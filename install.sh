@@ -11,6 +11,14 @@ has_path_setup() {
     grep -Eq '(^|["=:])\$HOME/\.local/bin|(^|["=:])~/\.local/bin|(^|["=:])/.*/\.local/bin' "$file"
 }
 
+has_ai_autolaunch() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    grep -Eq 'ai-start-menu' "$file" \
+        && grep -Eq 'AI_AUTO_LAUNCHED' "$file" \
+        && grep -Eq '(^|[^[:alnum:]_])ai([[:space:]]*$|[[:space:]]|;|&&|\|\|)' "$file"
+}
+
 append_block_once() {
     local file="$1" label="$2" content="$3" dir begin_mark end_mark
     begin_mark="# >>> linux-setup:$label >>>"
@@ -86,10 +94,10 @@ if [[ -f "$HOME/.bashrc" ]]; then
 fi'
 
     has_path_setup "$HOME/.zshenv" || append_block_once "$HOME/.zshenv" path "$path_block"
-    prepend_block_once "$HOME/.zshrc" zsh-ai "$zsh_ai_block"
+    has_ai_autolaunch "$HOME/.zshrc" || prepend_block_once "$HOME/.zshrc" zsh-ai "$zsh_ai_block"
 
     has_path_setup "$HOME/.bashrc" || append_block_once "$HOME/.bashrc" path "$path_block"
-    append_block_once "$HOME/.bashrc" bash-ai "$bash_ai_block"
+    has_ai_autolaunch "$HOME/.bashrc" || append_block_once "$HOME/.bashrc" bash-ai "$bash_ai_block"
 
     if [[ ! -f "$HOME/.bash_profile" && ! -f "$HOME/.bash_login" && ! -f "$HOME/.profile" ]]; then
         append_block_once "$HOME/.bash_profile" bash-profile "$bash_profile_block"

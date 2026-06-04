@@ -21,7 +21,7 @@ The bare installer installs `linux-setup`, `resume`, and `ai-menu`, then idempot
 ~/.bash_profile            only when no bash login profile exists
 ```
 
-Managed blocks are marker-delimited as `linux-setup:<label>` and are safe to rerun.
+Managed blocks are marker-delimited as `linux-setup:<label>` and are safe to rerun. Existing unmarked PATH or `ai-start-menu` + `AI_AUTO_LAUNCHED` setup is detected and left alone.
 
 Install managed modules explicitly:
 
