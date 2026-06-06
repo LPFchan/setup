@@ -783,13 +783,17 @@ cmd_reconfigure() {
         [[ -z "$mod" ]] && break
 
         if [[ "$mod" == "<ALL" ]]; then
-            action=$(echo -e "update all\nreinstall all\nuninstall all\ncancel" | fzf \
+            action=$(echo -e "update all\nreinstall all\nuninstall all\nrefresh list\ncancel" | fzf \
                 --layout=reverse --cycle \
                 --header="<ALL MODULES>" \
                 --bind='esc:abort'
             ) || continue
 
             case "$action" in
+                "refresh list")
+                    fetch_checksums
+                    continue
+                    ;;
                 "update all")
                     local confirm
                     confirm=$(echo -e "yes\nno" | fzf --header="Update ALL installed modules?" 2>/dev/null || true)
