@@ -134,6 +134,14 @@ fi
 
 install -m 0755 "$tmp" "$TARGET"
 
+# Clear stale hash record so setup can self-update cleanly
+hash_file="${XDG_STATE_HOME:-$HOME/.local/state}/setup/installed.tsv"
+if [[ -f "$hash_file" ]]; then
+    tmp2=$(mktemp)
+    grep -vF "${TARGET}"$'\t' "$hash_file" > "$tmp2" 2>/dev/null || true
+    mv "$tmp2" "$hash_file"
+fi
+
 echo "Installed $TARGET"
 
 if (($# > 0)); then
