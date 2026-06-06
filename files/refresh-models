@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # setup-module: refresh-models
-# setup-version: 2026.06.06.3
+# setup-version: 2026.06.06.4
 # setup-source: files/refresh-models
 """refresh-models — probe /v1/models endpoints and update opencode.json provider blocks.
 
@@ -13,7 +13,7 @@ Commands:
   status           Show timer state and next run
 """
 
-import json, os, sys, urllib.request, urllib.error, subprocess, pathlib
+import json, os, sys, urllib.request, urllib.error, subprocess, pathlib, getpass
 
 CONFIG_PATH = os.path.expanduser("~/.config/opencode/refresh-models.json")
 OPENCODE_PATH = os.path.expanduser("~/.config/opencode/opencode.json")
@@ -215,11 +215,30 @@ PROVIDER_URLS = {
 
 
 def cmd_auth():
-    """Show missing API keys and how to add them."""
+    """Interactive or direct API key onboarding.
+
+    refresh-models auth                     → interactive prompt for all missing keys
+    refresh-models auth <provider> <key>    → write key directly (agent-friendly)
+    """
     cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {"servers": {}}
     servers = cfg.get("servers", {})
     auth_data = load_json(AUTH_PATH) if os.path.exists(AUTH_PATH) else {}
 
+    # Agent mode: direct key write
+    if len(sys.argv) >= 4:
+        provider = sys.argv[2]
+        key = sys.argv[3]
+        if provider not in servers:
+            print(f"Unknown provider: {provider}", file=sys.stderr)
+            print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
+            sys.exit(1)
+        auth_data[provider] = {"type": "api", "key": key}
+        pathlib.Path(os.path.dirname(AUTH_PATH)).mkdir(parents=True, exist_ok=True)
+        save_json(AUTH_PATH, auth_data)
+        print(f"Wrote {provider} key to {AUTH_PATH}")
+        return
+
+    # Interactive mode
     missing = [s for s in servers if s not in auth_data]
     configured = [s for s in servers if s in auth_data]
 
@@ -227,24 +246,37 @@ def cmd_auth():
         print("Configured:")
         for s in configured:
             print(f"  {s}: ✓")
+        print()
+
     if not missing:
         print("All providers have API keys in auth.json.")
         return
 
-    print()
     print("Missing API keys:")
     for s in missing:
-        url = PROVIDER_URLS.get(s, f"https://{s}.com")
-        print(f"  {s}")
-        print(f"    Get key: {url}")
-        print()
+        url = PROVIDER_URLS.get(s, "")
+        print(f"  {s}" + (f"  — {url}" if url else ""))
+    print()
 
-    print(f"Add to {AUTH_PATH}:")
-    print("{")
-    for i, s in enumerate(missing):
-        comma = "," if i < len(missing) - 1 else ""
-        print(f'  "{s}": {{"type": "api", "key": "<your-key>"}}{comma}')
-    print("}")
+    updated = False
+    for s in missing:
+        url = PROVIDER_URLS.get(s, "")
+        prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
+        try:
+            key = getpass.getpass(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if key.strip():
+            auth_data[s] = {"type": "api", "key": key.strip()}
+            updated = True
+
+    if updated:
+        pathlib.Path(os.path.dirname(AUTH_PATH)).mkdir(parents=True, exist_ok=True)
+        save_json(AUTH_PATH, auth_data)
+        print(f"\nSaved to {AUTH_PATH}")
+    else:
+        print("\nNo keys entered.")
 
 
 def cmd_enable():
@@ -298,7 +330,7 @@ def cmd_enable():
     pathlib.Path(cfg_dir).mkdir(parents=True, exist_ok=True)
 
     if not os.path.exists(CONFIG_PATH):
-    default_config = {
+        default_config = {
         "servers": {
             "grimoire": {
                 "baseURL": "http://localhost:9001/v1",
@@ -343,14 +375,8 @@ def cmd_enable():
         missing = [s for s in servers if s not in auth_data]
         if missing:
             print()
-            print("  Missing API keys in auth.json:")
-            for s in missing:
-                url = PROVIDER_URLS.get(s, "")
-                print(f"    {s}" + (f" — {url}" if url else ""))
-            print()
-            print(f"  Add to {AUTH_PATH}:")
-            for s in missing:
-                print(f'    "{s}": {{"type": "api", "key": "<your-key>"}}')
+            print(f"  {len(missing)} provider(s) missing API keys: {', '.join(missing)}")
+            print(f"  Run: refresh-models auth")
 
 
 def cmd_disable():
