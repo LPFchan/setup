@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # setup-module: kernel-simmer
-# setup-version: 2026.06.06.1
 # setup-source: bin/kernel-simmer
 #
 # kernel-simmer — delayed kernel upgrade manager

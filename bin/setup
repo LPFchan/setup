@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # setup-module: setup
-# setup-version: 2026.06.07.1
 # setup-source: bin/setup
 set -euo pipefail
 
@@ -135,14 +134,31 @@ installed_hash_for() {
 }
 
 version_for() {
-    local file="$1"
-    [[ -f "$file" ]] || return 0
-    while IFS= read -r line; do
-        case "$line" in
-            '# setup-version: '*) printf '%s\n' "${line#'# setup-version: '}"; return 0 ;;
-            '# linux-setup-version: '*) printf '%s\n' "${line#'# linux-setup-version: '}"; return 0 ;;
-        esac
-    done < "$file"
+    # backward compat: returns the installed GitHub SHA (use installed_sha_for)
+    installed_sha_for "$1"
+}
+
+github_sha_for() {
+    local source="$1" url sha
+    if [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]]; then
+        [[ -n "${_GSHA_CACHE["$source"]:-}" ]] && { printf '%s\n' "${_GSHA_CACHE["$source"]}"; return; }
+    fi
+    url="https://api.github.com/repos/LPFchan/setup/commits?path=${source}&per_page=1"
+    sha=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+        -H "User-Agent: setup/1.0" "$url" 2>/dev/null \
+        | sed -n 's/.*"sha":"\([^"]*\)".*/\1/p' | head -1)
+    if [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]]; then
+        _GSHA_CACHE["$source"]="${sha:-}"
+    fi
+    printf '%s\n' "${sha:-}"
+}
+
+installed_sha_for() {
+    local target="$1"
+    [[ -f "$HASH_FILE" ]] || return 0
+    while IFS=$'\t' read -r path hash sha; do
+        [[ "$path" == "$target" ]] && printf '%s\n' "$sha" && return 0
+    done < "$HASH_FILE"
 }
 
 module_for() {
@@ -289,30 +305,6 @@ fetch_payload() {
     fi
 }
 
-version_gt() {
-    local remote="$1" local_version="$2" i remote_part local_part max
-    [[ -z "$remote" ]] && return 1
-    [[ -z "$local_version" ]] && return 0
-    [[ "$remote" == "$local_version" ]] && return 1
-
-    local -a remote_parts local_parts
-    IFS='.' read -r -a remote_parts <<< "$remote"
-    IFS='.' read -r -a local_parts <<< "$local_version"
-    max=${#remote_parts[@]}
-    ((${#local_parts[@]} > max)) && max=${#local_parts[@]}
-
-    for ((i = 0; i < max; i++)); do
-        remote_part="${remote_parts[$i]:-0}"
-        local_part="${local_parts[$i]:-0}"
-        [[ "$remote_part" =~ ^[0-9]+$ ]] || remote_part=0
-        [[ "$local_part" =~ ^[0-9]+$ ]] || local_part=0
-        ((10#$remote_part > 10#$local_part)) && return 0
-        ((10#$remote_part < 10#$local_part)) && return 1
-    done
-
-    return 1
-}
-
 record_hash() {
     local target="$1" hash="$2" version="$3" tmp
     mkdir -p "$STATE_DIR"
@@ -397,7 +389,7 @@ uninstall_one() {
 
 install_one() {
     local module="$1" target_spec="$2" mode="$3" source="$4"
-    local target dir payload old_hash current_hash new_hash install_target local_version remote_version remote_module
+    local target dir payload old_hash current_hash new_hash install_target local_sha remote_sha remote_module
 
     target=$(expand_path "$target_spec")
     dir=$(dirname "$target")
@@ -406,7 +398,7 @@ install_one() {
     payload=$(mktemp)
 
     fetch_payload "$source" "$payload"
-    remote_version=$(version_for "$payload" || true)
+    remote_sha=$(github_sha_for "$source")
     remote_module=$(module_for "$payload" || true)
 
     if [[ "$remote_module" != "$module" ]]; then
@@ -414,26 +406,21 @@ install_one() {
         rm -f "$payload"
         return 1
     fi
-    if [[ -z "$remote_version" ]]; then
-        echo "Missing setup-version in $source" >&2
-        rm -f "$payload"
-        return 1
-    fi
 
     new_hash=$(sha256 "$payload")
     old_hash=$(installed_hash_for "$target" || true)
-    local_version=$(version_for "$target" || true)
+    local_sha=$(installed_sha_for "$target" || true)
 
-    if [[ -f "$target" && -n "$local_version" ]] && ! version_gt "$remote_version" "$local_version" && [[ "$FORCE" -ne 1 ]]; then
+    if [[ -f "$target" && -n "$local_sha" ]] && [[ "$remote_sha" == "$local_sha" ]] && [[ "$FORCE" -ne 1 ]]; then
         if [[ -n "$old_hash" ]]; then
             current_hash=$(sha256 "$target")
             if [[ "$current_hash" != "$old_hash" ]]; then
-                echo "Local changes detected: $module remains at $local_version"
+                echo "Local changes detected: $module ($remote_sha)"
                 rm -f "$payload"
                 return 0
             fi
         fi
-        echo "Current $module $local_version -> $target"
+        echo "Current $module -> $target"
         rm -f "$payload"
         return 0
     fi
@@ -443,44 +430,41 @@ install_one() {
         if [[ "$current_hash" != "$old_hash" && "$FORCE" -ne 1 ]]; then
             install_target="$target.new"
             install -m "$mode" "$payload" "$install_target"
-            echo "Local changes detected: wrote $install_target for $module $remote_version"
+            echo "Local changes detected: wrote $install_target for $module"
             rm -f "$payload"
             return 0
         fi
     elif [[ -f "$target" ]]; then
         install -m "$mode" "$payload" "$target"
-        record_hash "$target" "$new_hash" "$remote_version"
-        echo "Replaced foreign file: $module $remote_version -> $target"
+        record_hash "$target" "$new_hash" "$remote_sha"
+        echo "Replaced foreign file: $module -> $target"
         rm -f "$payload"
         return 0
     fi
 
     install -m "$mode" "$payload" "$target"
-    record_hash "$target" "$new_hash" "$remote_version"
-    if [[ -n "$local_version" && "$local_version" != "$remote_version" ]]; then
-        echo "Updated $module $local_version -> $remote_version"
+    record_hash "$target" "$new_hash" "$remote_sha"
+    if [[ -n "$local_sha" && "$local_sha" != "$remote_sha" ]]; then
+        echo "Updated $module ($remote_sha)"
     else
-        echo "Installed $module $remote_version -> $target"
+        echo "Installed $module -> $target"
     fi
     rm -f "$payload"
 }
 
 status_one() {
     local module="$1" target_spec="$2" mode="$3" source="$4"
-    local target payload remote_version local_version local_module old_hash current_hash state extra
+    local target remote_sha local_sha local_module old_hash current_hash state extra
     target=$(expand_path "$target_spec")
-    payload=$(mktemp)
-    fetch_payload "$source" "$payload"
-    remote_version=$(version_for "$payload" || true)
-    rm -f "$payload"
+    remote_sha=$(github_sha_for "$source")
 
     if [[ ! -f "$target" ]]; then
-        printf '%-14s %-12s remote=%s target=%s\n' "$module" "uninstalled" "${remote_version:-unknown}" "$target"
+        printf '%-14s %-12s remote=%s target=%s\n' "$module" "uninstalled" "${remote_sha:-unknown}" "$target"
         return 0
     fi
 
     local_module=$(module_for "$target" || true)
-    local_version=$(version_for "$target" || true)
+    local_sha=$(installed_sha_for "$target" || true)
     old_hash=$(installed_hash_for "$target" || true)
 
     if [[ "$local_module" != "$module" ]]; then
@@ -489,7 +473,7 @@ status_one() {
     fi
 
     state="current"
-    extra="local=${local_version:-unknown} remote=${remote_version:-unknown}"
+    extra="local=${local_sha:-unknown} remote=${remote_sha:-unknown}"
 
     if [[ -n "$old_hash" ]]; then
         current_hash=$(sha256 "$target")
@@ -501,10 +485,8 @@ status_one() {
     fi
 
     if [[ "$state" != "modified" ]]; then
-        if version_gt "$remote_version" "$local_version"; then
+        if [[ -n "$local_sha" && "$local_sha" != "$remote_sha" ]]; then
             state="outdated"
-        elif version_gt "$local_version" "$remote_version"; then
-            state="ahead"
         fi
     fi
 
@@ -591,10 +573,10 @@ cmd_update() {
     local new_count=0 new_names=()
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
-        local target_path local_ver
+        local target_path local_sha
         target_path=$(expand_path "$target")
-        local_ver=$(version_for "$target_path" || true)
-        if [[ -z "$local_ver" ]]; then
+        local_sha=$(installed_sha_for "$target_path" || true)
+        if [[ -z "$local_sha" ]]; then
             new_count=$((new_count + 1))
             new_names+=("$module")
         else
@@ -720,44 +702,18 @@ detect_env_summary() {
     echo "${os} ${arch} · ${distro} · ${fs}"
 }
 
-module_state() {
-    local module="$1" target_spec="$2"
-    local target payload remote_ver local_ver
-    target=$(expand_path "$target_spec")
-    if [[ ! -f "$target" ]]; then
-        echo "not installed"
-        return
-    fi
-    local_ver=$(version_for "$target" || true)
-    payload=$(mktemp)
-    fetch_payload "$3" "$payload" 2>/dev/null || true
-    remote_ver=$(version_for "$payload" || true)
-    rm -f "$payload"
-    if [[ -z "$local_ver" ]]; then
-        echo "installed (no version)"
-    elif version_gt "$remote_ver" "$local_ver"; then
-        echo "outdated · ${local_ver}"
-    else
-        echo "current · ${local_ver}"
-    fi
-}
-
 cmd_reconfigure() {
     configure_shell
     fetch_manifest
     local env_summary
     env_summary=$(detect_env_summary)
 
-    # Cache remote versions (skip if bash <4 — macOS compatibility)
+    # Cache GitHub SHAs (skip if bash <4 — macOS compatibility)
     if [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]]; then
-        declare -A REMOTE_VER
+        declare -A REMOTE_SHA
         while IFS=$'\t' read -r m t mo s; do
             [[ -z "${m:-}" || "$m" == \#* ]] && continue
-            local p
-            p=$(mktemp)
-            fetch_payload "$s" "$p" 2>/dev/null || true
-            REMOTE_VER["$m"]=$(version_for "$p" || echo "")
-            rm -f "$p"
+            REMOTE_SHA["$m"]=$(github_sha_for "$s")
         done < "$MANIFEST_FILE"
     fi
 
@@ -772,31 +728,31 @@ cmd_reconfigure() {
 
         while IFS=$'\t' read -r m t mo s; do
             [[ -z "${m:-}" || "$m" == \#* ]] && continue
-            local target local_ver remote_ver \
+            local target local_sha remote_sha \
                    svc_label local_label remote_label status_label
 
             target=$(expand_path "$t")
-            local_ver=$(version_for "$target" || true)
+            local_sha=$(installed_sha_for "$target" || true)
 
             if [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]]; then
-                remote_ver="${REMOTE_VER["$m"]:-}"
+                remote_sha="${REMOTE_SHA["$m"]:-}"
             else
-                remote_ver=""
+                remote_sha=$(github_sha_for "$s")
             fi
-            [[ -z "$remote_ver" ]] && remote_ver="—"
+            [[ -z "$remote_sha" ]] && remote_sha="—"
 
-            if [[ -z "$local_ver" ]]; then
+            if [[ -z "$local_sha" || "$local_sha" == "—" ]]; then
                 local_label="—"
                 status_label="not installed"
-            elif [[ -n "${remote_ver//—/}" ]] && version_gt "${remote_ver}" "$local_ver"; then
-                local_label="$local_ver"
+            elif [[ "$local_sha" != "$remote_sha" ]]; then
+                local_label="${local_sha:0:7}"
                 status_label="update available"
             else
-                local_label="$local_ver"
+                local_label="${local_sha:0:7}"
                 status_label="up-to-date"
             fi
 
-            [[ -z "$remote_ver" || "$remote_ver" == "—" ]] && remote_label="—" || remote_label="$remote_ver"
+            [[ -z "$remote_sha" || "$remote_sha" == "—" ]] && remote_label="—" || remote_label="${remote_sha:0:7}"
 
             if is_service_module "$m"; then
                 local unit; unit=$(module_service_unit "$m")
@@ -809,7 +765,7 @@ cmd_reconfigure() {
                 fi
                 svc+=("$m|${local_label}|${svc_label}|${remote_label}|${status_label}")
             else
-                if [[ -n "$local_ver" ]]; then
+                if [[ -n "$local_sha" && "$local_sha" != "—" ]]; then
                     svc_label="installed"
                 else
                     svc_label="uninstalled"
@@ -857,8 +813,8 @@ cmd_reconfigure() {
                     [[ "$confirm" == "yes" ]] || continue
                     while IFS=$'\t' read -r m t mo s; do
                         [[ -z "${m:-}" || "$m" == \#* ]] && continue
-                        local_ver=$(version_for "$(expand_path "$t")" || true)
-                        [[ -n "$local_ver" ]] && install_one "$m" "$t" "$mo" "$s"
+                        local_sha=$(installed_sha_for "$(expand_path "$t")" || true)
+                        [[ -n "$local_sha" ]] && install_one "$m" "$t" "$mo" "$s"
                     done < "$MANIFEST_FILE"
                     ;;
                 "reinstall all")
@@ -899,11 +855,11 @@ cmd_reconfigure() {
         [[ -z "$target" ]] && continue
 
         # Use cached values for state detection
-        got_local_ver=$(version_for "$(expand_path "$target")" || true)
+        got_local_sha=$(installed_sha_for "$(expand_path "$target")" || true)
         has_svc=0
         is_service_module "$mod" && has_svc=1
         local file_installed=0 svc_active=0
-        [[ -n "$got_local_ver" ]] && file_installed=1
+        [[ -n "$got_local_sha" ]] && file_installed=1
         (( has_svc && file_installed )) && module_is_active "$mod" && svc_active=1
 
         actions=""

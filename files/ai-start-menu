@@ -1,5 +1,4 @@
 # setup-module: ai-menu
-# setup-version: 2026.06.06.1
 # setup-source: files/ai-start-menu
 
 ai() {

@@ -1,6 +1,5 @@
 #!/bin/bash
 # setup-module: monitoring
-# setup-version: 2026.06.07.1
 # setup-source: files/monitoring
 #
 # Unified monitoring daemon — three parallel loops:

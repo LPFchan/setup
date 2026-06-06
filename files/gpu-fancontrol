@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # setup-module: gpu-fancontrol
-# setup-version: 2026.06.07.1
 # setup-source: files/gpu-fancontrol
 """GPU-based PWM fan controller for ASUS ROG STRIX X570-F + dual RTX 3090.
 

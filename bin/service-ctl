@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # setup-module: service-ctl
-# setup-version: 2026.06.06.2
 # setup-source: bin/service-ctl
 #
 # service-ctl — manage system monitoring and control services

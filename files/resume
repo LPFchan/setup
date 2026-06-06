@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # setup-module: resume
-# setup-version: 2026.06.07.1
 # setup-source: files/resume
 # resume - interactively pick and resume a Claude Code, Codex, OpenCode, or ForgeCode session
 

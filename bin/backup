@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # setup-module: backup
-# setup-version: 2026.06.06.2
 # setup-source: bin/backup
 #
 # backup — unified backup to bingus NAS
