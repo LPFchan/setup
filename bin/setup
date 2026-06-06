@@ -736,7 +736,7 @@ cmd_reconfigure() {
             if is_service_module "$m"; then
                 local unit; unit=$(module_service_unit "$m")
                 if [[ "$unit" == "tool" ]]; then
-                    svc_label="installed"
+                    svc_label=$([[ -f "$target" ]] && echo "installed" || echo "uninstalled")
                 elif module_is_active "$m"; then
                     svc_label="active"
                 else
