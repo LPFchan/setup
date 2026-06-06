@@ -308,8 +308,14 @@ def cmd_enable():
 </plist>"""
         with open(plist_path, "w") as f:
             f.write(plist)
-        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
-        subprocess.run(["launchctl", "load", plist_path], check=True)
+        _uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
+                       capture_output=True)
+        try:
+            subprocess.run(["launchctl", "bootstrap", f"gui/{_uid}", plist_path],
+                           check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(["launchctl", "load", plist_path], check=True)
         print("refresh-models launchd agent enabled (hourly)")
     else:
         pathlib.Path(SERVICE_DIR).mkdir(parents=True, exist_ok=True)
@@ -405,6 +411,9 @@ def cmd_disable():
     if _is_macos():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
+            _uid = os.getuid()
+            subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
+                           capture_output=True)
             subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
             os.remove(plist_path)
         print("refresh-models launchd agent disabled")
