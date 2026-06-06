@@ -445,10 +445,10 @@ install_one() {
             rm -f "$payload"
             return 0
         fi
-    elif [[ -f "$target" && "$FORCE" -ne 1 ]]; then
-        install_target="$target.new"
-        install -m "$mode" "$payload" "$install_target"
-        echo "Untracked existing file: wrote $install_target for $module $remote_version"
+    elif [[ -f "$target" ]]; then
+        install -m "$mode" "$payload" "$target"
+        record_hash "$target" "$new_hash" "$remote_version"
+        echo "Replaced foreign file: $module $remote_version -> $target"
         rm -f "$payload"
         return 0
     fi
