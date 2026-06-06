@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Re-generate checksums.tsv from current source files.
+# Run before committing changes to bin/ or files/.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        echo "missing sha256sum/shasum" >&2; exit 1
+    fi
+}
+
+{
+    printf '# source\tsha256\n'
+    while IFS=$'\t' read -r module target mode source; do
+        [[ -z "${module:-}" || "$module" == \#* ]] && continue
+        [[ -f "$source" ]] || { echo "missing: $source" >&2; exit 1; }
+        h=$(sha256 "$source")
+        printf '%s\t%s\n' "$source" "$h"
+    done < manifest.tsv
+} > checksums.tsv
+
+echo "Wrote checksums.tsv ($(wc -l < checksums.tsv | tr -d ' ') lines)"

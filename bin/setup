@@ -133,39 +133,29 @@ installed_hash_for() {
         [[ "$path" == "$target" ]] && printf '%s\n' "$hash" && return 0
     done < "$HASH_FILE"
 }
-
-installed_blob_for() {
-    local target="$1"
-    [[ -f "$HASH_FILE" ]] || return 0
-    while IFS=$'\t' read -r path hash blob; do
-        [[ "$path" == "$target" ]] && printf '%s\n' "$blob" && return 0
-    done < "$HASH_FILE"
-}
-git_tree_shas() {
-    # Fetch all blob SHAs from the repo tree in a single API call.
-    # Cached within the session in _GTREE_CACHE.
-    if [[ -n "${_GTREE_CACHE:-}" ]]; then
-        printf '%s\n' "${_GTREE_CACHE}"
-        return
-    fi
-    local json
-    json=$(curl -fsSL --connect-timeout 5 --max-time 10 \
-        -H "Accept: application/vnd.github+json" \
-        -H "User-Agent: setup/1.0" \
-        "https://api.github.com/repos/LPFchan/setup/git/trees/main?recursive=1" 2>/dev/null || true)
-    if [[ -z "$json" ]]; then
-        echo "Warning: could not reach GitHub API (rate-limited or offline)" >&2
+fetch_checksums() {
+    # Download checksums.tsv and cache source → sha256 mappings.
+    if [[ -n "${_CSUM_CACHE:-}" ]]; then
         return 0
     fi
-    _GTREE_CACHE=$(printf '%s\n' "$json" \
-        | sed -n 's/.*"path":"\([^"]*\)","mode":"\([^"]*\)","type":"\([^"]*\)","sha":"\([^"]*\)".*/\1|\4/p' \
-        | grep -E '^(bin|files)/')
-    printf '%s\n' "${_GTREE_CACHE}"
+    local tmp
+    tmp=$(mktemp)
+    if curl -fsSL "$BASE_URL/checksums.tsv" -o "$tmp" 2>/dev/null \
+        && grep -q '^# source' "$tmp"; then
+        _CSUM_CACHE=$(cat "$tmp")
+    elif curl -fsSL "$FALLBACK_URL/checksums.tsv" -o "$tmp" 2>/dev/null \
+        && grep -q '^# source' "$tmp"; then
+        _CSUM_CACHE=$(cat "$tmp")
+    else
+        echo "Warning: could not fetch checksums.tsv" >&2
+    fi
+    rm -f "$tmp"
 }
 
-remote_blob_sha() {
-    [[ -n "${_GTREE_CACHE:-}" ]] || git_tree_shas > /dev/null
-    printf '%s\n' "${_GTREE_CACHE:-}" | grep "^${1}|" | head -1 | cut -d'|' -f2
+remote_checksum() {
+    local source="$1"
+    [[ -z "${_CSUM_CACHE:-}" ]] && fetch_checksums
+    printf '%s\n' "${_CSUM_CACHE:-}" | grep "^${source}"$'\t' | head -1 | cut -f2
 }
 
 module_for() {
@@ -421,7 +411,6 @@ install_one() {
 
     new_hash=$(sha256 "$payload")
     old_hash=$(installed_hash_for "$target" || true)
-    remote_blob=$(remote_blob_sha "$source")
 
     if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" == "$old_hash" ]] && [[ "$FORCE" -ne 1 ]]; then
         echo "Current $module -> $target"
@@ -438,14 +427,14 @@ install_one() {
         fi
     elif [[ -f "$target" ]]; then
         install -m "$mode" "$payload" "$target"
-        record_hash "$target" "$new_hash" "$remote_blob"
+        record_hash "$target" "$new_hash" "$new_hash"
         echo "Replaced foreign file: $module -> $target"
         rm -f "$payload"
         return 0
     fi
 
     install -m "$mode" "$payload" "$target"
-    record_hash "$target" "$new_hash" "$remote_blob"
+    record_hash "$target" "$new_hash" "$new_hash"
     if [[ -n "$old_hash" && "$old_hash" != "$new_hash" ]]; then
         echo "Updated $module"
     else
@@ -456,21 +445,17 @@ install_one() {
 
 status_one() {
     local module="$1" target_spec="$2" mode="$3" source="$4"
-    local target payload remote_blob local_blob local_module old_hash current_hash state extra
+    local target payload remote_hash local_hash local_module old_hash current_hash state extra
     target=$(expand_path "$target_spec")
-    payload=$(mktemp)
-    fetch_payload "$source" "$payload"
-    remote_blob=$(remote_blob_sha "$source")
-    rm -f "$payload"
+    remote_hash=$(remote_checksum "$source")
 
     if [[ ! -f "$target" ]]; then
-        printf '%-14s %-12s remote=%s target=%s\n' "$module" "uninstalled" "${remote_blob:0:7}" "$target"
+        printf '%-14s %-12s remote=%s target=%s\n' "$module" "uninstalled" "${remote_hash:0:7}" "$target"
         return 0
     fi
 
     local_module=$(module_for "$target" || true)
     old_hash=$(installed_hash_for "$target" || true)
-    local_blob=$(installed_blob_for "$target" || true)
 
     if [[ "$local_module" != "$module" ]]; then
         printf '%-14s %-12s target=%s\n' "$module" "foreign" "$target"
@@ -478,7 +463,7 @@ status_one() {
     fi
 
     state="current"
-    extra="local=${local_blob:0:7} remote=${remote_blob:0:7}"
+    extra="local=${old_hash:0:7} remote=${remote_hash:0:7}"
 
     if [[ -n "$old_hash" ]]; then
         current_hash=$(sha256 "$target")
@@ -490,7 +475,7 @@ status_one() {
     fi
 
     if [[ "$state" != "modified" ]]; then
-        if [[ -n "$local_blob" && "$local_blob" != "$remote_blob" ]]; then
+        if [[ -n "$old_hash" && "$old_hash" != "$remote_hash" ]]; then
             state="outdated"
         fi
     fi
@@ -578,10 +563,10 @@ cmd_update() {
     local new_count=0 new_names=()
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
-        local target_path local_blob
+        local target_path local_hash
         target_path=$(expand_path "$target")
-        local_blob=$(installed_blob_for "$target_path" || true)
-        if [[ -z "$local_blob" ]]; then
+        local_hash=$(installed_hash_for "$target_path" || true)
+        if [[ -z "$local_hash" ]]; then
             new_count=$((new_count + 1))
             new_names+=("$module")
         else
@@ -713,8 +698,8 @@ cmd_reconfigure() {
     local env_summary
     env_summary=$(detect_env_summary)
 
-    # Fetch all remote blob SHAs in one API call
-    git_tree_shas > /dev/null
+    # Fetch remote checksums (one small file)
+    fetch_checksums
 
     build_list() {
         # Header: name, local_ver, service, remote_ver, status
@@ -732,11 +717,10 @@ cmd_reconfigure() {
 
             target=$(expand_path "$t")
             local_hash=$(installed_hash_for "$target" || true)
-            local_blob=$(installed_blob_for "$target" || true)
-            remote_hash=$(remote_blob_sha "$s")
+            remote_hash=$(remote_checksum "$s")
             [[ -z "$remote_hash" ]] && remote_hash="-"
 
-            if [[ -z "$local_blob" || "$local_blob" == "-" ]]; then
+            if [[ -z "$local_hash" || "$local_hash" == "-" ]]; then
                 if [[ -f "$target" ]]; then
                     local_label="${local_hash:0:7}"
                     status_label="installed (untracked)"
@@ -744,7 +728,7 @@ cmd_reconfigure() {
                     local_label="-"
                     status_label="not installed"
                 fi
-            elif [[ "$local_blob" != "$remote_hash" ]]; then
+            elif [[ "$local_hash" != "$remote_hash" ]]; then
                 local_label="${local_hash:0:7}"
                 status_label="update available"
             else
@@ -765,7 +749,7 @@ cmd_reconfigure() {
                 fi
                 svc+=("$m|${local_label}|${svc_label}|${remote_label}|${status_label}")
             else
-                if [[ (-n "$local_blob" && "$local_blob" != "-") || -f "$target" ]]; then
+                if [[ (-n "$local_hash" && "$local_hash" != "-") || -f "$target" ]]; then
                     svc_label="installed"
                 else
                     svc_label="uninstalled"
@@ -812,8 +796,8 @@ cmd_reconfigure() {
                     [[ "$confirm" == "yes" ]] || continue
                     while IFS=$'\t' read -r m t mo s; do
                         [[ -z "${m:-}" || "$m" == \#* ]] && continue
-                        local_blob=$(installed_blob_for "$(expand_path "$t")" || true)
-                        [[ -n "$local_blob" ]] && install_one "$m" "$t" "$mo" "$s"
+                        local_hash=$(installed_hash_for "$(expand_path "$t")" || true)
+                        [[ -n "$local_hash" ]] && install_one "$m" "$t" "$mo" "$s"
                     done < "$MANIFEST_FILE"
                     ;;
                 "reinstall all")
@@ -854,11 +838,11 @@ cmd_reconfigure() {
         [[ -z "$target" ]] && continue
 
         # Use cached values for state detection
-        got_local_blob=$(installed_blob_for "$(expand_path "$target")" || true)
+        got_local_hash=$(installed_hash_for "$(expand_path "$target")" || true)
         has_svc=0
         is_service_module "$mod" && has_svc=1
         local file_installed=0 svc_active=0
-        if [[ -n "$got_local_blob" ]] || [[ -f "$(expand_path "$target")" ]]; then
+        if [[ -n "$got_local_hash" ]] || [[ -f "$(expand_path "$target")" ]]; then
             file_installed=1
         fi
         (( has_svc && file_installed )) && module_is_active "$mod" && svc_active=1
@@ -959,7 +943,6 @@ if [[ -z "$cmd" ]]; then
         cmd_reconfigure
     else
         cmd_update || true
-        cmd_install resume ai-menu || true
     fi
     exit 0
 fi
