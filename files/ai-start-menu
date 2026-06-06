@@ -1,5 +1,5 @@
 # linux-setup-module: ai-menu
-# linux-setup-version: 2026.06.05.1
+# linux-setup-version: 2026.06.06.1
 # linux-setup-source: files/ai-start-menu
 
 ai() {

@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# linux-setup-module: kernel-simmer
+# linux-setup-version: 2026.06.06.1
+# linux-setup-source: bin/kernel-simmer
+#
+# kernel-simmer — delayed kernel upgrade manager
+#
+# Holds kernel meta-packages permanently. Only installs a new kernel
+# after it has been available in the repository for a configurable
+# "cool-off" period (default 14 days), giving the community time to
+# surface regressions. Known-bad versions can be blacklisted.
+#
+# Commands:
+#   enable             Install systemd timer + service, set holds
+#   disable            Remove systemd units, release holds
+#   gap [days]         Show or set the cool-off period in days
+#   skip <version>     Add a kernel version to the skip/blacklist
+#   unskip <version>   Remove a kernel version from the skip list
+#   list-skip          Show all blacklisted kernel versions
+#   status             Show simmer state (gap, holds, skip list, kernel)
+#   check              Run one check cycle (download dry-run; no upgrade)
+#   update-hold        Unhold and re-hold meta-packages (fix stale holds)
+#   help               Show this message
+
+set -euo pipefail
+
+NAME="kernel-simmer"
+CONFIG_DIR="${CONFIG_DIR:-/etc/${NAME}}"
+STATE_DIR="${STATE_DIR:-/var/lib/${NAME}}"
+SKIP_FILE="${SKIP_FILE:-${CONFIG_DIR}/skip}"
+GAP_FILE="${STATE_DIR}/gap"
+STATE_FILE="${STATE_DIR}/state"
+HOLD_PKGS=("linux-image-generic" "linux-headers-generic" "linux-generic")
+TIMER_NAME="${NAME}.timer"
+SERVICE_NAME="${NAME}.service"
+LOG_TAG="${NAME}"
+
+# --- helpers ----------------------------------------------------------
+
+die() { echo "error: $*" >&2; exit 1; }
+warn() { echo "warn: $*" >&2; }
+info() { echo "$*"; }
+
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        die "this command requires root — try sudo ${NAME} $*"
+    fi
+}
+
+version_gt() {
+    local remote="$1" local_v="$2" i r l max
+    [[ -z "$remote" ]] && return 1; [[ -z "$local_v" ]] && return 0
+    [[ "$remote" == "$local_v" ]] && return 1
+    IFS='.' read -r -a r <<< "$remote"; IFS='.' read -r -a l <<< "$local_v"
+    max=${#r[@]}; ((${#l[@]} > max)) && max=${#l[@]}
+    for ((i = 0; i < max; i++)); do
+        local ri="${r[$i]:-0}" li="${l[$i]:-0}"
+        ((10#$ri > 10#$li)) && return 0; ((10#$ri < 10#$li)) && return 1
+    done; return 1
+}
+
+runner_log() {
+    logger -t "${LOG_TAG}" -p daemon.info "$*"
+}
+
+ensure_dirs() {
+    mkdir -p "${CONFIG_DIR}" "${STATE_DIR}"
+}
+
+read_gap() {
+    if [[ -f "${GAP_FILE}" ]]; then
+        cat "${GAP_FILE}"
+    else
+        echo 14
+    fi
+}
+
+write_gap() {
+    echo "$1" > "${GAP_FILE}"
+}
+
+read_skip() {
+    if [[ -f "${SKIP_FILE}" ]]; then
+        cat "${SKIP_FILE}"
+    fi
+}
+
+in_skip() {
+    local ver="$1"
+    [[ -f "${SKIP_FILE}" ]] || return 1
+    while IFS= read -r v; do [[ "${v}" == "${ver}" ]] && return 0; done < "${SKIP_FILE}"
+    return 1
+}
+
+# --- service + timer unit templates -----------------------------------
+
+SERVICE_UNIT='[Unit]
+Description=Check and install delayed kernel updates (kernel-simmer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kernel-simmer check
+Environment=CONFIG_DIR=/etc/kernel-simmer
+StandardOutput=journal
+StandardError=journal'
+
+TIMER_UNIT='[Unit]
+Description=Weekly kernel-simmer check
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target'
+
+# --- daemon check (invoked by systemd timer) --------------------------
+
+cmd_daemon_check() {
+    ensure_dirs
+    local gap
+    gap=$(read_gap)
+    CURRENT_KERNEL=$(uname -r)
+    KERNEL_SERIES=$(echo "${CURRENT_KERNEL}" | grep -oP '^\d+\.\d+')
+
+    runner_log "check: running kernel ${CURRENT_KERNEL}, gap=${gap}d"
+
+    # Temporarily unhold to refresh apt
+    for pkg in "${HOLD_PKGS[@]}"; do apt-mark unhold "${pkg}" 2>/dev/null || true; done
+    apt update -qq 2>/dev/null
+
+    # Find latest non-blacklisted kernel in our series
+    TARGET_VER=""
+    while IFS= read -r pkg; do
+        ver="${pkg#linux-image-}"
+        in_skip "${ver}" && continue
+        TARGET_VER="${ver}"
+    done < <(apt-cache search "linux-image-${KERNEL_SERIES}.*-generic" 2>/dev/null \
+        | awk '{print $1}' | sort -V)
+
+    if [[ -z "${TARGET_VER}" ]]; then
+        runner_log "check: no non-blacklisted kernel available in series ${KERNEL_SERIES}"
+        for pkg in "${HOLD_PKGS[@]}"; do apt-mark hold "${pkg}" 2>/dev/null || true; done
+        exit 0
+    fi
+
+    # Already on it?
+    if echo "${CURRENT_KERNEL}" | grep -qF "${TARGET_VER}"; then
+        runner_log "check: already on latest non-blacklisted (${TARGET_VER})"
+        for pkg in "${HOLD_PKGS[@]}"; do apt-mark hold "${pkg}" 2>/dev/null || true; done
+        exit 0
+    fi
+
+    # Cool-off tracking
+    NOW=$(date +%s)
+    STAGED=""; FIRST_SEEN=0
+    [[ -f "${STATE_FILE}" ]] && read -r STAGED FIRST_SEEN < "${STATE_FILE}"
+
+    if [[ "${STAGED}" != "${TARGET_VER}" ]]; then
+        FIRST_SEEN="${NOW}"
+        echo "${TARGET_VER} ${FIRST_SEEN}" > "${STATE_FILE}"
+        runner_log "check: new kernel ${TARGET_VER} seen, waiting ${gap}d cool-off"
+        for pkg in "${HOLD_PKGS[@]}"; do apt-mark hold "${pkg}" 2>/dev/null || true; done
+        exit 0
+    fi
+
+    ELAPSED=$(( (NOW - FIRST_SEEN) / 86400 ))
+    if [[ "${ELAPSED}" -lt "${gap}" ]]; then
+        REMAIN=$(( gap - ELAPSED ))
+        runner_log "check: ${TARGET_VER} available ${ELAPSED}/${gap}d (${REMAIN}d left)"
+        for pkg in "${HOLD_PKGS[@]}"; do apt-mark hold "${pkg}" 2>/dev/null || true; done
+        exit 0
+    fi
+
+    # Upgrade!
+    runner_log "check: cool-off passed, upgrading to ${TARGET_VER}"
+    apt-get install --only-upgrade -y "${HOLD_PKGS[@]}" 2>&1 | runner_log
+    apt-get autoremove -y 2>&1 | runner_log
+    apt-mark hold "${HOLD_PKGS[@]}" 2>/dev/null || true
+    rm -f "${STATE_FILE}"
+    runner_log "check: upgraded to ${TARGET_VER}, reboot recommended"
+}
+
+# --- subcommands ------------------------------------------------------
+
+cmd_status() {
+    require_root
+    ensure_dirs
+    local gap
+    gap=$(read_gap)
+    echo "kernel-simmer status"
+    echo "  gap:       ${gap} days"
+    echo "  holds:     $(apt-mark showhold | grep -c linux-image || true) kernel meta-pkg(s)"
+    echo "  timer:     $(systemctl is-active ${TIMER_NAME} 2>/dev/null || echo inactive)"
+    echo "  running:   $(uname -r)"
+    echo "  skip list: ${SKIP_FILE}"
+    while IFS= read -r v; do echo "    - ${v}"; done <<< "$(read_skip)"
+    echo
+    echo "Run 'linux-setup status kernel-simmer' for module version info."
+}
+
+cmd_enable() {
+    require_root
+    ensure_dirs
+
+    # Symlink into /usr/local/bin so systemd-as-root can find us
+    local my_path
+    my_path=$(readlink -f "$0")
+    if [[ "${my_path}" != /usr/local/bin/${NAME} ]]; then
+        ln -sf "${my_path}" /usr/local/bin/${NAME}
+        info "linked /usr/local/bin/${NAME} -> ${my_path}"
+    fi
+
+    # Ensure hold is active
+    for pkg in "${HOLD_PKGS[@]}"; do
+        if ! apt-mark showhold | grep -qF "${pkg}"; then
+            apt-mark hold "${pkg}" 2>/dev/null || true
+        fi
+    done
+    info "kernel meta-packages held"
+
+    # Install systemd service unit
+    echo "${SERVICE_UNIT}" > /etc/systemd/system/${SERVICE_NAME}
+    info "installed /etc/systemd/system/${SERVICE_NAME}"
+
+    # Install systemd timer unit
+    echo "${TIMER_UNIT}" > /etc/systemd/system/${TIMER_NAME}
+    info "installed /etc/systemd/system/${TIMER_NAME}"
+
+    # Ensure default gap
+    if [[ ! -f "${GAP_FILE}" ]]; then
+        write_gap 14
+        info "gap set to 14 days (default)"
+    fi
+
+    systemctl daemon-reload
+    systemctl enable ${TIMER_NAME}
+    systemctl start ${TIMER_NAME}
+    info "systemd timer ${TIMER_NAME} enabled and started"
+    info "${NAME} enabled (gap=$(read_gap)d)"
+}
+
+cmd_disable() {
+    require_root
+    systemctl disable --now ${TIMER_NAME} 2>/dev/null || true
+    systemctl disable --now ${SERVICE_NAME} 2>/dev/null || true
+    rm -f /etc/systemd/system/${TIMER_NAME}
+    rm -f /etc/systemd/system/${SERVICE_NAME}
+    systemctl daemon-reload
+    for pkg in "${HOLD_PKGS[@]}"; do
+        if apt-mark showhold | grep -qF "${pkg}"; then
+            apt-mark unhold "${pkg}" 2>/dev/null || true
+        fi
+    done
+    info "kernel meta-packages unheld"
+    info "${NAME} disabled"
+}
+
+cmd_gap() {
+    ensure_dirs
+    if [[ $# -eq 0 ]]; then
+        echo "$(read_gap)"
+        return 0
+    fi
+    local days="$1"
+    [[ "$days" =~ ^[0-9]+$ ]] || die "gap must be a positive integer"
+    write_gap "$days"
+    info "gap set to ${days} days"
+}
+
+cmd_skip() {
+    ensure_dirs
+    [[ $# -ge 1 ]] || die "usage: ${NAME} skip <version>"
+    local ver="$1"
+    touch "${SKIP_FILE}"
+    if in_skip "${ver}"; then
+        info "${ver} is already in skip list"
+        return 0
+    fi
+    echo "${ver}" >> "${SKIP_FILE}"
+    info "added ${ver} to skip list"
+}
+
+cmd_unskip() {
+    [[ $# -ge 1 ]] || die "usage: ${NAME} unskip <version>"
+    local ver="$1"
+    [[ -f "${SKIP_FILE}" ]] || die "skip list does not exist"
+    local tmp; tmp=$(mktemp)
+    local found=0
+    while IFS= read -r v; do
+        [[ "${v}" == "${ver}" ]] && found=1 && continue
+        echo "${v}"
+    done < "${SKIP_FILE}" > "${tmp}"
+    if [[ "$found" -eq 0 ]]; then
+        rm -f "${tmp}"
+        die "${ver} is not in the skip list"
+    fi
+    mv "${tmp}" "${SKIP_FILE}"
+    info "removed ${ver} from skip list"
+}
+
+cmd_list_skip() {
+    if [[ ! -f "${SKIP_FILE}" ]]; then
+        info "skip list is empty"
+        return 0
+    fi
+    while IFS= read -r v; do echo "${v}"; done < "${SKIP_FILE}"
+}
+
+cmd_check() {
+    require_root "check"
+    cmd_daemon_check
+}
+
+cmd_update_hold() {
+    require_root
+    for pkg in "${HOLD_PKGS[@]}"; do
+        apt-mark unhold "${pkg}" 2>/dev/null || true
+        apt-mark hold "${pkg}" 2>/dev/null || true
+    done
+    info "holds refreshed"
+}
+
+cmd_help() {
+    cat <<'HELP'
+Usage: kernel-simmer <command> [args...]
+
+Commands:
+  enable             Install systemd timer + service, set holds
+  disable            Remove systemd units, release holds
+  gap [days]         Show or set the cool-off period in days
+  skip <version>     Blacklist a kernel version (e.g. 6.8.0-124-generic)
+  unskip <version>   Remove a kernel version from the skip list
+  list-skip          Show all blacklisted kernel versions
+  status             Show simmer state
+  check              Run one check cycle (used by systemd timer)
+  update-hold        Refresh apt holds (fix stale state)
+  help               Show this message
+HELP
+}
+
+# --- main -------------------------------------------------------------
+
+cmd="${1:-help}"; [[ $# -gt 0 ]] && shift
+
+case "${cmd}" in
+    enable)        cmd_enable "$@" ;;
+    disable)       cmd_disable ;;
+    gap)           cmd_gap "$@" ;;
+    skip)          cmd_skip "$@" ;;
+    unskip)        cmd_unskip "$@" ;;
+    list-skip)     cmd_list_skip ;;
+    status)        cmd_status ;;
+    check)         cmd_check ;;
+    update-hold)   cmd_update_hold ;;
+    help|--help|-h) cmd_help ;;
+    *)             die "unknown command '${cmd}'. Try '${NAME} help'." ;;
+esac

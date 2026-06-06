@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+# linux-setup-module: gpu-fancontrol
+# linux-setup-version: 2026.06.06.1
+# linux-setup-source: files/gpu-fancontrol
+"""GPU-based PWM fan controller for ASUS ROG STRIX X570-F + dual RTX 3090.
+
+Ramp rates: both directions are smoothed at RAMP_UP/DOWN_PER_CYCLE degrees
+per loop. A HYSTERESIS deadband prevents jitter on tiny fluctuations.
+"""
+
+import os
+import signal
+import subprocess
+import sys
+import time
+
+TEMP_CURVE = [
+    (35,  26),
+    (50,  51),
+    (60,  89),
+    (70, 115),
+    (78, 166),
+    (83, 166),
+]
+
+PWM_CHANNELS = [3]
+PWM_MIN = 13
+PWM_MAX = 166
+INTERVAL = 1
+RAMP_UP_PER_CYCLE   = 0.5
+RAMP_DOWN_PER_CYCLE = 1.0
+HYSTERESIS = 10.0
+PWM_STEP = 3
+
+MODE_MANUAL = 1
+MODE_AUTO   = 5
+
+
+def find_hwmon(chip_name):
+    base = "/sys/class/hwmon"
+    for entry in sorted(os.listdir(base)):
+        path = os.path.join(base, entry)
+        try:
+            with open(os.path.join(path, "name")) as f:
+                if f.read().strip() == chip_name:
+                    return path
+        except OSError:
+            continue
+    raise RuntimeError("hwmon '{}' not found -- is nct6775 loaded?".format(chip_name))
+
+
+def get_gpu_temps():
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=5,
+    )
+    return [int(t.strip()) for t in result.stdout.strip().splitlines() if t.strip()]
+
+
+def interpolate(temp):
+    if temp <= TEMP_CURVE[0][0]:
+        return TEMP_CURVE[0][1]
+    if temp >= TEMP_CURVE[-1][0]:
+        return TEMP_CURVE[-1][1]
+    for i in range(len(TEMP_CURVE) - 1):
+        t0, p0 = TEMP_CURVE[i]
+        t1, p1 = TEMP_CURVE[i + 1]
+        if t0 <= temp <= t1:
+            ratio = (temp - t0) / (t1 - t0)
+            return round(p0 + ratio * (p1 - p0))
+    return TEMP_CURVE[-1][1]
+
+
+def write_pwm(hwmon, channel, value):
+    with open(os.path.join(hwmon, "pwm{}".format(channel)), "w") as f:
+        f.write(str(value))
+
+
+def set_mode(hwmon, channel, mode):
+    path = os.path.join(hwmon, "pwm{}_enable".format(channel))
+    if os.path.exists(path):
+        with open(path, "w") as f:
+            f.write(str(mode))
+
+
+def restore_auto(hwmon, sig=None, frame=None):
+    print("\nRestoring fans to motherboard auto control...", flush=True)
+    for ch in PWM_CHANNELS:
+        try:
+            set_mode(hwmon, ch, MODE_AUTO)
+        except OSError as e:
+            print("  pwm{}: {}".format(ch, e), file=sys.stderr)
+    if sig is not None:
+        sys.exit(0)
+
+
+def main():
+    hwmon = None
+    for chip in ("nct6798", "nct6775", "nct6687", "it8792", "it8689"):
+        try:
+            hwmon = find_hwmon(chip)
+            print("hwmon chip {} at {}".format(chip, hwmon), flush=True)
+            break
+        except RuntimeError:
+            continue
+    if hwmon is None:
+        raise RuntimeError("no supported hwmon chip found (tried: nct6798, nct6775, nct6687, it8792, it8689)")
+    for ch in PWM_CHANNELS:
+        set_mode(hwmon, ch, MODE_MANUAL)
+    signal.signal(signal.SIGTERM, lambda s, f: restore_auto(hwmon, s, f))
+    signal.signal(signal.SIGINT,  lambda s, f: restore_auto(hwmon, s, f))
+    print("Fan control active. Ramp: {:.1f}C/cycle up / {:.1f}C/cycle down ({:.0f}s/10C). Hysteresis: {:.0f}C. PWM step: {}/cycle ({:.0f}%/cycle). Range: {}%-{}%.".format(
+        RAMP_UP_PER_CYCLE, RAMP_DOWN_PER_CYCLE,
+        10 / RAMP_UP_PER_CYCLE * INTERVAL, HYSTERESIS,
+        PWM_STEP, PWM_STEP / 255 * 100,
+        round(PWM_MIN / 255 * 100), round(PWM_MAX / 255 * 100)), flush=True)
+    effective_temp = None
+    current_pwm = None
+    while True:
+        try:
+            temps = get_gpu_temps()
+            if not temps:
+                raise RuntimeError("nvidia-smi returned no temperatures")
+            actual_max = float(max(temps))
+            if effective_temp is None:
+                effective_temp = actual_max
+                current_pwm = interpolate(round(effective_temp))
+            diff = actual_max - effective_temp
+            if abs(diff) < HYSTERESIS:
+                pass
+            elif diff > 0:
+                effective_temp = min(actual_max, effective_temp + RAMP_UP_PER_CYCLE)
+            else:
+                effective_temp = max(actual_max, effective_temp - RAMP_DOWN_PER_CYCLE)
+            target_pwm = min(PWM_MAX, max(PWM_MIN, interpolate(round(effective_temp))))
+            if current_pwm is None:
+                current_pwm = target_pwm
+            elif target_pwm > current_pwm:
+                current_pwm = min(target_pwm, current_pwm + PWM_STEP)
+            elif target_pwm < current_pwm:
+                current_pwm = max(target_pwm, current_pwm - PWM_STEP)
+            for ch in PWM_CHANNELS:
+                write_pwm(hwmon, ch, current_pwm)
+            gpu_str = "  ".join("GPU{}={}C".format(i, t) for i, t in enumerate(temps))
+            direction = "^" if actual_max > effective_temp else "v" if actual_max < effective_temp else "="
+            print("{:<30}  eff={:.1f}C{}  pwm={} ({:.0f}%)  target={} ({:.0f}%)".format(
+                gpu_str, effective_temp, direction, current_pwm,
+                current_pwm / 255 * 100, target_pwm, target_pwm / 255 * 100), flush=True)
+        except Exception as e:
+            print("Error: {} -- fans set to max ({})".format(e, PWM_MAX), file=sys.stderr, flush=True)
+            effective_temp = None
+            for ch in PWM_CHANNELS:
+                try:
+                    write_pwm(hwmon, ch, PWM_MAX)
+                except OSError:
+                    pass
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

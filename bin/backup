@@ -1,0 +1,511 @@
+#!/usr/bin/env bash
+# linux-setup-module: backup
+# linux-setup-version: 2026.06.06.2
+# linux-setup-source: bin/backup
+#
+# backup — unified backup to bingus NAS
+#
+# Detects host, filesystem, and bingus reachability, then installs
+# the correct transport and snapshot mechanism. Both hosts share a
+# common paths.d config format and 7-daily + 4-weekly cadence.
+#
+# Commands:
+#   enable              Detect and install backup infrastructure
+#   disable             Remove backup scripts, timers, transport config
+#   status              Show backup config, last/next run
+#   trigger [daily|weekly]  Run backup now
+#   restore [date|--latest]  Interactively pick or restore specific date
+#   help                Show this message
+
+set -euo pipefail
+
+NAME="backup"
+CONF_DIR="/etc/${NAME}"
+LOG_TAG="${NAME}"
+
+# --- helpers ----------------------------------------------------------
+
+die() { echo "error: $*" >&2; exit 1; }
+warn() { echo "warn: $*" >&2; }
+info() { echo "$*"; }
+
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        die "this command requires root — try sudo ${NAME} $*"
+    fi
+}
+
+detect_fs() { stat -f -c '%T' "${1:-/}" 2>/dev/null || echo "unknown"; }
+
+detect_lan_nfs() {
+    if timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null; then
+        echo "nfs"
+    elif timeout 3 bash -c 'echo > /dev/tcp/bingus.lost.plus/873' 2>/dev/null; then
+        echo "rsyncd"
+    else
+        echo "unreachable"
+    fi
+}
+
+detect_host() { hostname -s; }
+
+write_paths_file() {
+    local file="$1"
+    cat > "${file}" <<'PATHS'
+# Each line is an rsync source path (with -aR preserving full path).
+# Lines starting with # are ignored.
+# Lines starting with - are rsync --exclude patterns.
+/home/yeowool/.zshrc
+/home/yeowool/.zshenv
+/home/yeowool/.zprofile
+/home/yeowool/.bashrc
+/home/yeowool/.gitconfig
+/home/yeowool/.ssh/
+/home/yeowool/.config/opencode/
+/home/yeowool/.claude/
+/home/yeowool/.codex/
+/home/yeowool/grimoire/
+/home/yeowool/opencode_conversations.json
+/home/yeowool/opencode_splits/
+/home/yeowool/token-stats.json
+/home/yeowool/templates/
+/home/yeowool/structured-cot/
+- *.log
+- node_modules/
+- .venv/
+- __pycache__/
+/etc/fstab
+/etc/systemd/system/
+/etc/sysctl.d/
+/etc/default/earlyoom
+/etc/cloudflared/
+/etc/samba/smb.conf
+/etc/fail2ban/jail.d/
+/etc/ssh/ssh_host_*
+/usr/local/bin/
+/usr/local/sbin/
+PATHS
+}
+
+# --- shared backup logic ---------------------------------------------
+
+BACKUP_PATHS_FILE=""
+BACKUP_DEST=""
+BACKUP_IS_BTRFS=0
+
+run_rsync() {
+    local excludes=()
+    while IFS= read -r line; do
+        [[ -z "$line" || "${line#\#}" != "$line" ]] && continue
+        if [[ "${line#- }" != "$line" ]]; then
+            excludes+=(--exclude="${line#- }")
+        else
+            rsync -aR --delete "${excludes[@]}" "$line" "$1" 2>/dev/null || true
+        fi
+    done < "$2"
+}
+
+# --- grimoire (btrfs + NFS) ------------------------------------------
+
+setup_grimoire() {
+    mkdir -p /mnt/bingus-backups "${CONF_DIR}/paths.d"
+
+    NFS="/mnt/bingus-backups/grimoire"
+
+    if ! grep -q 'mnt.bingus-backups' /etc/fstab; then
+        echo 'bingus:/volume1/bak /mnt/bingus-backups nfs defaults,noatime 0 0' >> /etc/fstab
+    fi
+    if ! mountpoint -q /mnt/bingus-backups; then
+        mount -t nfs bingus:/volume1/bak /mnt/bingus-backups || true
+    fi
+
+    if ! btrfs subvolume show /bak &>/dev/null; then
+        btrfs subvolume create /bak
+    fi
+
+    write_paths_file "${CONF_DIR}/paths.d/grimoire"
+
+    # Daily
+    cat > /usr/local/bin/backup-daily <<'DAILY'
+#!/bin/bash
+set -euo pipefail
+exec 9>/var/lock/backup.lock || exit 1
+trap 'rm -f /var/lock/backup.lock' EXIT
+
+SNAP="/bak-$(date +%Y%m%d)"
+NFS="/mnt/bingus-backups/grimoire"
+PATHS_FILE="/etc/backup/paths.d/grimoire"
+DEST="/bak"
+
+run_rsync() {
+    local excludes=()
+    while IFS= read -r line; do
+        [[ -z "$line" || "${line#\#}" != "$line" ]] && continue
+        if [[ "${line#- }" != "$line" ]]; then
+            excludes+=(--exclude="${line#- }")
+        else
+            rsync -aR --delete "${excludes[@]}" "$line" "$DEST" 2>/dev/null || true
+        fi
+    done < "$PATHS_FILE"
+}
+
+run_rsync
+
+btrfs subvolume snapshot -r /bak "${SNAP}"
+btrfs send "${SNAP}" > "${NFS}/$(date +%Y%m%d)-full.bin"
+btrfs subvolume delete "${SNAP}"
+
+# Prune: keep 7 dailies
+find "${NFS}" -name '*-full.bin' -mtime +7 -delete
+DAILY
+    chmod +x /usr/local/bin/backup-daily
+
+    # Weekly (same as daily but tagged for separate retention)
+    cp /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
+    sed -i 's/backup.lock/weekly.lock/' /usr/local/bin/backup-weekly
+    sed -i 's|find.*-mtime.*|find "${NFS}" -name '\''*-full.bin'\'' -mtime +28 -delete|' /usr/local/bin/backup-weekly
+
+    write_systemd_units "grimoire"
+}
+
+# --- oci-ubuntu (tar + rsyncd) ---------------------------------------
+
+setup_oci() {
+    local BLOCK="/mnt/block"
+    local STAGE="${BLOCK}/backups/oci-daily-staging"
+    local T1="${BLOCK}/backups/t1"
+    local T2="${BLOCK}/backups/t2"
+
+    mkdir -p "${STAGE}" "${T1}" "${T2}" "${CONF_DIR}/paths.d"
+
+    if [[ ! -f /etc/rsync.secrets ]]; then
+        cat <<INS
+rsyncd password required.
+
+Get it from vaultwarden:
+  folder: llm
+  item:   oci-ubuntu bingus rsync password
+
+Store it:
+  echo '<password>' | sudo tee /etc/rsync.secrets
+  sudo chmod 600 /etc/rsync.secrets
+
+Then re-run: sudo backup enable
+INS
+        exit 1
+    fi
+
+    write_paths_file "${CONF_DIR}/paths.d/oci-ubuntu"
+    # Replace yeowool with ubuntu for oci paths
+    sed -i 's|/home/yeowool|/home/ubuntu|g' "${CONF_DIR}/paths.d/oci-ubuntu"
+
+    local RSYNC="rsync://oci-ubuntu@bingus.lost.plus/bak/oci-ubuntu"
+
+    cat > /usr/local/bin/backup-daily <<'DAILY'
+#!/bin/bash
+set -euo pipefail
+exec 9>/var/lock/backup.lock || exit 1
+trap 'rm -f /var/lock/backup.lock' EXIT
+
+STAGE="/mnt/block/backups/oci-daily-staging"
+T1="/mnt/block/backups/t1"
+DATE=$(date +%Y%m%d)
+TARBALL="${T1}/oci-ubuntu-${DATE}.tar.gz"
+PATHS_FILE="/etc/backup/paths.d/oci-ubuntu"
+RSYNC_RSH="--password-file=/etc/rsync.secrets"
+RSYNC_DEST="rsync://oci-ubuntu@bingus.lost.plus/bak/oci-ubuntu/t1"
+
+rm -rf "${STAGE}" && mkdir -p "${STAGE}"
+
+run_rsync() {
+    local excludes=()
+    while IFS= read -r line; do
+        [[ -z "$line" || "${line#\#}" != "$line" ]] && continue
+        if [[ "${line#- }" != "$line" ]]; then
+            excludes+=(--exclude="${line#- }")
+        else
+            rsync -aR "${excludes[@]}" "$line" "${STAGE}/" 2>/dev/null || true
+        fi
+    done < "$PATHS_FILE"
+}
+
+run_rsync
+
+tar -czf "${TARBALL}" -C "${STAGE}" .
+rsync -a "${RSYNC_RSH}" "${TARBALL}" "${RSYNC_DEST}/"
+
+# Prune: rsync --delete mirrors local to remote
+rsync -a --delete "${RSYNC_RSH}" "${T1}/" "${RSYNC_DEST}/"
+
+# Local retention: keep 7
+ls "${T1}"/oci-ubuntu-*.tar.gz 2>/dev/null | sort | head -n -7 | xargs -r rm
+DAILY
+    chmod +x /usr/local/bin/backup-daily
+
+    # Weekly
+    cat > /usr/local/bin/backup-weekly <<'WEEKLY'
+#!/bin/bash
+set -euo pipefail
+exec 9>/var/lock/backup-weekly.lock || exit 1
+trap 'rm -f /var/lock/backup-weekly.lock' EXIT
+
+rm -f "/mnt/block/backups/oci-t1.snar"
+/usr/local/bin/backup-daily
+
+# Re-tag as weekly
+DATE=$(date +%Y%m%d)
+T2="/mnt/block/backups/t2"
+cp "/mnt/block/backups/t1/oci-ubuntu-${DATE}.tar.gz" "${T2}/oci-ubuntu-${DATE}.tar.gz"
+RSYNC_RSH="--password-file=/etc/rsync.secrets"
+RSYNC_DEST="rsync://oci-ubuntu@bingus.lost.plus/bak/oci-ubuntu/t2"
+rsync -a "${RSYNC_RSH}" "${T2}/oci-ubuntu-${DATE}.tar.gz" "${RSYNC_DEST}/"
+
+# Prune remote weekly dir
+rsync -a --delete "${RSYNC_RSH}" "${T2}/" "${RSYNC_DEST}/"
+
+# Local retention: keep 4
+ls "${T2}"/oci-ubuntu-*.tar.gz 2>/dev/null | sort | head -n -4 | xargs -r rm
+WEEKLY
+    chmod +x /usr/local/bin/backup-weekly
+
+    write_systemd_units "oci"
+}
+
+# --- systemd units ---------------------------------------------------
+
+write_systemd_units() {
+    local host="$1"
+
+    for PERIOD in daily weekly; do
+        cat > "/etc/systemd/system/backup-${PERIOD}.service" <<UNIT
+[Unit]
+Description=Backup ${PERIOD} to bingus (${host})
+$( [[ "${host}" == "oci" ]] && echo "After=tailscaled.service" && echo "Requires=tailscaled.service" )
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup-${PERIOD}
+UNIT
+    done
+
+    cat > /etc/systemd/system/backup-daily.timer <<TIMER
+[Timer]
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target
+TIMER
+
+    cat > /etc/systemd/system/backup-weekly.timer <<TIMER
+[Timer]
+OnCalendar=Sun 03:00
+Persistent=true
+[Install]
+WantedBy=timers.target
+TIMER
+
+    systemctl daemon-reload
+    systemctl enable --now backup-daily.timer backup-weekly.timer
+}
+
+# --- enable ----------------------------------------------------------
+
+cmd_enable() {
+    require_root
+    local HOST FS LAN
+    HOST=$(detect_host)
+    FS=$(detect_fs /)
+    LAN=$(detect_lan_nfs)
+
+    info "host:       ${HOST}"
+    info "filesystem: ${FS}"
+    info "bingus:     ${LAN}"
+
+    case "${HOST}" in
+        grimoire)
+            [[ "${FS}" == "btrfs" ]] || die "grimoire requires btrfs root"
+            [[ "${LAN}" == "nfs" ]] || die "grimoire requires NFS access to bingus"
+            setup_grimoire
+            info "grimoire backup enabled (btrfs → NFS → bingus)"
+            ;;
+        oci-ubuntu)
+            [[ "${LAN}" == "rsyncd" ]] || die "oci-ubuntu requires rsyncd access"
+            setup_oci
+            info "oci-ubuntu backup enabled (tar → rsyncd → bingus)"
+            ;;
+        *) die "unknown host '${HOST}'" ;;
+    esac
+}
+
+# --- disable ---------------------------------------------------------
+
+cmd_disable() {
+    require_root
+    for unit in backup-daily backup-weekly; do
+        systemctl disable --now "${unit}.timer" 2>/dev/null || true
+        systemctl disable --now "${unit}.service" 2>/dev/null || true
+        rm -f "/etc/systemd/system/${unit}.timer" "/etc/systemd/system/${unit}.service"
+    done
+    systemctl daemon-reload
+    rm -f /usr/local/bin/backup-daily /usr/local/bin/backup-weekly /usr/local/bin/backup-restore
+
+    if [[ "$(detect_host)" == "grimoire" ]]; then
+        umount /mnt/bingus-backups 2>/dev/null || true
+        sed -i '\|mnt.bingus-backups|d' /etc/fstab
+    fi
+    rm -f /etc/rsync.secrets
+    info "backup disabled"
+}
+
+# --- status ----------------------------------------------------------
+
+cmd_status() {
+    echo "host:       $(detect_host)"
+    echo "filesystem: $(detect_fs /)"
+    echo "bingus:     $(detect_lan_nfs)"
+    echo
+    for unit in backup-daily backup-weekly; do
+        local state next
+        state=$(systemctl is-active "${unit}.timer" 2>/dev/null || echo "not-installed")
+        if [[ "${state}" != "not-installed" ]]; then
+            next=$(systemctl show -p NextElapseUSecRealtime "${unit}.timer" 2>/dev/null | cut -d= -f2- | xargs || echo "?")
+            echo "  ${unit}.timer: ${state} (next: ${next})"
+        fi
+    done
+}
+
+# --- trigger ---------------------------------------------------------
+
+cmd_trigger() {
+    require_root
+    local period="${1:-daily}"
+    local script="/usr/local/bin/backup-${period}"
+    [[ -x "${script}" ]] || die "no backup script for '${period}'"
+    "${script}"
+    info "${period} backup completed"
+}
+
+# --- restore ---------------------------------------------------------
+
+cmd_restore() {
+    local HOST FS LAN
+    HOST=$(detect_host)
+    FS=$(detect_fs /)
+    LAN=$(detect_lan_nfs)
+
+    case "${HOST}" in
+        grimoire)
+            [[ "${LAN}" == "nfs" ]] || die "restore requires NFS access to bingus"
+            restore_grimoire "$@"
+            ;;
+        oci-ubuntu)
+            [[ "${LAN}" == "rsyncd" ]] || die "restore requires rsyncd access to bingus"
+            restore_oci "$@"
+            ;;
+        *) die "unknown host" ;;
+    esac
+}
+
+restore_grimoire() {
+    local NFS="/mnt/bingus-backups/grimoire"
+    local RECOVER="/tmp/recovery"
+
+    if ! mountpoint -q /mnt/bingus-backups; then
+        mount -t nfs bingus:/volume1/bak /mnt/bingus-backups 2>/dev/null || \
+            die "cannot mount bingus NFS. Is it reachable?"
+    fi
+
+    local date_arg="${1:-}"
+    if [[ -z "$date_arg" ]]; then
+        # fzf interactive
+        local files
+        files=$(ls -1t "${NFS}"/*-full.bin 2>/dev/null) || die "no backups found on bingus"
+        if command -v fzf >/dev/null && [[ -t 1 ]]; then
+            date_arg=$(
+                echo "$files" | sed 's|.*/||; s|-full.bin||' | \
+                fzf --header="Select backup to restore (Enter to restore, Esc to cancel)"
+            ) || { info "cancelled"; return 0; }
+        else
+            echo "$files" | sed 's|.*/||; s|-full.bin||' | tail -5
+            echo "Run 'backup restore YYYYMMDD' for a specific date"
+            return 0
+        fi
+    fi
+
+    local SRC="${NFS}/${date_arg}-full.bin"
+    [[ -f "${SRC}" ]] || die "no backup for ${date_arg}"
+
+    mkdir -p "${RECOVER}/${date_arg}"
+    cat "${SRC}" | btrfs receive "${RECOVER}/${date_arg}"
+    info "Restored to ${RECOVER}/${date_arg}"
+    info "Copy files from ${RECOVER}/${date_arg}/bak/"
+}
+
+restore_oci() {
+    local RSYNC="rsync://oci-ubuntu@bingus.lost.plus/bak/oci-ubuntu"
+    local RSH="--password-file=/etc/rsync.secrets"
+    local RECOVER="/tmp/recovery"
+    local date_arg="${1:-}"
+
+    if [[ ! -f /etc/rsync.secrets ]]; then
+        die "rsyncd password missing — get it from vaultwarden and store at /etc/rsync.secrets"
+    fi
+
+    if [[ -z "$date_arg" ]]; then
+        local files
+        files=$(rsync -a "${RSH}" "${RSYNC}/t2/" 2>/dev/null | awk '{print $NF}' | grep '\.tar\.gz$') || true
+        files+=$'\n'"$(rsync -a "${RSH}" "${RSYNC}/t1/" 2>/dev/null | awk '{print $NF}' | grep '\.tar\.gz$')" || true
+        [[ -z "$files" ]] && die "no backups found on bingus"
+        if command -v fzf >/dev/null && [[ -t 1 ]]; then
+            date_arg=$(
+                echo "$files" | sed 's|oci-ubuntu-||; s|\.tar\.gz||' | sort -u | \
+                fzf --header="Select backup to restore (Enter to restore, Esc to cancel)"
+            ) || { info "cancelled"; return 0; }
+        else
+            echo "$files" | sed 's|oci-ubuntu-||; s|\.tar\.gz||' | sort -u | tail -5
+            echo "Run 'backup restore YYYYMMDD' for a specific date"
+            return 0
+        fi
+    fi
+
+    local TAR
+    for tier in t2 t1; do
+        TAR=$(mktemp)
+        if rsync -a "${RSH}" "${RSYNC}/${tier}/oci-ubuntu-${date_arg}.tar.gz" "${TAR}" 2>/dev/null; then
+            break
+        fi
+        rm -f "${TAR}"
+        TAR=""
+    done
+    [[ -n "${TAR}" ]] || die "no backup for ${date_arg}"
+
+    mkdir -p "${RECOVER}/${date_arg}"
+    tar -xzf "${TAR}" -C "${RECOVER}/${date_arg}"
+    rm -f "${TAR}"
+    info "Restored to ${RECOVER}/${date_arg}"
+}
+
+# --- main ------------------------------------------------------------
+
+cmd="${1:-help}"; [[ $# -gt 0 ]] && shift
+
+case "${cmd}" in
+    enable)  cmd_enable ;;
+    disable) cmd_disable ;;
+    status)  cmd_status ;;
+    trigger) cmd_trigger "${1:-daily}" ;;
+    restore) cmd_restore "$@" ;;
+    help|--help|-h)
+        cat <<HELP
+Usage: ${NAME} <command> [args]
+
+Commands:
+  enable              Detect and install backup infrastructure
+  disable             Remove backup scripts and timers
+  status              Show backup config and schedule
+  trigger [daily|weekly]  Run backup now
+  restore [date|--latest]  Interactively pick or restore specific date
+  help                Show this message
+HELP
+        ;;
+    *) die "unknown command. Try '${NAME} help'." ;;
+esac

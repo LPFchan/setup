@@ -139,6 +139,5 @@ echo "Installed $TARGET"
 if (($# > 0)); then
     "$TARGET" "$@"
 else
-    "$TARGET" install resume ai-menu
-    configure_shell
+    "$TARGET"
 fi

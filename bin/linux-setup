@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # linux-setup-module: linux-setup
-# linux-setup-version: 2026.06.05.5
+# linux-setup-version: 2026.06.06.1
 # linux-setup-source: bin/linux-setup
 set -euo pipefail
 
@@ -12,22 +12,49 @@ MANIFEST_FILE="$STATE_DIR/manifest.tsv"
 HASH_FILE="$STATE_DIR/installed.tsv"
 FORCE=0
 
+SERVICE_MODULES="kernel-simmer service-ctl cgroup-monitor docker-events gpu-fancontrol gpu-xid-watch backup"
+BATCH=0
+
 usage() {
     cat <<'EOF'
-Usage: linux-setup [--force] <command> [module...]
+Usage: linux-setup [--force] [--batch] <command> [module...]
 
 Commands:
   list                 List available modules
   status [module...]   Show installed/current/outdated/modified state
-  install [module...]  Install missing or newer modules
-  update [module...]   Install missing or newer modules
-  uninstall [module...] Remove managed files and shell config blocks
+  install [module...]  Install module files (copies to ~/.local/bin/)
+  update [module...]   Update installed modules; reports new modules available
+  uninstall [module...] Remove managed files
+  enable [module...]   Enable service modules (requires sudo)
+  disable [module...]  Disable service modules (requires sudo)
   diff [module...]     Show local diff against remote source
   doctor               Check required local tools
+
+Run without arguments for interactive fzf reconfigure.
 
 Environment:
   LINUX_SETUP_BASE_URL Override source URL root
 EOF
+}
+
+module_enable_cmd() {
+    case "$1" in
+        kernel-simmer)  echo "kernel-simmer enable" ;;
+        service-ctl)    echo "service-ctl enable --all" ;;
+        cgroup-monitor|docker-events|gpu-fancontrol|gpu-xid-watch)
+                        echo "service-ctl enable $1" ;;
+        backup)         echo "backup enable" ;;
+    esac
+}
+
+module_disable_cmd() {
+    case "$1" in
+        kernel-simmer)  echo "kernel-simmer disable" ;;
+        service-ctl)    echo "service-ctl disable --all" ;;
+        cgroup-monitor|docker-events|gpu-fancontrol|gpu-xid-watch)
+                        echo "service-ctl disable $1" ;;
+        backup)         echo "backup disable" ;;
+    esac
 }
 
 sha256() {
@@ -113,6 +140,111 @@ has_managed_block() {
     local file="$1" label="$2"
     [[ -f "$file" ]] || return 1
     grep -Fq "# >>> linux-setup:$label >>>" "$file"
+}
+
+# --- shell config helpers (for setup command) -----------------------
+
+append_block_once() {
+    local file="$1" label="$2" content="$3" dir begin_mark end_mark
+    begin_mark="# >>> linux-setup:$label >>>"
+    end_mark="# <<< linux-setup:$label <<<"
+    dir=$(dirname "$file")
+    mkdir -p "$dir"
+    touch "$file"
+    if grep -Fq "$begin_mark" "$file"; then
+        return 0
+    fi
+    {
+        printf '\n%s\n' "$begin_mark"
+        printf '%s\n' "$content"
+        printf '%s\n' "$end_mark"
+    } >> "$file"
+    echo "Updated $file"
+}
+
+prepend_block_once() {
+    local file="$1" label="$2" content="$3" dir begin_mark end_mark tmp
+    begin_mark="# >>> linux-setup:$label >>>"
+    end_mark="# <<< linux-setup:$label <<<"
+    dir=$(dirname "$file")
+    mkdir -p "$dir"
+    touch "$file"
+    if grep -Fq "$begin_mark" "$file"; then
+        return 0
+    fi
+    tmp=$(mktemp)
+    {
+        printf '%s\n' "$begin_mark"
+        printf '%s\n' "$content"
+        printf '%s\n\n' "$end_mark"
+        cat "$file"
+    } > "$tmp"
+    mv "$tmp" "$file"
+    echo "Updated $file"
+}
+
+configure_shell() {
+    local path_block zsh_ai_block bash_ai_block bash_profile_block
+
+    path_block='case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac'
+
+    zsh_ai_block='[[ -o interactive && -t 0 ]] || return
+[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} ]] || return
+(( SHLVL > 1 )) && return
+
+[[ -f "$HOME/.bashrc.d/ai-start-menu" ]] && source "$HOME/.bashrc.d/ai-start-menu"
+if (( ${+functions[ai]} )) && [[ -z "${AI_AUTO_LAUNCHED:-}" ]]; then
+    export AI_AUTO_LAUNCHED=1
+    ai
+fi'
+
+    bash_ai_block='[[ $- == *i* && -t 0 ]] || return
+
+[[ -f "$HOME/.bashrc.d/ai-start-menu" ]] && source "$HOME/.bashrc.d/ai-start-menu"
+if declare -F ai >/dev/null && [[ -z "${AI_AUTO_LAUNCHED:-}" ]]; then
+    export AI_AUTO_LAUNCHED=1
+    ai
+fi'
+
+    bash_profile_block='case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+
+if [[ -f "$HOME/.bashrc" ]]; then
+    . "$HOME/.bashrc"
+fi'
+
+    if has_path_setup "$HOME/.zshenv"; then
+        echo "Current shell path -> $HOME/.zshenv"
+    else
+        append_block_once "$HOME/.zshenv" path "$path_block"
+    fi
+    if has_ai_autolaunch "$HOME/.zshrc"; then
+        echo "Current zsh ai autolaunch -> $HOME/.zshrc"
+    else
+        prepend_block_once "$HOME/.zshrc" zsh-ai "$zsh_ai_block"
+    fi
+
+    if has_path_setup "$HOME/.bashrc"; then
+        echo "Current shell path -> $HOME/.bashrc"
+    else
+        append_block_once "$HOME/.bashrc" path "$path_block"
+    fi
+    if has_ai_autolaunch "$HOME/.bashrc"; then
+        echo "Current bash ai autolaunch -> $HOME/.bashrc"
+    else
+        append_block_once "$HOME/.bashrc" bash-ai "$bash_ai_block"
+    fi
+
+    if [[ ! -f "$HOME/.bash_profile" && ! -f "$HOME/.bash_login" && ! -f "$HOME/.profile" ]]; then
+        append_block_once "$HOME/.bash_profile" bash-profile "$bash_profile_block"
+    else
+        echo "Current bash login profile -> existing profile"
+    fi
 }
 
 fetch_payload() {
@@ -395,16 +527,49 @@ shell_status_one() {
 }
 
 cmd_install() {
+    local modules=("$@")
     fetch_manifest
     local found=0
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
-        if module_selected "$module" "$@"; then
+        if module_selected "$module" "${modules[@]}"; then
             found=1
             install_one "$module" "$target" "$mode" "$source"
         fi
     done < "$MANIFEST_FILE"
     ((found == 1)) || { echo "No matching modules." >&2; exit 1; }
+
+    # Enable service modules after install
+    for module in "${modules[@]}"; do
+        local enable_cmd
+        enable_cmd=$(module_enable_cmd "$module") || continue
+        echo "Enabling $module..."
+        sudo ${enable_cmd} 2>/dev/null || echo "(enable deferred — run with sudo later)"
+    done
+}
+
+cmd_update() {
+    fetch_manifest
+    local new_count=0 new_names=()
+    while IFS=$'\t' read -r module target mode source; do
+        [[ -z "${module:-}" || "$module" == \#* ]] && continue
+        local target_path local_ver
+        target_path=$(expand_path "$target")
+        local_ver=$(version_for "$target_path" || true)
+        if [[ -z "$local_ver" ]]; then
+            new_count=$((new_count + 1))
+            new_names+=("$module")
+        else
+            install_one "$module" "$target" "$mode" "$source"
+        fi
+    done < "$MANIFEST_FILE"
+    echo
+    if [[ "$new_count" -gt 0 ]]; then
+        echo "$new_count new module(s) available: ${new_names[*]}"
+        echo "Run 'linux-setup' to select what to install."
+    else
+        echo "All modules up to date."
+    fi
 }
 
 cmd_uninstall() {
@@ -446,6 +611,28 @@ cmd_diff() {
     ((found == 1)) || { echo "No matching modules." >&2; exit 1; }
 }
 
+cmd_enable() {
+    local modules=("$@")
+    ((${#modules[@]} == 0)) && modules=(${SERVICE_MODULES})
+    for module in "${modules[@]}"; do
+        local cmd
+        cmd=$(module_enable_cmd "$module") || { echo "No enable command for $module" >&2; continue; }
+        echo "Enabling $module..."
+        sudo ${cmd}
+    done
+}
+
+cmd_disable() {
+    local modules=("$@")
+    ((${#modules[@]} == 0)) && modules=(${SERVICE_MODULES})
+    for module in "${modules[@]}"; do
+        local cmd
+        cmd=$(module_disable_cmd "$module") || { echo "No disable command for $module" >&2; continue; }
+        echo "Disabling $module..."
+        sudo ${cmd}
+    done
+}
+
 cmd_doctor() {
     local missing=0 tool
     for tool in awk cat curl cut diff dirname grep install mktemp mv rm rmdir; do
@@ -462,23 +649,149 @@ cmd_doctor() {
     return "$missing"
 }
 
+# --- fzf interactive reconfigure ------------------------------------
+
+detect_env_summary() {
+    local os arch distro fs
+    os=$(uname -s)
+    arch=$(uname -m)
+    if [[ -f /etc/os-release ]]; then
+        distro=$(. /etc/os-release && echo "${NAME} ${VERSION_ID}")
+    else
+        distro="${os}"
+    fi
+    fs=$(stat -f -c '%T' / 2>/dev/null || echo "unknown")
+    echo "${os} ${arch} · ${distro} · ${fs}"
+}
+
+module_state() {
+    local module="$1" target_spec="$2"
+    local target payload remote_ver local_ver
+    target=$(expand_path "$target_spec")
+    if [[ ! -f "$target" ]]; then
+        echo "not installed"
+        return
+    fi
+    local_ver=$(version_for "$target" || true)
+    payload=$(mktemp)
+    fetch_payload "$3" "$payload" 2>/dev/null || true
+    remote_ver=$(version_for "$payload" || true)
+    rm -f "$payload"
+    if [[ -z "$local_ver" ]]; then
+        echo "installed (no version)"
+    elif version_gt "$remote_ver" "$local_ver"; then
+        echo "outdated · ${local_ver}"
+    else
+        echo "current · ${local_ver}"
+    fi
+}
+
+cmd_reconfigure() {
+    configure_shell
+    fetch_manifest
+    local input_lines=() module target mode source state label env_summary
+
+    # Build fzf input
+    while IFS=$'\t' read -r module target mode source; do
+        [[ -z "${module:-}" || "$module" == \#* ]] && continue
+        state=$(module_state "$module" "$target" "$source")
+        # Pre-check if installed
+        case "$state" in
+            "not installed") label="  " ;;
+            *)               label="[x]" ;;
+        esac
+        input_lines+=("${label} ${module}  ${state}")
+    done < "$MANIFEST_FILE"
+
+    env_summary=$(detect_env_summary)
+
+    # If fzf is available and stdout is a terminal, use interactive selector
+    if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+        local selected
+        selected=$(
+            printf '%s\n' "${input_lines[@]}" | \
+            fzf --multi \
+                --bind=space:toggle+down,tab:toggle \
+                --header="${env_summary}  |  Tab/Spc toggle · Enter confirm" \
+                --preview='echo "linux-setup module: {2}"' \
+                --preview-window=hidden
+        ) || return 0  # user cancelled
+
+        local -a wanted=()
+        while IFS= read -r line; do
+            local mod
+            mod=$(echo "$line" | awk '{print $2}')
+            [[ -n "$mod" ]] && wanted+=("$mod")
+        done <<< "$selected"
+
+        # Install + enable wanted modules
+        for module in "${wanted[@]}"; do
+            while IFS=$'\t' read -r m target mode source; do
+                [[ "$m" == "$module" ]] || continue
+                install_one "$module" "$target" "$mode" "$source"
+                local enable_cmd
+                enable_cmd=$(module_enable_cmd "$module") && {
+                    echo "Enabling $module..."
+                    sudo ${enable_cmd} 2>/dev/null || echo "(enable deferred — run 'linux-setup enable $module' with sudo later)"
+                }
+            done < "$MANIFEST_FILE"
+        done
+
+        # Uninstall modules not wanted (that are currently installed)
+        while IFS=$'\t' read -r module target mode source; do
+            [[ -z "${module:-}" || "$module" == \#* ]] && continue
+            local wanted_module
+            for wanted_module in "${wanted[@]}"; do
+                [[ "$wanted_module" == "$module" ]] && continue 2
+            done
+            local target_path
+            target_path=$(expand_path "$target")
+            if [[ -f "$target_path" ]]; then
+                echo "Removing $module..."
+                uninstall_one "$module" "$target" "$mode" "$source"
+                local disable_cmd
+                disable_cmd=$(module_disable_cmd "$module") && {
+                    echo "Disabling $module..."
+                    sudo ${disable_cmd} 2>/dev/null || echo "(disable deferred — run with sudo later)"
+                }
+            fi
+        done < "$MANIFEST_FILE"
+    else
+        echo "No interactive terminal or fzf missing. Run with --batch or specify modules."
+        exit 1
+    fi
+}
+
 while (($# > 0)); do
     case "$1" in
         --force) FORCE=1; shift ;;
+        --batch) BATCH=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) break ;;
     esac
 done
 
 cmd="${1:-}"
-[[ -n "$cmd" ]] || { usage; exit 1; }
 shift || true
+
+if [[ -z "$cmd" ]]; then
+    if [[ -t 1 ]] && command -v fzf >/dev/null 2>&1; then
+        cmd_reconfigure
+    else
+        cmd_update
+        cmd_install resume ai-menu 2>/dev/null || true
+    fi
+    exit 0
+fi
 
 case "$cmd" in
     list) cmd_list "$@" ;;
     status) cmd_status "$@" ;;
-    install|update) cmd_install "$@" ;;
+    install) cmd_install "$@" ;;
+    update) cmd_update "$@" ;;
     uninstall) cmd_uninstall "$@" ;;
+    enable) cmd_enable "$@" ;;
+    disable) cmd_disable "$@" ;;
     diff) cmd_diff "$@" ;;
     doctor) cmd_doctor ;;
     *) usage >&2; exit 1 ;;

@@ -1,0 +1,40 @@
+#!/bin/sh
+# linux-setup-module: cgroup-monitor
+# linux-setup-version: 2026.06.06.1
+# linux-setup-source: files/cgroup-monitor
+#
+# Log container cgroup memory, Docker stats, GPU state, and health
+# to journald every GRIMOIRE_MONITOR_INTERVAL seconds.
+
+set -eu
+
+CONTAINER="${GRIMOIRE_CONTAINER:-grimoire}"
+INTERVAL="${GRIMOIRE_MONITOR_INTERVAL:-60}"
+HEALTH_URL="${GRIMOIRE_HEALTH_URL:-http://127.0.0.1:9001/health}"
+
+while :; do
+    id="$(docker inspect -f '{{.Id}}' "$CONTAINER" 2>/dev/null || true)"
+    pid="$(docker inspect -f '{{.State.Pid}}' "$CONTAINER" 2>/dev/null || true)"
+    stats="$(docker stats --no-stream --format 'cpu={{.CPUPerc}} mem={{.MemUsage}} mem_pct={{.MemPerc}} pids={{.PIDs}}' "$CONTAINER" 2>/dev/null || true)"
+    health="$(curl -fsS --max-time 2 "$HEALTH_URL" 2>/dev/null | tr '\n' ' ' || true)"
+    gpu="$(nvidia-smi --query-compute-apps=pid,process_name,gpu_uuid,used_memory --format=csv,noheader,nounits 2>/dev/null | tr '\n' ';' || true)"
+
+    cgroup=""
+    if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/$pid/cgroup" ]; then
+        rel="$(awk -F: '$1 == "0" && $2 == "" {print $3; exit}' "/proc/$pid/cgroup")"
+        cgroup="/sys/fs/cgroup$rel"
+    fi
+
+    if [ -n "$cgroup" ] && [ -r "$cgroup/memory.current" ]; then
+        current="$(cat "$cgroup/memory.current")"
+        events="$(awk '{printf "%s=%s,", $1, $2}' "$cgroup/memory.events")"
+        memstat="$(awk '/^(anon|file|kernel|slab|sock|shmem|file_mapped|inactive_file|active_file|unevictable|swapcached|zswap|zswapped|pgscan|pgsteal|pgmajfault) / {printf "%s=%s,", $1, $2}' "$cgroup/memory.stat")"
+        printf 'container=%s id=%s pid=%s cgroup=%s memory.current=%s memory.events=%s memory.stat=%s docker.stats="%s" gpu.apps="%s" health="%s"\n' \
+            "$CONTAINER" "$id" "$pid" "$cgroup" "$current" "$events" "$memstat" "$stats" "$gpu" "$health"
+    else
+        printf 'container=%s id=%s pid=%s cgroup_missing docker.stats="%s" gpu.apps="%s" health="%s"\n' \
+            "$CONTAINER" "$id" "$pid" "$stats" "$gpu" "$health"
+    fi
+
+    sleep "$INTERVAL"
+done

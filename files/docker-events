@@ -1,0 +1,18 @@
+#!/bin/sh
+# linux-setup-module: docker-events
+# linux-setup-version: 2026.06.06.1
+# linux-setup-source: files/docker-events
+#
+# Log Docker lifecycle events (die, oom, kill, restart, health)
+# for a specific container to journald.
+
+set -eu
+
+CONTAINER="${GRIMOIRE_CONTAINER:-grimoire}"
+
+while :; do
+    docker events \
+        --filter "container=$CONTAINER" \
+        --format 'time={{.Time}} type={{.Type}} action={{.Action}} id={{.Actor.ID}} name={{index .Actor.Attributes "name"}} image={{index .Actor.Attributes "image"}} exitCode={{index .Actor.Attributes "exitCode"}} oom={{index .Actor.Attributes "oom"}}'
+    sleep 5
+done
