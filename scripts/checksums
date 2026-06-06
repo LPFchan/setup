@@ -25,3 +25,11 @@ sha256() {
 } > checksums.tsv
 
 echo "Wrote checksums.tsv ($(wc -l < checksums.tsv | tr -d ' ') lines)"
+
+# Install pre-commit hook if missing
+HOOK="$(dirname "$0")/hook-pre-commit"
+TARGET="$(git rev-parse --git-dir)/hooks/pre-commit"
+if [[ -f "$HOOK" ]] && [[ ! -f "$TARGET" ]]; then
+    cp "$HOOK" "$TARGET" && chmod +x "$TARGET"
+    echo "Installed pre-commit hook"
+fi

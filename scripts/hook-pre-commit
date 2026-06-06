@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Auto-regenerate checksums.tsv before each commit.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+if git diff --cached --name-only --diff-filter=ACM | grep -qE '^(bin|files)/'; then
+    scripts/checksums
+    git add checksums.tsv
+    echo "  checksums.tsv updated"
+fi
