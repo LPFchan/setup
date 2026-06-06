@@ -800,6 +800,7 @@ cmd_reconfigure() {
 
             case "$action" in
                 "refresh list")
+                    _CSUM_CACHE=""
                     fetch_checksums
                     continue
                     ;;
