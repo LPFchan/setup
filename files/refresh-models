@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # linux-setup-module: refresh-models
-# linux-setup-version: 2026.06.06.1
+# linux-setup-version: 2026.06.06.2
 # linux-setup-source: files/refresh-models
 """refresh-models — probe /v1/models endpoints and update opencode.json provider blocks.
 
