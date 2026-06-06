@@ -19,7 +19,7 @@ usage() {
     cat <<'EOF'
 Usage: setup [--force] [--batch] <command> [module...]
   Flags must come before the command.
-  --force  overwrite locally edited files
+  --force  overwrite when uninstalling locally edited files
   --batch  non-interactive mode
 
 Commands:
@@ -419,12 +419,7 @@ install_one() {
     fi
 
     if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" != "$old_hash" ]]; then
-        current_hash=$(sha256 "$target")
-        if [[ "$current_hash" != "$old_hash" && "$FORCE" -ne 1 ]]; then
-            echo "Local changes detected: skipping $module (use --force to overwrite)"
-            rm -f "$payload"
-            return 0
-        fi
+        :
     elif [[ -f "$target" ]]; then
         install -m "$mode" "$payload" "$target"
         record_hash "$target" "$new_hash" "$new_hash"
