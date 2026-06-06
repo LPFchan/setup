@@ -1,6 +1,6 @@
-# linux-setup-module: ai-menu
-# linux-setup-version: 2026.06.06.1
-# linux-setup-source: files/ai-start-menu
+# setup-module: ai-menu
+# setup-version: 2026.06.06.1
+# setup-source: files/ai-start-menu
 
 ai() {
     local choice current_host

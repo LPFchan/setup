@@ -128,7 +128,7 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
 if ! curl -fsSL "$BASE_URL/bin/setup" -o "$tmp" \
-    || ! grep -q '^# linux-setup-module: linux-setup$' "$tmp"; then
+    || ! grep -q '^# setup-module: linux-setup$' "$tmp"; then
     curl -fsSL "$FALLBACK_URL/bin/setup" -o "$tmp"
 fi
 
