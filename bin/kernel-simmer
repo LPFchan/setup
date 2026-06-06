@@ -199,7 +199,7 @@ cmd_status() {
     echo "  skip list: ${SKIP_FILE}"
     while IFS= read -r v; do echo "    - ${v}"; done <<< "$(read_skip)"
     echo
-    echo "Run 'linux-setup status kernel-simmer' for module version info."
+    echo "Run 'setup status kernel-simmer' for module version info."
 }
 
 cmd_enable() {

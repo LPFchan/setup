@@ -1,0 +1,88 @@
+#!/bin/bash
+# linux-setup-module: monitoring
+# linux-setup-version: 2026.06.06.1
+# linux-setup-source: files/monitoring
+#
+# Unified monitoring daemon — three parallel loops:
+#   1. cgroup: container memory + nvidia-smi + health (polling)
+#   2. events: Docker lifecycle events (blocking stream)
+#   3. xid:    NVIDIA Xid GPU errors (polling)
+
+set -eu
+
+CONTAINER="${GRIMOIRE_CONTAINER:-grimoire}"
+INTERVAL="${GRIMOIRE_MONITOR_INTERVAL:-60}"
+HEALTH_URL="${GRIMOIRE_HEALTH_URL:-http://127.0.0.1:9001/health}"
+
+CGROUP_PID=""; EVENTS_PID=""; XID_PID=""
+
+cleanup() {
+    kill "$CGROUP_PID" "$EVENTS_PID" "$XID_PID" 2>/dev/null || true
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# --- cgroup ----------------------------------------------------------
+
+cgroup_loop() {
+    while :; do
+        pid=$(docker inspect -f '{{.State.Pid}}' "$CONTAINER" 2>/dev/null || echo "")
+        stats=$(docker stats --no-stream --format 'cpu={{.CPUPerc}} mem={{.MemUsage}} mem_pct={{.MemPerc}} pids={{.PIDs}}' "$CONTAINER" 2>/dev/null || echo "")
+        health=$(curl -fsS --max-time 2 "$HEALTH_URL" 2>/dev/null | tr '\n' ' ' || echo "")
+        gpu=$(nvidia-smi --query-compute-apps=pid,process_name,gpu_uuid,used_memory --format=csv,noheader,nounits 2>/dev/null | tr '\n' ';' || echo "")
+
+        cgroup=""
+        if [ -n "$pid" ] && [ "$pid" != "0" ] && [ -r "/proc/$pid/cgroup" ]; then
+            rel=$(awk -F: '$1 == "0" && $2 == "" {print $3; exit}' "/proc/$pid/cgroup")
+            cgroup="/sys/fs/cgroup$rel"
+        fi
+
+        if [ -n "$cgroup" ] && [ -r "$cgroup/memory.current" ]; then
+            current=$(cat "$cgroup/memory.current")
+            events=$(awk '{printf "%s=%s,", $1, $2}' "$cgroup/memory.events")
+            memstat=$(awk '/^(anon|file|kernel|slab|sock|shmem|file_mapped|inactive_file|active_file|unevictable|swapcached|zswap|zswapped|pgscan|pgsteal|pgmajfault) / {printf "%s=%s,", $1, $2}' "$cgroup/memory.stat")
+            echo "cgroup container=$CONTAINER pid=$pid cgroup=$cgroup memory.current=$current events=$events memstat=$memstat docker=\"$stats\" gpu=\"$gpu\" health=\"$health\""
+        else
+            echo "cgroup container=$CONTAINER pid=$pid cgroup_missing docker=\"$stats\" gpu=\"$gpu\" health=\"$health\""
+        fi
+
+        sleep "$INTERVAL"
+    done
+}
+
+# --- docker events ---------------------------------------------------
+
+events_loop() {
+    while :; do
+        docker events \
+            --filter "container=$CONTAINER" \
+            --format 'event time={{.Time}} type={{.Type}} action={{.Action}} id={{.Actor.ID}} name={{index .Actor.Attributes "name"}} image={{index .Actor.Attributes "image"}} exitCode={{index .Actor.Attributes "exitCode"}} oom={{index .Actor.Attributes "oom"}}'
+        sleep 5
+    done
+}
+
+# --- xid watch -------------------------------------------------------
+
+xid_loop() {
+    local known="/tmp/monitoring-xid-known"
+    rm -f "$known"
+    while :; do
+        msg=$(journalctl -k --no-pager -n 200 2>/dev/null | grep 'NVRM: Xid' | tail -1)
+        if [ -n "$msg" ]; then
+            hash=$(echo "$msg" | md5sum | cut -d' ' -f1)
+            if [ ! -f "$known" ] || ! grep -q "$hash" "$known" 2>/dev/null; then
+                echo "$hash" >> "$known"
+                echo "xid $msg"
+            fi
+        fi
+        sleep 30
+    done
+}
+
+# --- main ------------------------------------------------------------
+
+cgroup_loop & CGROUP_PID=$!
+events_loop & EVENTS_PID=$!
+xid_loop & XID_PID=$!
+
+wait

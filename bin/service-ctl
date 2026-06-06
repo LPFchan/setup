@@ -6,10 +6,8 @@
 # service-ctl — manage system monitoring and control services
 #
 # Components:
-#   cgroup-monitor  Log container cgroup memory, GPU, and health state
-#   docker-events   Log container lifecycle events (die, oom, kill)
 #   gpu-fancontrol  Temperature-based chassis fan controller
-#   gpu-xid-watch       Monitor kernel log for NVIDIA Xid (GPU) errors
+#   monitoring      Unified container cgroup, Docker events, and GPU Xid monitor
 #   kernel-simmer   Delayed kernel upgrades with cool-off (delegates)
 #
 # Usage:
@@ -23,19 +21,16 @@
 set -euo pipefail
 
 NAME="service-ctl"
-LOG_TAG="${NAME}"
-
-COMPONENTS="cgroup-monitor docker-events gpu-fancontrol gpu-xid-watch kernel-simmer"
+COMPONENTS="gpu-fancontrol monitoring kernel-simmer"
 
 # --- helpers ----------------------------------------------------------
 
 die() { echo "error: $*" >&2; exit 1; }
-
 info() { echo "$*"; }
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
-        die "this command requires root -- try sudo ${NAME} $*"
+        die "this command requires root — try sudo ${NAME} $*"
     fi
 }
 
@@ -50,82 +45,34 @@ find_script() {
     return 1
 }
 
-# --- legacy migration (pre-session setups) ---------------------------
-# Maps old systemd unit names that existed before this module was created.
-
-LEGACY_MAP_cgroup_monitor() {
-    echo "grimoire-cgroup-monitor.service" "/usr/local/sbin/grimoire-cgroup-monitor"
-}
-LEGACY_MAP_docker_events() {
-    echo "grimoire-docker-events.service" "/usr/local/sbin/grimoire-docker-events"
-}
-LEGACY_MAP_gpu_fancontrol() {
-    echo "gpu-fancontrol.service" "/usr/local/bin/gpu-fancontrol.py"
-}
-LEGACY_MAP_gpu_xid_watch() {
-    echo "nvidia-crash-watch.service" "/home/yeowool/nvidia-crash-watch.sh"
-}
+# --- legacy migration ------------------------------------------------
 
 migrate_legacy() {
     local comp="$1"
-    local map_func="LEGACY_MAP_${comp//-/_}"
-    local old_unit old_script
-    read -r old_unit old_script < <("${map_func}")
-
-    if [[ -n "${old_unit}" ]] && systemctl list-unit-files "${old_unit}" &>/dev/null; then
-        systemctl disable --now "${old_unit}" 2>/dev/null || true
-        rm -f "/etc/systemd/system/${old_unit}"
-    fi
-    if [[ -n "${old_script}" ]] && [[ -f "${old_script}" ]]; then
-        rm -f "${old_script}"
-    fi
+    case "${comp}" in
+        gpu-fancontrol)
+            if systemctl list-unit-files "gpu-fancontrol.service" &>/dev/null; then
+                systemctl disable --now "gpu-fancontrol.service" 2>/dev/null || true
+                rm -f "/etc/systemd/system/gpu-fancontrol.service"
+            fi
+            rm -f "/usr/local/bin/gpu-fancontrol.py"
+            ;;
+        monitoring)
+            for unit in grimoire-cgroup-monitor.service grimoire-docker-events.service nvidia-crash-watch.service host-cgroup-monitor.service host-docker-events.service host-xid-watch.service; do
+                if systemctl list-unit-files "$unit" &>/dev/null; then
+                    systemctl disable --now "$unit" 2>/dev/null || true
+                    rm -f "/etc/systemd/system/$unit"
+                fi
+            done
+            for script in /usr/local/sbin/grimoire-cgroup-monitor /usr/local/sbin/grimoire-docker-events /home/yeowool/nvidia-crash-watch.sh ~/.local/bin/cgroup-monitor ~/.local/bin/docker-events ~/.local/bin/gpu-xid-watch; do
+                rm -f "$script"
+            done
+            rm -f /usr/local/bin/cgroup-monitor /usr/local/bin/docker-events /usr/local/bin/gpu-xid-watch
+            ;;
+    esac
 }
 
-# --- component definitions with embedded systemd units ----------------
-
-SERVICE_UNIT_cgroup_monitor() {
-    local script_path="$1"
-    cat <<UNIT
-[Unit]
-Description=Log container cgroup memory and GPU state
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-ExecStart=${script_path}
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=cgroup-monitor
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-}
-
-SERVICE_UNIT_docker_events() {
-    local script_path="$1"
-    cat <<UNIT
-[Unit]
-Description=Log container lifecycle events
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-ExecStart=${script_path}
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=docker-events
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-}
+# --- systemd unit templates ------------------------------------------
 
 SERVICE_UNIT_gpu_fancontrol() {
     local script_path="$1"
@@ -147,100 +94,84 @@ WantedBy=multi-user.target
 UNIT
 }
 
-SERVICE_UNIT_gpu_xid_watch() {
+SERVICE_UNIT_monitoring() {
     local script_path="$1"
     cat <<UNIT
 [Unit]
-Description=NVIDIA Xid error monitor
+Description=Unified container monitoring (cgroup + events + Xid)
+After=docker.service
+Requires=docker.service
 
 [Service]
 Type=simple
 ExecStart=${script_path}
 Restart=always
-RestartSec=10
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monitoring
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 }
 
-# --- per-component handlers ------------------------------------------
+SERVICE_UNIT_kernel_simmer() {
+    # delegated — handled by kernel-simmer itself
+    :
+}
+
+# --- enable ----------------------------------------------------------
 
 component_enable() {
     local comp="$1"
-    local script_file service_name unit_func
+    require_root "enable ${comp}"
+    migrate_legacy "${comp}"
 
     case "${comp}" in
-        cgroup-monitor)
-            script_file="cgroup-monitor"
-            service_name="cgroup-monitor"
-            unit_func=SERVICE_UNIT_cgroup_monitor
-            ;;
-        docker-events)
-            script_file="docker-events"
-            service_name="docker-events"
-            unit_func=SERVICE_UNIT_docker_events
-            ;;
         gpu-fancontrol)
-            script_file="gpu-fancontrol"
-            service_name="gpu-fancontrol"
-            unit_func=SERVICE_UNIT_gpu_fancontrol
+            local src; src=$(find_script "gpu-fancontrol") || die "gpu-fancontrol not found"
+            [[ "${src}" == "/usr/local/bin/gpu-fancontrol" ]] || ln -sf "${src}" "/usr/local/bin/gpu-fancontrol"
+            SERVICE_UNIT_gpu_fancontrol "/usr/local/bin/gpu-fancontrol" > /etc/systemd/system/gpu-fancontrol.service
+            systemctl daemon-reload
+            systemctl enable --now gpu-fancontrol.service
+            info "gpu-fancontrol enabled"
             ;;
-        gpu-xid-watch)
-            script_file="gpu-xid-watch"
-            service_name="gpu-xid-watch"
-            unit_func=SERVICE_UNIT_gpu_xid_watch
+        monitoring)
+            local src; src=$(find_script "monitoring") || die "monitoring not found"
+            [[ "${src}" == "/usr/local/bin/monitoring" ]] || ln -sf "${src}" "/usr/local/bin/monitoring"
+            SERVICE_UNIT_monitoring "/usr/local/bin/monitoring" > /etc/systemd/system/monitoring.service
+            systemctl daemon-reload
+            systemctl enable --now monitoring.service
+            info "monitoring enabled"
             ;;
         kernel-simmer)
             if command -v kernel-simmer &>/dev/null; then
-                exec kernel-simmer enable
+                kernel-simmer enable
             elif [[ -x /usr/local/bin/kernel-simmer ]]; then
-                exec /usr/local/bin/kernel-simmer enable
+                /usr/local/bin/kernel-simmer enable
             else
-                die "kernel-simmer not found -- install via 'linux-setup install kernel-simmer' first"
+                die "kernel-simmer not found"
             fi
             ;;
-        *)
-            die "unknown component '${comp}'. Available: ${COMPONENTS}"
-            ;;
+        *) die "unknown component '${comp}'" ;;
     esac
-
-    require_root "enable ${comp}"
-
-    # Migrate any legacy service before installing the new one
-    migrate_legacy "${comp}"
-
-    local src_path
-    src_path=$(find_script "${script_file}") || die "${script_file} not found -- install via 'linux-setup install service-ctl'"
-
-    # Symlink into /usr/local/bin so systemd-as-root can find us
-    if [[ "${src_path}" != /usr/local/bin/${script_file} ]]; then
-        ln -sf "${src_path}" "/usr/local/bin/${script_file}"
-    fi
-    local target="/usr/local/bin/${script_file}"
-
-    # Write systemd unit
-    "${unit_func}" "${target}" > "/etc/systemd/system/${service_name}.service"
-
-    systemctl daemon-reload
-    systemctl enable --now "${service_name}.service"
-    info "${comp} enabled (${service_name}.service)"
 }
+
+# --- disable ---------------------------------------------------------
 
 component_disable() {
     local comp="$1"
     local service_name
 
     case "${comp}" in
-        cgroup-monitor) service_name="cgroup-monitor" ;;
-        docker-events)  service_name="docker-events" ;;
         gpu-fancontrol) service_name="gpu-fancontrol" ;;
-        gpu-xid-watch)      service_name="gpu-xid-watch" ;;
+        monitoring)     service_name="monitoring" ;;
         kernel-simmer)
             if command -v kernel-simmer &>/dev/null; then
-                exec kernel-simmer disable
+                kernel-simmer disable
             elif [[ -x /usr/local/bin/kernel-simmer ]]; then
-                exec /usr/local/bin/kernel-simmer disable
+                /usr/local/bin/kernel-simmer disable
             else
                 die "kernel-simmer not found"
             fi
@@ -249,24 +180,23 @@ component_disable() {
     esac
 
     require_root "disable ${comp}"
-
     systemctl disable --now "${service_name}.service" 2>/dev/null || true
     rm -f "/etc/systemd/system/${service_name}.service"
-    rm -f "/usr/local/bin/${service_name}" "/usr/local/sbin/${service_name}"
+    rm -f "/usr/local/bin/${service_name}"
     systemctl daemon-reload
     info "${comp} disabled"
 }
+
+# --- status ----------------------------------------------------------
 
 component_status() {
     local comp="$1"
     local service_name
     case "${comp}" in
-        cgroup-monitor) service_name="cgroup-monitor" ;;
-        docker-events)  service_name="docker-events" ;;
         gpu-fancontrol) service_name="gpu-fancontrol" ;;
-        gpu-xid-watch)      service_name="gpu-xid-watch" ;;
+        monitoring)     service_name="monitoring" ;;
         kernel-simmer)  service_name="kernel-simmer" ;;
-        *)              echo "  ${comp}: unknown"; return ;;
+        *) echo "  ${comp}: unknown"; return ;;
     esac
 
     local state
@@ -278,7 +208,7 @@ component_status() {
     fi
 }
 
-# --- subcommands ------------------------------------------------------
+# --- commands --------------------------------------------------------
 
 cmd_enable() {
     if [[ $# -eq 0 ]]; then
@@ -319,17 +249,23 @@ cmd_list() {
     for comp in ${COMPONENTS}; do
         printf '  %-20s ' "${comp}"
         case "${comp}" in
-            cgroup-monitor)  echo "cgroup memory, GPU, health -> journald" ;;
-            docker-events)   echo "Docker die/oom/kill events -> journald" ;;
-            gpu-fancontrol)  echo "Temperature-based chassis fan PWM" ;;
-            gpu-xid-watch)       echo "NVIDIA Xid GPU error monitor" ;;
-            kernel-simmer)   echo "Delayed kernel upgrades (delegates)" ;;
+            gpu-fancontrol) echo "Temperature-based chassis fan PWM" ;;
+            monitoring)     echo "Unified cgroup + Docker events + Xid monitor" ;;
+            kernel-simmer)  echo "Delayed kernel upgrades (delegates)" ;;
         esac
     done
 }
 
-cmd_help() {
-    cat <<HELP
+# --- main ------------------------------------------------------------
+
+cmd="${1:-help}"; [[ $# -gt 0 ]] && shift
+
+case "${cmd}" in
+    enable)  cmd_enable "$@" ;;
+    disable) cmd_disable "$@" ;;
+    status)  cmd_status ;;
+    list)    cmd_list ;;
+    help|--help|-h) cat <<HELP
 Usage: ${NAME} <command> [args]
 
 Commands:
@@ -343,17 +279,6 @@ Commands:
 
 Components: ${COMPONENTS}
 HELP
-}
-
-# --- main -------------------------------------------------------------
-
-cmd="${1:-help}"; [[ $# -gt 0 ]] && shift
-
-case "${cmd}" in
-    enable)  cmd_enable "$@" ;;
-    disable) cmd_disable "$@" ;;
-    status)  cmd_status ;;
-    list)    cmd_list ;;
-    help|--help|-h) cmd_help ;;
-    *)       die "unknown command '${cmd}'. Try '${NAME} help'." ;;
+        ;;
+    *) die "unknown command. Try '${NAME} help'." ;;
 esac

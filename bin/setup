@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# linux-setup-module: linux-setup
+# linux-setup-module: setup
 # linux-setup-version: 2026.06.06.1
-# linux-setup-source: bin/linux-setup
+# linux-setup-source: bin/setup
 set -euo pipefail
 
 BASE_URL="${LINUX_SETUP_BASE_URL:-https://setup.lost.plus}"
-FALLBACK_URL="${LINUX_SETUP_FALLBACK_URL:-https://raw.githubusercontent.com/LPFchan/linux-setup/main}"
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/linux-setup"
+FALLBACK_URL="${LINUX_SETUP_FALLBACK_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/setup"
 MANIFEST_URL="$BASE_URL/manifest.tsv"
 MANIFEST_FILE="$STATE_DIR/manifest.tsv"
 HASH_FILE="$STATE_DIR/installed.tsv"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer service-ctl cgroup-monitor docker-events gpu-fancontrol gpu-xid-watch backup"
+SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring backup"
 BATCH=0
 
 usage() {
     cat <<'EOF'
-Usage: linux-setup [--force] [--batch] <command> [module...]
+Usage: setup [--force] [--batch] <command> [module...]
   Flags must come before the command.
   --force  overwrite locally edited files
   --batch  non-interactive mode
@@ -44,7 +44,7 @@ module_enable_cmd() {
     case "$1" in
         kernel-simmer)  echo "kernel-simmer enable" ;;
         service-ctl)    echo "service-ctl enable --all" ;;
-        cgroup-monitor|docker-events|gpu-fancontrol|gpu-xid-watch)
+        gpu-fancontrol|monitoring)
                         echo "service-ctl enable $1" ;;
         backup)         echo "backup enable" ;;
     esac
@@ -54,10 +54,32 @@ module_disable_cmd() {
     case "$1" in
         kernel-simmer)  echo "kernel-simmer disable" ;;
         service-ctl)    echo "service-ctl disable --all" ;;
-        cgroup-monitor|docker-events|gpu-fancontrol|gpu-xid-watch)
+        gpu-fancontrol|monitoring)
                         echo "service-ctl disable $1" ;;
         backup)         echo "backup disable" ;;
     esac
+}
+
+module_service_unit() {
+    case "$1" in
+        service-ctl)    echo "tool" ;;
+        kernel-simmer)  echo "kernel-simmer.timer" ;;
+        gpu-fancontrol) echo "gpu-fancontrol.service" ;;
+        monitoring)     echo "monitoring.service" ;;
+        backup)         echo "backup-daily.timer" ;;
+    esac
+}
+
+is_service_module() {
+    local m
+    for m in ${SERVICE_MODULES}; do [[ "$m" == "$1" ]] && return 0; done
+    return 1
+}
+
+module_is_active() {
+    local unit
+    unit=$(module_service_unit "$1") || return 1
+    [[ "$(systemctl is-active "${unit}" 2>/dev/null)" == "active" ]]
 }
 
 sha256() {
@@ -542,12 +564,12 @@ cmd_install() {
     done < "$MANIFEST_FILE"
     ((found == 1)) || { echo "No matching modules." >&2; exit 1; }
 
-    # Enable service modules after install
+    # Enable each installed service module
     for module in "${modules[@]}"; do
-        local enable_cmd
-        enable_cmd=$(module_enable_cmd "$module") || continue
+        is_service_module "$module" || continue
+        local ec; ec=$(module_enable_cmd "$module")
         echo "Enabling $module..."
-        sudo ${enable_cmd} 2>/dev/null || echo "(enable deferred — run with sudo later)"
+        sudo ${ec} 2>/dev/null || echo "(enable deferred — run 'setup enable $module' with sudo)"
     done
 }
 
@@ -569,7 +591,7 @@ cmd_update() {
     echo
     if [[ "$new_count" -gt 0 ]]; then
         echo "$new_count new module(s) available: ${new_names[*]}"
-        echo "Run 'linux-setup' to select what to install."
+        echo "Run 'setup' to select what to install."
     else
         echo "All modules up to date."
     fi
@@ -582,6 +604,12 @@ cmd_uninstall() {
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if module_selected "$module" "$@"; then
             found=1
+            if (($# > 0)); then
+                local dc; dc=$(module_disable_cmd "$module") && {
+                    echo "Disabling $module..."
+                    sudo ${dc} 2>/dev/null || true
+                }
+            fi
             uninstall_one "$module" "$target" "$mode" "$source"
         fi
     done < "$MANIFEST_FILE"
@@ -618,8 +646,8 @@ cmd_enable() {
     local modules=("$@")
     ((${#modules[@]} == 0)) && modules=(${SERVICE_MODULES})
     for module in "${modules[@]}"; do
-        local cmd
-        cmd=$(module_enable_cmd "$module") || { echo "No enable command for $module" >&2; continue; }
+        is_service_module "$module" || { echo "Not a service module: $module" >&2; continue; }
+        local cmd; cmd=$(module_enable_cmd "$module")
         echo "Enabling $module..."
         sudo ${cmd}
     done
@@ -629,8 +657,8 @@ cmd_disable() {
     local modules=("$@")
     ((${#modules[@]} == 0)) && modules=(${SERVICE_MODULES})
     for module in "${modules[@]}"; do
-        local cmd
-        cmd=$(module_disable_cmd "$module") || { echo "No disable command for $module" >&2; continue; }
+        is_service_module "$module" || { echo "Not a service module: $module" >&2; continue; }
+        local cmd; cmd=$(module_disable_cmd "$module")
         echo "Disabling $module..."
         sudo ${cmd}
     done
@@ -695,106 +723,141 @@ cmd_reconfigure() {
     local env_summary
     env_summary=$(detect_env_summary)
 
-    # Build module list with current state
+    # Cache remote versions once — eliminates HTTP call per module per redraw
+    declare -A REMOTE_VER
+    while IFS=$'\t' read -r m t mo s; do
+        [[ -z "${m:-}" || "$m" == \#* ]] && continue
+        local p
+        p=$(mktemp)
+        fetch_payload "$s" "$p" 2>/dev/null || true
+        REMOTE_VER["$m"]=$(version_for "$p" || echo "")
+        rm -f "$p"
+    done < "$MANIFEST_FILE"
+
     build_list() {
-        local fmt=""
+        local -a non_svc svc
         while IFS=$'\t' read -r m t mo s; do
             [[ -z "${m:-}" || "$m" == \#* ]] && continue
-            local st
-            st=$(module_state "$m" "$t" "$s")
-            fmt="${fmt}${m}  ${st}"$'\n'
+            local target local_ver svc_label ver_label
+
+            target=$(expand_path "$t")
+
+            local_ver=$(version_for "$target" || true)
+            if [[ -z "$local_ver" ]]; then
+                ver_label="—"
+            elif version_gt "${REMOTE_VER["$m"]:-}" "$local_ver"; then
+                ver_label="${local_ver} → ${REMOTE_VER["$m"]}"
+            else
+                ver_label="${local_ver}"
+            fi
+
+            if is_service_module "$m"; then
+                local unit; unit=$(module_service_unit "$m")
+                if [[ "$unit" == "tool" ]]; then
+                    svc_label="installed"
+                elif module_is_active "$m"; then
+                    svc_label="active"
+                else
+                    svc_label="inactive"
+                fi
+                svc+=("$m|${ver_label}|${svc_label}")
+            else
+                if [[ -n "$local_ver" ]]; then
+                    svc_label="installed"
+                else
+                    svc_label="uninstalled"
+                fi
+                non_svc+=("$m|${ver_label}|${svc_label}")
+            fi
         done < "$MANIFEST_FILE"
-        echo -n "$fmt"
+
+        # Sort each group alphabetically by module name
+        IFS=$'\n' non_svc=($(sort <<<"${non_svc[*]}")); unset IFS
+        IFS=$'\n' svc=($(sort <<<"${svc[*]}")); unset IFS
+
+        # Print non-service first, then service
+        for entry in "${non_svc[@]}" "${svc[@]}"; do
+            IFS='|' read -r m v s <<< "$entry"
+            printf "%-20s %-25s %s\n" "$m" "$v" "$s"
+        done
     }
 
     while true; do
-        local lines
-        lines=$(build_list)
-        local selected
-        selected=$(echo "$lines" | fzf \
-            --layout=reverse \
+        local selected mod target mode source cur_state action actions has_svc
+
+        selected=$(build_list | fzf \
+            --layout=reverse --cycle \
             --header="${env_summary}  |  ↑↓=navigate  Enter=actions  Esc=finish" \
             --bind='esc:abort' \
             --preview-window=hidden
         ) || break
 
-        local mod
         mod=$(echo "$selected" | awk '{print $1}')
         [[ -z "$mod" ]] && break
 
-        # Look up module from manifest
-        local target mode source
         while IFS=$'\t' read -r m t mo s; do
             [[ "$m" == "$mod" ]] && { target="$t"; mode="$mo"; source="$s"; break; }
         done < "$MANIFEST_FILE"
         [[ -z "$target" ]] && continue
 
-        local cur_state
-        cur_state=$(module_state "$mod" "$target" "$source")
+        # Use cached values for state detection
+        got_local_ver=$(version_for "$(expand_path "$target")" || true)
+            has_svc=0
+        is_service_module "$mod" && has_svc=1
+        local file_installed=0 svc_active=0
+        [[ -n "$got_local_ver" ]] && file_installed=1
+        (( has_svc && file_installed )) && module_is_active "$mod" && svc_active=1
 
-        # Build action list
-        local actions=""
-        case "$cur_state" in
-            "not installed")
-                actions="install"
-                if [[ -n "$(module_enable_cmd "$mod" 2>/dev/null)" ]]; then
-                    actions="${actions}"$'\n'"install + enable"
-                fi
-                ;;
-            *)
-                actions="enable"
-                actions="${actions}"$'\n'"disable"
-                actions="${actions}"$'\n'"update"
-                actions="${actions}"$'\n'"uninstall"
-                ;;
-        esac
-        actions="${actions}"$'\n'"cancel"
+        actions=""
+        if (( file_installed )); then
+            (( has_svc && svc_active ))  && actions="${actions}disable"$'\n'
+            (( has_svc && !svc_active )) && actions="${actions}enable"$'\n'
+            actions="${actions}update"$'\n'
+            actions="${actions}reinstall"$'\n'
+            actions="${actions}uninstall"$'\n'
+        else
+            actions="install"$'\n'
+            (( has_svc )) && actions="${actions}install + enable"$'\n'
+        fi
+        actions="${actions}cancel"
 
-        local action
         action=$(echo "$actions" | fzf \
-            --layout=reverse \
-            --header="Action for ${mod} (${cur_state})" \
+            --layout=reverse --cycle \
+            --header="${mod}" \
             --bind='esc:abort'
         ) || continue
 
         case "$action" in
-            cancel) continue ;;
-            install)
-                install_one "$mod" "$target" "$mode" "$source"
-                ;;
+            cancel)    continue ;;
+            install)   install_one "$mod" "$target" "$mode" "$source" ;;
             "install + enable")
                 install_one "$mod" "$target" "$mode" "$source"
-                local ec
-                ec=$(module_enable_cmd "$mod") && {
+                local ec; ec=$(module_enable_cmd "$mod") && {
                     echo "Enabling $mod..."
-                    sudo ${ec} 2>/dev/null || echo "(enable deferred — run with sudo later)"
-                }
-                ;;
+                    sudo ${ec} 2>/dev/null || echo "(enable deferred)"
+                } ;;
             enable)
-                local ec
-                ec=$(module_enable_cmd "$mod") && {
+                local ec; ec=$(module_enable_cmd "$mod") && {
                     echo "Enabling $mod..."
-                    sudo ${ec} 2>/dev/null || echo "(enable deferred — run with sudo later)"
-                }
-                ;;
+                    sudo ${ec} 2>/dev/null || echo "(enable deferred)"
+                } ;;
             disable)
-                local dc
-                dc=$(module_disable_cmd "$mod") && {
+                local dc; dc=$(module_disable_cmd "$mod") && {
                     echo "Disabling $mod..."
                     sudo ${dc} 2>/dev/null || true
-                }
-                ;;
+                } ;;
             update)
+                install_one "$mod" "$target" "$mode" "$source" ;;
+            reinstall)
+                FORCE=1
                 install_one "$mod" "$target" "$mode" "$source"
-                ;;
+                FORCE=0 ;;
             uninstall)
-                local dc
-                dc=$(module_disable_cmd "$mod") && {
+                local dc; dc=$(module_disable_cmd "$mod") && {
                     echo "Disabling $mod..."
                     sudo ${dc} 2>/dev/null || true
                 }
-                uninstall_one "$mod" "$target" "$mode" "$source"
-                ;;
+                uninstall_one "$mod" "$target" "$mode" "$source" ;;
         esac
     done
 }
