@@ -134,13 +134,17 @@ fi
 
 install -m 0755 "$tmp" "$TARGET"
 
-# Clear stale hash record so setup can self-update cleanly
-hash_file="${XDG_STATE_HOME:-$HOME/.local/state}/setup/installed.tsv"
-if [[ -f "$hash_file" ]]; then
-    tmp2=$(mktemp)
-    grep -vF "${TARGET}"$'\t' "$hash_file" > "$tmp2" 2>/dev/null || true
-    mv "$tmp2" "$hash_file"
+# Record the hash so setup shows as up-to-date immediately
+_hash=$(if command -v sha256sum >/dev/null 2>&1; then sha256sum "$TARGET" | cut -d' ' -f1; else shasum -a 256 "$TARGET" | cut -d' ' -f1; fi)
+_hash_file="${XDG_STATE_HOME:-$HOME/.local/state}/setup/installed.tsv"
+_hash_dir=$(dirname "$_hash_file")
+mkdir -p "$_hash_dir"
+if [[ -f "$_hash_file" ]]; then
+    _tmp2=$(mktemp)
+    grep -vF "${TARGET}"$'\t' "$_hash_file" > "$_tmp2" 2>/dev/null || true
+    mv "$_tmp2" "$_hash_file"
 fi
+printf '%s\t%s\t%s\n' "$TARGET" "$_hash" "$_hash" >> "$_hash_file"
 
 echo "Installed $TARGET"
 
