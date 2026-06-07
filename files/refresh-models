@@ -71,6 +71,27 @@ def _provider_from_env(env_name):
     return ""
 
 
+def _source_zsenv():
+    """Export .zshenv api-keys block into os.environ (for launchd/cron contexts)."""
+    if not os.path.exists(ZSENV_PATH):
+        return
+    in_block = False
+    with open(ZSENV_PATH) as f:
+        for line in f:
+            s = line.strip()
+            if s == AUTH_BLOCK_BEGIN:
+                in_block = True
+                continue
+            if s == AUTH_BLOCK_END:
+                in_block = False
+                continue
+            if in_block and s.startswith("export ") and "=" in s:
+                kv = s[len("export "):]
+                name, _, val = kv.partition("=")
+                if name and val:
+                    os.environ[name] = val
+
+
 def _export_auth_to_zsenv():
     """One-way sync: auth.json → .zshenv. Called on enable/auth to surface
     keys set by opencode's /connect command."""
@@ -697,6 +718,9 @@ def main():
     args = sys.argv[1:]
 
     if not args:
+        _source_zsenv()
+        _export_auth_to_zsenv()
+        _sync_zsenv_to_auth()
         cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {}
         servers = cfg.get("servers", {})
         for name, srv_cfg in servers.items():
