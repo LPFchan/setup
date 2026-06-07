@@ -175,8 +175,7 @@ _migrate_ai_menu() {
         fi
         # Also clean stray unmanaged ai-start-menu references
         if grep -q 'ai-start-menu' "$_f" 2>/dev/null; then
-            sed -i '' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
-            sed -i -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
+            sed -i'' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
         fi
     done
 }
@@ -528,8 +527,7 @@ install_one() {
     if [[ "$module" == "ai-menu" ]]; then
         rm -f "$HOME/.bashrc.d/ai-start-menu"
         for _f in "$HOME/.zshrc" "$HOME/.zshenv" "$HOME/.bashrc"; do
-            [[ -f "$_f" ]] && sed -i '' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
-            [[ -f "$_f" ]] && sed -i -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
+            [[ -f "$_f" ]] && sed -i'' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
         done
     fi
     if [[ "$module" == "refresh-models" ]]; then

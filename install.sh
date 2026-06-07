@@ -74,8 +74,7 @@ configure_shell() {
             ' "$_f" > "$_tmp" && mv "$_tmp" "$_f"
         fi
         if grep -q 'ai-start-menu' "$_f" 2>/dev/null; then
-            sed -i '' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
-            sed -i -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
+            sed -i'' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
         fi
     done
     rm -f "$HOME/.bashrc.d/ai-start-menu"
