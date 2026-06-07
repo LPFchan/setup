@@ -655,9 +655,20 @@ cmd_install() {
 
 cmd_update() {
     fetch_manifest
-    local new_count=0 new_names=()
+    local new_count=0 new_names=() filters=()
+    local target_module
+    for target_module in "$@"; do
+        filters+=("$target_module")
+    done
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
+        if [[ ${#filters[@]} -gt 0 ]]; then
+            local found=0
+            for f in "${filters[@]}"; do
+                [[ "$module" == "$f" ]] && found=1 && break
+            done
+            [[ "$found" -eq 0 ]] && continue
+        fi
         local target_path local_hash
         target_path=$(expand_path "$target")
         local_hash=$(installed_hash_for "$target_path" || true)
