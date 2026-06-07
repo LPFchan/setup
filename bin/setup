@@ -327,11 +327,20 @@ manage_block() {
             local old_hash; old_hash=$(_extract_block_body | sha256)
             if [[ "$new_hash" != "$old_hash" ]]; then
                 local _tmp; _tmp=$(mktemp)
-                awk -v begin="$begin_mark" -v end="$end_mark" -v body="$content" '
-                    $0 == begin { print begin; printf "%s\n", body; skip=1; next }
-                    $0 == end   { print end; skip=0; next }
-                    !skip { print }
-                ' "$file" > "$_tmp" && mv "$_tmp" "$file"
+                {
+                    awk -v begin="$begin_mark" -v end="$end_mark" '
+                        $0 == begin { print; skip=1; next }
+                        $0 == end   { skip=0 }
+                        !skip { print }
+                    ' "$file" | while IFS= read -r line; do
+                        if [[ "$line" == "$begin_mark" ]]; then
+                            printf '%s\n' "$line"
+                            printf '%s\n' "$content"
+                        else
+                            printf '%s\n' "$line"
+                        fi
+                    done
+                } > "$_tmp" && mv "$_tmp" "$file"
                 echo "Updated $file $label"
             else
                 echo "Current $label -> $file"
@@ -541,7 +550,7 @@ install_one() {
         fi
         if [[ "$module" == "setup" ]]; then
             echo "Restarting setup..."
-            exec "$target" "${ORIG_ARGS[@]}"
+            exec "$target" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
         fi
         return 0
     fi
