@@ -546,14 +546,17 @@ def cmd_enable():
         with open(plist_path, "w") as f:
             f.write(plist)
         _uid = os.getuid()
-        subprocess.run(["launchctl", "bootout", f"user/{_uid}/{PLIST_NAME}"],
+        subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
                        capture_output=True)
-        r = subprocess.run(["launchctl", "bootstrap", f"user/{_uid}", plist_path],
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{_uid}", plist_path],
                            capture_output=True)
         if r.returncode == 0:
             print("refresh-models launchd agent enabled (hourly)")
         else:
-            print(f"refresh-models installed but launchd enable failed (rc={r.returncode})")
+            if r.returncode == 125:
+                print("no GUI session — log in on the Mac's screen first", file=sys.stderr)
+            else:
+                print(f"refresh-models installed but launchd enable failed (rc={r.returncode})", file=sys.stderr)
             if r.stderr:
                 print(r.stderr.decode().rstrip(), file=sys.stderr)
     else:
@@ -652,7 +655,7 @@ def cmd_disable():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
             _uid = os.getuid()
-            subprocess.run(["launchctl", "bootout", f"user/{_uid}/{PLIST_NAME}"],
+            subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
                            capture_output=True)
             os.remove(plist_path)
         print("refresh-models launchd agent disabled")
@@ -674,7 +677,7 @@ def cmd_status():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
             result = subprocess.run(
-                ["launchctl", "print", f"user/{os.getuid()}/{PLIST_NAME}"],
+                ["launchctl", "print", f"gui/{os.getuid()}/{PLIST_NAME}"],
                 capture_output=True, text=True,
             )
             if result.returncode == 0:
