@@ -6,7 +6,7 @@ ai() {
     local -a options ssh_hosts
     current_host=$(hostname)
     local current_aliases=("$current_host" "${current_host%%.*}" "${current_host%%.*}.local")
-    options=(claude codex opencode setup)
+    options=(claude codex opencode)
 
     if [[ -f ~/.ssh/config ]]; then
         ssh_hosts=( $(grep -E "^Host " ~/.ssh/config | awk '{print $2}') )
@@ -15,7 +15,7 @@ ai() {
         done
     fi
 
-    options+=(resume neither)
+    options+=(setup resume neither)
 
     choice=$(printf '%s\n' "${options[@]}" | fzf --height=15 --reverse --border \
         --header="current machine: ${current_host}" --pointer='▌' --prompt='▌ ' --cycle)
