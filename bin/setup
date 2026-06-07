@@ -2,6 +2,7 @@
 # setup-module: setup
 # setup-source: bin/setup
 set -uo pipefail
+ORIG_ARGS=("$@")
 
 SOURCE_URL="${LINUX_SETUP_SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/setup"
@@ -511,7 +512,7 @@ install_one() {
         fi
         if [[ "$module" == "setup" ]]; then
             echo "Restarting setup..."
-            exec "$target"
+            exec "$target" "${ORIG_ARGS[@]}"
         fi
         return 0
     fi
@@ -536,7 +537,7 @@ install_one() {
     rm -f "$payload"
     if [[ "$module" == "setup" ]]; then
         echo "Restarting setup..."
-        exec "$target"
+        exec "$target" "${ORIG_ARGS[@]}"
     fi
 }
 
