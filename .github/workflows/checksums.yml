@@ -14,6 +14,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: syntax check shell scripts
+        run: |
+          for f in bin/*; do
+            [[ -f "$f" ]] && bash -n "$f"
+          done
+      - name: syntax check python scripts
+        run: |
+          for f in files/refresh-models; do
+            python3 -c "import py_compile; py_compile.compile('$f', doraise=True)"
+          done
       - name: generate checksums
         run: scripts/checksums
       - name: commit if changed
