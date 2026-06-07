@@ -37,8 +37,14 @@ require_root() {
 detect_fs() { stat -f -c '%T' "${1:-/}" 2>/dev/null || echo "unknown"; }
 
 detect_lan_nfs() {
-    if timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null; then
-        echo "nfs"
+    local lan_ip
+    lan_ip=$(timeout 3 getent ahosts bingus 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}')
+    if [[ -n "$lan_ip" && "$lan_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
+        if timeout 3 bash -c "echo > /dev/tcp/${lan_ip}/2049" 2>/dev/null; then
+            echo "nfs"
+        else
+            echo "unreachable"
+        fi
     elif timeout 3 bash -c 'echo > /dev/tcp/bingus.lost.plus/873' 2>/dev/null; then
         echo "rsyncd"
     else
