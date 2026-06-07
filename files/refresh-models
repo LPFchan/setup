@@ -74,12 +74,12 @@ def _migrate_auth_json():
         if etype == "api":
             key = entry.get("key", "")
             if key and isinstance(key, str) and key.strip():
-                env_name = f"{provider.upper()}_API_KEY"
+                env_name = f"{provider.replace('-', '_').upper()}_API_KEY"
                 lines.append(f"export {env_name}={key.strip()}")
         elif etype == "oauth":
             access = entry.get("access", "")
             if access and isinstance(access, str):
-                env_name = f"{provider.upper()}_OAUTH_TOKEN"
+                env_name = f"{provider.replace('-', '_').upper()}_OAUTH_TOKEN"
                 lines.append(f"export {env_name}={access}")
 
     if not lines:
@@ -121,10 +121,10 @@ def _reconstruct_auth_json():
     data = {}
     for env_name, value in block.items():
         if env_name.endswith("_API_KEY"):
-            provider = env_name[:-8].lower()
+            provider = env_name[:-8].lower().replace("_", "-")
             data[provider] = {"type": "api", "key": value}
         elif env_name.endswith("_OAUTH_TOKEN"):
-            provider = env_name[:-12].lower()
+            provider = env_name[:-12].lower().replace("_", "-")
             data[provider] = {"type": "oauth", "access": value}
     if not data:
         return
@@ -364,7 +364,7 @@ PROVIDER_URLS = {
 
 
 def _env_name(provider):
-    return f"{provider.upper()}_API_KEY"
+    return f"{provider.replace('-', '_').upper()}_API_KEY"
 
 
 def _get_key(provider):

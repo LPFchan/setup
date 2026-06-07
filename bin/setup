@@ -201,11 +201,13 @@ for p, e in data.items():
     if etype == 'api':
         key = e.get('key', '')
         if key and isinstance(key, str) and key.strip():
-            lines.append(f'export {p.upper()}_API_KEY={key.strip()}')
+            provider = p.replace('-', '_').upper()
+            lines.append(f'export {provider}_API_KEY={key.strip()}')
     elif etype == 'oauth':
         access = e.get('access', '')
         if access and isinstance(access, str):
-            lines.append(f'export {p.upper()}_OAUTH_TOKEN={access}')
+            provider = p.replace('-', '_').upper()
+            lines.append(f'export {provider}_OAUTH_TOKEN={access}')
 if not lines:
     exit(0)
 existing = []
