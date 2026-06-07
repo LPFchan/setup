@@ -188,13 +188,17 @@ _cleanup_legacy_ai_files() {
     rm -f "$HOME/.bashrc.d/ai-start-menu"
     for _f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.zshenv"; do
         [[ -f "$_f" ]] || continue
-        if grep -qE 'linux-setup:(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
+        if grep -qE '(linux-setup|setup):(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
             _tmp=$(mktemp)
             awk '
                 /^# >>> linux-setup:zsh-ai >>>/   { skip=1; next }
                 /^# >>> linux-setup:bash-ai >>>/  { skip=1; next }
                 /^# <<< linux-setup:zsh-ai <<</   { skip=0; next }
                 /^# <<< linux-setup:bash-ai <<</  { skip=0; next }
+                /^# >>> setup:zsh-ai >>>/         { skip=1; next }
+                /^# >>> setup:bash-ai >>>/        { skip=1; next }
+                /^# <<< setup:zsh-ai <<</         { skip=0; next }
+                /^# <<< setup:bash-ai <<</        { skip=0; next }
                 !skip { print }
             ' "$_f" > "$_tmp" && mv "$_tmp" "$_f"
         fi
@@ -266,7 +270,6 @@ module_for() {
     while IFS= read -r line; do
         case "$line" in
             '# setup-module: '*) printf '%s\n' "${line#'# setup-module: '}"; return 0 ;;
-            '# linux-setup-module: '*) printf '%s\n' "${line#'# linux-setup-module: '}"; return 0 ;;
         esac
     done < "$file"
 }
@@ -275,15 +278,17 @@ module_for() {
 has_managed_block() {
     local file="$1" label="$2"
     [[ -f "$file" ]] || return 1
-    grep -Fq "# >>> linux-setup:$label >>>" "$file"
+    grep -Fq "# >>> setup:$label >>>" "$file" || grep -Fq "# >>> linux-setup:$label >>>" "$file"
 }
 
 # --- shell config helpers (for setup command) -----------------------
 
 manage_block() {
     local file="$1" label="$2" content="$3" mode="$4" position="${5:-append}"
-    local begin_mark="# >>> linux-setup:$label >>>"
-    local end_mark="# <<< linux-setup:$label <<<"
+    local begin_mark="# >>> setup:$label >>>"
+    local end_mark="# <<< setup:$label <<<"
+    local old_begin_mark="# >>> linux-setup:$label >>>"
+    local old_end_mark="# <<< linux-setup:$label <<<"
 
     mkdir -p "$(dirname "$file")"
     touch "$file"
@@ -291,26 +296,30 @@ manage_block() {
     _extract_block_body() {
         # Print lines between begin_mark and end_mark, exclusive.
         # Normalize: strip a single trailing newline if present.
-        awk -v begin="$begin_mark" -v end="$end_mark" '
-            $0 == begin { inblock=1; next }
-            $0 == end   { inblock=0; next }
+        awk -v begin="$begin_mark" -v end="$end_mark" \
+            -v old_begin="$old_begin_mark" -v old_end="$old_end_mark" '
+            $0 == begin || $0 == old_begin { inblock=1; next }
+            $0 == end   || $0 == old_end   { inblock=0; next }
             inblock { print }
         ' "$file" | sed '$ { /^$/ d; }'
     }
 
     case "$mode" in
         remove)
-            grep -Fq "$begin_mark" "$file" || return 0
+            if ! grep -Fq "$begin_mark" "$file" && ! grep -Fq "$old_begin_mark" "$file"; then
+                return 0
+            fi
             local _tmp; _tmp=$(mktemp)
-            awk -v begin="$begin_mark" -v end="$end_mark" '
-                $0 == begin { skip=1; next }
-                $0 == end   { skip=0; next }
+            awk -v begin="$begin_mark" -v end="$end_mark" \
+                -v old_begin="$old_begin_mark" -v old_end="$old_end_mark" '
+                $0 == begin || $0 == old_begin { skip=1; next }
+                $0 == end   || $0 == old_end   { skip=0; next }
                 !skip
             ' "$file" > "$_tmp" && mv "$_tmp" "$file"
             echo "Removed $label from $file"
             ;;
         prepend|append)
-            if grep -Fq "$begin_mark" "$file"; then
+            if grep -Fq "$begin_mark" "$file" || grep -Fq "$old_begin_mark" "$file"; then
                 echo "Current $label -> $file"
                 return 0
             fi
@@ -325,7 +334,7 @@ manage_block() {
             ;;
         upsert)
             local new_hash; new_hash=$(printf '%s' "$content" | sed '$ { /^$/ d; }' | sha256)
-            if ! grep -Fq "$begin_mark" "$file"; then
+            if ! grep -Fq "$begin_mark" "$file" && ! grep -Fq "$old_begin_mark" "$file"; then
                 if [[ "$position" == "prepend" ]]; then
                     local _tmp; _tmp=$(mktemp)
                     { printf '%s\n' "$begin_mark"; printf '%s\n' "$content"; printf '%s\n\n' "$end_mark"; cat "$file"; } > "$_tmp"
@@ -340,13 +349,14 @@ manage_block() {
             if [[ "$new_hash" != "$old_hash" ]]; then
                 local _tmp; _tmp=$(mktemp)
                 {
-                    awk -v begin="$begin_mark" -v end="$end_mark" '
-                        $0 == begin { print; skip=1; next }
-                        $0 == end   { skip=0 }
+                    awk -v begin="$begin_mark" -v end="$end_mark" \
+                        -v old_begin="$old_begin_mark" -v old_end="$old_end_mark" '
+                        $0 == begin || $0 == old_begin { print; skip=1; next }
+                        $0 == end   || $0 == old_end   { skip=0 }
                         !skip { print }
                     ' "$file" | while IFS= read -r line; do
-                        if [[ "$line" == "$begin_mark" ]]; then
-                            printf '%s\n' "$line"
+                        if [[ "$line" == "$begin_mark" || "$line" == "$old_begin_mark" ]]; then
+                            printf '%s\n' "$begin_mark"
                             printf '%s\n' "$content"
                         else
                             printf '%s\n' "$line"
@@ -462,6 +472,8 @@ remove_marker_blocks() {
     awk '
         /^# >>> linux-setup:/ { skip=1; changed=1; next }
         /^# <<< linux-setup:/ { skip=0; next }
+        /^# >>> setup:/ { skip=1; changed=1; next }
+        /^# <<< setup:/ { skip=0; next }
         !skip { print }
         END { if (changed) exit 42 }
     ' "$file" > "$tmp" || status=$?

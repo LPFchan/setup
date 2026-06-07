@@ -20,12 +20,12 @@ has_ai_autolaunch() {
 
 append_block_once() {
     local file="$1" label="$2" content="$3" dir begin_mark end_mark
-    begin_mark="# >>> linux-setup:$label >>>"
-    end_mark="# <<< linux-setup:$label <<<"
+    begin_mark="# >>> setup:$label >>>"
+    end_mark="# <<< setup:$label <<<"
     dir=$(dirname "$file")
     mkdir -p "$dir"
     touch "$file"
-    if grep -Fq "$begin_mark" "$file"; then
+    if grep -Fq "$begin_mark" "$file" || grep -Fq "# >>> linux-setup:$label >>>" "$file"; then
         return 0
     fi
     {
@@ -38,12 +38,12 @@ append_block_once() {
 
 prepend_block_once() {
     local file="$1" label="$2" content="$3" dir begin_mark end_mark tmp
-    begin_mark="# >>> linux-setup:$label >>>"
-    end_mark="# <<< linux-setup:$label <<<"
+    begin_mark="# >>> setup:$label >>>"
+    end_mark="# <<< setup:$label <<<"
     dir=$(dirname "$file")
     mkdir -p "$dir"
     touch "$file"
-    if grep -Fq "$begin_mark" "$file"; then
+    if grep -Fq "$begin_mark" "$file" || grep -Fq "# >>> linux-setup:$label >>>" "$file"; then
         return 0
     fi
     tmp=$(mktemp)
@@ -63,13 +63,17 @@ configure_shell() {
     # Remove stale ai managed blocks so fresh ones with ai-menu path are written
     for _f in "$HOME/.zshrc" "$HOME/.bashrc"; do
         [[ -f "$_f" ]] || continue
-        if grep -qE 'linux-setup:(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
+        if grep -qE '(linux-setup|setup):(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
             _tmp=$(mktemp)
             awk '
                 /^# >>> linux-setup:zsh-ai >>>/   { skip=1; next }
                 /^# >>> linux-setup:bash-ai >>>/  { skip=1; next }
                 /^# <<< linux-setup:zsh-ai <<</   { skip=0; next }
                 /^# <<< linux-setup:bash-ai <<</  { skip=0; next }
+                /^# >>> setup:zsh-ai >>>/         { skip=1; next }
+                /^# >>> setup:bash-ai >>>/        { skip=1; next }
+                /^# <<< setup:zsh-ai <<</         { skip=0; next }
+                /^# <<< setup:bash-ai <<</        { skip=0; next }
                 !skip { print }
             ' "$_f" > "$_tmp" && mv "$_tmp" "$_f"
         fi

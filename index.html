@@ -156,7 +156,7 @@
     <p>installs resume, ai-menu, kernel-simmer, backup, monitoring, and more</p>
   </main>
 
-  <footer><a href="https://github.com/LPFchan/linux-setup">github</a></footer>
+  <footer><a href="https://github.com/LPFchan/setup">github</a></footer>
 
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.js"></script>
   <script>
@@ -199,7 +199,7 @@
     ];
 
     function meta(source, key) {
-      const match = source.match(new RegExp(`^# linux-setup-${key}:\\s*(.+)$`, 'm'));
+      const match = source.match(new RegExp(`^# setup-${key}:\\s*(.+)$`, 'm'));
       return match ? match[1].trim() : 'unknown';
     }
 
