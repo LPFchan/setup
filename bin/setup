@@ -42,25 +42,37 @@ Environment:
 EOF
 }
 
+_resolve_bin() {
+    local name="$1"
+    local path="$HOME/.local/bin/$name"
+    if [[ -x "$path" ]]; then
+        echo "$path"
+    else
+        echo "$name"
+    fi
+}
+
 module_enable_cmd() {
+    local bin
     case "$1" in
-        kernel-simmer)  echo "kernel-simmer enable" ;;
-        service-ctl)    echo "service-ctl enable --all" ;;
+        kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin enable" ;;
+        service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin enable --all" ;;
         gpu-fancontrol|monitoring)
-                        echo "service-ctl enable $1" ;;
-        refresh-models) echo "refresh-models enable" ;;
-        backup)         echo "backup enable" ;;
+                        bin=$(_resolve_bin service-ctl); echo "$bin enable $1" ;;
+        refresh-models) bin=$(_resolve_bin refresh-models); echo "$bin enable" ;;
+        backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
     esac
 }
 
 module_disable_cmd() {
+    local bin
     case "$1" in
-        kernel-simmer)  echo "kernel-simmer disable" ;;
-        service-ctl)    echo "service-ctl disable --all" ;;
+        kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin disable" ;;
+        service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin disable --all" ;;
         gpu-fancontrol|monitoring)
-                        echo "service-ctl disable $1" ;;
-        refresh-models) echo "refresh-models disable" ;;
-        backup)         echo "backup disable" ;;
+                        bin=$(_resolve_bin service-ctl); echo "$bin disable $1" ;;
+        refresh-models) bin=$(_resolve_bin refresh-models); echo "$bin disable" ;;
+        backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
     esac
 }
 
