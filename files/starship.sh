@@ -37,12 +37,12 @@ status() {
     latest_ver=$(curl -fsSL "https://api.github.com/repos/starship/starship/releases/latest" \
         2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v\(.*\)".*/\1/' || true)
     if [[ -z "$latest_ver" ]]; then
-        printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "installed" "$installed_ver" "$BIN"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "installed" "$installed_ver" "$installed_ver" "$BIN"
         record_script_state "$MODULE" "version" "$installed_ver" "$installed_ver"
         return 0
     fi
     if [[ "$installed_ver" == "$latest_ver" ]]; then
-        printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "current" "$installed_ver" "$BIN"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "$installed_ver" "$latest_ver" "$BIN"
         record_script_state "$MODULE" "version" "$installed_ver" "$latest_ver"
         return 0
     else

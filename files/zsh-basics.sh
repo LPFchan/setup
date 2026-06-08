@@ -23,12 +23,12 @@ status() {
     expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
     actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | setup_sha256_string)
     if [[ -z "$expected" ]]; then
-        printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "$HOME/.zshrc"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$HOME/.zshrc"
         _record_state
         return 0
     fi
     if [[ "$expected" == "$actual" ]]; then
-        printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "$HOME/.zshrc"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${expected:0:7}" "$HOME/.zshrc"
         _record_state
         return 0
     else

@@ -31,7 +31,7 @@ status() {
         record_script_state "$MODULE" "git" "$lr" "$rr"
         return 1
     fi
-    printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "current" "$lr" "$DIR"
+    printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "$lr" "$rr" "$DIR"
     _record_state
     return 0
 }
