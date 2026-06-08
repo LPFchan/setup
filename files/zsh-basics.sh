@@ -16,18 +16,18 @@ install() {
 
 status() {
     if ! has_managed_block "$HOME/.zshrc" "zsh-basics"; then
-        printf '%-20s %-12s target=%s\n' "$MODULE" "missing" "$HOME/.zshrc"
+        printf '%-25s %-12s target=%s\n' "$MODULE" "missing" "$HOME/.zshrc"
         return 2
     fi
     local expected actual
     expected=$(setup_sha256_string "$BLOCK_CONTENT")
-    actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | setup_sha256_string)
+    actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | sed '$ { /^$/ d; }' | setup_sha256_string)
     if [[ "$expected" == "$actual" ]]; then
-        printf '%-20s %-12s target=%s\n' "$MODULE" "managed" "$HOME/.zshrc"
+        printf '%-25s %-12s target=%s\n' "$MODULE" "managed" "$HOME/.zshrc"
         _record_state
         return 0
     else
-        printf '%-20s %-12s target=%s\n' "$MODULE" "modified" "$HOME/.zshrc"
+        printf '%-25s %-12s target=%s\n' "$MODULE" "modified" "$HOME/.zshrc"
         return 1
     fi
 }

@@ -31,20 +31,20 @@ install() {
 
 status() {
     if [[ ! -d "$DIR1/.git" ]] || [[ ! -d "$DIR2/.git" ]]; then
-        printf '%-20s %-12s\n' "$MODULE" "uninstalled"
+        printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
     local s1 s2 rc1 rc2
     s1=$(git_check_status "$DIR1"); rc1=$?
     s2=$(git_check_status "$DIR2"); rc2=$?
     if [[ $rc1 -eq 1 || $rc2 -eq 1 ]]; then
-        printf '%-20s %-12s %s | %s\n' "$MODULE" "outdated" "$s1" "$s2"
+        printf '%-25s %-12s %s | %s\n' "$MODULE" "outdated" "$s1" "$s2"
         record_script_state "$MODULE" "git" \
             "$(git_local_ref "$DIR1" | cut -c1-7)+$(git_local_ref "$DIR2" | cut -c1-7)" \
             "$(git_remote_ref "$DIR1" | cut -c1-7)+$(git_remote_ref "$DIR2" | cut -c1-7)"
         return 1
     fi
-    printf '%-20s %-12s %s | %s\n' "$MODULE" "current" "$s1" "$s2"
+    printf '%-25s %-12s %s | %s\n' "$MODULE" "current" "$s1" "$s2"
     _record_state
     return 0
 }

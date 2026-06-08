@@ -29,7 +29,7 @@ install() {
 
 status() {
     if ! command -v starship >/dev/null 2>&1; then
-        printf '%-20s %-12s\n' "$MODULE" "uninstalled"
+        printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
     local installed_ver latest_ver
@@ -37,16 +37,16 @@ status() {
     latest_ver=$(curl -fsSL "https://api.github.com/repos/starship/starship/releases/latest" \
         2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v\(.*\)".*/\1/' || true)
     if [[ -z "$latest_ver" ]]; then
-        printf '%-20s %-12s version=%s (could not check latest)\n' "$MODULE" "installed" "$installed_ver"
+        printf '%-25s %-12s version=%s (could not check latest)\n' "$MODULE" "installed" "$installed_ver"
         record_script_state "$MODULE" "version" "$installed_ver" "$installed_ver"
         return 0
     fi
     if [[ "$installed_ver" == "$latest_ver" ]]; then
-        printf '%-20s %-12s version=%s\n' "$MODULE" "current" "$installed_ver"
+        printf '%-25s %-12s version=%s\n' "$MODULE" "current" "$installed_ver"
         record_script_state "$MODULE" "version" "$installed_ver" "$latest_ver"
         return 0
     else
-        printf '%-20s %-12s installed=%s latest=%s\n' "$MODULE" "outdated" "$installed_ver" "$latest_ver"
+        printf '%-25s %-12s installed=%s latest=%s\n' "$MODULE" "outdated" "$installed_ver" "$latest_ver"
         record_script_state "$MODULE" "version" "$installed_ver" "$latest_ver"
         return 1
     fi

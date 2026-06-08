@@ -47,10 +47,19 @@ git_pull_ff() {
 }
 
 setup_sha256_string() {
-    printf '%s' "$1" | if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | cut -d' ' -f1
+    local input="${1:-}"
+    if [[ -n "$input" ]]; then
+        printf '%s' "$input" | if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum | cut -d' ' -f1
+        else
+            shasum -a 256 | cut -d' ' -f1
+        fi
     else
-        shasum -a 256 | cut -d' ' -f1
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum | cut -d' ' -f1
+        else
+            shasum -a 256 | cut -d' ' -f1
+        fi
     fi
 }
 

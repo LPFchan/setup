@@ -662,7 +662,7 @@ status_one() {
     remote_hash=$(remote_checksum "$source")
 
     if [[ ! -f "$target" ]]; then
-        printf '%-14s %-12s remote=%s target=%s\n' "$module" "uninstalled" "${remote_hash:0:7}" "$target"
+        printf '%-25s %-12s remote=%s target=%s\n' "$module" "uninstalled" "${remote_hash:0:7}" "$target"
         return 0
     fi
 
@@ -670,7 +670,7 @@ status_one() {
     old_hash=$(installed_hash_for "$target" || true)
 
     if [[ "$local_module" != "$module" ]]; then
-        printf '%-14s %-12s target=%s\n' "$module" "foreign" "$target"
+        printf '%-25s %-12s target=%s\n' "$module" "foreign" "$target"
         return 0
     fi
 
@@ -692,14 +692,14 @@ status_one() {
         fi
     fi
 
-    printf '%-14s %-12s %s target=%s\n' "$module" "$state" "$extra" "$target"
+    printf '%-25s %-12s %s target=%s\n' "$module" "$state" "$extra" "$target"
 }
 
 cmd_list() {
     fetch_manifest
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
-        printf '%-14s %s\n' "$module" "$target"
+        printf '%-25s %s\n' "$module" "$target"
     done < "$MANIFEST_FILE"
 }
 
@@ -729,9 +729,9 @@ shell_status() {
 shell_status_one() {
     local file="$1" label="$2"
     if has_managed_block "$file" "$label"; then
-        printf '%-14s %-12s target=%s\n' "$label" "managed" "$file"
+        printf '%-25s %-12s target=%s\n' "$label" "managed" "$file"
     else
-        printf '%-14s %-12s target=%s\n' "$label" "missing" "$file"
+        printf '%-25s %-12s target=%s\n' "$label" "missing" "$file"
     fi
 }
 
@@ -1023,11 +1023,11 @@ cmd_reconfigure() {
 
     build_list() {
         # Header: name, local_ver, service, remote_ver, status
-        printf "%-14s %-13s %-11s %-13s %-17s\n" \
+        printf "%-25s %-13s %-11s %-13s %-17s\n" \
             "module" "local" "service" "remote" "status"
 
         # <ALL MODULES> pseudo-entry
-        printf "%-14s %-13s %-11s %-13s %-17s\n" \
+        printf "%-25s %-13s %-11s %-13s %-17s\n" \
             "<ALL MODULES>" "-" "-" "-" "-"
 
         while IFS=$'\t' read -r m t mo s; do
@@ -1116,7 +1116,7 @@ cmd_reconfigure() {
         # Print non-service first, then service
         for entry in "${non_svc[@]}" "${svc[@]}"; do
             IFS='|' read -r m l s r u <<< "$entry"
-            printf "%-14s %-13s %-11s %-13s %-17s\n" "$m" "$l" "$s" "$r" "$u"
+            printf "%-25s %-13s %-11s %-13s %-17s\n" "$m" "$l" "$s" "$r" "$u"
         done
     }
 

@@ -20,17 +20,17 @@ install() {
 
 status() {
     if [[ ! -d "$DIR/.git" ]]; then
-        printf '%-20s %-12s\n' "$MODULE" "uninstalled"
+        printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
     local s rc
     s=$(git_check_status "$DIR"); rc=$?
     if [[ $rc -eq 1 ]]; then
-        printf '%-20s %-12s %s\n' "$MODULE" "outdated" "$s"
+        printf '%-25s %-12s %s\n' "$MODULE" "outdated" "$s"
         record_script_state "$MODULE" "git" "$(git_local_ref "$DIR" | cut -c1-7)" "$(git_remote_ref "$DIR" | cut -c1-7)"
         return 1
     fi
-    printf '%-20s %-12s %s\n' "$MODULE" "current" "$s"
+    printf '%-25s %-12s %s\n' "$MODULE" "current" "$s"
     _record_state
     return 0
 }
