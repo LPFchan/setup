@@ -7,6 +7,7 @@
 MODULE="zsh-basics"
 
 BLOCK_CONTENT='setopt NO_NOMATCH
+bindkey -e
 WORDCHARS=${WORDCHARS//\//}'
 
 install() {
