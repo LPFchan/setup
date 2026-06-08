@@ -16,23 +16,23 @@ install() {
 
 status() {
     if ! has_managed_block "$HOME/.zshrc" "zsh-basics"; then
-        printf '%-25s %-12s target=%s\n' "$MODULE" "missing" "$HOME/.zshrc"
+        printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
     local expected actual
     expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
     actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | setup_sha256_string)
     if [[ -z "$expected" ]]; then
-        printf '%-25s %-12s target=%s\n' "$MODULE" "managed" "$HOME/.zshrc"
+        printf '%-25s %-12s local=%s\n' "$MODULE" "current" "${actual:0:7}"
         _record_state
         return 0
     fi
     if [[ "$expected" == "$actual" ]]; then
-        printf '%-25s %-12s target=%s\n' "$MODULE" "current" "$HOME/.zshrc"
+        printf '%-25s %-12s local=%s\n' "$MODULE" "current" "${actual:0:7}"
         _record_state
         return 0
     else
-        printf '%-25s %-12s target=%s\n' "$MODULE" "outdated" "$HOME/.zshrc"
+        printf '%-25s %-12s local=%s remote=%s\n' "$MODULE" "outdated" "${actual:0:7}" "${expected:0:7}"
         return 1
     fi
 }
