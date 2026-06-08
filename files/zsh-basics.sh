@@ -21,7 +21,7 @@ status() {
     fi
     local expected actual
     expected=$(setup_sha256_string "$BLOCK_CONTENT")
-    actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | sed '$ { /^$/ d; }' | setup_sha256_string)
+    actual=$(printf '%s' "$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc")" | setup_sha256_string)
     if [[ "$expected" == "$actual" ]]; then
         printf '%-25s %-12s target=%s\n' "$MODULE" "managed" "$HOME/.zshrc"
         _record_state
