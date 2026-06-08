@@ -20,14 +20,19 @@ status() {
         return 2
     fi
     local expected actual
-    expected=$(setup_sha256_string "$BLOCK_CONTENT")
-    actual=$(printf '%s' "$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc")" | setup_sha256_string)
-    if [[ "$expected" == "$actual" ]]; then
+    expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
+    actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | setup_sha256_string)
+    if [[ -z "$expected" ]]; then
         printf '%-25s %-12s target=%s\n' "$MODULE" "managed" "$HOME/.zshrc"
         _record_state
         return 0
+    fi
+    if [[ "$expected" == "$actual" ]]; then
+        printf '%-25s %-12s target=%s\n' "$MODULE" "current" "$HOME/.zshrc"
+        _record_state
+        return 0
     else
-        printf '%-25s %-12s target=%s\n' "$MODULE" "modified" "$HOME/.zshrc"
+        printf '%-25s %-12s target=%s\n' "$MODULE" "outdated" "$HOME/.zshrc"
         return 1
     fi
 }
@@ -48,6 +53,6 @@ _upsert_block() {
 
 _record_state() {
     local h
-    h=$(setup_sha256_string "$BLOCK_CONTENT")
+    h=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | setup_sha256_string)
     record_script_state "$MODULE" "block" "$h" "$h"
 }

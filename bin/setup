@@ -723,7 +723,6 @@ cmd_status() {
 
 shell_status() {
     shell_status_one "$HOME/.zshenv" path
-    shell_status_one "$HOME/.zshrc" zsh-ai
 }
 
 shell_status_one() {
