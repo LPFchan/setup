@@ -27,11 +27,11 @@ status() {
     lr=$(git_local_ref "$DIR" | cut -c1-7)
     rr=$(git_remote_ref "$DIR" | cut -c1-7)
     if [[ "$lr" != "$rr" ]]; then
-        printf '%-25s %-12s local=%s remote=%s\n' "$MODULE" "outdated" "$lr" "$rr"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "$lr" "$rr" "$DIR"
         record_script_state "$MODULE" "git" "$lr" "$rr"
         return 1
     fi
-    printf '%-25s %-12s local=%s\n' "$MODULE" "current" "$lr"
+    printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "current" "$lr" "$DIR"
     _record_state
     return 0
 }

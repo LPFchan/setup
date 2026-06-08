@@ -34,17 +34,19 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local lr1 lr2 rr1 rr2
-    lr1=$(git_local_ref "$DIR1" | cut -c1-7)
-    lr2=$(git_local_ref "$DIR2" | cut -c1-7)
-    rr1=$(git_remote_ref "$DIR1" | cut -c1-7)
-    rr2=$(git_remote_ref "$DIR2" | cut -c1-7)
+    local lr1 lr2 rr1 rr2 combined_local combined_remote
+    lr1=$(git_local_ref "$DIR1")
+    lr2=$(git_local_ref "$DIR2")
+    rr1=$(git_remote_ref "$DIR1")
+    rr2=$(git_remote_ref "$DIR2")
+    combined_local=$(printf '%s%s' "$lr1" "$lr2" | setup_sha256_string | cut -c1-7)
+    combined_remote=$(printf '%s%s' "$rr1" "$rr2" | setup_sha256_string | cut -c1-7)
     if [[ "$lr1" != "$rr1" || "$lr2" != "$rr2" ]]; then
-        printf '%-25s %-12s local=%s+%s remote=%s+%s\n' "$MODULE" "outdated" "$lr1" "$lr2" "$rr1" "$rr2"
-        record_script_state "$MODULE" "git" "${lr1}+${lr2}" "${rr1}+${rr2}"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "$combined_local" "$combined_remote" "$DIR1"
+        record_script_state "$MODULE" "git" "$combined_local" "$combined_remote"
         return 1
     fi
-    printf '%-25s %-12s local=%s+%s\n' "$MODULE" "current" "$lr1" "$lr2"
+    printf '%-25s %-12s local=%s target=%s\n' "$MODULE" "current" "$combined_local" "$DIR1"
     _record_state
     return 0
 }
