@@ -190,38 +190,6 @@ remote_checksum() {
     printf '%s\n' "${_CSUM_CACHE:-}" | grep "^${source}"$'\t' | head -1 | cut -f2
 }
 
-AI_MIGRATION_SENTINEL="${STATE_DIR}/ai-menu-migrated"
-
-_cleanup_legacy_ai_files() {
-    [[ -f "$AI_MIGRATION_SENTINEL" ]] && return 0
-
-    rm -f "$HOME/.bashrc.d/ai-start-menu"
-    for _f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.zshenv"; do
-        [[ -f "$_f" ]] || continue
-        if grep -qE '(linux-setup|setup):(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
-            _tmp=$(mktemp)
-            awk '
-                /^# >>> linux-setup:zsh-ai >>>/   { skip=1; next }
-                /^# >>> linux-setup:bash-ai >>>/  { skip=1; next }
-                /^# <<< linux-setup:zsh-ai <<</   { skip=0; next }
-                /^# <<< linux-setup:bash-ai <<</  { skip=0; next }
-                /^# >>> setup:zsh-ai >>>/         { skip=1; next }
-                /^# >>> setup:bash-ai >>>/        { skip=1; next }
-                /^# <<< setup:zsh-ai <<</         { skip=0; next }
-                /^# <<< setup:bash-ai <<</        { skip=0; next }
-                !skip { print }
-            ' "$_f" > "$_tmp" && mv "$_tmp" "$_f"
-        fi
-        if grep -q 'ai-start-menu' "$_f" 2>/dev/null; then
-            sed -i'' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
-        fi
-    done
-
-    mkdir -p "${AI_MIGRATION_SENTINEL%/*}"
-    touch "$AI_MIGRATION_SENTINEL"
-    echo "Migrated ai-menu shell blocks"
-}
-
 _migrate_auth_json() {
     local old="$HOME/.local/share/opencode/auth.json"
     [[ -f "$old" ]] || return 0
@@ -388,8 +356,6 @@ BLOCK_REGISTRY=(
 )
 
 configure_shell() {
-    _cleanup_legacy_ai_files
-
     local path_block zsh_ai_block
 
     path_block='case ":$PATH:" in
@@ -597,10 +563,6 @@ install_one() {
     old_hash=$(installed_hash_for "$target" || true)
 
     if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" == "$old_hash" ]] && [[ "$FORCE" -ne 1 ]]; then
-        # Run one-time migration even when file is current
-        if [[ "$module" == "ai-menu" ]]; then
-            _cleanup_legacy_ai_files
-        fi
         if [[ "$module" == "refresh-models" ]]; then
             _migrate_auth_json
         fi
@@ -616,9 +578,6 @@ install_one() {
         record_hash "$target" "$new_hash" "$new_hash"
         echo "$module ${new_hash:0:7} (foreign) -> $target"
         rm -f "$payload"
-        if [[ "$module" == "ai-menu" ]]; then
-            _cleanup_legacy_ai_files
-        fi
         if [[ "$module" == "refresh-models" ]]; then
             _migrate_auth_json
         fi
@@ -635,12 +594,6 @@ install_one() {
         echo "$module ${old_hash:0:7} -> ${new_hash:0:7} -> $target"
     else
         echo "$module ${new_hash:0:7} (install) -> $target"
-    fi
-    if [[ "$module" == "ai-menu" ]]; then
-        rm -f "$HOME/.bashrc.d/ai-start-menu"
-        for _f in "$HOME/.zshrc" "$HOME/.zshenv"; do
-            [[ -f "$_f" ]] && sed -i'' -e '/ai-start-menu/d' "$_f" 2>/dev/null || true
-        done
     fi
     if [[ "$module" == "refresh-models" ]]; then
         _migrate_auth_json
@@ -761,6 +714,7 @@ cmd_install() {
 }
 
 cmd_update() {
+    configure_shell || true
     fetch_manifest
     local new_count=0 new_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
@@ -1012,7 +966,6 @@ detect_env_summary() {
 }
 
 cmd_reconfigure() {
-    configure_shell || true
     fetch_manifest || true
     local env_summary
     env_summary="$(hostname -s) · $(detect_env_summary)"
@@ -1298,15 +1251,6 @@ cmd_reconfigure() {
                 uninstall_one "$mod" "$target" "$mode" "$source" ;;
         esac
     done
-
-    # Post-reconfigure: check if refresh-models needs auth onboarding
-    local auth_marker="$STATE_DIR/refresh-models.needs-auth"
-    if [[ -f "$auth_marker" ]]; then
-        echo
-        echo "refresh-models is installed but needs API keys. Launching auth..."
-        rm -f "$auth_marker"
-        refresh-models auth
-    fi
 }
 
 while (($# > 0)); do
@@ -1318,23 +1262,40 @@ while (($# > 0)); do
     esac
 done
 
+# Post-install: check if refresh-models needs auth onboarding
+_post_auth_check() {
+    local auth_marker="$STATE_DIR/refresh-models.needs-auth"
+    if [[ -f "$auth_marker" ]]; then
+        if [[ -t 1 ]] && command -v fzf >/dev/null 2>&1; then
+            echo
+            echo "refresh-models is installed but needs API keys. Launching auth..."
+            rm -f "$auth_marker"
+            refresh-models auth
+        else
+            echo "Warning: refresh-models is installed but needs API keys. Run 'setup' or 'refresh-models auth' to configure." >&2
+        fi
+    fi
+}
+
 cmd="${1:-}"
 shift || true
 
 if [[ -z "$cmd" ]]; then
     if [[ -t 1 ]] && command -v fzf >/dev/null 2>&1; then
+        configure_shell || true
         cmd_reconfigure
     else
         cmd_update || true
     fi
+    _post_auth_check
     exit 0
 fi
 
 case "$cmd" in
     list) cmd_list "$@" ;;
     status) cmd_status "$@" ;;
-    install) cmd_install "$@" ;;
-    update) cmd_update "$@" ;;
+    install) cmd_install "$@"; _post_auth_check ;;
+    update) cmd_update "$@"; _post_auth_check ;;
     uninstall) cmd_uninstall "$@" ;;
     enable) cmd_enable "$@" ;;
     disable) cmd_disable "$@" ;;
