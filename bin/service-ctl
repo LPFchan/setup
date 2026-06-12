@@ -190,16 +190,16 @@ component_disable() {
 
 component_status() {
     local comp="$1"
-    local service_name
+    local unit
     case "${comp}" in
-        gpu-fancontrol) service_name="gpu-fancontrol" ;;
-        monitoring)     service_name="monitoring" ;;
-        kernel-simmer)  service_name="kernel-simmer" ;;
+        gpu-fancontrol) unit="gpu-fancontrol.service" ;;
+        monitoring)     unit="monitoring.service" ;;
+        kernel-simmer)  unit="kernel-simmer.timer" ;;
         *) echo "  ${comp}: unknown"; return ;;
     esac
 
     local state
-    state=$(systemctl is-active "${service_name}.service" 2>/dev/null || echo "not-installed")
+    state=$(systemctl is-active "${unit}" 2>/dev/null || echo "not-installed")
     if [[ "${state}" == "active" ]] || [[ "${state}" == "activating" ]]; then
         printf '  \e[32m%-20s %s\e[0m\n' "${comp}" "${state}"
     else
