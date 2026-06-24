@@ -50,6 +50,16 @@ _cc_first_msg() {
     | head -1
 }
 
+_cc_is_print_session() {
+    local meta entrypoint prompt_source
+    meta=$(jq -r 'select(.type == "user" and .message.role == "user")
+                  | [.entrypoint // "", .promptSource // ""]
+                  | @tsv' "$1" 2>/dev/null | head -1) || return 1
+    [[ -n "$meta" ]] || return 1
+    IFS=$'\t' read -r entrypoint prompt_source <<< "$meta"
+    [[ "$entrypoint" == "sdk-cli" || "$prompt_source" == "sdk" ]]
+}
+
 _cx_first_msg() {
     grep '"role":"user"' "$1" 2>/dev/null \
     | jq -r 'select(.type == "response_item")
@@ -68,13 +78,14 @@ _cc_proj_path() {
 
 collect_sessions() {
     if [[ -d "$CLAUDE_DIR" ]]; then
-        ls -t "$CLAUDE_DIR"/*/*.jsonl 2>/dev/null | head -n "$MAX_SESSIONS" | while read -r f; do
+        ls -t "$CLAUDE_DIR"/*/*.jsonl 2>/dev/null | while read -r f; do
             id=$(basename "$f" .jsonl)
             [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
             mtime=$("${STAT_CMD[@]}" "$f" 2>/dev/null) || continue
             proj=$(basename "$(dirname "$f")")
             cwd=$(_cc_proj_path "$proj")
             [[ "$cwd" == *"CodexBar"* ]] && continue
+            _cc_is_print_session "$f" && continue
             msg=$(_cc_first_msg "$f")
             echo "$mtime|cc|$id|$cwd|${msg:-}"
         done
