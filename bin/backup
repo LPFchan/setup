@@ -193,7 +193,7 @@ rm -rf "$DEST" && mkdir -p "$DEST"
 list_remote() { rsync --list-only ${RSYNC_RSH} "$REMOTE"/$1 2>/dev/null | awk '{print $NF}' | grep -v '^\.'; }
 delete_remote() {
     local empty=$(mktemp -d)
-    rsync -r --delete --include="$(basename "$1")" --exclude='*' ${RSYNC_RSH} "$empty/" "$REMOTE/"
+    rsync -r --no-perms --no-owner --no-group --no-times --delete --include="$(basename "$1")" --exclude='*' ${RSYNC_RSH} "$empty/" "$REMOTE/"
     rmdir "$empty"
 }
 SETUP
@@ -204,7 +204,7 @@ adapter_ship_rsyncd() {
     cat <<SHIP
 TARBALL="/var/cache/backup-${host}/\$(date +%Y%m%d)-full.tar.gz"
 tar -czf "\$TARBALL" -C "\$DEST" .
-rsync -a \${RSYNC_RSH} "\$TARBALL" "\$REMOTE/"
+rsync -a --no-perms --no-owner --no-group --no-times \${RSYNC_RSH} "\$TARBALL" "\$REMOTE/"
 rm -f "\$TARBALL"
 SHIP
 }
