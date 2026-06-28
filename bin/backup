@@ -85,7 +85,6 @@ write_paths_file() {
 /etc/sysctl.d/
 /etc/default/earlyoom
 /etc/cloudflared/
-/etc/samba/smb.conf
 /etc/fail2ban/jail.d/
 /etc/ssh/ssh_host_*
 /etc/ssh/sshd_config.d/
@@ -244,7 +243,7 @@ run_rsync() {
     local expanded
     for src in "${sources[@]}"; do
         expanded=$(eval echo "$src" 2>/dev/null) || true
-        [ -n "$expanded" ] && rsync -aR "${excludes[@]}" $expanded "$DEST"/
+        [ -n "$expanded" ] && rsync -aR --ignore-missing-args "${excludes[@]}" $expanded "$DEST"/ || true
     done
 }
 run_rsync
