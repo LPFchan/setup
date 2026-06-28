@@ -142,8 +142,10 @@ run_rsync() {
             sources+=("$line")
         fi
     done < "$PATHS_FILE"
+    local expanded
     for src in "${sources[@]}"; do
-        rsync -aR "${excludes[@]}" "$src" "$DEST"/
+        expanded=$(eval echo "$src" 2>/dev/null) || true
+        [ -n "$expanded" ] && rsync -aR "${excludes[@]}" $expanded "$DEST"/
     done
 }
 
@@ -241,8 +243,10 @@ run_rsync() {
             sources+=("$line")
         fi
     done < "$PATHS_FILE"
+    local expanded
     for src in "${sources[@]}"; do
-        rsync -aR "${excludes[@]}" "$src" "${STAGE}"/
+        expanded=$(eval echo "$src" 2>/dev/null) || true
+        [ -n "$expanded" ] && rsync -aR "${excludes[@]}" $expanded "${STAGE}"/
     done
 }
 
