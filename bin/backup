@@ -27,7 +27,7 @@ warn() { echo "warn: $*" >&2; }
 info() { echo "$*"; }
 
 require_root() {
-    [[ $EUID -ne 0 ]] && die "this command requires root — try sudo ${NAME} $*"
+    [[ $EUID -eq 0 ]] || die "this command requires root — try sudo ${NAME} $*"
 }
 
 detect_fs() { stat -f -c '%T' "${1:-/}" 2>/dev/null || echo "unknown"; }
@@ -409,12 +409,12 @@ cmd_restore() {
 
     # NFS probe
     if mountpoint -q /mnt/bingus-backups 2>/dev/null; then
-        nfs_files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*.bin 2>/dev/null) || nfs_files=""
+        nfs_files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || nfs_files=""
     else
         if timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null; then
             mkdir -p /mnt/bingus-backups
             timeout 10 mount -t nfs bingus:/volume1/bak /mnt/bingus-backups 2>/dev/null && {
-                nfs_files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*.bin 2>/dev/null) || nfs_files=""
+                nfs_files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || nfs_files=""
             }
         fi
     fi
