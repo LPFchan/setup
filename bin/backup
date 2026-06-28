@@ -107,14 +107,14 @@ setup_grimoire() {
     NFS="/mnt/bingus-backups/grimoire"
 
     if ! grep -q 'mnt.bingus-backups' /etc/fstab; then
-        echo 'bingus:/volume1/bak /mnt/bingus-backups nfs defaults,noatime 0 0' >> /etc/fstab
+        echo 'bingus:/volume1/bak /mnt/bingus-backups nfs defaults,noatime,nofail 0 0' >> /etc/fstab
     fi
     if ! mountpoint -q /mnt/bingus-backups; then
         mount -t nfs bingus:/volume1/bak /mnt/bingus-backups || true
     fi
 
     if ! btrfs subvolume show /bak &>/dev/null; then
-    mkdir -p /bak
+        mkdir -p /bak
         btrfs subvolume create /bak
     fi
 
@@ -127,27 +127,56 @@ set -euo pipefail
 exec 9>/var/lock/backup.lock || exit 1
 trap 'rm -f /var/lock/backup.lock' EXIT
 
-SNAP="/bak-$(date +%Y%m%d)"
 NFS="/mnt/bingus-backups/grimoire"
 PATHS_FILE="/etc/backup/paths.d/grimoire"
 DEST="/bak"
 
+run_rsync() {
+    local excludes=()
+    local sources=()
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if [[ "$line" == -* ]]; then
+            excludes+=("--exclude=${line#-}")
+        else
+            sources+=("$line")
+        fi
+    done < "$PATHS_FILE"
+    for src in "${sources[@]}"; do
+        rsync -aR "${excludes[@]}" "$src" "$DEST"/
+    done
+}
 
 run_rsync
 
+# Rebuild manifests
+mkdir -p "$DEST/rebuild"
+apt-mark showmanual > "$DEST/rebuild/apt-manual.txt"
+npm ls -g --depth=0 --json > "$DEST/rebuild/npm-global.json" 2>/dev/null || true
+fnm ls > "$DEST/rebuild/fnm-versions.txt" 2>/dev/null || true
+
+# Snapshot + send
+SNAP="/bak-$(date +%Y%m%d)"
 btrfs subvolume snapshot -r /bak "${SNAP}"
 btrfs send "${SNAP}" > "${NFS}/$(date +%Y%m%d)-full.bin"
 btrfs subvolume delete "${SNAP}"
 
-# Prune: keep 7 dailies
-find "${NFS}" -name '*-full.bin' -mtime +7 -delete
+# Prune: keep 7 dailies (date-based)
+CUTOFF=$(date -d '8 days ago' +%Y%m%d)
+for f in "$NFS"/*-full.bin; do
+    [ -f "$f" ] || continue
+    f_date=$(basename "$f" | grep -oP '^\d{8}' || true)
+    if [ -n "$f_date" ] && [ "$f_date" -lt "$CUTOFF" ]; then
+        rm -f "$f"
+    fi
+done
 DAILY
     chmod +x /usr/local/bin/backup-daily
 
-    # Weekly (same as daily but tagged for separate retention)
+    # Weekly (same as daily but 28-day retention)
     cp /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
     sed -i 's/backup.lock/weekly.lock/' /usr/local/bin/backup-weekly
-    sed -i 's|find.*-mtime.*|find "${NFS}" -name '\''*-full.bin'\'' -mtime +28 -delete|' /usr/local/bin/backup-weekly
+    sed -i "s/8 days ago/29 days ago/" /usr/local/bin/backup-weekly
 
     write_systemd_units "grimoire"
 }
@@ -201,8 +230,29 @@ RSYNC_DEST="rsync://oci-ubuntu@bingus.lost.plus/bak/oci-ubuntu/t1"
 
 rm -rf "${STAGE}" && mkdir -p "${STAGE}"
 
+run_rsync() {
+    local excludes=()
+    local sources=()
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if [[ "$line" == -* ]]; then
+            excludes+=("--exclude=${line#-}")
+        else
+            sources+=("$line")
+        fi
+    done < "$PATHS_FILE"
+    for src in "${sources[@]}"; do
+        rsync -aR "${excludes[@]}" "$src" "${STAGE}"/
+    done
+}
 
 run_rsync
+
+# Rebuild manifests
+mkdir -p "${STAGE}/rebuild"
+apt-mark showmanual > "${STAGE}/rebuild/apt-manual.txt"
+npm ls -g --depth=0 --json > "${STAGE}/rebuild/npm-global.json" 2>/dev/null || true
+fnm ls > "${STAGE}/rebuild/fnm-versions.txt" 2>/dev/null || true
 
 tar -czf "${TARBALL}" -C "${STAGE}" .
 rsync -a "${RSYNC_RSH}" "${TARBALL}" "${RSYNC_DEST}/"
