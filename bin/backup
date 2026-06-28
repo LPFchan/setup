@@ -92,9 +92,13 @@ write_paths_file() {
 /usr/local/sbin/
 PATHS
 
-    local home_dir
-    home_dir=$(getent passwd 1000 | cut -d: -f6)
-    [[ -n "$home_dir" ]] || die "no UID 1000 user found — cannot derive home directory"
+    local home_dir sudo_user
+    sudo_user="${SUDO_USER:-}"
+    if [[ -n "$sudo_user" ]]; then
+        home_dir=$(getent passwd "$sudo_user" | cut -d: -f6)
+    fi
+    [[ -n "$home_dir" ]] || home_dir=$(getent passwd 1000 | cut -d: -f6)
+    [[ -n "$home_dir" ]] || die "cannot derive home directory — no SUDO_USER and no UID 1000 user"
     if [[ "$home_dir" != "/home/yeowool" ]]; then
         sed -i "s|/home/yeowool|${home_dir}|g" "$file"
     fi
