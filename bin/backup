@@ -436,7 +436,7 @@ cmd_restore() {
         warn "rsyncd unavailable — credentials missing (re-store from vaultwarden)"
     else
         rsyncd_files=$(rsync --list-only $rsh "rsync://${host}@bingus.lost.plus/bak/${host}/" 2>/dev/null \
-            | awk '{print $NF}' | grep -E '^\d{8}-(full|weekly)\.' ) || rsyncd_files=""
+            | awk '{print $NF}' | grep -P '^\d{8}-(full|weekly)\.' ) || rsyncd_files=""
         [[ -n "$rsyncd_files" ]] && rsyncd_avail=1
     fi
 
