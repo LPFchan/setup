@@ -61,25 +61,25 @@ write_paths_file() {
 # Each line is an rsync source path (with -aR preserving full path).
 # Lines starting with # are ignored.
 # Lines starting with - are rsync --exclude patterns.
-/home/yeowool/.zshrc
-/home/yeowool/.zshenv
-/home/yeowool/.zprofile
-/home/yeowool/.bashrc
-/home/yeowool/.gitconfig
-/home/yeowool/.ssh/
-/home/yeowool/.config/opencode/
-/home/yeowool/.claude/
-/home/yeowool/.codex/
-/home/yeowool/grimoire/
-/home/yeowool/opencode_conversations.json
-/home/yeowool/opencode_splits/
-/home/yeowool/token-stats.json
-/home/yeowool/templates/
-/home/yeowool/structured-cot/
-- *.log
+# Strategy: blanket home + blacklist excludes (catches future projects automatically).
+/home/yeowool/
+- .cache/
+- .rustup/
+- .cargo/
+- .npm/
+- .local/
+- .snap/
+- .gnupg/
+- .docker/
+- .copilot/
+- .landscape/
+- .vscode-server/
+- .terminfo/
 - node_modules/
 - .venv/
 - __pycache__/
+- *.log
+- .git/
 /etc/fstab
 /etc/systemd/system/
 /etc/sysctl.d/
@@ -88,6 +88,7 @@ write_paths_file() {
 /etc/samba/smb.conf
 /etc/fail2ban/jail.d/
 /etc/ssh/ssh_host_*
+/etc/ssh/sshd_config.d/
 /usr/local/bin/
 /usr/local/sbin/
 PATHS
@@ -252,6 +253,9 @@ mkdir -p "$DEST/rebuild"
 apt-mark showmanual > "$DEST/rebuild/apt-manual.txt"
 npm ls -g --depth=0 --json > "$DEST/rebuild/npm-global.json" 2>/dev/null || true
 fnm ls > "$DEST/rebuild/fnm-versions.txt" 2>/dev/null || true
+pipx list --json > "$DEST/rebuild/pipx-list.json" 2>/dev/null || true
+snap list > "$DEST/rebuild/snap-list.txt" 2>/dev/null || true
+docker images --format '{{.Repository}}:{{.Tag}}' > "$DEST/rebuild/docker-images.txt" 2>/dev/null || true
 ENGINE
 
         "adapter_ship_${transport}" "$host"
