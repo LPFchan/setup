@@ -7,7 +7,12 @@ ai() {
     # $HOST is set natively by zsh — no fork, unlike $(hostname).
     local current_host=$HOST
     local current_aliases=("$current_host" "${current_host%%.*}" "${current_host%%.*}.local")
-    options=(claude codex opencode)
+    # Forkless availability filter: ${+commands[...]} is a hash lookup,
+    # so missing tools drop out of the menu without any external probe.
+    local tool
+    for tool in claude codex opencode hermes grok; do
+        (( ${+commands[$tool]} )) && options+=("$tool")
+    done
 
     # Forkless parse: $(<file) + (z) word-split instead of $(grep | awk).
     # A pipeline inside a command substitution can spin forever in zsh's
@@ -47,6 +52,8 @@ ai() {
             fi
             ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
+        hermes) hermes ;;
+        grok) grok ;;
         setup) setup ;;
         resume) resume ;;
         neither|"") ;;
