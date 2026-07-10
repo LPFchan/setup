@@ -36,10 +36,10 @@ ai() {
     # Single-command substitution: one fork, child tail-execs into fzf.
     # No zsh subshell survives, no pipeline job exists — the hasprocs spin
     # is structurally impossible here. <<< is a temp file, not a fork.
-    # Height = entries + 4 chrome lines (border top/bottom, header, prompt)
-    # so the whole menu is visible without scrolling; fzf clamps to the
-    # terminal height if the list outgrows it.
-    choice=$(fzf --height=$(( $#options + 4 )) --reverse --border \
+    # Height = entries + 5 chrome lines (border top/bottom, header, prompt,
+    # match-counter info line) so the whole menu is visible without
+    # scrolling; fzf clamps to the terminal height if the list outgrows it.
+    choice=$(fzf --height=$(( $#options + 5 )) --reverse --border \
         --header="current machine: ${current_host}" --pointer='▌' --prompt='▌ ' --cycle \
         <<< "${(F)options}")
 
