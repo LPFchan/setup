@@ -18,7 +18,7 @@ BATCH=0
 
 fetch_script_helpers() {
     mkdir -p "$(dirname "$SCRIPT_HELPERS_FILE")"
-    curl -fsSL "$SOURCE_URL/lib/script-helpers.sh" -o "$SCRIPT_HELPERS_FILE" 2>/dev/null \
+    curl -fsSL --connect-timeout 8 --max-time 60 "$SOURCE_URL/lib/script-helpers.sh" -o "$SCRIPT_HELPERS_FILE" 2>/dev/null \
         || echo "Warning: could not fetch lib/script-helpers.sh" >&2
     # shellcheck disable=SC1090
     [[ -f "$SCRIPT_HELPERS_FILE" ]] && source "$SCRIPT_HELPERS_FILE"
@@ -145,7 +145,7 @@ expand_path() {
 
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    curl -fsSL "$MANIFEST_URL" -o "$MANIFEST_FILE" 2>/dev/null || true
+    curl -fsSL --connect-timeout 8 --max-time 60 "$MANIFEST_URL" -o "$MANIFEST_FILE" 2>/dev/null || true
 }
 
 module_selected() {
@@ -175,7 +175,7 @@ fetch_checksums() {
     fi
     local tmp
     tmp=$(mktemp)
-    if curl -fsSL "$SOURCE_URL/checksums.tsv" -o "$tmp" 2>/dev/null \
+    if curl -fsSL --connect-timeout 8 --max-time 60 "$SOURCE_URL/checksums.tsv" -o "$tmp" 2>/dev/null \
         && grep -q '^# source' "$tmp"; then
         _CSUM_CACHE=$(cat "$tmp")
     else
@@ -383,7 +383,7 @@ fi'
 
 fetch_payload() {
     local source="$1" payload="$2"
-    if curl -fsSL "$SOURCE_URL/$source" -o "$payload" 2>/dev/null \
+    if curl -fsSL --connect-timeout 8 --max-time 60 "$SOURCE_URL/$source" -o "$payload" 2>/dev/null \
         && grep -q '^# setup-module: ' "$payload"; then
         return 0
     fi
