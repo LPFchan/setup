@@ -11,4 +11,5 @@ backup	~/.local/bin/backup	0755	bin/backup
 zsh-autocomplete	~/.zsh/zsh-autocomplete	script	files/zsh-autocomplete.sh
 zsh-syntax-highlighting	~/.zsh/zsh-syntax-highlighting	script	files/zsh-syntax-highlighting.sh
 starship	~/.local/bin/starship	script	files/starship.sh
+fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
