@@ -3,7 +3,8 @@
 
 ai() {
     local choice line
-    local -a options ssh_hosts words
+    local -a options ssh_hosts words tools folders
+    local -A folder_paths
     # $HOST is set natively by zsh — no fork, unlike $(hostname).
     local current_host=$HOST
     local current_aliases=("$current_host" "${current_host%%.*}" "${current_host%%.*}.local")
@@ -11,8 +12,9 @@ ai() {
     # so missing tools drop out of the menu without any external probe.
     local tool
     for tool in claude codex opencode hermes grok; do
-        (( ${+commands[$tool]} )) && options+=("$tool")
+        (( ${+commands[$tool]} )) && tools+=("$tool")
     done
+    tools+=(setup resume neither)
 
     # Forkless parse: $(<file) + (z) word-split instead of $(grep | awk).
     # A pipeline inside a command substitution can spin forever in zsh's
@@ -26,22 +28,124 @@ ai() {
             words=( ${(z)line} )
             (( $#words >= 2 )) && ssh_hosts+=( $words[2] )
         done
+        local -a hosts
         for h in "${ssh_hosts[@]}"; do
-            [[ "$h" != "*" ]] && (( ${current_aliases[(I)$h]} == 0 )) && options+=("$h")
+            [[ "$h" != "*" ]] && (( ${current_aliases[(I)$h]} == 0 )) && hosts+=("$h")
         done
+        ssh_hosts=("${hosts[@]}")
     fi
 
-    options+=(setup resume neither)
+    # Self-heal: machines that received this file via `setup update` (e.g.
+    # the daily `setup schedule` timer) won't have the fzf-multicolumn
+    # binary yet. Install it through the setup module exactly once — the
+    # marker stops retry loops on offline machines (delete it or run
+    # `setup install fzf-multicolumn` manually to retry). Plain foreground
+    # commands, no command substitution — fork-safety rule intact.
+    local mc_marker=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-grid-attempted
+    if ! (( ${+commands[fzf-multicolumn]} )) && (( ${+commands[setup]} )) && [[ ! -e $mc_marker ]]; then
+        echo "ai-menu: installing fzf-multicolumn (grid menu) ..."
+        mkdir -p ${mc_marker:h} 2>/dev/null
+        : >| $mc_marker
+        setup install fzf-multicolumn
+        rehash  # so ${+commands[fzf-multicolumn]} sees it immediately
+    fi
 
-    # Single-command substitution: one fork, child tail-execs into fzf.
+    if (( ${+commands[fzf-multicolumn]} )); then
+        # 3-column grid via our fzf fork: col 1 = agentic tools,
+        # col 2 = SSH hosts, col 3 = recent cd targets from history.
+        # Rows are interleaved (grid is row-major) and short columns are
+        # padded with ' ' blanks so each column keeps its meaning.
+
+        # Nerd Font column icons:  desktop monitor (U+F108) for SSH hosts,
+        #  folder (U+F07B) for cd targets. The folder icon is part of the
+        # folder's dispatch key, so a folder named like a tool or host entry
+        # stays unambiguous and never needs to be skipped.
+        local host_icon=$'' folder_icon=$''
+
+        # Recent folders, forkless: the $history assoc from zsh/parameter
+        # (already loaded in interactive shells) instead of $(fc -l | ...).
+        # Newest first, deduped by basename; only the basename is shown,
+        # the full argument is kept for cd.
+        zmodload -F zsh/parameter p:history 2>/dev/null
+        # zsh reads $HISTFILE only after .zshrc finishes — AND at that point
+        # HISTSIZE is still the default 30, so even a manual read would keep
+        # almost nothing (auto-launch runs before line 60 of .zshrc). typeset
+        # localizes HISTSIZE (ring reverts on return, harmless: zsh re-reads
+        # the file after init) and fc -R is a builtin, forkless manual read.
+        if (( $#history < 200 )); then
+            typeset HISTSIZE=2000
+            builtin fc -R ${HISTFILE:-$HOME/.zsh_history} 2>/dev/null
+        fi
+        local k cmd arg base
+        local folder_max=$(( $#tools > $#ssh_hosts ? $#tools : $#ssh_hosts ))
+        for k in ${(On)${(k)history}}; do
+            cmd=${history[$k]}
+            words=( ${(z)cmd} )
+            [[ $words[1] == (builtin|command|nocorrect) ]] && shift words
+            [[ $words[1] == cd && $#words -ge 2 ]] || continue
+            arg=$words[2]
+            [[ $arg == -- ]] && arg=${words[3]:-}
+            # Skip non-paths: empty/special targets, option flags (cd -P x),
+            # and args with unexpanded $vars/backticks we can't resolve here.
+            [[ $arg == (''|-*|.|..|~|/) || $arg == *[\$\`]* ]] && continue
+            arg=${(Q)arg}
+            base=${arg%/}
+            base=${base:t}
+            [[ -n $base ]] || continue
+            local fkey="$folder_icon $base"
+            (( ${+folder_paths[$fkey]} )) && continue
+            folder_paths[$fkey]=$arg
+            folders+=("$base")
+            (( $#folders >= folder_max )) && break
+        done
+        local -i i rows=$#tools
+        (( $#ssh_hosts > rows )) && rows=$#ssh_hosts
+        (( $#folders > rows )) && rows=$#folders
+        for (( i = 1; i <= rows; i++ )); do
+            options+=("${tools[i]:- }" \
+                "${ssh_hosts[i]:+$host_icon }${ssh_hosts[i]:- }" \
+                "${folders[i]:+$folder_icon }${folders[i]:- }")
+        done
+        local -a picker
+        picker=(fzf-multicolumn --grid=3 --grid-gap=4 --height=$(( rows + 5 )))
+    else
+        # Fallback: classic single-column fzf, no folder column.
+        # Legacy order: tools, hosts, setup, resume, neither.
+        options=("${(@)tools:#(setup|resume|neither)}" "${ssh_hosts[@]}" setup resume neither)
+        local -a picker
+        picker=(fzf --height=$(( $#options + 5 )))
+    fi
+
+    # Single-command substitution: one fork, child tail-execs into the picker.
     # No zsh subshell survives, no pipeline job exists — the hasprocs spin
     # is structurally impossible here. <<< is a temp file, not a fork.
-    # Height = entries + 5 chrome lines (border top/bottom, header, prompt,
+    # Height = list rows + 5 chrome lines (border top/bottom, header, prompt,
     # match-counter info line) so the whole menu is visible without
-    # scrolling; fzf clamps to the terminal height if the list outgrows it.
-    choice=$(fzf --height=$(( $#options + 5 )) --reverse --border \
-        --header="current machine: ${current_host}" --pointer='▌' --prompt='▌ ' --cycle \
+    # scrolling; the picker clamps to the terminal height if it outgrows it.
+    # ${(D)PWD} = prompt-style ~-abbreviated cwd. Showing it in the header
+    # gives visible feedback after a folder jump reopens the menu.
+    choice=$("${picker[@]}" --reverse --border \
+        --header="current machine: ${current_host} · ${(D)PWD}" --pointer='▌' --prompt='▌ ' --cycle \
         <<< "${(F)options}")
+
+    # Folder selections keep the folder icon in their dispatch key, so a
+    # folder named like a tool or host can never be misdispatched — check
+    # before any icon stripping.
+    if [[ -n "${folder_paths[$choice]:-}" ]]; then
+        # ${~...} expands a leading ~. Relative history args were usually
+        # typed from $HOME, so prefer resolving them there; fall back to
+        # the current directory. Re-open the menu after the jump so a tool
+        # can be launched in place.
+        local dest=${~folder_paths[$choice]}
+        [[ $dest != /* && -d ~/$dest ]] && dest=~/$dest
+        cd -- "$dest" && ai
+        return
+    fi
+
+    # Strip the display-only host icon back off (grid path only)
+    if (( ${+host_icon} )); then
+        choice=${choice#$host_icon }
+    fi
 
     case "$choice" in
         claude) claude ;;
@@ -59,7 +163,7 @@ ai() {
         grok) grok ;;
         setup) setup ;;
         resume) resume ;;
-        neither|"") ;;
+        neither|""|" ") ;;
         *) ssh "$choice" ;;
     esac
 }
