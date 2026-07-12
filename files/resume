@@ -28,14 +28,19 @@ CODEX_DIR="$HOME/.codex/sessions"
 OC_DB="$HOME/.local/share/opencode/opencode.db"
 FG_DB="$HOME/.forge/.forge.db"
 MAX_SESSIONS=100
+# Only the newest SCAN_LIMIT files per source get the expensive per-file jq
+# extraction; the merged list is then trimmed to MAX_SESSIONS. Without this the
+# scan is O(all sessions ever created) and stalls for tens of seconds silently
+# on large histories (looks like a hang before the picker appears).
+SCAN_LIMIT=$((MAX_SESSIONS * 2))
 
 case "$(uname -s)" in
     Darwin)
-        STAT_CMD=(stat -f %m)
+        STAT_EXEC=(-exec stat -f '%m %N' {} +)
         DATE_CMD=(date -r)
         ;;
     *)
-        STAT_CMD=(stat -c %Y)
+        STAT_EXEC=(-exec stat -c '%Y %n' {} +)
         DATE_CMD=(date -d "@")
         ;;
 esac
@@ -78,31 +83,32 @@ _cc_proj_path() {
 
 collect_sessions() {
     if [[ -d "$CLAUDE_DIR" ]]; then
-        ls -t "$CLAUDE_DIR"/*/*.jsonl 2>/dev/null | while read -r f; do
+        find "$CLAUDE_DIR" -maxdepth 2 -type f -name '*.jsonl' "${STAT_EXEC[@]}" 2>/dev/null \
+        | sort -rn | head -n "$SCAN_LIMIT" \
+        | while read -r mtime f; do
             id=$(basename "$f" .jsonl)
             [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
-            mtime=$("${STAT_CMD[@]}" "$f" 2>/dev/null) || continue
             proj=$(basename "$(dirname "$f")")
             cwd=$(_cc_proj_path "$proj")
             [[ "$cwd" == *"CodexBar"* ]] && continue
             _cc_is_print_session "$f" && continue
             msg=$(_cc_first_msg "$f")
             echo "$mtime|cc|$id|$cwd|${msg:-}"
-        done
+        done || true
     fi
 
     if [[ -d "$CODEX_DIR" ]]; then
-        find "$CODEX_DIR" -name "rollout-*.jsonl" 2>/dev/null \
-        | while read -r f; do
+        find "$CODEX_DIR" -type f -name "rollout-*.jsonl" "${STAT_EXEC[@]}" 2>/dev/null \
+        | sort -rn | head -n "$SCAN_LIMIT" \
+        | while read -r mtime f; do
             id=$(basename "$f" .jsonl | sed 's/^rollout-[0-9T-]\{19\}-//')
-            mtime=$("${STAT_CMD[@]}" "$f" 2>/dev/null) || continue
             meta=$(head -1 "$f" 2>/dev/null)
             src=$(echo "$meta" | jq -r '.payload.thread_source // ""' 2>/dev/null)
             [[ "$src" == "subagent" ]] && continue
             cwd=$(echo "$meta" | jq -r '.payload.cwd // ""' 2>/dev/null || echo "")
             msg=$(_cx_first_msg "$f")
             echo "$mtime|cx|$id|$cwd|${msg:-}"
-        done
+        done || true
     fi
 
     if [[ -f "$OC_DB" ]]; then
