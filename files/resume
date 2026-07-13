@@ -81,6 +81,13 @@ _cc_proj_path() {
     echo "/${rest//-//}"
 }
 
+# The project dir name encodes both '/' and literal '-' as '-', so decoding it
+# is ambiguous (e.g. 'repo-template' becomes 'repo/template'). The session
+# JSONL stores the real cwd, so prefer that and only fall back to the decode.
+_cc_cwd() {
+    grep -m1 '"cwd":' "$1" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | head -1
+}
+
 collect_sessions() {
     if [[ -d "$CLAUDE_DIR" ]]; then
         find "$CLAUDE_DIR" -maxdepth 2 -type f -name '*.jsonl' "${STAT_EXEC[@]}" 2>/dev/null \
@@ -88,8 +95,8 @@ collect_sessions() {
         | while read -r mtime f; do
             id=$(basename "$f" .jsonl)
             [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
-            proj=$(basename "$(dirname "$f")")
-            cwd=$(_cc_proj_path "$proj")
+            cwd=$(_cc_cwd "$f")
+            [[ -n "$cwd" ]] || cwd=$(_cc_proj_path "$(basename "$(dirname "$f")")")
             [[ "$cwd" == *"CodexBar"* ]] && continue
             _cc_is_print_session "$f" && continue
             msg=$(_cc_first_msg "$f")
