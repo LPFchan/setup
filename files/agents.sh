@@ -18,12 +18,14 @@ AGENTS_LINKS=(
     "$HOME/.claude/CLAUDE.md"
     "$HOME/.codex/AGENTS.md"
     "$HOME/AGENTS.md"
+    "$HOME/.config/opencode/AGENTS.md"
 )
 # FLEET.md sibling symlink targets (so "see FLEET.md" resolves per harness)
 FLEET_LINKS=(
     "$HOME/.claude/FLEET.md"
     "$HOME/.codex/FLEET.md"
     "$HOME/FLEET.md"
+    "$HOME/.config/opencode/FLEET.md"
 )
 # Harness skills dirs — global skills are symlinked in per-skill (non-destructive)
 SKILLS_LINK_DIRS=(
@@ -83,7 +85,7 @@ install() {
     for d in "${SKILLS_LINK_DIRS[@]}"; do _link_skills "$d"; done
 
     _record_state
-    echo "agents: installed -> $AGENTS_DIR (linked into ${#AGENTS_LINKS[@]} harnesses)"
+    echo "agents: installed -> $AGENTS_DIR (linked into ${#AGENTS_LINKS[@]} targets)"
 }
 
 update() { install; }
