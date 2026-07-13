@@ -1,6 +1,65 @@
 # setup-module: ai-menu
 # setup-source: files/ai-menu
 
+# Recent cd targets from $history, newest first, as canonical absolute paths
+# (deduped by abs path, existence-checked). One path per line on stdout.
+#
+# `ai` calls this inside a command substitution, so it runs in a subshell —
+# a hard failsafe boundary. Parsing arbitrary history strings is the one place
+# a malformed entry can raise a *fatal* expansion error (see the ${~arg} note
+# below); contained here it dies with the subshell and the folder column just
+# comes back empty, instead of unwinding the whole shell / plugin stack during
+# startup auto-launch. Forkless within itself: $history assoc + builtin
+# modifiers, no external process.
+_ai_recent_dirs() {
+    emulate -L zsh
+    local max=${1:-8}
+    zmodload -F zsh/parameter p:history 2>/dev/null
+    # zsh loads $HISTFILE only after .zshrc finishes, and HISTSIZE is still the
+    # default 30 during auto-launch, so read the file in ourselves. typeset
+    # localizes the bumped HISTSIZE (reverts on return, harmless: zsh re-reads
+    # the file after init); fc -R is a builtin, forkless manual read.
+    if (( $#history < 200 )); then
+        typeset HISTSIZE=2000
+        builtin fc -R ${HISTFILE:-$HOME/.zsh_history} 2>/dev/null
+    fi
+    local k cmd arg dest canon
+    local -a words
+    local -A seen_path                 # canonical abs path -> 1
+    for k in ${(On)${(k)history}}; do
+        cmd=${history[$k]}
+        words=( ${(z)cmd} )
+        [[ $words[1] == (builtin|command|nocorrect) ]] && shift words
+        [[ $words[1] == cd && $#words -ge 2 ]] || continue
+        arg=$words[2]
+        [[ $arg == -- ]] && arg=${words[3]:-}
+        # Skip non-paths: empty/special targets, option flags (cd -P x), and
+        # args with unexpanded $vars/backticks we can't resolve here.
+        [[ $arg == (''|-*|.|..|~|/) || $arg == *[\$\`]* ]] && continue
+        arg=${(Q)arg}
+        # Expand ONLY a literal leading ~/ (or bare ~) by hand. Do NOT use
+        # ${~arg}: its tilde flag also does named-directory lookup AND glob
+        # expansion, both of which raise FATAL errors on ordinary history junk
+        # — `cd ~Documents` (a slash typo) -> "no such user or named
+        # directory: Documents", `cd build*` -> "no matches found" — aborting
+        # the caller (and, at startup, the whole plugin stack). Plain string
+        # ops can't throw; the [[ -d ]] test below is the real validity gate.
+        dest=$arg
+        [[ $arg == '~' || $arg == '~/'* ]] && dest=$HOME${arg#\~}
+        [[ $dest != /* && -d $HOME/$dest ]] && dest=$HOME/$dest
+        [[ -d $dest ]] || continue     # drop vanished dirs (stale history)
+        # Dedup on the absolute path (${dest:a}), not the basename, so distinct
+        # dirs sharing a name (~/work/api vs ~/play/api) are both kept while a
+        # dir reached repeatedly collapses to one. :a folds . / .. lexically
+        # but keeps symlinks, so the logical path the user typed is preserved.
+        canon=${dest:a}
+        (( ${+seen_path[$canon]} )) && continue
+        seen_path[$canon]=1
+        print -r -- $canon
+        (( ${#seen_path} >= max )) && break
+    done
+}
+
 ai() {
     local choice line
     local -a options ssh_hosts words tools folders
@@ -62,59 +121,20 @@ ai() {
         # stays unambiguous and never needs to be skipped.
         local host_icon=$'' folder_icon=$''
 
-        # Recent folders, forkless: the $history assoc from zsh/parameter
-        # (already loaded in interactive shells) instead of $(fc -l | ...).
-        # Newest first, deduped by basename; only the basename is shown,
-        # the full argument is kept for cd.
-        zmodload -F zsh/parameter p:history 2>/dev/null
-        # zsh reads $HISTFILE only after .zshrc finishes — AND at that point
-        # HISTSIZE is still the default 30, so even a manual read would keep
-        # almost nothing (auto-launch runs before line 60 of .zshrc). typeset
-        # localizes HISTSIZE (ring reverts on return, harmless: zsh re-reads
-        # the file after init) and fc -R is a builtin, forkless manual read.
-        if (( $#history < 200 )); then
-            typeset HISTSIZE=2000
-            builtin fc -R ${HISTFILE:-$HOME/.zsh_history} 2>/dev/null
-        fi
-        local k cmd arg base dest canon
+        # Recent cd targets for column 3. The fragile part — parsing arbitrary
+        # history strings and expanding them into paths — is done by the
+        # _ai_recent_dirs helper, invoked through a single-command substitution
+        # (one fork, no pipeline: the fork-safe form blessed above, and a
+        # subshell that fails clean). That subshell is the failsafe boundary: a
+        # fatal expansion error from malformed history stays inside it and the
+        # column comes back empty, rather than aborting the menu at startup.
         local folder_max=$(( $#tools > $#ssh_hosts ? $#tools : $#ssh_hosts ))
-        # Collect recent cd targets, newest first. Two correctness fixes over
-        # the old basename-only dedup:
-        #   1. Dedup by the *absolute path* (${dest:a}), so two distinct
-        #      directories that share a basename (~/work/api vs ~/play/api)
-        #      are BOTH kept, while the same directory reached repeatedly
-        #      still collapses to a single entry. :a absolutizes and folds
-        #      away . / .. lexically but does NOT resolve symlinks, so the
-        #      menu (and the prompt after the jump) shows the logical path
-        #      the user actually typed, not a physical symlink target.
-        #   2. Drop targets that no longer exist ([[ -d ]]), so stale history
-        #      (deleted/renamed/unmounted dirs) never clutters the menu.
-        # Resolution mirrors the dispatch below (expand a leading ~, then try
-        # $HOME for a still-relative arg) so the existence test matches where
-        # cd would actually land. All builtin modifiers/tests — forkless.
-        local -A seen_path                 # canonical abs path -> 1
         local -a cand_dest cand_base cand_parent
-        for k in ${(On)${(k)history}}; do
-            cmd=${history[$k]}
-            words=( ${(z)cmd} )
-            [[ $words[1] == (builtin|command|nocorrect) ]] && shift words
-            [[ $words[1] == cd && $#words -ge 2 ]] || continue
-            arg=$words[2]
-            [[ $arg == -- ]] && arg=${words[3]:-}
-            # Skip non-paths: empty/special targets, option flags (cd -P x),
-            # and args with unexpanded $vars/backticks we can't resolve here.
-            [[ $arg == (''|-*|.|..|~|/) || $arg == *[\$\`]* ]] && continue
-            arg=${(Q)arg}
-            dest=${~arg}
-            [[ $dest != /* && -d ~/$dest ]] && dest=~/$dest
-            [[ -d $dest ]] || continue     # fix 2: skip vanished directories
-            canon=${dest:a}                # fix 1: dedup on abs path, not name
-            (( ${+seen_path[$canon]} )) && continue
-            seen_path[$canon]=1
-            cand_dest+=("$canon")
-            cand_base+=("${canon:t}")
-            cand_parent+=("${canon:h:t}")
-            (( $#cand_dest >= folder_max )) && break
+        local d
+        cand_dest=( ${(f)"$(_ai_recent_dirs $folder_max)"} )
+        for d in "${cand_dest[@]}"; do
+            cand_base+=("${d:t}")          # basename = default menu label
+            cand_parent+=("${d:h:t}")      # parent dir, to disambiguate dupes
         done
         # Turn candidates into display names + dispatch keys. Show a bare
         # basename when it is unique; otherwise qualify with the parent dir
@@ -125,10 +145,16 @@ ai() {
         # is unique because canon is unique.
         local -i ci
         local -A base_count
+        local base disp key
         for base in "${cand_base[@]}"; do (( base_count[$base]++ )); done
+        # Declare disp/key ONCE, above the loop. A `local disp key` *inside* the
+        # loop re-declares an already-set `key` each pass, and zsh's typeset
+        # echoes a bare, already-set name back as `key='…'` — that stray line
+        # leaked into the picker input on every render. One declaration up here,
+        # plain assignment below, no leak.
         for (( ci = 1; ci <= $#cand_dest; ci++ )); do
             base=$cand_base[ci]
-            local disp=$base key
+            disp=$base
             (( base_count[$base] > 1 )) && disp="$cand_parent[ci]/$base"
             key="$folder_icon $disp"
             (( ${+folder_paths[$key]} )) && { disp=${(D)cand_dest[ci]}; key="$folder_icon $disp"; }
