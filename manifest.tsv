@@ -13,3 +13,5 @@ zsh-syntax-highlighting	~/.zsh/zsh-syntax-highlighting	script	files/zsh-syntax-h
 starship	~/.local/bin/starship	script	files/starship.sh
 fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
+agents	~/.agents/AGENTS.md	script	files/agents.sh
+ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh

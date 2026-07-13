@@ -37,8 +37,34 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
 | `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
 | `zsh-basics` | (none) | `setopt NO_NOMATCH`, `WORDCHARS` | `files/zsh-basics.sh` |
+| `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
+| `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
+
+### `agents` — canonical agent instructions
+
+Installs the canonical agent payload from `agents/` (this repo) into `~/.agents/`
+and symlinks it into every harness so all machines share one source of truth:
+
+- `agents/AGENTS.md` → `~/.agents/AGENTS.md`, symlinked to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/AGENTS.md`
+- `agents/FLEET.md` → `~/.agents/FLEET.md`, symlinked as `FLEET.md` beside each of the above
+- `agents/skills/*` → `~/.agents/skills/`, symlinked per-skill into `~/.claude/skills/` and `~/.codex/skills/`
+
+Existing real files/dirs at any target are backed up to `*.pre-agents.bak` before
+symlinking; `uninstall` removes the symlinks and restores the backups. The module
+keeps its own clone of this repo at `~/.local/state/setup/agents-src` and tracks
+its git ref for update detection. Global skills carry a `version:` in frontmatter.
+
+Edit the payload under `agents/` here, push, and `setup update` syncs every machine.
+
+### `ssh-aliases` — outbound SSH host aliases
+
+Manages a marker-delimited block of `Host` stanzas in `~/.ssh/config`, built from
+the fleet table in `files/ssh-aliases.sh` and **omitting the current machine**
+(matched by `hostname`; override with `SSH_ALIASES_SELF`). Also normalizes
+`~/.ssh` (700) and `~/.ssh/config` (600) permissions. Keep the table in sync with
+`agents/FLEET.md`.
 
 ## Commands
 
@@ -66,6 +92,16 @@ Setup manages shell config via marker-delimited blocks in `.zshrc`:
 # >>> setup:zsh-syntax-highlighting >>> — deferred syntax highlighting
 # >>> setup:starship >>>        — cached starship init
 ```
+
+Every managed block's first line is a warning so agents (and humans) know not to
+edit inside it — the block is regenerated from source on `setup update`:
+
+```
+# [setup] managed block — do NOT edit between these markers; overwritten on 'setup update'. Source: LPFchan/setup
+```
+
+The warning is part of the block body, so it participates in drift detection.
+Existing blocks are rewritten once (shown as `outdated`) on the next update.
 
 Each block is guarded so missing plugins don't break the shell:
 - `[[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]` for autocomplete

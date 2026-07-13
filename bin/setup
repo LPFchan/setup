@@ -271,6 +271,14 @@ manage_block() {
     mkdir -p "$(dirname "$file")"
     touch "$file"
 
+    # Prepend an in-block warning so agents editing the file know it's managed
+    # and their edits will be overwritten. Included in the block body, so it is
+    # part of the content hash (consistent across write and drift detection).
+    local warn="# [setup] managed block — do NOT edit between these markers; overwritten on 'setup update'. Source: LPFchan/setup"
+    if [[ "$mode" != "remove" && -n "$content" ]]; then
+        content="$warn"$'\n'"$content"
+    fi
+
     _extract_block_body() {
         # Print lines between begin_mark and end_mark, exclusive.
         # Normalize: strip a single trailing newline if present.

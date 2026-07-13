@@ -28,8 +28,10 @@ append_block_once() {
     if grep -Fq "$begin_mark" "$file" || grep -Fq "# >>> linux-setup:$label >>>" "$file"; then
         return 0
     fi
+    local warn="# [setup] managed block — do NOT edit between these markers; overwritten on 'setup update'. Source: LPFchan/setup"
     {
         printf '\n%s\n' "$begin_mark"
+        printf '%s\n' "$warn"
         printf '%s\n' "$content"
         printf '%s\n' "$end_mark"
     } >> "$file"
@@ -46,9 +48,11 @@ prepend_block_once() {
     if grep -Fq "$begin_mark" "$file" || grep -Fq "# >>> linux-setup:$label >>>" "$file"; then
         return 0
     fi
+    local warn="# [setup] managed block — do NOT edit between these markers; overwritten on 'setup update'. Source: LPFchan/setup"
     tmp=$(mktemp)
     {
         printf '%s\n' "$begin_mark"
+        printf '%s\n' "$warn"
         printf '%s\n' "$content"
         printf '%s\n\n' "$end_mark"
         cat "$file"
