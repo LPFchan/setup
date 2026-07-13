@@ -1002,13 +1002,9 @@ cmd_reconfigure() {
     fetch_checksums
 
     build_list() {
-        # Header: name, local_ver, service, remote_ver, status
-        printf "%-25s %-13s %-11s %-13s %-17s\n" \
-            "module" "local" "service" "remote" "status"
-
-        # <ALL MODULES> pseudo-entry
-        printf "%-25s %-13s %-11s %-13s %-17s\n" \
-            "<ALL MODULES>" "-" "-" "-" "-"
+        # Rows are buffered so column widths can be sized to their content.
+        local -a rows=("module|local|service|remote|status" "<ALL MODULES>|-|-|-|-")
+        local -a non_svc=() svc=()
 
         while IFS=$'\t' read -r m t mo s; do
             [[ -z "${m:-}" || "$m" == \#* ]] && continue
@@ -1023,24 +1019,15 @@ cmd_reconfigure() {
                 if [[ -n "$_ss" ]]; then
                     IFS=$'\t' read -r _rt _lr _rr <<< "$_ss"
                 fi
-                local_label="${_lr:0:7}"; [[ -z "$_lr" ]] && local_label="-"
                 if [[ -z "$_lr" ]]; then
-                    remote_label="-"
-                    status_label="not installed"
+                    local_label="-"; remote_label="-"; status_label="not installed"
                 elif [[ "$_rt" == "version" ]]; then
-                    remote_label="$_rr"
-                    if [[ "$_lr" == "$_rr" ]]; then
-                        status_label="up-to-date"
-                    else
-                        status_label="update available"
-                    fi
+                    # versions shown in full — dynamic columns absorb the width
+                    local_label="$_lr"; remote_label="$_rr"
+                    [[ "$_lr" == "$_rr" ]] && status_label="up-to-date" || status_label="update available"
                 else
-                    remote_label="${_rr:0:7}"
-                    if [[ "$_lr" == "$_rr" ]]; then
-                        status_label="up-to-date"
-                    else
-                        status_label="update available"
-                    fi
+                    local_label="${_lr:0:7}"; remote_label="${_rr:0:7}"
+                    [[ "$_lr" == "$_rr" ]] && status_label="up-to-date" || status_label="update available"
                 fi
                 non_svc+=("$m|${local_label}|$([ -n "$_lr" ] && echo installed || echo uninstalled)|${remote_label}|${status_label}")
                 continue
@@ -1072,11 +1059,22 @@ cmd_reconfigure() {
         # Sort each group alphabetically by module name
         IFS=$'\n' non_svc=($(sort <<<"${non_svc[*]}")); unset IFS
         IFS=$'\n' svc=($(sort <<<"${svc[*]}")); unset IFS
+        rows+=("${non_svc[@]}" "${svc[@]}")
 
-        # Print non-service first, then service
-        for entry in "${non_svc[@]}" "${svc[@]}"; do
-            IFS='|' read -r m l s r u <<< "$entry"
-            printf "%-25s %-13s %-11s %-13s %-17s\n" "$m" "$l" "$s" "$r" "$u"
+        # Size each column to its widest value across every row.
+        local w0=0 w1=0 w2=0 w3=0 c0 c1 c2 c3 c4 entry
+        for entry in "${rows[@]}"; do
+            IFS='|' read -r c0 c1 c2 c3 c4 <<< "$entry"
+            (( ${#c0} > w0 )) && w0=${#c0}
+            (( ${#c1} > w1 )) && w1=${#c1}
+            (( ${#c2} > w2 )) && w2=${#c2}
+            (( ${#c3} > w3 )) && w3=${#c3}
+        done
+
+        # Print with dynamic widths (final column left unpadded).
+        for entry in "${rows[@]}"; do
+            IFS='|' read -r c0 c1 c2 c3 c4 <<< "$entry"
+            printf "%-*s %-*s %-*s %-*s %s\n" "$w0" "$c0" "$w1" "$c1" "$w2" "$c2" "$w3" "$c3" "$c4"
         done
     }
 
