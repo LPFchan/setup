@@ -20,14 +20,11 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
+    # expected = hash of the block body derived from BLOCK_CONTENT (source of
+    # truth), so drift between source and the installed block is detected.
     local expected actual
-    expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
+    expected=$(setup_managed_block_body "$BLOCK_CONTENT" | setup_sha256_string)
     actual=$(awk '/^# >>> setup:zsh-basics >>>/{f=1;next}/^# <<< setup:zsh-basics <<</{f=0}f' "$HOME/.zshrc" | setup_sha256_string)
-    if [[ -z "$expected" ]]; then
-        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$HOME/.zshrc"
-        _record_state
-        return 0
-    fi
     if [[ "$expected" == "$actual" ]]; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${expected:0:7}" "$HOME/.zshrc"
         _record_state

@@ -43,6 +43,8 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 
+The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `tmux` the helper (`~/.local/bin/tmux-cpu-mem`) is derived in-process, so both surfaces are checked. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
+
 ### `agents` — canonical agent instructions
 
 Installs the canonical agent payload from `agents/` (this repo) into `~/.agents/`
@@ -147,7 +149,8 @@ After `setup install` on a fresh machine, the `.zshrc` may have duplicate lines 
 - `git_check_status` — returns 0=current, 1=outdated, 2=missing
 - `git_pull_ff` — fast-forward only pull
 - `setup_sha256_string` — hash a string (not a file)
-- `record_script_state` / `script_state_for` — track state in `script-state.tsv`
+- `setup_managed_block_body` — reproduce the exact block-body bytes `manage_block` writes (warning line + content), so a module can hash its *desired* block from source for drift detection
+- `record_script_state` / `script_state_for` — track state in `script-state.tsv` (non-empty entry also marks a script module "installed" for `setup update`)
 - `is_script_installed` — check if a script module has been installed
 
 Helpers are fetched from `SOURCE_URL/lib/script-helpers.sh` at startup and cached at `~/.local/state/setup/lib/`.

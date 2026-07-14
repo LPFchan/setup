@@ -59,10 +59,12 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
+    # expected = hash of the block body built from the fleet table (source of
+    # truth), so drift between source and the installed block is detected.
     local expected actual
     actual=$(_block_hash)
-    expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
-    if [[ -z "$expected" || "$expected" == "$actual" ]]; then
+    expected=$(setup_managed_block_body "$(_build_block)" | setup_sha256_string)
+    if [[ "$expected" == "$actual" ]]; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$SSH_CONFIG"
         _record_state
         return 0

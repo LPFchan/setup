@@ -21,9 +21,10 @@ set -g status-right "#(tmux-cpu-mem) "'
 
 # Instantaneous CPU via a /proc/stat delta cached across calls (no sleep),
 # RAM as (total-available)/total. Prints `CPU N% - RAM N%`.
-_write_helper() {
-    mkdir -p "$(dirname "$HELPER")"
-    cat > "$HELPER" <<'CPUMEM'
+# Desired helper content (source of truth). `_write_helper` installs it and
+# `status()` hashes it to detect drift against the installed copy.
+_helper_content() {
+    cat <<'CPUMEM'
 #!/bin/sh
 PREV="/tmp/tmux-cpu.$(id -u)"
 set -- $(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
@@ -36,6 +37,11 @@ cpu=0; [ "$dt" -gt 0 ] && cpu=$(( (100*(dt-di))/dt ))
 ram=$(free | awk '/^Mem:/{printf "%.0f",($2-$7)/$2*100}')
 printf 'CPU %d%% - RAM %d%%' "$cpu" "$ram"
 CPUMEM
+}
+
+_write_helper() {
+    mkdir -p "$(dirname "$HELPER")"
+    _helper_content > "$HELPER"
     chmod 0755 "$HELPER"
 }
 
@@ -62,6 +68,16 @@ _state_hash() {
     printf '%s\n%s' "$block" "$helper" | setup_sha256_string
 }
 
+# Combined hash over the *desired* block body (from BLOCK_CONTENT) and the
+# *desired* helper content (from _helper_content) — both source-of-truth — so
+# status() detects drift between source and either installed surface.
+_desired_hash() {
+    local block helper
+    block=$(setup_managed_block_body "$BLOCK_CONTENT")
+    helper=$(_helper_content)
+    printf '%s\n%s' "$block" "$helper" | setup_sha256_string
+}
+
 _record_state() {
     local h
     h=$(_state_hash)
@@ -83,10 +99,10 @@ status() {
         return 2
     fi
     local expected actual
-    expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
+    expected=$(_desired_hash)
     actual=$(_state_hash)
-    if [[ -z "$expected" || "$expected" == "$actual" ]]; then
-        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$TMUX_CONF"
+    if [[ "$expected" == "$actual" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${expected:0:7}" "$TMUX_CONF"
         _record_state
         return 0
     fi

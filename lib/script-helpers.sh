@@ -63,6 +63,19 @@ setup_sha256_string() {
     fi
 }
 
+# Reproduce the exact body bytes that `manage_block` (bin/setup) writes between
+# a block's markers: a fixed managed-block warning line, then the module's
+# content. Script modules use this to derive the *desired* block-body hash from
+# their in-scope BLOCK_CONTENT (source of truth), so `status()` can detect drift
+# between source and the installed block — not just human edits to the install.
+#
+# The warning string MUST stay byte-identical to `warn` in manage_block.
+setup_managed_block_body() {
+    local content="${1:-}"
+    local warn="# [setup] managed block — do NOT edit between these markers; overwritten on 'setup update'. Source: LPFchan/setup"
+    printf '%s\n' "$warn"$'\n'"$content"
+}
+
 record_script_state() {
     local module="$1" ref_type="$2" local_ref="$3" remote_ref="$4"
     local state_file="${STATE_DIR:-$HOME/.local/state/setup}/script-state.tsv"

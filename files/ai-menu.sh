@@ -58,10 +58,10 @@ status() {
         return 2
     fi
     local expected actual
-    expected=$(script_state_for "$MODULE" 2>/dev/null | cut -f3)
+    expected=$(_desired_hash)
     actual=$(_state_hash)
-    if [[ -z "$expected" || "$expected" == "$actual" ]]; then
-        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$PAYLOAD_TARGET"
+    if [[ "$expected" == "$actual" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${actual:0:7}" "${expected:0:7}" "$PAYLOAD_TARGET"
         _record_state
         return 0
     fi
@@ -82,6 +82,26 @@ _state_hash() {
     local block payload
     block=$(awk '/^# >>> setup:ai-menu >>>/{f=1;next}/^# <<< setup:ai-menu <<</{f=0}f' "$HOME/.zshrc")
     payload=$([[ -f "$PAYLOAD_TARGET" ]] && cat "$PAYLOAD_TARGET")
+    printf '%s\n%s' "$block" "$payload" | setup_sha256_string
+}
+
+# Combined hash over the *desired* block body (from BLOCK_CONTENT, source of
+# truth) and the *desired* payload. The block is derivable in-process; the
+# payload's source of truth is files/ai-menu in the git clone ($SRC_CLONE),
+# which install()/update() always sync (git pull --ff) before copying. If a
+# synced clone exists, hash its payload so status() detects source drift in
+# both the block AND the payload. If no clone is present yet (e.g. status run
+# before any update on this machine), fall back to the installed payload so we
+# don't report a spurious "outdated" — payload drift then goes uncovered until
+# the next update repopulates the clone, but the block is still checked.
+_desired_hash() {
+    local block payload src="$SRC_CLONE/files/ai-menu"
+    block=$(setup_managed_block_body "$BLOCK_CONTENT")
+    if [[ -f "$src" ]]; then
+        payload=$(cat "$src")
+    else
+        payload=$([[ -f "$PAYLOAD_TARGET" ]] && cat "$PAYLOAD_TARGET")
+    fi
     printf '%s\n%s' "$block" "$payload" | setup_sha256_string
 }
 
