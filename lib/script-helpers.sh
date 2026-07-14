@@ -79,7 +79,7 @@ setup_managed_block_body() {
 record_script_state() {
     local module="$1" ref_type="$2" local_ref="$3" remote_ref="$4"
     local state_file="${STATE_DIR:-$HOME/.local/state/setup}/script-state.tsv"
-    local tmp
+    local tmp m rt lr rr
     mkdir -p "$(dirname "$state_file")"
     tmp=$(mktemp)
     if [[ -f "$state_file" ]]; then
@@ -95,6 +95,7 @@ record_script_state() {
 script_state_for() {
     local module="$1"
     local state_file="${STATE_DIR:-$HOME/.local/state/setup}/script-state.tsv"
+    local m rt lr rr
     [[ -f "$state_file" ]] || return 1
     while IFS=$'\t' read -r m rt lr rr; do
         [[ "$m" == "$module" ]] && { echo "$rt"$'\t'"$lr"$'\t'"$rr"; return 0; }
@@ -105,7 +106,7 @@ script_state_for() {
 remove_script_state() {
     local module="$1"
     local state_file="${STATE_DIR:-$HOME/.local/state/setup}/script-state.tsv"
-    local tmp
+    local tmp m rt lr rr
     [[ -f "$state_file" ]] || return 0
     tmp=$(mktemp)
     while IFS=$'\t' read -r m rt lr rr; do
