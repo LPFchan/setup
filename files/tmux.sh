@@ -16,6 +16,10 @@ ZSHRC="$HOME/.zshrc"
 BLOCK_CONTENT='set -g default-terminal "tmux-256color"
 set -as terminal-features ",xterm*:RGB"
 set -g mouse on
+bind -T copy-mode WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
+bind -T copy-mode WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
+bind -T copy-mode-vi WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
+bind -T copy-mode-vi WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
 set -g status-interval 5
 set -g status-left " #h "
 set -g status-right "#(tmux-cpu-mem) "'
