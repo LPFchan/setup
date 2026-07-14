@@ -17,6 +17,8 @@ ZSHRC="$HOME/.zshrc"
 BLOCK_CONTENT='set -g default-terminal "tmux-256color"
 set -as terminal-features ",xterm*:RGB"
 set -g mouse on
+bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
+bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""
 bind -T copy-mode WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
 bind -T copy-mode WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
 bind -T copy-mode-vi WheelUpPane select-pane \; send-keys -X -N 1 scroll-up

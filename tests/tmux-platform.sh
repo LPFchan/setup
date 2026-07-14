@@ -23,6 +23,10 @@ source "$ROOT/files/tmux.sh"
 
 [[ "$BLOCK_CONTENT" == *'set -g status-position top'* ]] \
     || fail "tmux status bar is not configured at the top"
+[[ "$BLOCK_CONTENT" == *'bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}"'* ]] \
+    || fail "tmux tab dragging does not capture a stable source window"
+[[ "$BLOCK_CONTENT" == *'bind -n MouseDrag1Status run-shell -C -t = '*'#{@setup-drag-window}'* ]] \
+    || fail "tmux window tabs cannot be reordered by dragging"
 [[ "$BLOCK_CONTENT" == *'set -g status-left-length 64'* ]] \
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \
@@ -53,6 +57,8 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     rendered_style=$("$tmux_bin" -L "$test_server" show-options -gv status-style)
     rendered_inactive_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-style)
     rendered_current_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-current-style)
+    mouse_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDown1Status ' || true)
+    drag_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDrag1Status' || true)
     "$tmux_bin" -L "$test_server" kill-server
     [[ -n "$rendered_host" && "$rendered" == "$rendered_host"* ]] \
         || fail "tmux hostname format rendered empty or was not left-aligned: '$rendered'"
@@ -67,6 +73,13 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
        && "$rendered_current_style" == *"bold"* \
        && "$rendered_current_style" == *"nodim"* ]] \
         || fail "tmux did not resolve current-window colors: '$rendered_current_style'"
+    [[ "$mouse_down_binding" == *'@setup-drag-window'* \
+       && "$mouse_down_binding" == *'switch-client -t ='* ]] \
+        || fail "tmux did not install stable tab source capture: '$mouse_down_binding'"
+    [[ "$drag_binding" == *'run-shell -C -t ='* \
+       && "$drag_binding" == *'@setup-drag-window'* \
+       && "$drag_binding" == *'#{window_id}'* ]] \
+        || fail "tmux did not install the tab drag binding: '$drag_binding'"
 fi
 
 # Exercise the zsh hook that captures the launched command before an executable
