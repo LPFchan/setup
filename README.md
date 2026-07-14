@@ -90,7 +90,7 @@ Setup manages shell config via marker-delimited blocks in `.zshrc`, kept in a
 fixed **canonical order** (top → bottom):
 
 ```
-# >>> setup:tmux-autostart >>>  — replace outbound SSH shell with `tmux new-session -A -s main`
+# >>> setup:tmux-autostart >>>  — replace every interactive shell outside tmux with `tmux new-session -A -s main`
 # >>> setup:zsh-init >>>        — interactive/tty/terminal guards + /exit alias (early `return` guards; no longer autolaunches ai)
 # >>> setup:starship >>>        — cached starship init
 # >>> setup:zsh-autocomplete >>> — plugin source + history settings + autocomplete config (loads zsh-defer)
@@ -105,8 +105,9 @@ position at creation, the accumulated order is otherwise historical — so after
 every run `normalize_block_order` (defined in `bin/setup`, mirrored in
 `install.sh`) reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER`
 above, idempotently and without touching unmanaged content. `tmux-autostart`
-runs first (SSH shell swaps into tmux before anything heavy), `zsh-init`'s early
-`return` guards precede what they gate, `zsh-syntax-highlighting` follows
+runs first (every interactive shell outside tmux swaps into it before anything
+heavy), `zsh-init`'s early `return` guards precede what they gate,
+`zsh-syntax-highlighting` follows
 `zsh-autocomplete` (which loads `zsh-defer`), and `ai-menu` autolaunches `ai`
 last once the shell is fully initialized. Blocks with unknown labels are kept and
 sorted after the known ones.

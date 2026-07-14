@@ -171,7 +171,7 @@ esac'
 
 alias /exit='"'"'exit'"'"''
 
-    tmux_autostart_block='if [[ -o interactive && -z $TMUX && -n $SSH_CONNECTION ]] && command -v tmux >/dev/null; then
+    tmux_autostart_block='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
   exec tmux new-session -A -s main
 fi'
 
