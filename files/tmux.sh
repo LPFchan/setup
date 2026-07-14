@@ -51,6 +51,12 @@ fi'
 TITLE_BLOCK_CONTENT='if [[ -o interactive && -n ${TMUX-} ]] && command -v tmux >/dev/null; then
   autoload -Uz add-zsh-hook
 
+  _setup_tmux_set_title() {
+    emulate -L zsh
+    local title=${1-}
+    [[ -n $title ]] && tmux rename-window -- "$title"
+  }
+
   _setup_tmux_preexec_title() {
     emulate -L zsh
     setopt extendedglob
@@ -101,7 +107,7 @@ TITLE_BLOCK_CONTENT='if [[ -o interactive && -n ${TMUX-} ]] && command -v tmux >
       fi
     fi
 
-    [[ -n $title ]] && tmux rename-window -- "$title"
+    _setup_tmux_set_title "$title"
   }
 
   _setup_tmux_precmd_title() {

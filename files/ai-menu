@@ -207,6 +207,14 @@ ai() {
         choice=${choice#$host_icon }
     fi
 
+    # preexec sees only the outer `ai` function call, not commands dispatched
+    # from inside it. Hand the selected tool or SSH host to the tmux module's
+    # title helper explicitly so the tab follows the command actually launched.
+    if [[ -n $choice && $choice != (neither|' ') ]] \
+        && (( ${+functions[_setup_tmux_set_title]} )); then
+        _setup_tmux_set_title "${choice##*@}"
+    fi
+
     case "$choice" in
         claude) claude ;;
         codex)

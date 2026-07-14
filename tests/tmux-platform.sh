@@ -130,24 +130,37 @@ EOF
 #!/bin/sh
 exit 0
 EOF
-    chmod +x "$FAKE_BIN/tmux" "$FAKE_BIN/codex" "$FAKE_BIN/ssh"
+    cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$AI_TEST_CHOICE"
+EOF
+    chmod +x "$FAKE_BIN/tmux" "$FAKE_BIN/codex" "$FAKE_BIN/ssh" "$FAKE_BIN/fzf"
 
     zdotdir="$TEST_TMP/zsh"
     mkdir -p "$zdotdir"
     printf '%s\n' "$TITLE_BLOCK_CONTENT" > "$zdotdir/.zshrc"
+    cat "$ROOT/files/ai-menu" >> "$zdotdir/.zshrc"
+    mkdir -p "$HOME/.ssh"
+    printf 'Host grimoire\n' > "$HOME/.ssh/config"
     TMUX="test,1,0" TMUX_TITLE_LOG="$title_log" ZDOTDIR="$zdotdir" \
         PATH="$FAKE_BIN:/usr/bin:/bin" "$zsh_bin" -di > /dev/null 2>&1 <<'EOF'
 alias cx=codex
 TEST_TITLE=1 cx --help
 env TEST_TITLE=1 codex --help
 ssh -p 2222 user@grimoire
+AI_TEST_CHOICE=codex ai
+AI_TEST_CHOICE=grimoire ai
 exit
 EOF
     grep -Fxq 'rename-window -- codex' "$title_log" \
         || fail "tmux command title did not use the expanded top-level command"
     grep -Fxq 'rename-window -- grimoire' "$title_log" \
         || fail "tmux SSH title did not use the remote host"
-    rm -f "$FAKE_BIN/tmux" "$FAKE_BIN/codex" "$FAKE_BIN/ssh"
+    [[ $(grep -Fxc 'rename-window -- codex' "$title_log") -ge 3 ]] \
+        || fail "ai-menu did not replace its outer title with the selected harness"
+    [[ $(grep -Fxc 'rename-window -- grimoire' "$title_log") -ge 2 ]] \
+        || fail "ai-menu did not replace its outer title with the selected SSH host"
+    rm -f "$FAKE_BIN/tmux" "$FAKE_BIN/codex" "$FAKE_BIN/ssh" "$FAKE_BIN/fzf"
 fi
 
 cat > "$FAKE_BIN/uname" <<'EOF'
