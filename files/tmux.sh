@@ -28,6 +28,8 @@ set -g status-left " #{p12:host_short} "
 set -g status-right "#(tmux-cpu-mem) "
 set -g window-status-format " #W "
 set -g window-status-current-format " #W "
+set -g window-status-style "dim"
+set -gF window-status-current-style "bg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black},fg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},bold,nodim"
 set -gF status-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black}"'
 
 AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then

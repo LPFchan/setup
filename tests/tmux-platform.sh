@@ -31,6 +31,10 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux window titles still include the window index or flags"
 [[ "$BLOCK_CONTENT" == *'set -g window-status-current-format " #W "'* ]] \
     || fail "current tmux window titles still include the window index or flags"
+[[ "$BLOCK_CONTENT" == *'set -g window-status-style "dim"'* ]] \
+    || fail "inactive tmux window titles are not visually muted"
+[[ "$BLOCK_CONTENT" == *'set -gF window-status-current-style '*'bold,nodim"'* ]] \
+    || fail "current tmux window title has no distinct color treatment"
 
 [[ "$BLOCK_CONTENT" == *'bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39}'* ]] \
     || fail "tmux status bar does not consume the shared system color"
@@ -47,6 +51,8 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     rendered=$("$tmux_bin" -L "$test_server" display-message -p '#{p12:host_short}')
     rendered_host=$("$tmux_bin" -L "$test_server" display-message -p '#{host_short}')
     rendered_style=$("$tmux_bin" -L "$test_server" show-options -gv status-style)
+    rendered_inactive_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-style)
+    rendered_current_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-current-style)
     "$tmux_bin" -L "$test_server" kill-server
     [[ -n "$rendered_host" && "$rendered" == "$rendered_host"* ]] \
         || fail "tmux hostname format rendered empty or was not left-aligned: '$rendered'"
@@ -54,6 +60,13 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
         || fail "tmux hostname format rendered fewer than 12 characters: '$rendered'"
     [[ "$rendered_style" == *"bg=#FF0000"* && "$rendered_style" == *"fg=#FFFFFF"* ]] \
         || fail "tmux did not resolve shared system colors: '$rendered_style'"
+    [[ "$rendered_inactive_style" == "dim" ]] \
+        || fail "tmux did not apply inactive-window dimming: '$rendered_inactive_style'"
+    [[ "$rendered_current_style" == *"fg=#FF0000"* \
+       && "$rendered_current_style" == *"bg=#FFFFFF"* \
+       && "$rendered_current_style" == *"bold"* \
+       && "$rendered_current_style" == *"nodim"* ]] \
+        || fail "tmux did not resolve current-window colors: '$rendered_current_style'"
 fi
 
 # Exercise the zsh hook that captures the launched command before an executable
