@@ -9,8 +9,8 @@ BIN="$HOME/.local/bin/fzf-multicolumn"
 REPO="LPFchan/fzf-multicolumn"
 
 install() {
-    if command -v fzf-multicolumn >/dev/null 2>&1; then
-        echo "fzf-multicolumn already installed: $(fzf-multicolumn --version)"
+    if [[ -x "$BIN" ]]; then
+        echo "fzf-multicolumn already installed: $("$BIN" --version)"
     else
         _download_release || return 1
     fi
@@ -18,12 +18,12 @@ install() {
 }
 
 status() {
-    if ! command -v fzf-multicolumn >/dev/null 2>&1; then
+    if [[ ! -x "$BIN" ]]; then
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
     local installed_ver latest_ver
-    installed_ver=$(fzf-multicolumn --version 2>/dev/null | awk 'NR==1{print $1}')
+    installed_ver=$("$BIN" --version 2>/dev/null | awk 'NR==1{print $1}')
     latest_ver=$(_latest_tag || true)
     latest_ver="${latest_ver#v}"
     if [[ -z "$latest_ver" ]]; then
@@ -118,9 +118,9 @@ _download_release() {
 }
 
 _record_state() {
-    if command -v fzf-multicolumn >/dev/null 2>&1; then
+    if [[ -x "$BIN" ]]; then
         local ver
-        ver=$(fzf-multicolumn --version 2>/dev/null | awk 'NR==1{print $1}')
+        ver=$("$BIN" --version 2>/dev/null | awk 'NR==1{print $1}')
         record_script_state "$MODULE" "version" "${ver:-unknown}" "${ver:-unknown}"
     fi
 }

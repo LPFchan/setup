@@ -531,19 +531,73 @@ _script_install() {
     return $rc
 }
 
-_script_status() {
-    local module="$1" target="$2" source="$3"
-    local payload
+# Run a script module's live status probe once and normalize its standardized
+# output for every status surface.  The durable script state remains useful as
+# an installation marker, but never decides live freshness.
+#
+# Fields: target, state, display status, local, remote, installed, details
+script_status_fields() {
+    local module="$1" target_spec="$2" source="$3"
+    local payload result line rc state status_label local_label remote_label
+    local target installed extra
     payload=$(mktemp)
+    result=$(mktemp)
+    target=$(expand_path "$target_spec")
+
     if ! fetch_payload "$source" "$payload"; then
-        rm -f "$payload"
-        return 1
+        installed=$(is_script_installed "$module" && echo 1 || echo 0)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$target" "error" "probe failed" "-" "-" "$installed" "fetch failed"
+        rm -f "$payload" "$result"
+        return 0
     fi
-    source "$payload"
-    status
-    local rc=$?
-    rm -f "$payload"
-    return $rc
+
+    # shellcheck disable=SC1090
+    if ! source "$payload"; then
+        installed=$(is_script_installed "$module" && echo 1 || echo 0)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$target" "error" "probe failed" "-" "-" "$installed" "load failed"
+        rm -f "$payload" "$result"
+        return 0
+    fi
+    if status > "$result"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    line=$(awk 'NF { print; exit }' "$result")
+    rm -f "$payload" "$result"
+
+    state=$(awk 'NF { print $2; exit }' <<< "$line")
+    local_label=$(sed -n 's/.* local=\([^ ]*\).*/\1/p' <<< "$line")
+    remote_label=$(sed -n 's/.* remote=\([^ ]*\).*/\1/p' <<< "$line")
+    [[ "$line" == *" target="* ]] && target=${line##* target=}
+    local_label=${local_label:--}
+    remote_label=${remote_label:--}
+
+    case "$state:$rc" in
+        current:0)
+            status_label="up-to-date"; installed=1 ;;
+        outdated:1)
+            status_label="update available"; installed=1 ;;
+        installed:0|unknown:0)
+            status_label="remote unknown"; installed=1 ;;
+        uninstalled:2)
+            status_label="not installed"; installed=0 ;;
+        *)
+            state="error"; status_label="probe failed"
+            installed=$(is_script_installed "$module" && echo 1 || echo 0) ;;
+    esac
+
+    if [[ "$state" == "error" ]]; then
+        extra="probe failed"
+    elif [[ "$local_label" != "-" || "$remote_label" != "-" ]]; then
+        extra="local=$local_label remote=$remote_label"
+    else
+        extra=""
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$target" "$state" "$status_label" "$local_label" "$remote_label" "$installed" "$extra"
 }
 
 _script_uninstall() {
@@ -804,9 +858,19 @@ file_status_fields() {
 status_one() {
     local module="$1" target_spec="$2" mode="$3" source="$4"
 
-    [[ "$mode" == "script" ]] && { _script_status "$module" "$target_spec" "$source"; return; }
-
     local target state status_label local_label remote_label installed extra
+    if [[ "$mode" == "script" ]]; then
+        IFS=$'\t' read -r target state status_label local_label remote_label installed extra \
+            < <(script_status_fields "$module" "$target_spec" "$source")
+        if [[ "$local_label" == "-" && "$remote_label" == "-" ]]; then
+            printf '%-25s %-12s target=%s\n' "$module" "$state" "$target"
+        else
+            printf '%-25s %-12s local=%s remote=%s target=%s\n' \
+                "$module" "$state" "$local_label" "$remote_label" "$target"
+        fi
+        return
+    fi
+
     IFS=$'\t' read -r target state status_label local_label remote_label installed extra \
         < <(file_status_fields "$module" "$target_spec" "$source")
 
@@ -884,7 +948,7 @@ cmd_install() {
 cmd_update() {
     configure_shell || true
     fetch_manifest
-    local new_count=0 new_names=() filters=()
+    local new_count=0 new_names=() failure_count=0 failure_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
     for target_module in "$@"; do
         filters+=("$target_module")
@@ -901,13 +965,34 @@ cmd_update() {
         local target_path local_hash
         target_path=$(expand_path "$target")
         if [[ "$mode" == "script" ]]; then
-            local _ss; _ss=$(script_state_for "$module" || true)
-            if [[ -z "$_ss" ]]; then
-                new_count=$((new_count + 1))
-                new_names+=("$module")
-            else
-                _script_update "$module" "$target" "$source"
-            fi
+            local script_target script_state script_status script_local script_remote script_installed script_extra
+            IFS=$'\t' read -r script_target script_state script_status script_local script_remote script_installed script_extra \
+                < <(script_status_fields "$module" "$target" "$source")
+            case "$script_state" in
+                current)
+                    ;;
+                outdated)
+                    if ! _script_update "$module" "$target" "$source"; then
+                        echo "Warning: $module update failed." >&2
+                        failure_count=$((failure_count + 1))
+                        failure_names+=("$module")
+                    fi
+                    ;;
+                uninstalled)
+                    new_count=$((new_count + 1))
+                    new_names+=("$module")
+                    ;;
+                installed|unknown)
+                    echo "Warning: could not determine whether $module is current; skipping update." >&2
+                    failure_count=$((failure_count + 1))
+                    failure_names+=("$module")
+                    ;;
+                *)
+                    echo "Warning: could not probe $module; skipping update." >&2
+                    failure_count=$((failure_count + 1))
+                    failure_names+=("$module")
+                    ;;
+            esac
         else
             local_hash=$(installed_hash_for "$target_path" || true)
             if [[ "$module" == "setup" ]]; then
@@ -933,7 +1018,10 @@ cmd_update() {
     if [[ "$new_count" -gt 0 ]]; then
         echo "$new_count new module(s) available: ${new_names[*]}"
         echo "Run 'setup' to select what to install."
-    else
+    fi
+    if [[ "$failure_count" -gt 0 ]]; then
+        echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
+    elif [[ "$new_count" -eq 0 ]]; then
         echo "All modules up to date."
     fi
 }
@@ -1194,25 +1282,12 @@ cmd_reconfigure() {
             local target state file_installed extra \
                    svc_label local_label remote_label status_label
 
-            # Script modules use script-state.tsv instead of installed.tsv/checksums.tsv
+            # Script modules use one live probe for both CLI and table status.
             if [[ "$mo" == "script" ]]; then
-                target=$(expand_path "$t")
-                local _ss; _ss=$(script_state_for "$m" || true)
-                local _lr="" _rr="" _rt=""
-                if [[ -n "$_ss" ]]; then
-                    IFS=$'\t' read -r _rt _lr _rr <<< "$_ss"
-                fi
-                if [[ -z "$_lr" ]]; then
-                    local_label="-"; remote_label="-"; status_label="not installed"
-                elif [[ "$_rt" == "version" ]]; then
-                    # versions shown in full — dynamic columns absorb the width
-                    local_label="$_lr"; remote_label="$_rr"
-                    [[ "$_lr" == "$_rr" ]] && status_label="up-to-date" || status_label="update available"
-                else
-                    local_label="${_lr:0:7}"; remote_label="${_rr:0:7}"
-                    [[ "$_lr" == "$_rr" ]] && status_label="up-to-date" || status_label="update available"
-                fi
-                non_svc+=("$m|${local_label}|$([ -n "$_lr" ] && echo installed || echo uninstalled)|${remote_label}|${status_label}")
+                IFS=$'\t' read -r target state status_label local_label remote_label file_installed extra \
+                    < <(script_status_fields "$m" "$t" "$s")
+                svc_label=$([[ "$file_installed" == "1" ]] && echo installed || echo uninstalled)
+                non_svc+=("$m|${local_label}|${svc_label}|${remote_label}|${status_label}")
                 continue
             fi
 
@@ -1443,6 +1518,10 @@ cmd_reconfigure() {
         normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
     done
 }
+
+if [[ "${SETUP_SOURCE_ONLY:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 while (($# > 0)); do
     case "$1" in

@@ -77,6 +77,8 @@ setup_managed_block_body() {
 }
 
 record_script_state() {
+    # Durable installation marker and diagnostic cache. Live status probes, not
+    # these cached refs, are authoritative for freshness.
     local module="$1" ref_type="$2" local_ref="$3" remote_ref="$4"
     local state_file="${STATE_DIR:-$HOME/.local/state/setup}/script-state.tsv"
     local tmp m rt lr rr

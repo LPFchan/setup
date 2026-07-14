@@ -18,8 +18,8 @@ BLOCK_CONTENT='if command -v starship >/dev/null; then
 fi'
 
 install() {
-    if command -v starship >/dev/null 2>&1; then
-        echo "starship already installed: $(starship --version | head -1)"
+    if [[ -x "$BIN" ]]; then
+        echo "starship already installed: $("$BIN" --version | head -1)"
     else
         curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b "$HOME/.local/bin"
     fi
@@ -28,12 +28,12 @@ install() {
 }
 
 status() {
-    if ! command -v starship >/dev/null 2>&1; then
+    if [[ ! -x "$BIN" ]]; then
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
     local installed_ver latest_ver
-    installed_ver=$(starship --version 2>/dev/null | awk 'NR==1{print $2}')
+    installed_ver=$("$BIN" --version 2>/dev/null | awk 'NR==1{print $2}')
     latest_ver=$(curl -fsSL "https://api.github.com/repos/starship/starship/releases/latest" \
         2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v\(.*\)".*/\1/' || true)
     if [[ -z "$latest_ver" ]]; then
@@ -69,9 +69,9 @@ _upsert_block() {
 }
 
 _record_state() {
-    if command -v starship >/dev/null 2>&1; then
+    if [[ -x "$BIN" ]]; then
         local ver
-        ver=$(starship --version 2>/dev/null | awk 'NR==1{print $2}')
+        ver=$("$BIN" --version 2>/dev/null | awk 'NR==1{print $2}')
         record_script_state "$MODULE" "version" "${ver:-unknown}" "${ver:-unknown}"
     fi
 }
