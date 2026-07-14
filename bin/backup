@@ -297,6 +297,7 @@ write_systemd_units() {
 [Unit]
 Description=Backup ${period} to bingus (${host} via ${transport})
 $( [[ "${transport}" == "rsyncd" ]] && echo "After=tailscaled.service" && echo "Requires=tailscaled.service" )
+$( [[ "${transport}" == "nfs" ]] && echo "After=remote-fs.target" && echo "Wants=remote-fs.target" )
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/backup-${period}
