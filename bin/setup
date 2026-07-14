@@ -664,7 +664,7 @@ install_one() {
 
     [[ "$mode" == "script" ]] && { _script_install "$module" "$target_spec" "$source"; return; }
 
-    local target dir payload old_hash current_hash new_hash install_target remote_module remote_hash
+    local target dir payload old_hash current_hash new_hash install_target remote_module remote_hash disk_hash
 
     target=$(expand_path "$target_spec")
     dir=$(dirname "$target")
@@ -684,7 +684,18 @@ install_one() {
     new_hash=$(sha256 "$payload")
     old_hash=$(installed_hash_for "$target" || true)
 
-    if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" == "$old_hash" ]] && [[ "$FORCE" -ne 1 ]]; then
+    # Hash of the file actually on disk. Compared against the recorded hash so
+    # we can detect drift: an earlier install that recorded a hash but whose
+    # write failed or was interrupted leaves recorded ahead of the real file.
+    disk_hash=""
+    [[ -f "$target" ]] && disk_hash=$(sha256 "$target")
+
+    # Only "current" (skip) when the remote matches the recorded hash AND the
+    # on-disk file still matches that hash. Without the disk_hash check a drifted
+    # file is skipped forever and `setup update` can never self-heal it — only a
+    # force reinstall would. See the drift routing in the condition below.
+    if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" == "$old_hash" ]] \
+       && [[ "$disk_hash" == "$old_hash" ]] && [[ "$FORCE" -ne 1 ]]; then
         if [[ "$module" == "refresh-models" ]]; then
             _migrate_auth_json
         fi
@@ -693,10 +704,16 @@ install_one() {
         return 0
     fi
 
-    if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" != "$old_hash" ]]; then
+    # Route both "new content" and "disk drifted from recorded" to the normal
+    # install path below (rewrite + re-record) rather than the foreign branch.
+    if [[ -f "$target" && -n "$old_hash" ]] && { [[ "$new_hash" != "$old_hash" ]] || [[ "$disk_hash" != "$old_hash" ]]; }; then
         :
     elif [[ -f "$target" ]]; then
-        install -m "$mode" "$payload" "$target"
+        install -m "$mode" "$payload" "$target" || {
+            echo "Failed to write $module -> $target" >&2
+            rm -f "$payload"
+            return 1
+        }
         record_hash "$target" "$new_hash" "$new_hash"
         echo "$module ${new_hash:0:7} (foreign) -> $target"
         rm -f "$payload"
@@ -710,7 +727,11 @@ install_one() {
         return 0
     fi
 
-    install -m "$mode" "$payload" "$target"
+    install -m "$mode" "$payload" "$target" || {
+        echo "Failed to write $module -> $target" >&2
+        rm -f "$payload"
+        return 1
+    }
     record_hash "$target" "$new_hash" "$new_hash"
     if [[ -n "$old_hash" && "$old_hash" != "$new_hash" ]]; then
         echo "$module ${old_hash:0:7} -> ${new_hash:0:7} -> $target"
