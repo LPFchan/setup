@@ -15,9 +15,10 @@ PAYLOAD_TARGET="$HOME/.bashrc.d/ai-menu"
 SRC_REPO="${AI_MENU_SRC_REPO:-https://github.com/LPFchan/setup.git}"
 SRC_CLONE="${STATE_DIR:-$HOME/.local/state/setup}/ai-menu-src"
 
-BLOCK_CONTENT='[[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
-if (( ${+functions[ai]} )) && [[ -z "${AI_AUTO_LAUNCHED:-}" ]]; then
-    export AI_AUTO_LAUNCHED=1
+BLOCK_CONTENT='[[ ${(t)AI_AUTO_LAUNCHED} == *export* ]] && unset AI_AUTO_LAUNCHED
+[[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
+if (( ${+functions[ai]} )) && (( ! ${+AI_AUTO_LAUNCHED} )); then
+    typeset -g +x AI_AUTO_LAUNCHED=1
     ai
 fi'
 
