@@ -31,18 +31,22 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux tab context menu does not stay open after button release"
 [[ "$BLOCK_CONTENT" == *'unbind -n MouseUp3Status'* ]] \
     || fail "tmux does not remove the obsolete release-triggered tab menu"
-[[ "$BLOCK_CONTENT" == *'bind -n MouseDown3StatusDefault display-menu -O '*' -t . '* ]] \
-    || fail "tmux current-tab fallback menu is not persistent"
+[[ "$BLOCK_CONTENT" == *'unbind -n MouseDown3StatusDefault'* ]] \
+    || fail "tmux does not remove the obsolete current-tab fallback menu"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDown3StatusLeft display-menu -O '*' -t = '* ]] \
     || fail "tmux hostname menu is not persistent"
+[[ "$BLOCK_CONTENT" == *'bind -n DoubleClick1Status kill-window -t ='* ]] \
+    || fail "tmux tabs do not close on double-click"
+[[ "$BLOCK_CONTENT" == *'bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c "#{pane_current_path}"'* ]] \
+    || fail "empty tmux status space does not append a window on double-click"
 [[ "$BLOCK_CONTENT" == *'set -g status-left-length 64'* ]] \
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \
     || fail "tmux hostname segment is not left-aligned and padded to at least 12 characters"
-[[ "$BLOCK_CONTENT" == *'set -g window-status-format " #W "'* ]] \
+[[ "$BLOCK_CONTENT" == *'set -g window-status-format "#[range=window|#{window_index}] #W #[norange]"'* ]] \
     || fail "tmux window titles still include the window index or flags"
-[[ "$BLOCK_CONTENT" == *'set -g window-status-current-format " #W "'* ]] \
-    || fail "current tmux window titles still include the window index or flags"
+[[ "$BLOCK_CONTENT" == *'set -g window-status-current-format "#[range=window|#{window_index}] #W #[norange]"'* ]] \
+    || fail "current tmux window title lacks an explicit mouse range"
 [[ "$BLOCK_CONTENT" == *'set -g window-status-style "dim"'* ]] \
     || fail "inactive tmux window titles are not visually muted"
 [[ "$BLOCK_CONTENT" == *'set -gF window-status-current-style '*'bold,nodim"'* ]] \
@@ -71,6 +75,8 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     right_up_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseUp3Status[[:space:]]' || true)
     right_default_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusDefault[[:space:]]' || true)
     right_left_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusLeft[[:space:]]' || true)
+    double_tab_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root DoubleClick1Status[[:space:]]' || true)
+    double_empty_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root DoubleClick1StatusDefault[[:space:]]' || true)
     "$tmux_bin" -L "$test_server" kill-server
     [[ -n "$rendered_host" && "$rendered" == "$rendered_host"* ]] \
         || fail "tmux hostname format rendered empty or was not left-aligned: '$rendered'"
@@ -96,10 +102,16 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
         || fail "tmux did not install the persistent tab menu: '$right_down_binding'"
     [[ -z "$right_up_binding" ]] \
         || fail "tmux retained the obsolete release-triggered tab menu: '$right_up_binding'"
-    [[ "$right_default_binding" == *'display-menu -O'* && "$right_default_binding" == *'-t .'* ]] \
-        || fail "tmux did not install the persistent current-tab fallback: '$right_default_binding'"
+    [[ -z "$right_default_binding" ]] \
+        || fail "tmux retained the obsolete current-tab fallback: '$right_default_binding'"
     [[ "$right_left_binding" == *'display-menu -O'* && "$right_left_binding" == *'-t ='* ]] \
         || fail "tmux did not install the persistent hostname menu: '$right_left_binding'"
+    [[ "$double_tab_binding" == *'kill-window -t ='* ]] \
+        || fail "tmux did not install tab double-click close: '$double_tab_binding'"
+    [[ "$double_empty_binding" == *'new-window -a'* \
+       && "$double_empty_binding" == *'-t ":{end}"'* \
+       && "$double_empty_binding" == *'-c "#{pane_current_path}"'* ]] \
+        || fail "tmux did not install empty-space double-click append: '$double_empty_binding'"
 fi
 
 # Exercise the zsh hook that captures the launched command before an executable
