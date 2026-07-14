@@ -35,7 +35,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `zsh-autocomplete` | `~/.zsh/zsh-autocomplete/` + `~/.zsh/zsh-defer/` | plugin source + history + autocomplete settings | `files/zsh-autocomplete.sh` |
 | `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
 | `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
-| `zsh-basics` | (none) | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
+| `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
@@ -53,7 +53,7 @@ script modules are left untouched, outdated modules run `update()`, uninstalled
 modules are reported as new, and modules whose freshness cannot be probed are
 skipped with a warning.
 
-The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart block, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
+The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `zsh-basics`, the `.zshrc` baseline and `.zshenv` system-color block are checked together. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart block, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
 
 The `tmux` module also treats the executable as a required dependency. On
 install or repair it uses Homebrew/MacPorts on macOS, or a detected supported
@@ -102,6 +102,20 @@ setup schedule            # install the daily auto-update timer
 setup schedule status     # show whether the timer is configured and active
 setup                     # interactive fzf reconfigure
 ```
+
+## Global system color
+
+The `zsh-basics` module owns a `system-color` block in `~/.zshenv` that exports
+a deterministic machine identity for every zsh-launched tool:
+
+- `SYSTEM_COLOR_HUE` — integer hue from `cksum(lowercase short hostname) % 360`
+- `SYSTEM_COLOR_HEX` — `#RRGGBB` converted from HSV with saturation and
+  value/brightness fixed at 100%
+- `SYSTEM_COLOR_TEXT_HEX` — black or white foreground chosen for contrast
+
+Only the hostname determines the shared color; no per-machine palette is
+stored. Tmux consumes these variables for its status bar, and other tools can
+use the same exported values without reproducing the hash or color conversion.
 
 ## .zshrc managed blocks
 
