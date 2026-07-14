@@ -28,6 +28,8 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux does not advertise idempotent RGB support for direct and nested clients"
 [[ "$BLOCK_CONTENT" == *'set-environment -g COLORTERM truecolor'* ]] \
     || fail "tmux panes do not advertise truecolor to applications"
+[[ "$BLOCK_CONTENT" == *'set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1'* ]] \
+    || fail "Claude Code is not allowed to render truecolor inside tmux"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}"'* ]] \
     || fail "tmux tab dragging does not capture a stable source window"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDrag1Status run-shell -C -t = '*'#{@setup-drag-window}'* ]] \
@@ -78,6 +80,7 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     rendered_current_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-current-style)
     rendered_terminal_features=$("$tmux_bin" -L "$test_server" show-options -gs terminal-features)
     rendered_colorterm=$("$tmux_bin" -L "$test_server" show-environment -g COLORTERM)
+    rendered_claude_truecolor=$("$tmux_bin" -L "$test_server" show-environment -g CLAUDE_CODE_TMUX_TRUECOLOR)
     mouse_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDown1Status ' || true)
     drag_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDrag1Status' || true)
     right_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3Status[[:space:]]' || true)
@@ -108,6 +111,8 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
         || fail "tmux duplicated RGB features after repeated reloads: '$rendered_terminal_features'"
     [[ "$rendered_colorterm" == 'COLORTERM=truecolor' ]] \
         || fail "tmux did not export truecolor capability: '$rendered_colorterm'"
+    [[ "$rendered_claude_truecolor" == 'CLAUDE_CODE_TMUX_TRUECOLOR=1' ]] \
+        || fail "tmux did not enable Claude Code truecolor: '$rendered_claude_truecolor'"
     [[ "$mouse_down_binding" == *'@setup-drag-window'* \
        && "$mouse_down_binding" == *'switch-client -t ='* ]] \
         || fail "tmux did not install stable tab source capture: '$mouse_down_binding'"

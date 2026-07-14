@@ -21,6 +21,9 @@ set -s terminal-features[90] "xterm*:RGB"
 set -s terminal-features[91] "tmux*:RGB"
 # Some applications use COLORTERM rather than terminfo to enable direct RGB.
 set-environment -g COLORTERM truecolor
+# Claude Code otherwise deliberately caps its renderer at ANSI-256 in tmux,
+# even when COLORTERM and the client RGB feature both advertise truecolor.
+set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1
 set -g mouse on
 bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
 bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""
