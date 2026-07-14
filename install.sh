@@ -55,7 +55,7 @@ prepend_block_once() {
 
 # Canonical top→bottom order of setup-managed .zshrc blocks. Mirrors
 # ZSHRC_BLOCK_ORDER in bin/setup so a fresh curl-install ends up ordered too.
-ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-init starship zsh-autocomplete zsh-basics zsh-syntax-highlighting ai-menu)
+ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-basics starship zsh-autocomplete zsh-syntax-highlighting ai-menu)
 
 # Reorder setup-managed blocks in <file> to match the given label order,
 # preserving unmanaged content and staying idempotent. Mirrors
@@ -133,12 +133,11 @@ normalize_block_order() {
 }
 
 configure_shell() {
-    local path_block zsh_init_block tmux_autostart_block
+    local path_block
 
     # Remove stale ai managed blocks so fresh ones with ai-menu path are written.
-    # This awk also strips the legacy `setup:zsh-ai` block, which doubles as the
-    # zsh-ai -> zsh-init rename migration (prepend_block_once then writes zsh-init
-    # fresh, so no orphaned duplicate remains).
+    # This also strips the legacy `setup:zsh-ai` block; its shell behavior is now
+    # owned by the zsh-basics module.
     for _f in "$HOME/.zshrc" "$HOME/.bashrc"; do
         [[ -f "$_f" ]] || continue
         if grep -qE '(linux-setup|setup):(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
@@ -166,25 +165,11 @@ configure_shell() {
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac'
 
-    zsh_init_block='[[ -o interactive && -t 0 ]] || return
-[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
-
-alias /exit='"'"'exit'"'"''
-
-    tmux_autostart_block='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
-  exec tmux new-session -A -s main
-fi'
-
     if has_path_setup "$HOME/.zshenv"; then
         echo "Current shell path -> $HOME/.zshenv"
     else
         append_block_once "$HOME/.zshenv" path "$path_block"
     fi
-    # Prepend order: zsh-init first, then tmux-autostart, so tmux-autostart lands
-    # ABOVE zsh-init in the final .zshrc (each prepend inserts at the top). Final
-    # ordering across all blocks is enforced by normalize_block_order below.
-    prepend_block_once "$HOME/.zshrc" zsh-init "$zsh_init_block"
-    prepend_block_once "$HOME/.zshrc" tmux-autostart "$tmux_autostart_block"
 }
 
 mkdir -p "$BIN_DIR"

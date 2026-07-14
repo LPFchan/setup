@@ -35,15 +35,15 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `zsh-autocomplete` | `~/.zsh/zsh-autocomplete/` + `~/.zsh/zsh-defer/` | plugin source + history + autocomplete settings | `files/zsh-autocomplete.sh` |
 | `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
 | `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
-| `zsh-basics` | (none) | `setopt NO_NOMATCH`, `WORDCHARS` | `files/zsh-basics.sh` |
+| `zsh-basics` | (none) | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
-| `tmux` | `~/.local/bin/tmux-cpu-mem` (status helper) | truecolor/mouse/status settings in `~/.tmux.conf` (reloads a running server on install) | `files/tmux.sh` |
+| `tmux` | `~/.local/bin/tmux-cpu-mem` (status helper) | truecolor/mouse/status settings in `~/.tmux.conf`; interactive-shell autostart in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 
-The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `tmux` the helper (`~/.local/bin/tmux-cpu-mem`) is derived in-process, so both surfaces are checked. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
+The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart block, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
 
 ### `agents` — canonical agent instructions
 
@@ -91,30 +91,30 @@ fixed **canonical order** (top → bottom):
 
 ```
 # >>> setup:tmux-autostart >>>  — replace every interactive shell outside tmux with `tmux new-session -A -s main`
-# >>> setup:zsh-init >>>        — interactive/tty/terminal guards + /exit alias (early `return` guards; no longer autolaunches ai)
+# >>> setup:zsh-basics >>>      — interactive/tty/terminal guards + /exit alias + baseline zsh behavior
 # >>> setup:starship >>>        — cached starship init
 # >>> setup:zsh-autocomplete >>> — plugin source + history settings + autocomplete config (loads zsh-defer)
-# >>> setup:zsh-basics >>>      — NO_NOMATCH, WORDCHARS
 # >>> setup:zsh-syntax-highlighting >>> — deferred syntax highlighting (needs zsh-defer → after zsh-autocomplete)
 # >>> setup:ai-menu >>>         — source ~/.bashrc.d/ai-menu + `ai` autolaunch (owned by the ai-menu module)
 ```
 
-`tmux-autostart` and `zsh-init` are prepended by `configure_shell`; the rest are
-appended by their own script modules. Because `manage_block` only sets a block's
-position at creation, the accumulated order is otherwise historical — so after
-every run `normalize_block_order` (defined in `bin/setup`, mirrored in
-`install.sh`) reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER`
-above, idempotently and without touching unmanaged content. `tmux-autostart`
-runs first (every interactive shell outside tmux swaps into it before anything
-heavy), `zsh-init`'s early `return` guards precede what they gate,
+`tmux-autostart` and `zsh-basics` are prepended by their respective modules; the
+remaining blocks are appended by their own script modules. Because
+`manage_block` only sets a block's position at creation, the accumulated order
+is otherwise historical — so after every run
+`normalize_block_order` (defined in `bin/setup`, mirrored in `install.sh`)
+reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER` above,
+idempotently and without touching unmanaged content. `tmux-autostart` runs first
+(every interactive shell outside tmux swaps into it before anything heavy),
+`zsh-basics`' early `return` guards precede what they gate,
 `zsh-syntax-highlighting` follows
 `zsh-autocomplete` (which loads `zsh-defer`), and `ai-menu` autolaunches `ai`
 last once the shell is fully initialized. Blocks with unknown labels are kept and
 sorted after the known ones.
 
-> Migration: the block formerly named `zsh-ai` is now `zsh-init`. On update, the
-> legacy `setup:zsh-ai` block is stripped before `zsh-init` is written, so no
-> orphaned duplicate remains.
+> Migration: the core-owned `zsh-init` block (formerly `zsh-ai`) is folded into
+> the module-owned `zsh-basics` block on update, so no orphaned duplicate
+> remains.
 
 Every managed block's first line is a warning so agents (and humans) know not to
 edit inside it — the block is regenerated from source on `setup update`:

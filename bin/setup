@@ -358,26 +358,21 @@ manage_block() {
 }
 
 BLOCK_DELIM=$'\x1f'
-# NOTE: prepend inserts at the very top of the file, so the entry processed
-# LAST ends up on top. tmux-autostart is listed AFTER zsh-init so that in the
-# resulting .zshrc it sits ABOVE zsh-init (must run before ai-menu autolaunch).
-# Final canonical ordering is enforced separately by normalize_block_order.
+# Core-owned shell scaffolding. Module-owned blocks participate in the
+# canonical ordering below but are installed by their respective modules.
 BLOCK_REGISTRY=(
     "zshenv${BLOCK_DELIM}path${BLOCK_DELIM}path_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
-    "zshrc${BLOCK_DELIM}zsh-init${BLOCK_DELIM}zsh_init_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
-    "zshrc${BLOCK_DELIM}tmux-autostart${BLOCK_DELIM}tmux_autostart_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
 )
 
 # Canonical top→bottom order of setup-managed .zshrc blocks. Enforced by
 # normalize_block_order at the end of every path that may add/rewrite a block.
-ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-init starship zsh-autocomplete zsh-basics zsh-syntax-highlighting ai-menu)
+ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-basics starship zsh-autocomplete zsh-syntax-highlighting ai-menu)
 
 configure_shell() {
-    local path_block zsh_init_block tmux_autostart_block
+    local path_block
 
-    # Migration: earlier versions named this block `zsh-ai`. Strip any legacy
-    # `setup:zsh-ai` block before writing `zsh-init` so `setup update` on an
-    # existing machine doesn't leave both blocks (orphaned zsh-ai + zsh-init).
+    # Migration: earlier versions named the shell-init block `zsh-ai`. Its
+    # behavior now belongs to zsh-basics, which adopts it during module update.
     if [[ -f "$HOME/.zshrc" ]] && grep -Fq "# >>> setup:zsh-ai >>>" "$HOME/.zshrc"; then
         manage_block "$HOME/.zshrc" "zsh-ai" "" "remove"
     fi
@@ -387,19 +382,26 @@ configure_shell() {
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac'
 
-    zsh_init_block='[[ -o interactive && -t 0 ]] || return
-[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
-
-alias /exit='"'"'exit'"'"''
-
-    tmux_autostart_block='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
-  exec tmux new-session -A -s main
-fi'
-
     for entry in "${BLOCK_REGISTRY[@]}"; do
         IFS="$BLOCK_DELIM" read -r file_key label content_var mode position <<< "$entry"
         manage_block "$HOME/.$file_key" "$label" "${!content_var}" "$mode" "$position"
     done
+
+    # Ownership migration: core used to install zsh-init on every host. Keep it
+    # until an installed zsh-basics module can fold it into its own block; remove
+    # the legacy orphan when zsh-basics is absent.
+    if has_managed_block "$HOME/.zshrc" "zsh-init" \
+       && [[ -z "$(script_state_for zsh-basics || true)" ]]; then
+        manage_block "$HOME/.zshrc" "zsh-init" "" "remove"
+    fi
+
+    # Ownership migration: core used to install tmux-autostart on every host.
+    # Keep the block when the tmux module is installed so that module update can
+    # adopt it in place; remove the legacy orphan when the module is absent.
+    if has_managed_block "$HOME/.zshrc" "tmux-autostart" \
+       && [[ -z "$(script_state_for tmux || true)" ]]; then
+        manage_block "$HOME/.zshrc" "tmux-autostart" "" "remove"
+    fi
 }
 
 # Reorder the setup-managed blocks in <file> to match the given label order,

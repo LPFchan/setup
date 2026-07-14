@@ -2,15 +2,16 @@
 # setup-module: tmux
 # setup-type: script
 #
-# Manages a block in ~/.tmux.conf (mouse + status bar: hostname left,
-# `CPU% - RAM%` right) AND installs the tmux-cpu-mem status helper to
-# ~/.local/bin. Uninstalling this module removes both surfaces.
+# Manages tmux settings in ~/.tmux.conf, installs the tmux-cpu-mem status
+# helper, and owns the ~/.zshrc block that auto-launches every interactive shell
+# into the shared `main` session. Uninstalling removes all three surfaces.
 
 [[ "$(type -t setup_sha256_string)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
 
 MODULE="tmux"
 TMUX_CONF="$HOME/.tmux.conf"
 HELPER="$HOME/.local/bin/tmux-cpu-mem"
+ZSHRC="$HOME/.zshrc"
 
 BLOCK_CONTENT='set -g default-terminal "tmux-256color"
 set -as terminal-features ",xterm*:RGB"
@@ -18,6 +19,10 @@ set -g mouse on
 set -g status-interval 5
 set -g status-left " #h "
 set -g status-right "#(tmux-cpu-mem) "'
+
+AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
+  exec tmux new-session -A -s main
+fi'
 
 # Instantaneous CPU via a /proc/stat delta cached across calls (no sleep),
 # RAM as (total-available)/total. Prints `CPU N% - RAM N%`.
@@ -45,8 +50,9 @@ _write_helper() {
     chmod 0755 "$HELPER"
 }
 
-_upsert_block() {
+_upsert_blocks() {
     manage_block "$TMUX_CONF" "tmux" "$BLOCK_CONTENT" "upsert" "append"
+    manage_block "$ZSHRC" "tmux-autostart" "$AUTOSTART_BLOCK_CONTENT" "upsert" "prepend"
 }
 
 # If a tmux server is already running, reload the config so the new block takes
@@ -59,23 +65,26 @@ _reload() {
     tmux source-file "$TMUX_CONF" >/dev/null 2>&1 || true
 }
 
-# Combined hash over the .tmux.conf block and the installed helper, so drift in
-# either surface is detected.
+# Combined hash over the .tmux.conf block, autostart block, and installed helper,
+# so drift in any owned surface is detected.
 _state_hash() {
-    local block helper
-    block=$(awk '/^# >>> setup:tmux >>>/{f=1;next}/^# <<< setup:tmux <<</{f=0}f' "$TMUX_CONF")
+    local block autostart helper
+    block=""
+    autostart=""
+    [[ -f "$TMUX_CONF" ]] && block=$(awk '/^# >>> setup:tmux >>>/{f=1;next}/^# <<< setup:tmux <<</{f=0}f' "$TMUX_CONF")
+    [[ -f "$ZSHRC" ]] && autostart=$(awk '/^# >>> setup:tmux-autostart >>>/{f=1;next}/^# <<< setup:tmux-autostart <<</{f=0}f' "$ZSHRC")
     helper=$([[ -f "$HELPER" ]] && cat "$HELPER")
-    printf '%s\n%s' "$block" "$helper" | setup_sha256_string
+    printf '%s\n%s\n%s' "$block" "$autostart" "$helper" | setup_sha256_string
 }
 
-# Combined hash over the *desired* block body (from BLOCK_CONTENT) and the
-# *desired* helper content (from _helper_content) — both source-of-truth — so
-# status() detects drift between source and either installed surface.
+# Combined hash over all desired module-owned content, so status() detects drift
+# between source and any installed surface.
 _desired_hash() {
-    local block helper
+    local block autostart helper
     block=$(setup_managed_block_body "$BLOCK_CONTENT")
+    autostart=$(setup_managed_block_body "$AUTOSTART_BLOCK_CONTENT")
     helper=$(_helper_content)
-    printf '%s\n%s' "$block" "$helper" | setup_sha256_string
+    printf '%s\n%s\n%s' "$block" "$autostart" "$helper" | setup_sha256_string
 }
 
 _record_state() {
@@ -86,7 +95,7 @@ _record_state() {
 
 install() {
     _write_helper
-    _upsert_block
+    _upsert_blocks
     _record_state
     _reload
 }
@@ -94,7 +103,9 @@ install() {
 update() { install; }
 
 status() {
-    if ! has_managed_block "$TMUX_CONF" "tmux" || [[ ! -f "$HELPER" ]]; then
+    if ! has_managed_block "$TMUX_CONF" "tmux" \
+       && ! has_managed_block "$ZSHRC" "tmux-autostart" \
+       && [[ ! -f "$HELPER" ]]; then
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
@@ -112,6 +123,7 @@ status() {
 
 uninstall() {
     manage_block "$TMUX_CONF" "tmux" "" "remove"
+    manage_block "$ZSHRC" "tmux-autostart" "" "remove"
     rm -f "$HELPER"
     remove_script_state "$MODULE"
 }

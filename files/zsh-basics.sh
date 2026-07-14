@@ -6,7 +6,12 @@
 
 MODULE="zsh-basics"
 
-BLOCK_CONTENT='setopt NO_NOMATCH
+BLOCK_CONTENT='[[ -o interactive && -t 0 ]] || return
+[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
+
+alias /exit='"'"'exit'"'"'
+
+setopt NO_NOMATCH
 bindkey -e
 WORDCHARS=${WORDCHARS//\//}'
 
@@ -42,11 +47,17 @@ update() {
 
 uninstall() {
     manage_block "$HOME/.zshrc" "zsh-basics" "" "remove"
+    manage_block "$HOME/.zshrc" "zsh-init" "" "remove"
+    manage_block "$HOME/.zshrc" "zsh-ai" "" "remove"
     remove_script_state "$MODULE"
 }
 
 _upsert_block() {
-    manage_block "$HOME/.zshrc" "zsh-basics" "$BLOCK_CONTENT" "upsert" "append"
+    # Adopt the behavior previously owned by core setup under zsh-init (and its
+    # older zsh-ai name) into this module's single lifecycle-managed block.
+    manage_block "$HOME/.zshrc" "zsh-init" "" "remove"
+    manage_block "$HOME/.zshrc" "zsh-ai" "" "remove"
+    manage_block "$HOME/.zshrc" "zsh-basics" "$BLOCK_CONTENT" "upsert" "prepend"
 }
 
 _record_state() {
