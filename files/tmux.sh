@@ -12,7 +12,9 @@ MODULE="tmux"
 TMUX_CONF="$HOME/.tmux.conf"
 HELPER="$HOME/.local/bin/tmux-cpu-mem"
 
-BLOCK_CONTENT='set -g mouse on
+BLOCK_CONTENT='set -g default-terminal "tmux-256color"
+set -as terminal-features ",xterm*:RGB"
+set -g mouse on
 set -g status-interval 5
 set -g status-left " #h "
 set -g status-right "#(tmux-cpu-mem) "'
@@ -41,6 +43,16 @@ _upsert_block() {
     manage_block "$TMUX_CONF" "tmux" "$BLOCK_CONTENT" "upsert" "append"
 }
 
+# If a tmux server is already running, reload the config so the new block takes
+# effect without a manual source-file. Note: terminal-features/RGB (truecolor)
+# is only re-read when a client (re)attaches, so an already-attached session
+# needs a detach+reattach to pick up the color change (mouse/status apply live).
+_reload() {
+    command -v tmux >/dev/null 2>&1 || return 0
+    tmux info >/dev/null 2>&1 || return 0   # no server running → nothing to reload
+    tmux source-file "$TMUX_CONF" >/dev/null 2>&1 || true
+}
+
 # Combined hash over the .tmux.conf block and the installed helper, so drift in
 # either surface is detected.
 _state_hash() {
@@ -60,6 +72,7 @@ install() {
     _write_helper
     _upsert_block
     _record_state
+    _reload
 }
 
 update() { install; }
