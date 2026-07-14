@@ -2,9 +2,10 @@
 # setup-module: tmux
 # setup-type: script
 #
-# Manages tmux settings in ~/.tmux.conf, installs the tmux-cpu-mem status
-# helper, and owns the ~/.zshrc block that auto-launches every interactive shell
-# into the shared `main` session. Uninstalling removes all three surfaces.
+# Ensures tmux is available, manages settings in ~/.tmux.conf, installs the
+# tmux-cpu-mem status helper, and owns the ~/.zshrc block that auto-launches
+# every interactive shell into the shared `main` session. Uninstalling removes
+# the three setup-owned surfaces but leaves the system tmux package installed.
 
 [[ "$(type -t setup_sha256_string)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
 
@@ -28,24 +29,95 @@ AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux 
   exec tmux new-session -A -s main
 fi'
 
-# Instantaneous CPU via a /proc/stat delta cached across calls (no sleep),
-# RAM as (total-available)/total. Prints `CPU N% - RAM N%`.
+# Instantaneous CPU and RAM utilization for Linux and macOS. Linux uses a
+# /proc/stat delta cached across calls (no sleep); macOS uses top and
+# memory_pressure. Prints `CPU N% - RAM N%`.
 # Desired helper content (source of truth). `_write_helper` installs it and
 # `status()` hashes it to detect drift against the installed copy.
 _helper_content() {
     cat <<'CPUMEM'
 #!/bin/sh
-PREV="/tmp/tmux-cpu.$(id -u)"
-set -- $(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
-idle=$(( $4 + $5 ))
-total=$(( $1+$2+$3+$4+$5+$6+$7+$8 ))
-if [ -r "$PREV" ]; then read pt pi < "$PREV"; else pt=0; pi=0; fi
-echo "$total $idle" > "$PREV"
-dt=$(( total - pt )); di=$(( idle - pi ))
-cpu=0; [ "$dt" -gt 0 ] && cpu=$(( (100*(dt-di))/dt ))
-ram=$(free | awk '/^Mem:/{printf "%.0f",($2-$7)/$2*100}')
+case "$(uname -s)" in
+  Linux)
+    PREV="/tmp/tmux-cpu.$(id -u)"
+    set -- $(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)
+    idle=$(( $4 + $5 ))
+    total=$(( $1+$2+$3+$4+$5+$6+$7+$8 ))
+    if [ -r "$PREV" ]; then read pt pi < "$PREV"; else pt=0; pi=0; fi
+    echo "$total $idle" > "$PREV"
+    dt=$(( total - pt )); di=$(( idle - pi ))
+    cpu=0; [ "$dt" -gt 0 ] && cpu=$(( (100*(dt-di))/dt ))
+    ram=$(free | awk '/^Mem:/{printf "%.0f",($2-$7)/$2*100}')
+    ;;
+  Darwin)
+    cpu=$(top -l 1 -n 0 2>/dev/null | awk '/CPU usage/ {gsub("%", "", $7); printf "%.0f", 100-$7; exit}')
+    ram=$(memory_pressure -Q 2>/dev/null | awk '/System-wide memory free percentage:/ {gsub("%", "", $5); printf "%.0f", 100-$5; exit}')
+    ;;
+  *)
+    cpu=0
+    ram=0
+    ;;
+esac
+case "$cpu" in ''|*[!0-9]*) cpu=0 ;; esac
+case "$ram" in ''|*[!0-9]*) ram=0 ;; esac
 printf 'CPU %d%% - RAM %d%%' "$cpu" "$ram"
 CPUMEM
+}
+
+_as_root() {
+    if [[ "$EUID" -eq 0 ]]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        echo "tmux: installing with $(basename "$1") requires root; install tmux manually" >&2
+        return 1
+    fi
+}
+
+_ensure_tmux() {
+    command -v tmux >/dev/null 2>&1 && return 0
+
+    echo "tmux is not installed; installing it now..."
+    case "$(uname -s)" in
+        Darwin)
+            if command -v brew >/dev/null 2>&1; then
+                brew install tmux
+            elif command -v port >/dev/null 2>&1; then
+                _as_root port install tmux
+            else
+                echo "tmux: install Homebrew (or MacPorts), then rerun setup" >&2
+                return 1
+            fi
+            ;;
+        Linux)
+            if command -v apt-get >/dev/null 2>&1; then
+                _as_root apt-get install -y tmux
+            elif command -v dnf >/dev/null 2>&1; then
+                _as_root dnf install -y tmux
+            elif command -v yum >/dev/null 2>&1; then
+                _as_root yum install -y tmux
+            elif command -v pacman >/dev/null 2>&1; then
+                _as_root pacman -S --needed --noconfirm tmux
+            elif command -v zypper >/dev/null 2>&1; then
+                _as_root zypper --non-interactive install tmux
+            elif command -v brew >/dev/null 2>&1; then
+                brew install tmux
+            else
+                echo "tmux: no supported package manager found; install tmux manually" >&2
+                return 1
+            fi
+            ;;
+        *)
+            echo "tmux: unsupported platform $(uname -s); install tmux manually" >&2
+            return 1
+            ;;
+    esac
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        echo "tmux: package installation completed but tmux is still not on PATH" >&2
+        return 1
+    fi
 }
 
 _write_helper() {
@@ -98,6 +170,7 @@ _record_state() {
 }
 
 install() {
+    _ensure_tmux || return 1
     _write_helper
     _upsert_blocks
     _record_state
@@ -112,6 +185,10 @@ status() {
        && [[ ! -f "$HELPER" ]]; then
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
+    fi
+    if ! command -v tmux >/dev/null 2>&1; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "missing" "required" "tmux"
+        return 1
     fi
     local expected actual
     expected=$(_desired_hash)

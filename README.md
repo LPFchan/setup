@@ -39,7 +39,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
-| `tmux` | `~/.local/bin/tmux-cpu-mem` (status helper) | truecolor/mouse/one-line wheel scrolling/status settings in `~/.tmux.conf`; interactive-shell autostart in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
+| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor/mouse/one-line wheel scrolling/status settings in `~/.tmux.conf`; interactive-shell autostart in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 
@@ -54,6 +54,13 @@ modules are reported as new, and modules whose freshness cannot be probed are
 skipped with a warning.
 
 The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart block, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
+
+The `tmux` module also treats the executable as a required dependency. On
+install or repair it uses Homebrew/MacPorts on macOS, or a detected supported
+package manager on Linux, before writing setup-owned configuration. Removing
+the module leaves the system package installed because setup cannot safely
+distinguish a package it installed from one that was already shared with other
+tools.
 
 ### `agents` — canonical agent instructions
 
