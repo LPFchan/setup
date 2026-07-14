@@ -358,13 +358,17 @@ manage_block() {
 }
 
 BLOCK_DELIM=$'\x1f'
+# NOTE: prepend inserts at the very top of the file, so the entry processed
+# LAST ends up on top. tmux-autostart is listed AFTER zsh-ai so that in the
+# resulting .zshrc it sits ABOVE zsh-ai (must run before ai-menu autolaunch).
 BLOCK_REGISTRY=(
     "zshenv${BLOCK_DELIM}path${BLOCK_DELIM}path_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
     "zshrc${BLOCK_DELIM}zsh-ai${BLOCK_DELIM}zsh_ai_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
+    "zshrc${BLOCK_DELIM}tmux-autostart${BLOCK_DELIM}tmux_autostart_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
 )
 
 configure_shell() {
-    local path_block zsh_ai_block
+    local path_block zsh_ai_block tmux_autostart_block
 
     path_block='case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
@@ -372,15 +376,12 @@ configure_shell() {
 esac'
 
     zsh_ai_block='[[ -o interactive && -t 0 ]] || return
-[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} ]] || return
-(( SHLVL > 1 )) && return
+[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
 
-alias /exit='"'"'exit'"'"'
+alias /exit='"'"'exit'"'"''
 
-[[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
-if (( ${+functions[ai]} )) && [[ -z "${AI_AUTO_LAUNCHED:-}" ]]; then
-    export AI_AUTO_LAUNCHED=1
-    ai
+    tmux_autostart_block='if [[ -o interactive && -z $TMUX && -n $SSH_CONNECTION ]] && command -v tmux >/dev/null; then
+  exec tmux new-session -A -s main
 fi'
 
     for entry in "${BLOCK_REGISTRY[@]}"; do

@@ -10,14 +10,6 @@ has_path_setup() {
     grep -Eq '(^|["=:])\$HOME/\.local/bin|(^|["=:])~/\.local/bin|(^|["=:])/.*/\.local/bin' "$file"
 }
 
-has_ai_autolaunch() {
-    local file="$1"
-    [[ -f "$file" ]] || return 1
-    grep -Eq 'ai-menu' "$file" \
-        && grep -Eq 'AI_AUTO_LAUNCHED' "$file" \
-        && grep -Eq '(^|[^[:alnum:]_])ai([[:space:]]*$|[[:space:]]|;|&&|\|\|)' "$file"
-}
-
 append_block_once() {
     local file="$1" label="$2" content="$3" dir begin_mark end_mark
     begin_mark="# >>> setup:$label >>>"
@@ -62,7 +54,7 @@ prepend_block_once() {
 }
 
 configure_shell() {
-    local path_block zsh_ai_block
+    local path_block zsh_ai_block tmux_autostart_block
 
     # Remove stale ai managed blocks so fresh ones with ai-menu path are written
     for _f in "$HOME/.zshrc" "$HOME/.bashrc"; do
@@ -93,15 +85,12 @@ configure_shell() {
 esac'
 
     zsh_ai_block='[[ -o interactive && -t 0 ]] || return
-[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} ]] || return
-(( SHLVL > 1 )) && return
+[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
 
-alias /exit='"'"'exit'"'"'
+alias /exit='"'"'exit'"'"''
 
-[[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
-if (( ${+functions[ai]} )) && [[ -z "${AI_AUTO_LAUNCHED:-}" ]]; then
-    export AI_AUTO_LAUNCHED=1
-    ai
+    tmux_autostart_block='if [[ -o interactive && -z $TMUX && -n $SSH_CONNECTION ]] && command -v tmux >/dev/null; then
+  exec tmux new-session -A -s main
 fi'
 
     if has_path_setup "$HOME/.zshenv"; then
@@ -109,11 +98,10 @@ fi'
     else
         append_block_once "$HOME/.zshenv" path "$path_block"
     fi
-    if has_ai_autolaunch "$HOME/.zshrc"; then
-        echo "Current zsh ai autolaunch -> $HOME/.zshrc"
-    else
-        prepend_block_once "$HOME/.zshrc" zsh-ai "$zsh_ai_block"
-    fi
+    # Prepend order: zsh-ai first, then tmux-autostart, so tmux-autostart lands
+    # ABOVE zsh-ai in the final .zshrc (each prepend inserts at the top).
+    prepend_block_once "$HOME/.zshrc" zsh-ai "$zsh_ai_block"
+    prepend_block_once "$HOME/.zshrc" tmux-autostart "$tmux_autostart_block"
 }
 
 mkdir -p "$BIN_DIR"

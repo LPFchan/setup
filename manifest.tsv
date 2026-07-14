@@ -1,7 +1,7 @@
 # module	target	mode	source
 setup	~/.local/bin/setup	0755	bin/setup
 resume	~/.local/bin/resume	0755	files/resume
-ai-menu	~/.bashrc.d/ai-menu	0644	files/ai-menu
+ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer
 service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol
@@ -15,3 +15,5 @@ fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
 agents	~/.agents/AGENTS.md	script	files/agents.sh
 ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh
+tmux	~/.tmux.conf	script	files/tmux.sh
+tmux-cpu-mem	~/.local/bin/tmux-cpu-mem	0755	files/tmux-cpu-mem

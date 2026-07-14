@@ -21,13 +21,13 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 |--------|--------|--------|
 | `setup` | `~/.local/bin/setup` | `bin/setup` |
 | `resume` | `~/.local/bin/resume` | `files/resume` |
-| `ai-menu` | `~/.bashrc.d/ai-menu` | `files/ai-menu` |
 | `kernel-simmer` | `~/.local/bin/kernel-simmer` | `bin/kernel-simmer` |
 | `service-ctl` | `~/.local/bin/service-ctl` | `bin/service-ctl` |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | `files/gpu-fancontrol` |
 | `monitoring` | `~/.local/bin/monitoring` | `files/monitoring` |
 | `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
+| `tmux-cpu-mem` | `~/.local/bin/tmux-cpu-mem` | `files/tmux-cpu-mem` |
 
 ### Script modules
 
@@ -39,6 +39,8 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `zsh-basics` | (none) | `setopt NO_NOMATCH`, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
+| `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
+| `tmux` | (none) | mouse/status settings in `~/.tmux.conf` | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 
@@ -86,12 +88,19 @@ setup                     # interactive fzf reconfigure
 Setup manages shell config via marker-delimited blocks in `.zshrc`:
 
 ```
-# >>> setup:zsh-ai >>>          — guards + ai-menu autolaunch + /exit alias
+# >>> setup:tmux-autostart >>>  — replace outbound SSH shell with `tmux new-session -A -s main`
+# >>> setup:zsh-ai >>>          — interactive/tty/terminal guards + /exit alias (no longer autolaunches ai)
+# >>> setup:ai-menu >>>         — source ~/.bashrc.d/ai-menu + `ai` autolaunch (owned by the ai-menu module)
 # >>> setup:zsh-basics >>>      — NO_NOMATCH, WORDCHARS
 # >>> setup:zsh-autocomplete >>> — plugin source + history settings + autocomplete config
 # >>> setup:zsh-syntax-highlighting >>> — deferred syntax highlighting
 # >>> setup:starship >>>        — cached starship init
 ```
+
+`tmux-autostart` and `zsh-ai` are prepended (top of `.zshrc`, tmux-autostart
+first so the SSH shell swaps into tmux before `ai` launches); the rest are
+appended. The `ai-menu` block is appended by its module, so autolaunch runs at
+the bottom of `.zshrc` once the shell is fully initialized.
 
 Every managed block's first line is a warning so agents (and humans) know not to
 edit inside it — the block is regenerated from source on `setup update`:
