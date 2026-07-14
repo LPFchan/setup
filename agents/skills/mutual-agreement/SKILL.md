@@ -2,6 +2,7 @@
 name: mutual-agreement
 version: 1.0
 description: "Delegate work to a subagent with mutual review gates. Parent owns the plan and the commit. Subagent owns the implementation. Neither proceeds without the other's agreement."
+argument-hint: "Goal statement, file paths, and constraints for the change to delegate"
 ---
 
 # Mutual Agreement
@@ -41,13 +42,13 @@ The subagent prompt must include:
 > "Only implement if you agree with the plan. If you disagree with any part,
 > explain why and propose alternatives. Do not commit or push."
 
-### Phase 2: Subagent → Parent (implementation only)
+### Phase 2: Subagent → Parent (implementation IS the response)
 
 The subagent reads the plan, evaluates it, and either:
 
-- **Agrees** → implements the changes, writes them to disk, and returns a
-  summary of what it did (files changed, lines added/removed, any decisions
-  it made that weren't specified in the plan). Does NOT commit or push.
+- **Agrees** → implements the changes, writes them to disk. The subagent's
+  response IS the implementation — not a proposal, not a description. The
+  parent sees the diff when it reviews. Does NOT commit or push.
 - **Disagrees** → returns an explanation of what's wrong with the plan and
   proposed alternatives. Does NOT implement.
 
@@ -88,9 +89,10 @@ subagent got wrong, the commit message notes it).
 - **Parent includes implementation code in the plan.** This defeats the
   purpose — the subagent becomes a copy-paste executor, not a reviewer.
   The plan should describe what, the subagent figures out how.
-- **Subagent commits without parent review.** The commit is always the
-  parent's call. Even if the implementation looks correct, the parent
-  should verify the diff before pushing to shared state.
+- **Subagent commits or pushes.** The subagent's job ends at writing files to
+  disk. The commit is the parent's explicit agreement. If the parent doesn't
+  commit, the implementation is rejected. Never include "commit+push" in the
+  subagent's dispatch prompt — include "do not commit or push" instead.
 - **Parent rubber-stamps the implementation.** If the parent doesn't actually
   review the diff, the agreement gate is theater. Read the changes. Verify
   the verification criteria from the plan.
