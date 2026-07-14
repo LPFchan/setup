@@ -4,6 +4,8 @@ Run `hostname` to see which machine you're on. All machines reach each other
 over SSH without a password (keys via `ssh-import-id gh:LPFchan`). Topology:
 Cloudflare DNS → 10.0.0.0/24 → Tailscale subnet. Every machine runs
 LPFchan/setup (`setup`, `ai-menu`, `resume`, `backup`, …) with config synced.
+All machines except `bingus` auto-launch tmux and ai-menu by default. Press Esc
+to dismiss ai-menu.
 
 ## yeowoolair — daily-driver MacBook Air
 - yeowool-air.tailaa113.ts.net (no static IP) · user yeowool
