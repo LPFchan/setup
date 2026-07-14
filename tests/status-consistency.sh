@@ -201,4 +201,41 @@ assert_eq 0 "$fzf_rc" "managed fzf-multicolumn should be current"
 [[ "$fzf_output" == *"current"* && "$fzf_output" == *"local=0.74.0-multicolumn.2"* ]] \
     || fail "fzf-multicolumn status inspected the PATH shadow: $fzf_output"
 
+# ai-menu carries its payload in a separate clone. A stale clone must compare
+# against remote HEAD before payload hashes, otherwise setup update sees the
+# old clone and old installed payload agree and incorrectly skips the update.
+ai_remote="$TEST_TMP/ai-menu-remote.git"
+ai_work="$TEST_TMP/ai-menu-work"
+git init --bare --initial-branch=main "$ai_remote" >/dev/null
+git init --initial-branch=main "$ai_work" >/dev/null
+git -C "$ai_work" config user.name test
+git -C "$ai_work" config user.email test@example.com
+mkdir -p "$ai_work/files"
+printf 'old payload\n' > "$ai_work/files/ai-menu"
+git -C "$ai_work" add files/ai-menu
+git -C "$ai_work" commit -m old >/dev/null
+git -C "$ai_work" remote add origin "$ai_remote"
+git -C "$ai_work" push -u origin main >/dev/null
+
+STATE_DIR="$TEST_TMP/ai-menu-state"
+AI_MENU_SRC_REPO="$ai_remote"
+# shellcheck disable=SC1091
+source "$ROOT/files/ai-menu.sh"
+install >/dev/null
+
+printf 'new payload\n' > "$ai_work/files/ai-menu"
+git -C "$ai_work" add files/ai-menu
+git -C "$ai_work" commit -m new >/dev/null
+git -C "$ai_work" push >/dev/null
+if ai_status=$(status); then
+    ai_status_rc=0
+else
+    ai_status_rc=$?
+fi
+assert_eq 1 "$ai_status_rc" "ai-menu status must detect a stale payload clone"
+[[ "$ai_status" == *"outdated"* ]] \
+    || fail "ai-menu stale clone was not reported outdated: $ai_status"
+update >/dev/null
+assert_eq "new payload" "$(cat "$PAYLOAD_TARGET")" "ai-menu update must install the remote payload"
+
 echo "status consistency tests passed"

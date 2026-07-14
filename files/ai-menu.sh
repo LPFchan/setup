@@ -58,7 +58,16 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local expected actual
+    local expected actual local_ref remote_ref
+    local_ref=$(git_local_ref "$SRC_CLONE")
+    remote_ref=$(git_remote_ref "$SRC_CLONE")
+    if [[ -n "$remote_ref" && "$local_ref" != "$remote_ref" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" \
+            "${local_ref:0:7}" "${remote_ref:0:7}" "$PAYLOAD_TARGET"
+        record_script_state "$MODULE" "git" "${local_ref:0:7}" "${remote_ref:0:7}"
+        return 1
+    fi
+
     expected=$(_desired_hash)
     actual=$(_state_hash)
     if [[ "$expected" == "$actual" ]]; then
@@ -88,13 +97,12 @@ _state_hash() {
 
 # Combined hash over the *desired* block body (from BLOCK_CONTENT, source of
 # truth) and the *desired* payload. The block is derivable in-process; the
-# payload's source of truth is files/ai-menu in the git clone ($SRC_CLONE),
-# which install()/update() always sync (git pull --ff) before copying. If a
-# synced clone exists, hash its payload so status() detects source drift in
-# both the block AND the payload. If no clone is present yet (e.g. status run
-# before any update on this machine), fall back to the installed payload so we
-# don't report a spurious "outdated" — payload drift then goes uncovered until
-# the next update repopulates the clone, but the block is still checked.
+# payload's source of truth is files/ai-menu in the git clone ($SRC_CLONE).
+# status() first compares that clone with remote HEAD so setup update cannot
+# mistake a stale clone for the desired payload. Once refs match, hash the
+# clone's payload to detect drift in both the block and installed payload. If
+# no clone exists yet, fall back to the installed payload; the installation
+# checks above still report a missing managed surface as uninstalled.
 _desired_hash() {
     local block payload src="$SRC_CLONE/files/ai-menu"
     block=$(setup_managed_block_body "$BLOCK_CONTENT")
