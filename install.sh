@@ -53,10 +53,92 @@ prepend_block_once() {
     echo "Updated $file"
 }
 
-configure_shell() {
-    local path_block zsh_ai_block tmux_autostart_block
+# Canonical top→bottom order of setup-managed .zshrc blocks. Mirrors
+# ZSHRC_BLOCK_ORDER in bin/setup so a fresh curl-install ends up ordered too.
+ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-init starship zsh-autocomplete zsh-basics zsh-syntax-highlighting ai-menu)
 
-    # Remove stale ai managed blocks so fresh ones with ai-menu path are written
+# Reorder setup-managed blocks in <file> to match the given label order,
+# preserving unmanaged content and staying idempotent. Mirrors
+# normalize_block_order in bin/setup (see there for the full algorithm).
+normalize_block_order() {
+    local file="$1"; shift
+    [[ -f "$file" ]] || return 0
+    local order=("$@")
+    local tmp; tmp=$(mktemp)
+    ORDER_LIST="$(printf '%s\n' "${order[@]}")" awk '
+        function flush_nonblock(   i) {
+            if (nb_count == 0) return
+            start = 1; endi = nb_count
+            while (start <= endi && nb[start] ~ /^[[:space:]]*$/) start++
+            while (endi >= start && nb[endi] ~ /^[[:space:]]*$/) endi--
+            if (start > endi) { nb_count = 0; return }
+            item_type[++nitems] = "text"
+            s = ""
+            for (i = start; i <= endi; i++) s = s (i > start ? "\n" : "") nb[i]
+            item_text[nitems] = s
+            nb_count = 0
+        }
+        BEGIN {
+            n_order = 0
+            m = split(ENVIRON["ORDER_LIST"], oarr, "\n")
+            for (i = 1; i <= m; i++) if (oarr[i] != "") order_idx[oarr[i]] = ++n_order
+        }
+        {
+            if ($0 ~ /^# >>> setup:.* >>>$/) {
+                flush_nonblock()
+                label = $0
+                sub(/^# >>> setup:/, "", label)
+                sub(/ >>>$/, "", label)
+                blk = $0
+                inblock = 1
+                item_type[++nitems] = "block"
+                item_label[nitems] = label
+                next
+            }
+            if (inblock) {
+                blk = blk "\n" $0
+                if ($0 ~ /^# <<< setup:.* <<<$/) {
+                    inblock = 0
+                    item_text[nitems] = blk
+                }
+                next
+            }
+            nb[++nb_count] = $0
+        }
+        END {
+            flush_nonblock()
+            nslots = 0
+            for (i = 1; i <= nitems; i++) if (item_type[i] == "block") slot[++nslots] = i
+            for (i = 1; i <= nslots; i++) {
+                idx = slot[i]; lbl = item_label[idx]
+                if (lbl in order_idx) key[i] = order_idx[lbl]
+                else key[i] = n_order + i
+                ord[i] = i
+            }
+            for (i = 2; i <= nslots; i++) {
+                kk = key[i]; oo = ord[i]; j = i - 1
+                while (j >= 1 && key[j] > kk) { key[j+1] = key[j]; ord[j+1] = ord[j]; j-- }
+                key[j+1] = kk; ord[j+1] = oo
+            }
+            for (i = 1; i <= nslots; i++) sorted_text[i] = item_text[slot[ord[i]]]
+            si = 0; out = 0
+            for (i = 1; i <= nitems; i++) {
+                if (item_type[i] == "block") { piece = sorted_text[++si] }
+                else                          { piece = item_text[i] }
+                if (out++) printf "\n"
+                printf "%s\n", piece
+            }
+        }
+    ' "$file" > "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
+configure_shell() {
+    local path_block zsh_init_block tmux_autostart_block
+
+    # Remove stale ai managed blocks so fresh ones with ai-menu path are written.
+    # This awk also strips the legacy `setup:zsh-ai` block, which doubles as the
+    # zsh-ai -> zsh-init rename migration (prepend_block_once then writes zsh-init
+    # fresh, so no orphaned duplicate remains).
     for _f in "$HOME/.zshrc" "$HOME/.bashrc"; do
         [[ -f "$_f" ]] || continue
         if grep -qE '(linux-setup|setup):(zsh-ai|bash-ai)' "$_f" 2>/dev/null; then
@@ -84,7 +166,7 @@ configure_shell() {
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac'
 
-    zsh_ai_block='[[ -o interactive && -t 0 ]] || return
+    zsh_init_block='[[ -o interactive && -t 0 ]] || return
 [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
 
 alias /exit='"'"'exit'"'"''
@@ -98,9 +180,10 @@ fi'
     else
         append_block_once "$HOME/.zshenv" path "$path_block"
     fi
-    # Prepend order: zsh-ai first, then tmux-autostart, so tmux-autostart lands
-    # ABOVE zsh-ai in the final .zshrc (each prepend inserts at the top).
-    prepend_block_once "$HOME/.zshrc" zsh-ai "$zsh_ai_block"
+    # Prepend order: zsh-init first, then tmux-autostart, so tmux-autostart lands
+    # ABOVE zsh-init in the final .zshrc (each prepend inserts at the top). Final
+    # ordering across all blocks is enforced by normalize_block_order below.
+    prepend_block_once "$HOME/.zshrc" zsh-init "$zsh_init_block"
     prepend_block_once "$HOME/.zshrc" tmux-autostart "$tmux_autostart_block"
 }
 
@@ -131,8 +214,17 @@ printf '%s\t%s\t%s\n' "$TARGET" "$_hash" "$_hash" >> "$_hash_file"
 
 echo "Installed $TARGET"
 
+# Write the prepended .zshrc blocks (also strips the legacy zsh-ai block) before
+# the CLI runs and adds its module-owned blocks.
+configure_shell
+
 if (($# > 0)); then
     "$TARGET" "$@"
 else
     "$TARGET"
 fi
+
+# After configure_shell + the CLI's module bootstrap (which appends the
+# remaining .zshrc blocks), enforce the canonical ordering so a fresh
+# curl-install ends up ordered even without relying on the installed CLI.
+normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"

@@ -359,23 +359,35 @@ manage_block() {
 
 BLOCK_DELIM=$'\x1f'
 # NOTE: prepend inserts at the very top of the file, so the entry processed
-# LAST ends up on top. tmux-autostart is listed AFTER zsh-ai so that in the
-# resulting .zshrc it sits ABOVE zsh-ai (must run before ai-menu autolaunch).
+# LAST ends up on top. tmux-autostart is listed AFTER zsh-init so that in the
+# resulting .zshrc it sits ABOVE zsh-init (must run before ai-menu autolaunch).
+# Final canonical ordering is enforced separately by normalize_block_order.
 BLOCK_REGISTRY=(
     "zshenv${BLOCK_DELIM}path${BLOCK_DELIM}path_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
-    "zshrc${BLOCK_DELIM}zsh-ai${BLOCK_DELIM}zsh_ai_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
+    "zshrc${BLOCK_DELIM}zsh-init${BLOCK_DELIM}zsh_init_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
     "zshrc${BLOCK_DELIM}tmux-autostart${BLOCK_DELIM}tmux_autostart_block${BLOCK_DELIM}upsert${BLOCK_DELIM}prepend"
 )
 
+# Canonical top→bottom order of setup-managed .zshrc blocks. Enforced by
+# normalize_block_order at the end of every path that may add/rewrite a block.
+ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-init starship zsh-autocomplete zsh-basics zsh-syntax-highlighting ai-menu)
+
 configure_shell() {
-    local path_block zsh_ai_block tmux_autostart_block
+    local path_block zsh_init_block tmux_autostart_block
+
+    # Migration: earlier versions named this block `zsh-ai`. Strip any legacy
+    # `setup:zsh-ai` block before writing `zsh-init` so `setup update` on an
+    # existing machine doesn't leave both blocks (orphaned zsh-ai + zsh-init).
+    if [[ -f "$HOME/.zshrc" ]] && grep -Fq "# >>> setup:zsh-ai >>>" "$HOME/.zshrc"; then
+        manage_block "$HOME/.zshrc" "zsh-ai" "" "remove"
+    fi
 
     path_block='case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac'
 
-    zsh_ai_block='[[ -o interactive && -t 0 ]] || return
+    zsh_init_block='[[ -o interactive && -t 0 ]] || return
 [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
 
 alias /exit='"'"'exit'"'"''
@@ -388,6 +400,107 @@ fi'
         IFS="$BLOCK_DELIM" read -r file_key label content_var mode position <<< "$entry"
         manage_block "$HOME/.$file_key" "$label" "${!content_var}" "$mode" "$position"
     done
+}
+
+# Reorder the setup-managed blocks in <file> to match the given label order,
+# preserving all unmanaged content exactly and staying idempotent.
+#
+#   normalize_block_order <file> <label1> <label2> ...
+#
+# Algorithm:
+#   1. Scan the file into an ordered list of items; each item is either a
+#      MANAGED BLOCK (full text from `# >>> setup:LABEL >>>` through its
+#      matching `# <<< setup:LABEL <<<`, inclusive) or a run of NON-block lines.
+#   2. The item positions that are blocks are "slots".
+#   3. Sort present blocks by canonical order: known labels by their index in
+#      the argument list; unknown labels sort AFTER all known ones, keeping
+#      their original relative order (stable). Unknown blocks are never dropped.
+#   4. Re-emit items in place; fill block-slots with the sorted blocks. Non-block
+#      items stay exactly where they were.
+#   5. Exactly one blank line separates consecutive elements; block interiors and
+#      unmanaged lines are left byte-for-byte intact. Written atomically via mv.
+normalize_block_order() {
+    local file="$1"; shift
+    [[ -f "$file" ]] || return 0
+    local order=("$@")
+
+    local tmp; tmp=$(mktemp)
+    ORDER_LIST="$(printf '%s\n' "${order[@]}")" awk '
+        function flush_nonblock(   i) {
+            # Emit accumulated non-block lines as one item, trimming leading and
+            # trailing blank lines (inter-item spacing is re-added on output).
+            if (nb_count == 0) return
+            start = 1; endi = nb_count
+            while (start <= endi && nb[start] ~ /^[[:space:]]*$/) start++
+            while (endi >= start && nb[endi] ~ /^[[:space:]]*$/) endi--
+            if (start > endi) { nb_count = 0; return }
+            item_type[++nitems] = "text"
+            s = ""
+            for (i = start; i <= endi; i++) s = s (i > start ? "\n" : "") nb[i]
+            item_text[nitems] = s
+            nb_count = 0
+        }
+        BEGIN {
+            n_order = 0
+            m = split(ENVIRON["ORDER_LIST"], oarr, "\n")
+            for (i = 1; i <= m; i++) if (oarr[i] != "") order_idx[oarr[i]] = ++n_order
+        }
+        {
+            if ($0 ~ /^# >>> setup:.* >>>$/) {
+                flush_nonblock()
+                label = $0
+                sub(/^# >>> setup:/, "", label)
+                sub(/ >>>$/, "", label)
+                blk = $0
+                inblock = 1
+                item_type[++nitems] = "block"
+                item_label[nitems] = label
+                next
+            }
+            if (inblock) {
+                blk = blk "\n" $0
+                if ($0 ~ /^# <<< setup:.* <<<$/) {
+                    inblock = 0
+                    item_text[nitems] = blk
+                }
+                next
+            }
+            nb[++nb_count] = $0
+        }
+        END {
+            flush_nonblock()
+
+            # Collect block-slot indices and sort blocks by canonical order.
+            nslots = 0
+            for (i = 1; i <= nitems; i++) if (item_type[i] == "block") slot[++nslots] = i
+            # Build a sort key per slot: known -> index; unknown -> big base +
+            # original appearance order (stable, after all known).
+            for (i = 1; i <= nslots; i++) {
+                idx = slot[i]
+                lbl = item_label[idx]
+                if (lbl in order_idx) key[i] = order_idx[lbl]
+                else key[i] = n_order + i   # keeps unknowns stable & last
+                ord[i] = i
+            }
+            # Simple stable insertion sort on key[].
+            for (i = 2; i <= nslots; i++) {
+                kk = key[i]; oo = ord[i]; j = i - 1
+                while (j >= 1 && key[j] > kk) { key[j+1] = key[j]; ord[j+1] = ord[j]; j-- }
+                key[j+1] = kk; ord[j+1] = oo
+            }
+            # sorted_block_text[slotpos] = text of the block that belongs there.
+            for (i = 1; i <= nslots; i++) sorted_text[i] = item_text[slot[ord[i]]]
+
+            # Re-emit items; blocks pulled from sorted order, text as-is.
+            si = 0; out = 0
+            for (i = 1; i <= nitems; i++) {
+                if (item_type[i] == "block") { piece = sorted_text[++si] }
+                else                          { piece = item_text[i] }
+                if (out++) printf "\n"      # one blank line between items
+                printf "%s\n", piece
+            }
+        }
+    ' "$file" > "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }
 
 fetch_payload() {
@@ -740,6 +853,9 @@ cmd_install() {
             sudo -E ${ec} 2>&1 || echo "(enable failed — run 'setup enable $module' with sudo)"
         fi
     done
+
+    # A module install may have added a .zshrc block; keep canonical order.
+    normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
 }
 
 cmd_update() {
@@ -788,6 +904,8 @@ cmd_update() {
     if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
         install_one setup "$setup_target" "$setup_mode" "$setup_source"
     fi
+    # All .zshrc blocks now exist (configure_shell + module loop); enforce order.
+    normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
     echo
     if [[ "$new_count" -gt 0 ]]; then
         echo "$new_count new module(s) available: ${new_names[*]}"
@@ -1257,6 +1375,8 @@ cmd_reconfigure() {
                 }
                 uninstall_one "$mod" "$target" "$mode" "$source" ;;
         esac
+        # A .zshrc block may have just been (re)written; keep canonical order.
+        normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
     done
 }
 
