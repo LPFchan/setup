@@ -2,14 +2,14 @@
 # setup-module: backup
 # setup-source: bin/backup
 #
-# backup — unified backup to bingus NAS
+# backup — unified backup to bingus NAS via NFS
 #
-# Transport-driven dispatch: NFS (btrfs+LAN) or rsyncd (tar+Tailscale).
-# Zero local retention — the only copy lives on bingus.
+# btrfs send over NFS mount to bingus. Zero local retention —
+# the only copy lives on bingus.
 #
 # Commands:
-#   enable              Detect and install backup infrastructure
-#   disable             Remove backup scripts, timers, transport config
+#   enable              Install backup infrastructure
+#   disable             Remove backup scripts, timers, NFS config
 #   status              Show backup config, last/next run
 #   trigger [daily|weekly]  Run backup now
 #   restore [date]      Interactively pick or restore specific date
@@ -32,25 +32,6 @@ require_root() {
 
 detect_fs() { stat -f -c '%T' "${1:-/}" 2>/dev/null || echo "unknown"; }
 detect_host() { hostname -s; }
-
-detect_transport() {
-    local fs lan_ip
-    fs=$(detect_fs /)
-    lan_ip=$(timeout 3 getent ahosts bingus 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}')
-    if [[ -n "$lan_ip" && "$lan_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-        if [[ "$fs" == "btrfs" ]] && timeout 3 bash -c "echo > /dev/tcp/${lan_ip}/2049" 2>/dev/null; then
-            echo "nfs"
-        elif timeout 3 bash -c 'echo > /dev/tcp/bingus.lost.plus/873' 2>/dev/null; then
-            echo "rsyncd"
-        else
-            echo "unreachable"
-        fi
-    elif timeout 3 bash -c 'echo > /dev/tcp/bingus.lost.plus/873' 2>/dev/null; then
-        echo "rsyncd"
-    else
-        echo "unreachable"
-    fi
-}
 
 # --- paths config -----------------------------------------------------
 
@@ -106,9 +87,9 @@ PATHS
 
 # --- enable-time setup ------------------------------------------------
 
-setup_transport_nfs() {
+setup_nfs() {
     local host="$1"
-    [[ "$(detect_fs /)" == "btrfs" ]] || die "NFS transport requires btrfs root — this host has $(detect_fs /)"
+    [[ "$(detect_fs /)" == "btrfs" ]] || die "requires btrfs root — this host has $(detect_fs /)"
 
     mkdir -p /mnt/bingus-backups
     grep -q 'mnt.bingus-backups' /etc/fstab || \
@@ -122,101 +103,10 @@ setup_transport_nfs() {
     }
 }
 
-setup_transport_rsyncd() {
-    local host="$1"
-    local staging_root="/var/cache/backup-${host}"
-
-    if [[ -e /mnt/block && ! -e "$staging_root" ]]; then
-        ln -s /mnt/block/backups "$staging_root"
-    fi
-
-    if [[ "$(df --output=avail /var/cache 2>/dev/null | tail -1)" -lt 52428800 ]] 2>/dev/null; then
-        warn "/var/cache is low on space (<50GB) — consider symlinking ${staging_root} to a larger volume"
-    fi
-
-    mkdir -p "${staging_root}/staging"
-
-    [[ -f /etc/rsync.secrets ]] || {
-        cat <<INS
-rsyncd password required.
-
-Get it from vaultwarden:
-  folder: llm
-  item:   ${host} bingus rsync password
-
-Store it:
-  echo '<password>' | sudo tee /etc/rsync.secrets
-  sudo chmod 600 /etc/rsync.secrets
-
-Then re-run: sudo backup enable
-INS
-        exit 1
-    }
-
-    systemctl list-unit-files tailscaled.service &>/dev/null || \
-        die "rsyncd transport requires Tailscale — install and start tailscaled"
-}
-
-# --- adapter functions (emit sections to stdout) -----------------------
-
-adapter_header_nfs() {
-    local host="$1"
-    echo "DEST=\"/bak\""
-    echo "REMOTE=\"/mnt/bingus-backups/${host}\""
-}
-
-adapter_setup_nfs() {
-    cat <<'SETUP'
-mountpoint -q /mnt/bingus-backups || exit 1
-
-list_remote() { ls -1 "$REMOTE"/$1 2>/dev/null; }
-delete_remote() { rm -f "$REMOTE/$(basename "$1")"; }
-SETUP
-}
-
-adapter_ship_nfs() {
-    cat <<'SHIP'
-SNAP="/bak-$(date +%Y%m%d)"
-btrfs subvolume snapshot -r /bak "$SNAP"
-btrfs send "$SNAP" > "$REMOTE/$(date +%Y%m%d)-full.bin"
-btrfs subvolume delete "$SNAP"
-SHIP
-}
-
-adapter_header_rsyncd() {
-    local host="$1"
-    echo "DEST=\"/var/cache/backup-${host}/staging\""
-    echo "REMOTE=\"rsync://${host}@bingus.lost.plus/bak/${host}\""
-    echo "RSYNC_RSH=\"--password-file=/etc/rsync.secrets\""
-}
-
-adapter_setup_rsyncd() {
-    cat <<'SETUP'
-rm -rf "$DEST" && mkdir -p "$DEST"
-
-list_remote() { rsync --list-only ${RSYNC_RSH} "$REMOTE"/$1 2>/dev/null | awk '{print $NF}' | grep -v '^\.'; }
-delete_remote() {
-    local empty=$(mktemp -d)
-    rsync -r --no-perms --no-owner --no-group --no-times --delete --include="$(basename "$1")" --exclude='*' ${RSYNC_RSH} "$empty/" "$REMOTE/"
-    rmdir "$empty"
-}
-SETUP
-}
-
-adapter_ship_rsyncd() {
-    local host="$1"
-    cat <<SHIP
-TARBALL="/var/cache/backup-${host}/\$(date +%Y%m%d)-full.tar.gz"
-tar -czf "\$TARBALL" -C "\$DEST" .
-rsync -a --no-perms --no-owner --no-group --no-times \${RSYNC_RSH} "\$TARBALL" "\$REMOTE/"
-rm -f "\$TARBALL"
-SHIP
-}
-
 # --- script generation ------------------------------------------------
 
 generate_daily_script() {
-    local transport="$1" host="$2"
+    local host="$1"
 
     {
         cat <<HEADER
@@ -227,11 +117,18 @@ trap 'rm -f /var/lock/backup.lock' EXIT
 
 PATHS_FILE="/etc/backup/paths.d/${host}"
 HEADER
-        "adapter_header_${transport}" "$host"
+
+        echo "DEST=\"/bak\""
+        echo "REMOTE=\"/mnt/bingus-backups/${host}\""
         echo 'PATTERN="*-full.*"'
         echo 'RETENTION_DAYS="8"'
 
-        "adapter_setup_${transport}" "$host"
+        cat <<'SETUP'
+mountpoint -q /mnt/bingus-backups || exit 1
+
+list_remote() { ls -1 "$REMOTE"/$1 2>/dev/null; }
+delete_remote() { rm -f "$REMOTE/$(basename "$1")"; }
+SETUP
 
         cat <<'ENGINE'
 run_rsync() {
@@ -261,7 +158,12 @@ snap list > "$DEST/rebuild/snap-list.txt" 2>/dev/null || true
 docker images --format '{{.Repository}}:{{.Tag}}' > "$DEST/rebuild/docker-images.txt" 2>/dev/null || true
 ENGINE
 
-        "adapter_ship_${transport}" "$host"
+        cat <<'SHIP'
+SNAP="/bak-$(date +%Y%m%d)"
+btrfs subvolume snapshot -r /bak "$SNAP"
+btrfs send "$SNAP" > "$REMOTE/$(date +%Y%m%d)-full.bin"
+btrfs subvolume delete "$SNAP"
+SHIP
 
         cat <<'PRUNE'
 CUTOFF=$(date -d "${RETENTION_DAYS} days ago" +%Y%m%d)
@@ -290,14 +192,14 @@ generate_weekly() {
 # --- systemd units ----------------------------------------------------
 
 write_systemd_units() {
-    local host="$1" transport="$2"
+    local host="$1"
 
     for period in daily weekly; do
         cat > "/etc/systemd/system/backup-${period}.service" <<UNIT
 [Unit]
-Description=Backup ${period} to bingus (${host} via ${transport})
-$( [[ "${transport}" == "rsyncd" ]] && echo "After=tailscaled.service" && echo "Requires=tailscaled.service" )
-$( [[ "${transport}" == "nfs" ]] && echo "After=remote-fs.target" && echo "Wants=remote-fs.target" )
+Description=Backup ${period} to bingus (${host} via NFS)
+After=remote-fs.target
+Wants=remote-fs.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/backup-${period}
@@ -328,41 +230,25 @@ TIMER
 
 cmd_enable() {
     require_root
-    local host transport
+    local host
     host=$(detect_host)
-    transport=$(detect_transport)
+
+    [[ "$(detect_fs /)" == "btrfs" ]] || die "requires btrfs root"
+    timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null || die "bingus NFS unreachable"
 
     info "host:       ${host}"
     info "filesystem: $(detect_fs /)"
-    info "transport:  ${transport}"
 
-    case "$transport" in
-        nfs)
-            setup_transport_nfs "$host"
-            write_paths_file "$host"
-            generate_daily_script nfs "$host"
-            generate_weekly
-            write_systemd_units "$host" nfs
-            info "backup enabled (btrfs → NFS → bingus)"
-            ;;
-        rsyncd)
-            setup_transport_rsyncd "$host"
-            write_paths_file "$host"
-            generate_daily_script rsyncd "$host"
-            generate_weekly
-            write_systemd_units "$host" rsyncd
-            info "backup enabled (tar → rsyncd → bingus)"
-            ;;
-        *)
-            die "bingus unreachable"
-            ;;
-    esac
+    setup_nfs "$host"
+    write_paths_file "$host"
+    generate_daily_script "$host"
+    generate_weekly
+    write_systemd_units "$host"
+    info "backup enabled (btrfs → NFS → bingus)"
 }
 
 cmd_disable() {
     require_root
-    local transport
-    transport=$(detect_transport)
 
     for unit in backup-daily backup-weekly; do
         systemctl disable --now "${unit}.timer" 2>/dev/null || true
@@ -372,20 +258,15 @@ cmd_disable() {
     systemctl daemon-reload
     rm -f /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
 
-    if [[ "$transport" == "nfs" || "$transport" == "unreachable" ]]; then
-        umount /mnt/bingus-backups 2>/dev/null || true
-        sed -i '\|mnt.bingus-backups|d' /etc/fstab
-    fi
-    if [[ "$transport" == "rsyncd" || "$transport" == "unreachable" ]]; then
-        rm -f /etc/rsync.secrets
-    fi
+    umount /mnt/bingus-backups 2>/dev/null || true
+    sed -i '\|mnt.bingus-backups|d' /etc/fstab
     info "backup disabled"
 }
 
 cmd_status() {
     echo "host:       $(detect_host)"
     echo "filesystem: $(detect_fs /)"
-    echo "transport:  $(detect_transport)"
+    echo "nfs mount:  $(mountpoint -q /mnt/bingus-backups 2>/dev/null && echo mounted || echo not-mounted)"
     echo
     for unit in backup-daily backup-weekly; do
         local state next
@@ -407,92 +288,50 @@ cmd_trigger() {
 }
 
 cmd_restore() {
-    local host transport
+    local host
     host=$(detect_host)
-    transport=$(detect_transport)
-    local nfs_avail=0 rsyncd_avail=0
-    local nfs_files="" rsyncd_files=""
+    local files=""
     local recover="/tmp/recovery"
     local date_arg="${1:-}"
 
     # NFS probe
     if mountpoint -q /mnt/bingus-backups 2>/dev/null; then
-        nfs_files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || nfs_files=""
+        files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || files=""
     else
         if timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null; then
             mkdir -p /mnt/bingus-backups
             timeout 10 mount -t nfs bingus:/volume1/bak /mnt/bingus-backups 2>/dev/null && {
-                nfs_files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || nfs_files=""
+                files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || files=""
             }
         fi
     fi
-    if [[ -n "$nfs_files" ]]; then
-        if [[ "$(detect_fs /)" == "btrfs" ]]; then
-            nfs_avail=1
-        else
-            warn "NFS artifacts present but unrestorable on $(detect_fs /) (requires btrfs)"
-        fi
-    fi
 
-    # rsyncd probe
-    local rsh=""
-    [[ -f /etc/rsync.secrets ]] && rsh="--password-file=/etc/rsync.secrets"
-    if [[ -z "$rsh" ]]; then
-        warn "rsyncd unavailable — credentials missing (re-store from vaultwarden)"
-    else
-        rsyncd_files=$(rsync --list-only $rsh "rsync://${host}@bingus.lost.plus/bak/${host}/" 2>/dev/null \
-            | awk '{print $NF}' | grep -P '^\d{8}-(full|weekly)\.' ) || rsyncd_files=""
-        [[ -n "$rsyncd_files" ]] && rsyncd_avail=1
-    fi
+    [[ -n "$files" ]] || die "no backups found for ${host} on bingus NFS"
 
-    [[ $nfs_avail -eq 0 && $rsyncd_avail -eq 0 ]] && die "no restorable backups found for ${host} on bingus"
-
-    # Build merged list
-    local all_files=""
-    if [[ $nfs_avail -eq 1 ]]; then
-        all_files+=$(echo "$nfs_files" | sed 's|.*/||' | sed 's/^/[nfs] /')$'\n'
-    fi
-    if [[ $rsyncd_avail -eq 1 ]]; then
-        all_files+=$(echo "$rsyncd_files" | sed 's/^/[tar] /')$'\n'
+    if [[ "$(detect_fs /)" != "btrfs" ]]; then
+        warn "NFS artifacts present but unrestorable on $(detect_fs /) (requires btrfs)"
+        echo "$files" | sed 's|.*/||' | sort -r | tail -5
+        return 1
     fi
 
     if [[ -z "$date_arg" ]]; then
         if command -v fzf >/dev/null && [[ -t 1 ]]; then
             date_arg=$(
-                echo "$all_files" | grep -v '^$' | sort -r | \
+                echo "$files" | sed 's|.*/||' | sort -r | \
                 fzf --header="Select backup to restore (Enter=restore, Esc=cancel)"
             ) || { info "cancelled"; return 0; }
-            date_arg=$(echo "$date_arg" | sed 's/^\[[a-z]*\] //')
         else
-            echo "$all_files" | grep -v '^$' | sort -r | tail -5
+            echo "$files" | sed 's|.*/||' | sort -r | tail -5
             echo "Run 'backup restore YYYYMMDD-full.bin' for a specific file"
             return 0
         fi
     fi
 
-    # Dispatch by artifact type
-    local src=""
-    if [[ "$date_arg" == *.bin ]]; then
-        # NFS artifact (btrfs receive)
-        src="/mnt/bingus-backups/${host}/${date_arg}"
-        [[ -f "$src" ]] || die "no NFS artifact: ${date_arg}"
-        mkdir -p "${recover}/${date_arg%.bin}"
-        cat "$src" | btrfs receive "${recover}/${date_arg%.bin}"
-        info "Restored to ${recover}/${date_arg%.bin}"
-    elif [[ "$date_arg" == *.tar.gz ]]; then
-        # rsyncd artifact (tar extract)
-        [[ -n "$rsh" ]] || die "rsyncd credentials missing"
-        local tar
-        tar=$(mktemp)
-        rsync -a $rsh "rsync://${host}@bingus.lost.plus/bak/${host}/${date_arg}" "$tar" 2>/dev/null || {
-            rm -f "$tar"; die "cannot fetch ${date_arg}"; }
-        mkdir -p "${recover}/${date_arg%.tar.gz}"
-        tar -xzf "$tar" -C "${recover}/${date_arg%.tar.gz}"
-        rm -f "$tar"
-        info "Restored to ${recover}/${date_arg%.tar.gz}"
-    else
-        die "unrecognized artifact format: ${date_arg}"
-    fi
+    local src="/mnt/bingus-backups/${host}/${date_arg}"
+    [[ -f "$src" ]] || die "no NFS artifact: ${date_arg}"
+    mkdir -p "${recover}/${date_arg%.bin}"
+    cat "$src" | btrfs receive "${recover}/${date_arg%.bin}"
+    info "Restored to ${recover}/${date_arg%.bin}"
 }
 
 # --- main -------------------------------------------------------------
@@ -510,7 +349,7 @@ case "$cmd" in
 Usage: ${NAME} <command> [args]
 
 Commands:
-  enable              Detect and install backup infrastructure
+  enable              Install backup infrastructure
   disable             Remove backup scripts and timers
   status              Show backup config and schedule
   trigger [daily|weekly]  Run backup now
