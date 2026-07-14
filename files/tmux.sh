@@ -24,7 +24,7 @@ bind -T copy-mode-vi WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
 set -g status-interval 5
 set -g status-position top
 set -g status-left-length 64
-set -g status-left " #{p-12:#h} "
+set -g status-left " #{p12:host_short} "
 set -g status-right "#(tmux-cpu-mem) "'
 
 AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
