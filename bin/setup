@@ -42,7 +42,7 @@ Commands:
   disable [module...]  Disable service modules (requires sudo)
   diff [module...]     Show local diff against remote source
   doctor               Check required local tools
-  schedule             Install daily auto-update timer
+  schedule [status]    Install daily auto-update timer or show its state
   unschedule           Remove daily auto-update timer
 
 Run without arguments for interactive fzf reconfigure.
@@ -1054,6 +1054,14 @@ WantedBy=timers.target
 "
 
 cmd_schedule() {
+    if [[ "${1:-}" == "status" ]]; then
+        shift
+        (($# == 0)) || { echo "Usage: setup schedule status" >&2; return 2; }
+        cmd_schedule_status
+        return
+    fi
+    (($# == 0)) || { echo "Usage: setup schedule [status]" >&2; return 2; }
+
     local script_path
     script_path="$(command -v setup 2>/dev/null || echo "$HOME/.local/bin/setup")"
     if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -1097,6 +1105,39 @@ PLIST
         systemctl --user enable --now setup-update.timer
         echo "setup auto-update scheduled daily (systemd)"
     fi
+}
+
+cmd_schedule_status() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        local label="com.lost.plus.setup-update"
+        local plist="$HOME/Library/LaunchAgents/$label.plist"
+        local _uid; _uid=$(id -u)
+        if [[ ! -f "$plist" ]]; then
+            echo "setup auto-update not scheduled (launchd)"
+            return 1
+        fi
+        if launchctl print "gui/$_uid/$label" >/dev/null 2>&1; then
+            echo "setup auto-update scheduled daily at 03:00 (launchd, loaded)"
+            return 0
+        fi
+        echo "setup auto-update configured but not loaded (launchd)"
+        return 1
+    fi
+
+    local timer="$HOME/.config/systemd/user/setup-update.timer"
+    if [[ ! -f "$timer" ]]; then
+        echo "setup auto-update not scheduled (systemd)"
+        return 1
+    fi
+    local enabled="no" active="no"
+    systemctl --user is-enabled --quiet setup-update.timer 2>/dev/null && enabled="yes"
+    systemctl --user is-active --quiet setup-update.timer 2>/dev/null && active="yes"
+    if [[ "$enabled" == "yes" && "$active" == "yes" ]]; then
+        echo "setup auto-update scheduled daily (systemd, enabled and active)"
+        return 0
+    fi
+    echo "setup auto-update configured but inactive (systemd, enabled=$enabled active=$active)"
+    return 1
 }
 
 cmd_unschedule() {

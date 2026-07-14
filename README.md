@@ -81,6 +81,8 @@ setup disable backup      # disable service module
 setup update              # update installed modules, report new ones
 setup diff resume         # show diff against remote
 setup doctor              # check required tools (including git)
+setup schedule            # install the daily auto-update timer
+setup schedule status     # show whether the timer is configured and active
 setup                     # interactive fzf reconfigure
 ```
 
