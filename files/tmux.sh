@@ -26,10 +26,82 @@ set -g status-position top
 set -g status-left-length 64
 set -g status-left " #{p12:host_short} "
 set -g status-right "#(tmux-cpu-mem) "
+set -g window-status-format " #W "
+set -g window-status-current-format " #W "
 set -gF status-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black}"'
 
 AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
   exec tmux new-session -A -s main
+fi'
+
+# Name a tmux window from the command as entered at the interactive zsh prompt,
+# before launchers can exec architecture-, version-, or interpreter-named
+# binaries. The command table is deliberately generic; only SSH needs protocol
+# awareness because its useful title is the destination rather than `ssh`.
+TITLE_BLOCK_CONTENT='if [[ -o interactive && -n ${TMUX-} ]] && command -v tmux >/dev/null; then
+  autoload -Uz add-zsh-hook
+
+  _setup_tmux_preexec_title() {
+    emulate -L zsh
+    setopt extendedglob
+
+    local -a words
+    words=("${(z)2}")
+    words=("${(@Q)words}")
+
+    # Skip leading assignments and shell/process launchers so the title names
+    # the program the user asked to run (for example, `env FOO=1 codex`).
+    while (( $#words )); do
+      if [[ ${words[1]} == [[:alpha:]_][[:alnum:]_]#=* ]]; then
+        words=("${words[@]:1}")
+      elif [[ ${words[1]} == (command|exec|noglob|nocorrect|time) ]]; then
+        words=("${words[@]:1}")
+      elif [[ ${words[1]} == env ]]; then
+        words=("${words[@]:1}")
+        while (( $#words )) && [[ ${words[1]} == -* || ${words[1]} == [[:alpha:]_][[:alnum:]_]#=* ]]; do
+          words=("${words[@]:1}")
+        done
+      else
+        break
+      fi
+    done
+
+    (( $#words )) || return
+    local command_name=${words[1]:t}
+    local title=$command_name
+
+    if [[ $command_name == ssh ]]; then
+      local candidate
+      integer i=2
+      while (( i <= $#words )); do
+        candidate=${words[i]}
+        if [[ $candidate == -- ]]; then
+          (( i++ ))
+          break
+        elif [[ $candidate != -* || $candidate == - ]]; then
+          break
+        elif [[ $candidate == -[BbcDEeFIiJLlmOoPpQRSWw] ]]; then
+          (( i += 2 ))
+        else
+          (( i++ ))
+        fi
+      done
+      if (( i <= $#words )); then
+        title=${words[i]##*@}
+      fi
+    fi
+
+    [[ -n $title ]] && tmux rename-window -- "$title"
+  }
+
+  _setup_tmux_precmd_title() {
+    tmux set-window-option automatic-rename on
+  }
+
+  add-zsh-hook -d preexec _setup_tmux_preexec_title 2>/dev/null
+  add-zsh-hook -d precmd _setup_tmux_precmd_title 2>/dev/null
+  add-zsh-hook preexec _setup_tmux_preexec_title
+  add-zsh-hook precmd _setup_tmux_precmd_title
 fi'
 
 # Instantaneous CPU and RAM utilization for Linux and macOS. Linux uses a
@@ -132,6 +204,7 @@ _write_helper() {
 _upsert_blocks() {
     manage_block "$TMUX_CONF" "tmux" "$BLOCK_CONTENT" "upsert" "append"
     manage_block "$ZSHRC" "tmux-autostart" "$AUTOSTART_BLOCK_CONTENT" "upsert" "prepend"
+    manage_block "$ZSHRC" "tmux-title" "$TITLE_BLOCK_CONTENT" "upsert" "prepend"
 }
 
 # If a tmux server is already running, reload the config so the new block takes
@@ -147,26 +220,29 @@ _reload() {
     tmux source-file "$TMUX_CONF" >/dev/null 2>&1 || true
 }
 
-# Combined hash over the .tmux.conf block, autostart block, and installed helper,
-# so drift in any owned surface is detected.
+# Combined hash over the .tmux.conf block, zsh integration blocks, and installed
+# helper, so drift in any owned surface is detected.
 _state_hash() {
-    local block autostart helper
+    local block autostart title helper
     block=""
     autostart=""
+    title=""
     [[ -f "$TMUX_CONF" ]] && block=$(awk '/^# >>> setup:tmux >>>/{f=1;next}/^# <<< setup:tmux <<</{f=0}f' "$TMUX_CONF")
     [[ -f "$ZSHRC" ]] && autostart=$(awk '/^# >>> setup:tmux-autostart >>>/{f=1;next}/^# <<< setup:tmux-autostart <<</{f=0}f' "$ZSHRC")
+    [[ -f "$ZSHRC" ]] && title=$(awk '/^# >>> setup:tmux-title >>>/{f=1;next}/^# <<< setup:tmux-title <<</{f=0}f' "$ZSHRC")
     helper=$([[ -f "$HELPER" ]] && cat "$HELPER")
-    printf '%s\n%s\n%s' "$block" "$autostart" "$helper" | setup_sha256_string
+    printf '%s\n%s\n%s\n%s' "$block" "$autostart" "$title" "$helper" | setup_sha256_string
 }
 
 # Combined hash over all desired module-owned content, so status() detects drift
 # between source and any installed surface.
 _desired_hash() {
-    local block autostart helper
+    local block autostart title helper
     block=$(setup_managed_block_body "$BLOCK_CONTENT")
     autostart=$(setup_managed_block_body "$AUTOSTART_BLOCK_CONTENT")
+    title=$(setup_managed_block_body "$TITLE_BLOCK_CONTENT")
     helper=$(_helper_content)
-    printf '%s\n%s\n%s' "$block" "$autostart" "$helper" | setup_sha256_string
+    printf '%s\n%s\n%s\n%s' "$block" "$autostart" "$title" "$helper" | setup_sha256_string
 }
 
 _record_state() {
@@ -188,6 +264,7 @@ update() { install; }
 status() {
     if ! has_managed_block "$TMUX_CONF" "tmux" \
        && ! has_managed_block "$ZSHRC" "tmux-autostart" \
+       && ! has_managed_block "$ZSHRC" "tmux-title" \
        && [[ ! -f "$HELPER" ]]; then
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
@@ -211,6 +288,7 @@ status() {
 uninstall() {
     manage_block "$TMUX_CONF" "tmux" "" "remove"
     manage_block "$ZSHRC" "tmux-autostart" "" "remove"
+    manage_block "$ZSHRC" "tmux-title" "" "remove"
     rm -f "$HELPER"
     remove_script_state "$MODULE"
 }

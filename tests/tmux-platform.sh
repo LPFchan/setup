@@ -27,6 +27,10 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \
     || fail "tmux hostname segment is not left-aligned and padded to at least 12 characters"
+[[ "$BLOCK_CONTENT" == *'set -g window-status-format " #W "'* ]] \
+    || fail "tmux window titles still include the window index or flags"
+[[ "$BLOCK_CONTENT" == *'set -g window-status-current-format " #W "'* ]] \
+    || fail "current tmux window titles still include the window index or flags"
 
 [[ "$BLOCK_CONTENT" == *'bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39}'* ]] \
     || fail "tmux status bar does not consume the shared system color"
@@ -50,6 +54,42 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
         || fail "tmux hostname format rendered fewer than 12 characters: '$rendered'"
     [[ "$rendered_style" == *"bg=#FF0000"* && "$rendered_style" == *"fg=#FFFFFF"* ]] \
         || fail "tmux did not resolve shared system colors: '$rendered_style'"
+fi
+
+# Exercise the zsh hook that captures the launched command before an executable
+# can replace itself with an implementation-specific process name.
+if zsh_bin=$(command -v zsh 2>/dev/null); then
+    title_log="$TEST_TMP/tmux-title.log"
+    cat > "$FAKE_BIN/tmux" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_TITLE_LOG"
+EOF
+    cat > "$FAKE_BIN/codex" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    cat > "$FAKE_BIN/ssh" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    chmod +x "$FAKE_BIN/tmux" "$FAKE_BIN/codex" "$FAKE_BIN/ssh"
+
+    zdotdir="$TEST_TMP/zsh"
+    mkdir -p "$zdotdir"
+    printf '%s\n' "$TITLE_BLOCK_CONTENT" > "$zdotdir/.zshrc"
+    TMUX="test,1,0" TMUX_TITLE_LOG="$title_log" ZDOTDIR="$zdotdir" \
+        PATH="$FAKE_BIN:/usr/bin:/bin" "$zsh_bin" -di > /dev/null 2>&1 <<'EOF'
+alias cx=codex
+TEST_TITLE=1 cx --help
+env TEST_TITLE=1 codex --help
+ssh -p 2222 user@grimoire
+exit
+EOF
+    grep -Fxq 'rename-window -- codex' "$title_log" \
+        || fail "tmux command title did not use the expanded top-level command"
+    grep -Fxq 'rename-window -- grimoire' "$title_log" \
+        || fail "tmux SSH title did not use the remote host"
+    rm -f "$FAKE_BIN/tmux" "$FAKE_BIN/codex" "$FAKE_BIN/ssh"
 fi
 
 cat > "$FAKE_BIN/uname" <<'EOF'

@@ -39,7 +39,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
-| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor/mouse/one-line wheel scrolling/top status bar colored from `SYSTEM_COLOR_HEX`, with a dynamically sized 12-character-minimum hostname/status settings in `~/.tmux.conf`; interactive-shell autostart in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
+| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor/mouse/one-line wheel scrolling/top status bar colored from `SYSTEM_COLOR_HEX`, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive-shell autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 
@@ -53,7 +53,7 @@ script modules are left untouched, outdated modules run `update()`, uninstalled
 modules are reported as new, and modules whose freshness cannot be probed are
 skipped with a warning.
 
-The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `zsh-basics`, the `.zshrc` baseline and `.zshenv` system-color block are checked together. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart block, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
+The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `zsh-basics`, the `.zshrc` baseline and `.zshenv` system-color block are checked together. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart and title-hook blocks, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); when that clone is present its payload is hashed too, otherwise `status()` falls back to the installed payload (no spurious `outdated`, but payload drift is uncovered until the next update repopulates the clone).
 
 The `tmux` module also treats the executable as a required dependency. On
 install or repair it uses Homebrew/MacPorts on macOS, or a detected supported
@@ -124,6 +124,7 @@ fixed **canonical order** (top → bottom):
 
 ```
 # >>> setup:tmux-autostart >>>  — replace every interactive shell outside tmux with `tmux new-session -A -s main`
+# >>> setup:tmux-title >>>      — name windows from launched commands and SSH destinations
 # >>> setup:zsh-basics >>>      — interactive/tty/terminal guards + /exit alias + baseline zsh behavior
 # >>> setup:starship >>>        — cached starship init
 # >>> setup:zsh-autocomplete >>> — plugin source + history settings + autocomplete config (loads zsh-defer)
@@ -131,14 +132,16 @@ fixed **canonical order** (top → bottom):
 # >>> setup:ai-menu >>>         — source ~/.bashrc.d/ai-menu + `ai` autolaunch (owned by the ai-menu module)
 ```
 
-`tmux-autostart` and `zsh-basics` are prepended by their respective modules; the
-remaining blocks are appended by their own script modules. Because
+`tmux-autostart`, `tmux-title`, and `zsh-basics` are prepended by their
+respective modules; the remaining blocks are appended by their own script
+modules. Because
 `manage_block` only sets a block's position at creation, the accumulated order
 is otherwise historical — so after every run
 `normalize_block_order` (defined in `bin/setup`, mirrored in `install.sh`)
 reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER` above,
 idempotently and without touching unmanaged content. `tmux-autostart` runs first
 (every interactive shell outside tmux swaps into it before anything heavy),
+`tmux-title` installs the hooks used by shells inside tmux,
 `zsh-basics`' early `return` guards precede what they gate,
 `zsh-syntax-highlighting` follows
 `zsh-autocomplete` (which loads `zsh-defer`), and `ai-menu` autolaunches `ai`

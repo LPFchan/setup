@@ -55,7 +55,7 @@ prepend_block_once() {
 
 # Canonical top→bottom order of setup-managed .zshrc blocks. Mirrors
 # ZSHRC_BLOCK_ORDER in bin/setup so a fresh curl-install ends up ordered too.
-ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-basics starship zsh-autocomplete zsh-syntax-highlighting ai-menu)
+ZSHRC_BLOCK_ORDER=(tmux-autostart tmux-title zsh-basics starship zsh-autocomplete zsh-syntax-highlighting ai-menu)
 
 # Reorder setup-managed blocks in <file> to match the given label order,
 # preserving unmanaged content and staying idempotent. Mirrors

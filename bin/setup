@@ -366,7 +366,7 @@ BLOCK_REGISTRY=(
 
 # Canonical top→bottom order of setup-managed .zshrc blocks. Enforced by
 # normalize_block_order at the end of every path that may add/rewrite a block.
-ZSHRC_BLOCK_ORDER=(tmux-autostart zsh-basics starship zsh-autocomplete zsh-syntax-highlighting ai-menu)
+ZSHRC_BLOCK_ORDER=(tmux-autostart tmux-title zsh-basics starship zsh-autocomplete zsh-syntax-highlighting ai-menu)
 
 configure_shell() {
     local path_block
