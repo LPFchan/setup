@@ -27,7 +27,6 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `monitoring` | `~/.local/bin/monitoring` | `files/monitoring` |
 | `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
-| `tmux-cpu-mem` | `~/.local/bin/tmux-cpu-mem` | `files/tmux-cpu-mem` |
 
 ### Script modules
 
@@ -40,7 +39,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
-| `tmux` | (none) | mouse/status settings in `~/.tmux.conf` | `files/tmux.sh` |
+| `tmux` | `~/.local/bin/tmux-cpu-mem` (status helper) | mouse/status settings in `~/.tmux.conf` | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 

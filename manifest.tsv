@@ -16,4 +16,3 @@ zsh-basics	-	script	files/zsh-basics.sh
 agents	~/.agents/AGENTS.md	script	files/agents.sh
 ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh
 tmux	~/.tmux.conf	script	files/tmux.sh
-tmux-cpu-mem	~/.local/bin/tmux-cpu-mem	0755	files/tmux-cpu-mem
