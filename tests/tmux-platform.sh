@@ -21,6 +21,13 @@ source "$ROOT/lib/script-helpers.sh"
 # shellcheck disable=SC1091
 source "$ROOT/files/tmux.sh"
 
+[[ "$BLOCK_CONTENT" == *'set -g status-position top'* ]] \
+    || fail "tmux status bar is not configured at the top"
+[[ "$BLOCK_CONTENT" == *'set -g status-left-length 64'* ]] \
+    || fail "tmux hostname segment cannot expand beyond the default limit"
+[[ "$BLOCK_CONTENT" == *'set -g status-left " #{p-12:#h} "'* ]] \
+    || fail "tmux hostname segment is not right-padded to at least 12 characters"
+
 cat > "$FAKE_BIN/uname" <<'EOF'
 #!/bin/sh
 echo Darwin
