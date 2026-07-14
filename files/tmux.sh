@@ -15,7 +15,12 @@ HELPER="$HOME/.local/bin/tmux-cpu-mem"
 ZSHRC="$HOME/.zshrc"
 
 BLOCK_CONTENT='set -g default-terminal "tmux-256color"
-set -as terminal-features ",xterm*:RGB"
+# Fixed array indexes keep repeated `source-file` reloads idempotent. The tmux
+# pattern covers nested fleet sessions whose outer terminal is another tmux.
+set -s terminal-features[90] "xterm*:RGB"
+set -s terminal-features[91] "tmux*:RGB"
+# Some applications use COLORTERM rather than terminfo to enable direct RGB.
+set-environment -g COLORTERM truecolor
 set -g mouse on
 bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
 bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""

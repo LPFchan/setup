@@ -23,6 +23,11 @@ source "$ROOT/files/tmux.sh"
 
 [[ "$BLOCK_CONTENT" == *'set -g status-position top'* ]] \
     || fail "tmux status bar is not configured at the top"
+[[ "$BLOCK_CONTENT" == *'set -s terminal-features[90] "xterm*:RGB"'* \
+   && "$BLOCK_CONTENT" == *'set -s terminal-features[91] "tmux*:RGB"'* ]] \
+    || fail "tmux does not advertise idempotent RGB support for direct and nested clients"
+[[ "$BLOCK_CONTENT" == *'set-environment -g COLORTERM truecolor'* ]] \
+    || fail "tmux panes do not advertise truecolor to applications"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}"'* ]] \
     || fail "tmux tab dragging does not capture a stable source window"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDrag1Status run-shell -C -t = '*'#{@setup-drag-window}'* ]] \
@@ -64,11 +69,15 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     printf '%s\n' "$BLOCK_CONTENT" > "$tmux_config"
     SYSTEM_COLOR_HEX="#FF0000" SYSTEM_COLOR_TEXT_HEX="#FFFFFF" \
         "$tmux_bin" -L "$test_server" -f "$tmux_config" new-session -d
+    "$tmux_bin" -L "$test_server" source-file "$tmux_config"
+    "$tmux_bin" -L "$test_server" source-file "$tmux_config"
     rendered=$("$tmux_bin" -L "$test_server" display-message -p '#{p12:host_short}')
     rendered_host=$("$tmux_bin" -L "$test_server" display-message -p '#{host_short}')
     rendered_style=$("$tmux_bin" -L "$test_server" show-options -gv status-style)
     rendered_inactive_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-style)
     rendered_current_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-current-style)
+    rendered_terminal_features=$("$tmux_bin" -L "$test_server" show-options -gs terminal-features)
+    rendered_colorterm=$("$tmux_bin" -L "$test_server" show-environment -g COLORTERM)
     mouse_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDown1Status ' || true)
     drag_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDrag1Status' || true)
     right_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3Status[[:space:]]' || true)
@@ -91,6 +100,14 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
        && "$rendered_current_style" == *"bold"* \
        && "$rendered_current_style" == *"nodim"* ]] \
         || fail "tmux did not resolve current-window colors: '$rendered_current_style'"
+    [[ "$rendered_terminal_features" == *'terminal-features[90] xterm*:RGB'* \
+       && "$rendered_terminal_features" == *'terminal-features[91] tmux*:RGB'* ]] \
+        || fail "tmux did not load direct and nested RGB features: '$rendered_terminal_features'"
+    [[ $(printf '%s\n' "$rendered_terminal_features" | grep -cF 'xterm*:RGB') -eq 1 \
+       && $(printf '%s\n' "$rendered_terminal_features" | grep -cF 'tmux*:RGB') -eq 1 ]] \
+        || fail "tmux duplicated RGB features after repeated reloads: '$rendered_terminal_features'"
+    [[ "$rendered_colorterm" == 'COLORTERM=truecolor' ]] \
+        || fail "tmux did not export truecolor capability: '$rendered_colorterm'"
     [[ "$mouse_down_binding" == *'@setup-drag-window'* \
        && "$mouse_down_binding" == *'switch-client -t ='* ]] \
         || fail "tmux did not install stable tab source capture: '$mouse_down_binding'"
