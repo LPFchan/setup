@@ -19,6 +19,10 @@ set -as terminal-features ",xterm*:RGB"
 set -g mouse on
 bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
 bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""
+unbind -n MouseUp3Status
+bind -n MouseDown3Status display-menu -O -T "#[align=centre]#{window_name}" -t = -x W -y W "#{?#{>:#{session_windows},1},,-}Swap Left" l { swap-window -t :-1 } "#{?#{>:#{session_windows},1},,-}Swap Right" r { swap-window -t :+1 } "#{?pane_marked_set,,-}Swap Marked" s { swap-window } "" Kill X { kill-window } Respawn R { respawn-window -k } "#{?pane_marked,Unmark,Mark}" m { select-pane -m } Rename n { command-prompt -F -I "#W" { rename-window -t "#{window_id}" "%%" } } "" "New After" w { new-window -a } "New At End" W { new-window }
+bind -n MouseDown3StatusDefault display-menu -O -T "#[align=centre]#{window_name}" -t . -x W -y W "#{?#{>:#{session_windows},1},,-}Swap Left" l { swap-window -t :-1 } "#{?#{>:#{session_windows},1},,-}Swap Right" r { swap-window -t :+1 } "#{?pane_marked_set,,-}Swap Marked" s { swap-window } "" Kill X { kill-window } Respawn R { respawn-window -k } "#{?pane_marked,Unmark,Mark}" m { select-pane -m } Rename n { command-prompt -F -I "#W" { rename-window -t "#{window_id}" "%%" } } "" "New After" w { new-window -a } "New At End" W { new-window }
+bind -n MouseDown3StatusLeft display-menu -O -T "#[align=centre]#{session_name}" -t = -x M -y W Next n { switch-client -n } Previous p { switch-client -p } "" Renumber N { move-window -r } Rename r { command-prompt -I "#S" { rename-session "%%" } } Detach d { detach-client } "" "New Session" s { new-session } "New Window" w { new-window }
 bind -T copy-mode WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
 bind -T copy-mode WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
 bind -T copy-mode-vi WheelUpPane select-pane \; send-keys -X -N 1 scroll-up

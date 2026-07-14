@@ -27,6 +27,14 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux tab dragging does not capture a stable source window"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDrag1Status run-shell -C -t = '*'#{@setup-drag-window}'* ]] \
     || fail "tmux window tabs cannot be reordered by dragging"
+[[ "$BLOCK_CONTENT" == *'bind -n MouseDown3Status display-menu -O '*' -t = '* ]] \
+    || fail "tmux tab context menu does not stay open after button release"
+[[ "$BLOCK_CONTENT" == *'unbind -n MouseUp3Status'* ]] \
+    || fail "tmux does not remove the obsolete release-triggered tab menu"
+[[ "$BLOCK_CONTENT" == *'bind -n MouseDown3StatusDefault display-menu -O '*' -t . '* ]] \
+    || fail "tmux current-tab fallback menu is not persistent"
+[[ "$BLOCK_CONTENT" == *'bind -n MouseDown3StatusLeft display-menu -O '*' -t = '* ]] \
+    || fail "tmux hostname menu is not persistent"
 [[ "$BLOCK_CONTENT" == *'set -g status-left-length 64'* ]] \
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \
@@ -59,6 +67,10 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     rendered_current_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-current-style)
     mouse_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDown1Status ' || true)
     drag_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDrag1Status' || true)
+    right_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3Status[[:space:]]' || true)
+    right_up_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseUp3Status[[:space:]]' || true)
+    right_default_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusDefault[[:space:]]' || true)
+    right_left_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusLeft[[:space:]]' || true)
     "$tmux_bin" -L "$test_server" kill-server
     [[ -n "$rendered_host" && "$rendered" == "$rendered_host"* ]] \
         || fail "tmux hostname format rendered empty or was not left-aligned: '$rendered'"
@@ -80,6 +92,14 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
        && "$drag_binding" == *'@setup-drag-window'* \
        && "$drag_binding" == *'#{window_id}'* ]] \
         || fail "tmux did not install the tab drag binding: '$drag_binding'"
+    [[ "$right_down_binding" == *'display-menu -O'* && "$right_down_binding" == *'-t ='* ]] \
+        || fail "tmux did not install the persistent tab menu: '$right_down_binding'"
+    [[ -z "$right_up_binding" ]] \
+        || fail "tmux retained the obsolete release-triggered tab menu: '$right_up_binding'"
+    [[ "$right_default_binding" == *'display-menu -O'* && "$right_default_binding" == *'-t .'* ]] \
+        || fail "tmux did not install the persistent current-tab fallback: '$right_default_binding'"
+    [[ "$right_left_binding" == *'display-menu -O'* && "$right_left_binding" == *'-t ='* ]] \
+        || fail "tmux did not install the persistent hostname menu: '$right_left_binding'"
 fi
 
 # Exercise the zsh hook that captures the launched command before an executable
