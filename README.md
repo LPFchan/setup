@@ -39,7 +39,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc` | `files/ai-menu.sh` |
-| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor/mouse/one-line wheel scrolling/top status bar with a dynamically sized 12-character-minimum hostname/status settings in `~/.tmux.conf`; interactive-shell autostart in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
+| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor/mouse/one-line wheel scrolling/top status bar colored from `SYSTEM_COLOR_HEX`, with a dynamically sized 12-character-minimum hostname/status settings in `~/.tmux.conf`; interactive-shell autostart in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 

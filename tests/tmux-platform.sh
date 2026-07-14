@@ -27,19 +27,29 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \
     || fail "tmux hostname segment is not left-aligned and padded to at least 12 characters"
+
+[[ "$BLOCK_CONTENT" == *'bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39}'* ]] \
+    || fail "tmux status bar does not consume the shared system color"
+
 # Exercise tmux's actual format evaluator when tmux is available. This catches
 # shorthand aliases nested inside padding modifiers, which parse but render as
 # an empty field.
 if tmux_bin=$(command -v tmux 2>/dev/null); then
     test_server="setup-hostname-format-$$"
-    "$tmux_bin" -L "$test_server" -f /dev/null new-session -d
+    tmux_config="$TEST_TMP/tmux.conf"
+    printf '%s\n' "$BLOCK_CONTENT" > "$tmux_config"
+    SYSTEM_COLOR_HEX="#FF0000" SYSTEM_COLOR_TEXT_HEX="#FFFFFF" \
+        "$tmux_bin" -L "$test_server" -f "$tmux_config" new-session -d
     rendered=$("$tmux_bin" -L "$test_server" display-message -p '#{p12:host_short}')
     rendered_host=$("$tmux_bin" -L "$test_server" display-message -p '#{host_short}')
+    rendered_style=$("$tmux_bin" -L "$test_server" show-options -gv status-style)
     "$tmux_bin" -L "$test_server" kill-server
     [[ -n "$rendered_host" && "$rendered" == "$rendered_host"* ]] \
         || fail "tmux hostname format rendered empty or was not left-aligned: '$rendered'"
     [[ "${#rendered}" -ge 12 ]] \
         || fail "tmux hostname format rendered fewer than 12 characters: '$rendered'"
+    [[ "$rendered_style" == *"bg=#FF0000"* && "$rendered_style" == *"fg=#FFFFFF"* ]] \
+        || fail "tmux did not resolve shared system colors: '$rendered_style'"
 fi
 
 cat > "$FAKE_BIN/uname" <<'EOF'

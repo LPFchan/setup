@@ -25,7 +25,8 @@ set -g status-interval 5
 set -g status-position top
 set -g status-left-length 64
 set -g status-left " #{p12:host_short} "
-set -g status-right "#(tmux-cpu-mem) "'
+set -g status-right "#(tmux-cpu-mem) "
+set -gF status-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black}"'
 
 AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
   exec tmux new-session -A -s main
@@ -140,6 +141,9 @@ _upsert_blocks() {
 _reload() {
     command -v tmux >/dev/null 2>&1 || return 0
     tmux info >/dev/null 2>&1 || return 0   # no server running → nothing to reload
+    [[ -n "${SYSTEM_COLOR_HEX:-}" ]] && tmux set-environment -g SYSTEM_COLOR_HEX "$SYSTEM_COLOR_HEX"
+    [[ -n "${SYSTEM_COLOR_TEXT_HEX:-}" ]] && tmux set-environment -g SYSTEM_COLOR_TEXT_HEX "$SYSTEM_COLOR_TEXT_HEX"
+    [[ -n "${SYSTEM_COLOR_HUE:-}" ]] && tmux set-environment -g SYSTEM_COLOR_HUE "$SYSTEM_COLOR_HUE"
     tmux source-file "$TMUX_CONF" >/dev/null 2>&1 || true
 }
 
