@@ -2,7 +2,7 @@
 # setup-module: agents
 # setup-type: script
 #
-# Installs the canonical agent payload (AGENTS.md + FLEET.md + global skills)
+# Installs the canonical agent payload (AGENTS.md + global skills)
 # into ~/.agents/ and symlinks it into each harness. Source of truth lives in
 # this repo under agents/; edit there and `setup update` to sync every machine.
 
@@ -19,13 +19,6 @@ AGENTS_LINKS=(
     "$HOME/.codex/AGENTS.md"
     "$HOME/AGENTS.md"
     "$HOME/.config/opencode/AGENTS.md"
-)
-# FLEET.md sibling symlink targets (so "see FLEET.md" resolves per harness)
-FLEET_LINKS=(
-    "$HOME/.claude/FLEET.md"
-    "$HOME/.codex/FLEET.md"
-    "$HOME/FLEET.md"
-    "$HOME/.config/opencode/FLEET.md"
 )
 # Harness skills dirs — global skills are symlinked in per-skill (non-destructive)
 SKILLS_LINK_DIRS=(
@@ -67,6 +60,22 @@ _link_skills() {
     done
 }
 
+_post_install() {
+    # Clean up legacy FLEET.md symlinks — fleet topology now lives in the
+    # fleet skill (agents/skills/fleet/SKILL.md).
+    local _old_fleet=(
+        "$AGENTS_DIR/FLEET.md"
+        "$HOME/.claude/FLEET.md"
+        "$HOME/.codex/FLEET.md"
+        "$HOME/FLEET.md"
+        "$HOME/.config/opencode/FLEET.md"
+    )
+    local t
+    for t in "${_old_fleet[@]}"; do
+        if [[ -L "$t" || -f "$t" ]]; then rm -f "$t"; fi
+    done
+}
+
 install() {
     _sync_src
     if [[ ! -d "$SRC_CLONE/agents" ]]; then
@@ -75,20 +84,22 @@ install() {
     fi
     mkdir -p "$AGENTS_DIR"
     cp "$SRC_CLONE/agents/AGENTS.md" "$AGENTS_DIR/AGENTS.md"
-    cp "$SRC_CLONE/agents/FLEET.md"  "$AGENTS_DIR/FLEET.md"
     rm -rf "$AGENTS_DIR/skills"                       # mirror, don't accrete stale skills
     cp -R "$SRC_CLONE/agents/skills" "$AGENTS_DIR/skills"
 
     local t d
     for t in "${AGENTS_LINKS[@]}"; do _link "$AGENTS_DIR/AGENTS.md" "$t"; done
-    for t in "${FLEET_LINKS[@]}";  do _link "$AGENTS_DIR/FLEET.md"  "$t"; done
     for d in "${SKILLS_LINK_DIRS[@]}"; do _link_skills "$d"; done
 
+    _post_install
     _record_state
     echo "agents: installed -> $AGENTS_DIR (linked into ${#AGENTS_LINKS[@]} targets)"
 }
 
-update() { install; }
+update() {
+    install
+    _post_install
+}
 
 status() {
     if [[ ! -f "$AGENTS_DIR/AGENTS.md" ]] || [[ ! -d "$SRC_CLONE/.git" ]]; then
@@ -103,6 +114,11 @@ status() {
         record_script_state "$MODULE" "git" "${lr:0:7}" "${rr:0:7}"
         return 1
     fi
+    # Legacy artifacts that need cleanup trigger an update even when git refs match.
+    if [[ -e "$AGENTS_DIR/FLEET.md" || -L "$AGENTS_DIR/FLEET.md" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${lr:0:7}" "${rr:0:7}" "$AGENTS_DIR"
+        return 1
+    fi
     printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${lr:0:7}" "${rr:0:7}" "$AGENTS_DIR"
     _record_state
     return 0
@@ -110,7 +126,7 @@ status() {
 
 uninstall() {
     local t d name skill
-    for t in "${AGENTS_LINKS[@]}" "${FLEET_LINKS[@]}"; do
+    for t in "${AGENTS_LINKS[@]}"; do
         if [[ -L "$t" && "$(readlink "$t")" == "$AGENTS_DIR"/* ]]; then rm -f "$t"; fi
         [[ -e "$t.pre-agents.bak" && ! -e "$t" ]] && mv "$t.pre-agents.bak" "$t"
     done
@@ -123,7 +139,7 @@ uninstall() {
             [[ -e "$d/$name.pre-agents.bak" && ! -e "$d/$name" ]] && mv "$d/$name.pre-agents.bak" "$d/$name"
         done
     done
-    rm -rf "$AGENTS_DIR/AGENTS.md" "$AGENTS_DIR/FLEET.md" "$AGENTS_DIR/skills"
+    rm -rf "$AGENTS_DIR/AGENTS.md" "$AGENTS_DIR/skills"
     rmdir "$AGENTS_DIR" 2>/dev/null || true
     rm -rf "$SRC_CLONE"
     remove_script_state "$MODULE"
