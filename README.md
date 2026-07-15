@@ -28,6 +28,9 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
 
+The `resume` picker forwards the selected harness name to the current tmux
+window title before resuming the session.
+
 ### Script modules
 
 | module | installs | manages block | source |
@@ -39,7 +42,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc`; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
-| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and home-started new tabs/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive-shell autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
+| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and home-started new tabs/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive TTY autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer.
 
@@ -127,7 +130,7 @@ Setup manages shell config via marker-delimited blocks in `.zshrc`, kept in a
 fixed **canonical order** (top → bottom):
 
 ```
-# >>> setup:tmux-autostart >>>  — replace every interactive shell outside tmux with `tmux new-session -A -s main`
+# >>> setup:tmux-autostart >>>  — replace every interactive TTY shell outside tmux with `tmux new-session -A -s main`
 # >>> setup:tmux-title >>>      — name windows from launched commands and SSH destinations
 # >>> setup:zsh-basics >>>      — interactive/tty/terminal guards + /exit alias + baseline zsh behavior
 # >>> setup:starship >>>        — cached starship init
@@ -144,7 +147,7 @@ is otherwise historical — so after every run
 `normalize_block_order` (defined in `bin/setup`, mirrored in `install.sh`)
 reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER` above,
 idempotently and without touching unmanaged content. `tmux-autostart` runs first
-(every interactive shell outside tmux swaps into it before anything heavy),
+(every interactive TTY shell outside tmux swaps into it before anything heavy),
 `tmux-title` installs the hooks used by shells inside tmux,
 `zsh-basics`' early `return` guards precede what they gate,
 `zsh-syntax-highlighting` follows

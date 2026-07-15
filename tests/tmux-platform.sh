@@ -53,6 +53,8 @@ source "$ROOT/files/tmux.sh"
     || fail "empty tmux status space does not append a home-started window on double-click"
 [[ "$AUTOSTART_BLOCK_CONTENT" == *'tmux new-session -A -s main -c ~'* ]] \
     || fail "tmux autostart does not create the shared session in home"
+[[ "$AUTOSTART_BLOCK_CONTENT" == *'[[ -o interactive && -t 0 && -z $TMUX ]]'* ]] \
+    || fail "tmux autostart is not restricted to shells with a terminal on stdin"
 [[ "$BLOCK_CONTENT" == *'set -g status-left-length 64'* ]] \
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \

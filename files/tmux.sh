@@ -4,8 +4,9 @@
 #
 # Ensures tmux is available, manages settings in ~/.tmux.conf, installs the
 # tmux-cpu-mem status helper, and owns the ~/.zshrc block that auto-launches
-# every interactive shell into the shared `main` session. Uninstalling removes
-# the three setup-owned surfaces but leaves the system tmux package installed.
+# every interactive TTY shell into the shared `main` session. Uninstalling
+# removes the three setup-owned surfaces but leaves the system tmux package
+# installed.
 
 [[ "$(type -t setup_sha256_string)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
 
@@ -53,7 +54,7 @@ set -g window-status-style "dim"
 set -gF window-status-current-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black},bold,nodim"
 set -gF status-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black}"'
 
-AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
+AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -t 0 && -z $TMUX ]] && command -v tmux >/dev/null; then
   exec tmux new-session -A -s main -c ~
 fi'
 

@@ -222,8 +222,15 @@ fi
 echo "Resuming $tool session $id..."
 
 case "$tool" in
-    cc) exec claude --resume "$id" ;;
-    cx) exec codex resume "$id" ;;
-    oc) exec opencode --session "$id" ;;
-    fg) exec forge --conversation-id "$id" ;;
+    cc) harness=claude; resume_args=(--resume "$id") ;;
+    cx) harness=codex; resume_args=(resume "$id") ;;
+    oc) harness=opencode; resume_args=(--session "$id") ;;
+    fg) harness=forge; resume_args=(--conversation-id "$id") ;;
+    *) exit 0 ;;
 esac
+
+if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    tmux rename-window -- "$harness" || true
+fi
+
+exec "$harness" "${resume_args[@]}"

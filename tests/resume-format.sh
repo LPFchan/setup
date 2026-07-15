@@ -53,4 +53,32 @@ row=$(cat "$TEST_TMP/fzf-input")
 [[ "$row" == *"codex"* && "$row" == *"Fix timestamp display"* ]] \
     || { echo "FAIL: resume row did not include expected session metadata: $row" >&2; exit 1; }
 
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+printf '%s\n' "$selection"
+EOF
+cat > "$FAKE_BIN/tmux" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$TEST_TMP/tmux-args"
+exit 1
+EOF
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/harness-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/tmux" "$FAKE_BIN/codex"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/resume-stderr"
+
+expected_tmux_args=$'rename-window\n--\ncodex'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume sent unexpected tmux arguments: $actual_tmux_args" >&2; exit 1; }
+
+expected_harness_args=$(printf '%s\nresume\ntest-session' "$FAKE_BIN/codex")
+actual_harness_args=$(cat "$TEST_TMP/harness-args")
+[[ "$actual_harness_args" == "$expected_harness_args" ]] \
+    || { echo "FAIL: resume did not dispatch the harness after tmux title failure: $actual_harness_args" >&2; exit 1; }
+
 echo "resume format tests passed"
