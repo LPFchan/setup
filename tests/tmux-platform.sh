@@ -33,6 +33,8 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux panes do not advertise truecolor to applications"
 [[ "$BLOCK_CONTENT" == *'set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1'* ]] \
     || fail "Claude Code is not allowed to render truecolor inside tmux"
+[[ "$BLOCK_CONTENT" == *'bind c new-window -c ~'* ]] \
+    || fail "tmux prefix-c does not create windows in home"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}"'* ]] \
     || fail "tmux tab dragging does not capture a stable source window"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDrag1Status run-shell -C -t = '*'#{@setup-drag-window}'* ]] \
@@ -47,8 +49,10 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux hostname menu is not persistent"
 [[ "$BLOCK_CONTENT" == *'bind -n DoubleClick1Status kill-window -t ='* ]] \
     || fail "tmux tabs do not close on double-click"
-[[ "$BLOCK_CONTENT" == *'bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c "#{pane_current_path}"'* ]] \
-    || fail "empty tmux status space does not append a window on double-click"
+[[ "$BLOCK_CONTENT" == *'bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c ~'* ]] \
+    || fail "empty tmux status space does not append a home-started window on double-click"
+[[ "$AUTOSTART_BLOCK_CONTENT" == *'tmux new-session -A -s main -c ~'* ]] \
+    || fail "tmux autostart does not create the shared session in home"
 [[ "$BLOCK_CONTENT" == *'set -g status-left-length 64'* ]] \
     || fail "tmux hostname segment cannot expand beyond the default limit"
 [[ "$BLOCK_CONTENT" == *'set -g status-left " #{p12:host_short} "'* ]] \
@@ -91,6 +95,7 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     right_up_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseUp3Status[[:space:]]' || true)
     right_default_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusDefault[[:space:]]' || true)
     right_left_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusLeft[[:space:]]' || true)
+    new_window_binding=$("$tmux_bin" -L "$test_server" list-keys -T prefix | grep -E ' prefix c[[:space:]]' || true)
     double_tab_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root DoubleClick1Status[[:space:]]' || true)
     double_empty_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root DoubleClick1StatusDefault[[:space:]]' || true)
     "$tmux_bin" -L "$test_server" kill-server
@@ -127,20 +132,28 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
        && "$drag_binding" == *'@setup-drag-window'* \
        && "$drag_binding" == *'#{window_id}'* ]] \
         || fail "tmux did not install the tab drag binding: '$drag_binding'"
-    [[ "$right_down_binding" == *'display-menu -O'* && "$right_down_binding" == *'-t ='* ]] \
+    [[ "$right_down_binding" == *'display-menu -O'* \
+       && "$right_down_binding" == *'-t ='* \
+       && "$right_down_binding" == *"new-window -a -c $HOME"* \
+       && "$right_down_binding" == *"new-window -c $HOME"* ]] \
         || fail "tmux did not install the persistent tab menu: '$right_down_binding'"
     [[ -z "$right_up_binding" ]] \
         || fail "tmux retained the obsolete release-triggered tab menu: '$right_up_binding'"
     [[ -z "$right_default_binding" ]] \
         || fail "tmux retained the obsolete current-tab fallback: '$right_default_binding'"
-    [[ "$right_left_binding" == *'display-menu -O'* && "$right_left_binding" == *'-t ='* ]] \
+    [[ "$right_left_binding" == *'display-menu -O'* \
+       && "$right_left_binding" == *'-t ='* \
+       && "$right_left_binding" == *"new-session -c $HOME"* \
+       && "$right_left_binding" == *"new-window -c $HOME"* ]] \
         || fail "tmux did not install the persistent hostname menu: '$right_left_binding'"
+    [[ "$new_window_binding" == *"new-window -c $HOME"* ]] \
+        || fail "tmux prefix-c does not create windows in home: '$new_window_binding'"
     [[ "$double_tab_binding" == *'kill-window -t ='* ]] \
         || fail "tmux did not install tab double-click close: '$double_tab_binding'"
     [[ "$double_empty_binding" == *'new-window -a'* \
        && "$double_empty_binding" == *'-t ":{end}"'* \
-       && "$double_empty_binding" == *'-c "#{pane_current_path}"'* ]] \
-        || fail "tmux did not install empty-space double-click append: '$double_empty_binding'"
+       && "$double_empty_binding" == *"-c $HOME"* ]] \
+        || fail "tmux did not install home-started empty-space double-click append: '$double_empty_binding'"
 fi
 
 # Exercise the zsh hook that captures the launched command before an executable

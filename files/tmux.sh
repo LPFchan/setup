@@ -29,14 +29,15 @@ set-environment -g COLORTERM truecolor
 # even when COLORTERM and the client RGB feature both advertise truecolor.
 set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1
 set -g mouse on
+bind c new-window -c ~
 bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
 bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""
 unbind -n MouseUp3Status
 unbind -n MouseDown3StatusDefault
-bind -n MouseDown3Status display-menu -O -T "#[align=centre]#{window_name}" -t = -x W -y W "#{?#{>:#{session_windows},1},,-}Swap Left" l { swap-window -t :-1 } "#{?#{>:#{session_windows},1},,-}Swap Right" r { swap-window -t :+1 } "#{?pane_marked_set,,-}Swap Marked" s { swap-window } "" Kill X { kill-window } Respawn R { respawn-window -k } "#{?pane_marked,Unmark,Mark}" m { select-pane -m } Rename n { command-prompt -F -I "#W" { rename-window -t "#{window_id}" "%%" } } "" "New After" w { new-window -a } "New At End" W { new-window }
-bind -n MouseDown3StatusLeft display-menu -O -T "#[align=centre]#{session_name}" -t = -x M -y W Next n { switch-client -n } Previous p { switch-client -p } "" Renumber N { move-window -r } Rename r { command-prompt -I "#S" { rename-session "%%" } } Detach d { detach-client } "" "New Session" s { new-session } "New Window" w { new-window }
+bind -n MouseDown3Status display-menu -O -T "#[align=centre]#{window_name}" -t = -x W -y W "#{?#{>:#{session_windows},1},,-}Swap Left" l { swap-window -t :-1 } "#{?#{>:#{session_windows},1},,-}Swap Right" r { swap-window -t :+1 } "#{?pane_marked_set,,-}Swap Marked" s { swap-window } "" Kill X { kill-window } Respawn R { respawn-window -k } "#{?pane_marked,Unmark,Mark}" m { select-pane -m } Rename n { command-prompt -F -I "#W" { rename-window -t "#{window_id}" "%%" } } "" "New After" w { new-window -a -c ~ } "New At End" W { new-window -c ~ }
+bind -n MouseDown3StatusLeft display-menu -O -T "#[align=centre]#{session_name}" -t = -x M -y W Next n { switch-client -n } Previous p { switch-client -p } "" Renumber N { move-window -r } Rename r { command-prompt -I "#S" { rename-session "%%" } } Detach d { detach-client } "" "New Session" s { new-session -c ~ } "New Window" w { new-window -c ~ }
 bind -n DoubleClick1Status kill-window -t =
-bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c "#{pane_current_path}"
+bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c ~
 bind -T copy-mode WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
 bind -T copy-mode WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
 bind -T copy-mode-vi WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
@@ -53,7 +54,7 @@ set -gF window-status-current-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},
 set -gF status-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black}"'
 
 AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then
-  exec tmux new-session -A -s main
+  exec tmux new-session -A -s main -c ~
 fi'
 
 # Name a tmux window from the command as entered at the interactive zsh prompt,
