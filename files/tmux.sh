@@ -49,7 +49,7 @@ set -g status-right "#(tmux-cpu-mem) "
 set -g window-status-format "#[range=window|#{window_index}] #W #[norange]"
 set -g window-status-current-format "#[range=window|#{window_index}] #W #[norange]"
 set -g window-status-style "dim"
-set -gF window-status-current-style "bg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black},fg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},bold,nodim"
+set -gF window-status-current-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black},bold,nodim"
 set -gF status-style "bg=#{?SYSTEM_COLOR_HEX,#{SYSTEM_COLOR_HEX},colour39},fg=#{?SYSTEM_COLOR_TEXT_HEX,#{SYSTEM_COLOR_TEXT_HEX},black}"'
 
 AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -z $TMUX ]] && command -v tmux >/dev/null; then

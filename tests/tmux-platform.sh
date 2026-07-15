@@ -102,8 +102,8 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
         || fail "tmux did not resolve shared system colors: '$rendered_style'"
     [[ "$rendered_inactive_style" == "dim" ]] \
         || fail "tmux did not apply inactive-window dimming: '$rendered_inactive_style'"
-    [[ "$rendered_current_style" == *"fg=#FF0000"* \
-       && "$rendered_current_style" == *"bg=#FFFFFF"* \
+    [[ "$rendered_current_style" == *"bg=#FF0000"* \
+       && "$rendered_current_style" == *"fg=#FFFFFF"* \
        && "$rendered_current_style" == *"bold"* \
        && "$rendered_current_style" == *"nodim"* ]] \
         || fail "tmux did not resolve current-window colors: '$rendered_current_style'"
