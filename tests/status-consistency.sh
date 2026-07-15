@@ -146,6 +146,34 @@ cmd_update_output=$(cmd_update 2>&1)
 [[ "$cmd_update_output" == *"could not probe probe-error; skipping update"* ]] \
     || fail "setup update did not warn about the failed status probe: $cmd_update_output"
 
+cat > "$TEST_TMP/manifest.tsv" <<'EOF'
+# module	target	mode	source
+current-update	~/.local/current-update	script	current-update.sh
+outdated-update	~/.local/outdated-update	script	outdated-update.sh
+EOF
+rm -f "$TEST_TMP/current-update-invoked" "$TEST_TMP/outdated-update-invoked"
+fzf_count="$TEST_TMP/fzf-count"
+printf '0\n' > "$fzf_count"
+fzf() {
+    local n input
+    input=$(cat)
+    n=$(( $(cat "$fzf_count") + 1 ))
+    printf '%s\n' "$n" > "$fzf_count"
+    case "$n" in
+        1) awk '$1 == "<ALL" { print; exit }' <<< "$input" ;;
+        2) printf 'update all\n' ;;
+        3) printf 'yes\n' ;;
+        *) return 1 ;;
+    esac
+}
+interactive_update_output=$(cmd_reconfigure 2>&1)
+[[ "$interactive_update_output" == *"Confirmed: Update ALL installed modules?"* ]] \
+    || fail "interactive update-all did not print a visible confirmation: $interactive_update_output"
+[[ ! -e "$TEST_TMP/current-update-invoked" ]] \
+    || fail "interactive update-all invoked update() for a current script module"
+[[ -e "$TEST_TMP/outdated-update-invoked" ]] \
+    || fail "interactive update-all did not reuse cmd_update semantics for an outdated script module"
+
 fields=$(script_status_fields absent '~/.local/bin/absent' uninstalled.sh)
 IFS=$'\t' read -r target state display local_ref remote_ref installed extra <<< "$fields"
 assert_eq uninstalled "$state" "uninstalled live state"
@@ -201,9 +229,9 @@ assert_eq 0 "$fzf_rc" "managed fzf-multicolumn should be current"
 [[ "$fzf_output" == *"current"* && "$fzf_output" == *"local=0.74.0-multicolumn.2"* ]] \
     || fail "fzf-multicolumn status inspected the PATH shadow: $fzf_output"
 
-# ai-menu carries its payload in a separate clone. A stale clone must compare
-# against remote HEAD before payload hashes, otherwise setup update sees the
-# old clone and old installed payload agree and incorrectly skips the update.
+# ai-menu carries its payload in a separate clone. A diverged private clone must
+# compare path-scoped content against remote HEAD, then update must reset that
+# module-managed clone before installing the payload.
 ai_remote="$TEST_TMP/ai-menu-remote.git"
 ai_work="$TEST_TMP/ai-menu-work"
 git init --bare --initial-branch=main "$ai_remote" >/dev/null
@@ -223,6 +251,12 @@ AI_MENU_SRC_REPO="$ai_remote"
 source "$ROOT/files/ai-menu.sh"
 install >/dev/null
 
+git -C "$SRC_CLONE" config user.name test
+git -C "$SRC_CLONE" config user.email test@example.com
+printf 'private diverged payload\n' > "$SRC_CLONE/files/ai-menu"
+git -C "$SRC_CLONE" add files/ai-menu
+git -C "$SRC_CLONE" commit -m private-diverge >/dev/null
+
 printf 'new payload\n' > "$ai_work/files/ai-menu"
 git -C "$ai_work" add files/ai-menu
 git -C "$ai_work" commit -m new >/dev/null
@@ -237,5 +271,58 @@ assert_eq 1 "$ai_status_rc" "ai-menu status must detect a stale payload clone"
     || fail "ai-menu stale clone was not reported outdated: $ai_status"
 update >/dev/null
 assert_eq "new payload" "$(cat "$PAYLOAD_TARGET")" "ai-menu update must install the remote payload"
+
+agents_remote="$TEST_TMP/agents-remote.git"
+agents_work="$TEST_TMP/agents-work"
+git init --bare --initial-branch=main "$agents_remote" >/dev/null
+git init --initial-branch=main "$agents_work" >/dev/null
+git -C "$agents_work" config user.name test
+git -C "$agents_work" config user.email test@example.com
+mkdir -p "$agents_work/agents/skills/demo" "$agents_work/files"
+printf 'agents v1\n' > "$agents_work/agents/AGENTS.md"
+printf -- '---\nname: demo\n---\n# Demo\n' > "$agents_work/agents/skills/demo/SKILL.md"
+printf '# agents installer v1\n' > "$agents_work/files/agents.sh"
+git -C "$agents_work" add agents files/agents.sh
+git -C "$agents_work" commit -m agents-v1 >/dev/null
+git -C "$agents_work" remote add origin "$agents_remote"
+git -C "$agents_work" push -u origin main >/dev/null
+
+STATE_DIR="$TEST_TMP/agents-state"
+AGENTS_SRC_REPO="$agents_remote"
+# shellcheck disable=SC1091
+source "$ROOT/files/agents.sh"
+install >/dev/null
+
+mkdir -p "$agents_work/docs"
+printf 'unrelated\n' > "$agents_work/docs/note.md"
+git -C "$agents_work" add docs/note.md
+git -C "$agents_work" commit -m unrelated >/dev/null
+git -C "$agents_work" push >/dev/null
+if agents_status=$(status); then
+    agents_status_rc=0
+else
+    agents_status_rc=$?
+fi
+assert_eq 0 "$agents_status_rc" "agents status must ignore remote changes outside agents/ and files/agents.sh"
+[[ "$agents_status" == *"current"* ]] \
+    || fail "agents unrelated remote change was not current: $agents_status"
+
+printf 'agents v2\n' > "$agents_work/agents/AGENTS.md"
+git -C "$agents_work" add agents/AGENTS.md
+git -C "$agents_work" commit -m agents-v2 >/dev/null
+git -C "$agents_work" push >/dev/null
+mkdir -p "$SRC_CLONE/agents/skills/stale"
+printf '# stale\n' > "$SRC_CLONE/agents/skills/stale/SKILL.md"
+if agents_status=$(status); then
+    agents_status_rc=0
+else
+    agents_status_rc=$?
+fi
+assert_eq 1 "$agents_status_rc" "agents status must detect remote changes under agents/"
+[[ "$agents_status" == *"outdated"* ]] \
+    || fail "agents scoped remote change was not outdated: $agents_status"
+update >/dev/null
+[[ ! -e "$AGENTS_DIR/skills/stale/SKILL.md" ]] \
+    || fail "agents update copied an untracked stale skill from the private clone"
 
 echo "status consistency tests passed"

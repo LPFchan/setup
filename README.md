@@ -36,7 +36,7 @@ Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reco
 | `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
 | `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
 | `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
-| `agents` | `~/.agents/` (AGENTS.md + FLEET.md + skills) | — | `files/agents.sh` |
+| `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc`; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
 | `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and empty-space append/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive-shell autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
@@ -53,7 +53,7 @@ script modules are left untouched, outdated modules run `update()`, uninstalled
 modules are reported as new, and modules whose freshness cannot be probed are
 skipped with a warning.
 
-The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `zsh-basics`, the `.zshrc` baseline and `.zshenv` system-color block are checked together. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart and title-hook blocks, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); `status()` compares that clone with remote HEAD before hashing its payload, so a stale clone cannot make an old installed payload appear current.
+The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `zsh-basics`, the `.zshrc` baseline and `.zshenv` system-color block are checked together. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart and title-hook blocks, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); `status()` compares only the scoped source paths (`files/ai-menu`, `files/ai-menu.sh`) with remote HEAD before hashing its payload, so unrelated repo pushes do not mark it outdated and a stale or diverged clone cannot make an old installed payload appear current.
 
 The `tmux` module also treats the executable as a required dependency. On
 install or repair it uses Homebrew/MacPorts on macOS, or a detected supported
@@ -68,13 +68,14 @@ Installs the canonical agent payload from `agents/` (this repo) into `~/.agents/
 and symlinks it into every harness so all machines share one source of truth:
 
 - `agents/AGENTS.md` → `~/.agents/AGENTS.md`, symlinked to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/AGENTS.md`, `~/.config/opencode/AGENTS.md`
-- `agents/FLEET.md` → `~/.agents/FLEET.md`, symlinked as `FLEET.md` beside each of the above
 - `agents/skills/*` → `~/.agents/skills/`, symlinked per-skill into `~/.claude/skills/` and `~/.codex/skills/`
 
 Existing real files/dirs at any target are backed up to `*.pre-agents.bak` before
 symlinking; `uninstall` removes the symlinks and restores the backups. The module
 keeps its own clone of this repo at `~/.local/state/setup/agents-src` and tracks
-its git ref for update detection. Global skills carry a `version:` in frontmatter.
+content under `agents/` and `files/agents.sh` for update detection. Unrelated
+repo pushes do not mark it outdated; legacy `FLEET.md` artifacts are removed on
+install/update. Global skills carry a `version:` in frontmatter.
 
 Edit the payload under `agents/` here, push, and `setup update` syncs every machine.
 
@@ -87,7 +88,7 @@ attach a per-host terminal fallback; `bingus` uses `xterm-256color` because
 Synology DSM lacks the `tmux-256color` terminfo entry advertised by SSH clients
 running inside tmux. Also normalizes
 `~/.ssh` (700) and `~/.ssh/config` (600) permissions. Keep the table in sync with
-`agents/FLEET.md`.
+`agents/skills/fleet/SKILL.md`.
 
 ## Commands
 
@@ -186,6 +187,9 @@ After `setup install` on a fresh machine, the `.zshrc` may have duplicate lines 
 
 - `git_clone_if_missing` — idempotent git clone
 - `git_local_ref` / `git_remote_ref` — local vs remote HEAD comparison
+- `git_fetch_origin_head` — fetch remote HEAD into `FETCH_HEAD` without moving the local branch
+- `git_path_content_hash` / `git_scoped_content_refs` — compare path-scoped blob/tree content between a local clone and remote HEAD
+- `git_sync_private_clone_to_origin_head` — reset a module-managed private clone to remote HEAD for install/update
 - `git_check_status` — returns 0=current, 1=outdated, 2=missing
 - `git_pull_ff` — fast-forward only pull
 - `setup_sha256_string` — hash a string (not a file)
