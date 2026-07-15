@@ -1272,7 +1272,7 @@ confirm_action() {
             --height=8 \
             --cycle \
             --bind='esc:abort' \
-            --header="$prompt" 2>/dev/null || true)
+            --header="$prompt" || true)
     else
         printf '%s [y/N] ' "$prompt" >&2
         read -r answer || answer=""

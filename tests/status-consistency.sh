@@ -162,11 +162,13 @@ fzf() {
     case "$n" in
         1) awk '$1 == "<ALL" { print; exit }' <<< "$input" ;;
         2) printf 'update all\n' ;;
-        3) printf 'yes\n' ;;
+        3) printf 'confirmation-ui-visible\n' >&2; printf 'yes\n' ;;
         *) return 1 ;;
     esac
 }
 interactive_update_output=$(cmd_reconfigure 2>&1)
+[[ "$interactive_update_output" == *"confirmation-ui-visible"* ]] \
+    || fail "interactive update-all hid the confirmation fzf UI stream: $interactive_update_output"
 [[ "$interactive_update_output" == *"Confirmed: Update ALL installed modules?"* ]] \
     || fail "interactive update-all did not print a visible confirmation: $interactive_update_output"
 [[ ! -e "$TEST_TMP/current-update-invoked" ]] \
