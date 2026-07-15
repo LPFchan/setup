@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TEST_TMP=$(mktemp -d)
-trap 'rm -rf "$TEST_TMP"' EXIT
+trap '/usr/bin/rm -rf "$TEST_TMP"' EXIT
 
 export HOME="$TEST_TMP/home"
 export XDG_STATE_HOME="$TEST_TMP/state"
@@ -209,8 +209,14 @@ chmod +x "$FAKE_BIN/tmux"
 EOF
 chmod +x "$FAKE_BIN/uname" "$FAKE_BIN/top" "$FAKE_BIN/memory_pressure" "$FAKE_BIN/brew"
 
+# Provide minimal POSIX utilities so the macOS simulation can run with
+# PATH=$FAKE_BIN only — keeping /usr/bin out prevents the host's real tmux
+# from shadowing the "tmux not found" path we need to exercise.
+cp /usr/bin/touch /usr/bin/chmod /usr/bin/cat /usr/bin/dirname \
+   /usr/bin/mkdir /usr/bin/rm /usr/bin/awk /usr/bin/cp "$FAKE_BIN/"
+
 export TEST_TMP
-PATH="$FAKE_BIN:/usr/bin:/bin"
+PATH="$FAKE_BIN"
 export PATH
 
 _ensure_tmux
@@ -239,8 +245,8 @@ fi
 # it writes any setup-owned configuration or helper.
 NO_PKG_BIN="$TEST_TMP/no-package-manager"
 mkdir -p "$NO_PKG_BIN"
-cp "$FAKE_BIN/uname" "$NO_PKG_BIN/uname"
-PATH="$NO_PKG_BIN:/usr/bin:/bin"
+cp "$FAKE_BIN/uname" /usr/bin/touch "$NO_PKG_BIN/"
+PATH="$NO_PKG_BIN"
 export PATH
 _write_helper() { touch "$TEST_TMP/helper-written"; }
 _upsert_blocks() { touch "$TEST_TMP/blocks-written"; }
