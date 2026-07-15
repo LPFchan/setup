@@ -5,7 +5,7 @@ Canonical agent instructions for the fleet. `~/.claude/CLAUDE.md`,
 `agents` module in LPFchan/setup — edit it there and run `setup update` to sync
 every machine.
 
-Fleet topology (machines, hosts, roles): see FLEET.md.
+Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/SKILL.md).
 
 ## Harness-specific rules
 
