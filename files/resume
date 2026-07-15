@@ -37,13 +37,21 @@ SCAN_LIMIT=$((MAX_SESSIONS * 2))
 case "$(uname -s)" in
     Darwin)
         STAT_EXEC=(-exec stat -f '%m %N' {} +)
-        DATE_CMD=(date -r)
+        DATE_FLAVOR=bsd
         ;;
     *)
         STAT_EXEC=(-exec stat -c '%Y %n' {} +)
-        DATE_CMD=(date -d "@")
+        DATE_FLAVOR=gnu
         ;;
 esac
+
+format_epoch() {
+    local ts="$1"
+    case "$DATE_FLAVOR" in
+        bsd) date -r "$ts" "+%m/%d %H:%M" ;;
+        gnu) date -d "@$ts" "+%m/%d %H:%M" ;;
+    esac
+}
 
 _cc_first_msg() {
     grep -m5 '"role":"user"' "$1" 2>/dev/null \
@@ -173,16 +181,9 @@ PYEOF
     fi
 }
 
-sessions=$(collect_sessions | sort -rn | head -n "$MAX_SESSIONS")
-
-if [[ -z "$sessions" ]]; then
-    echo "No sessions found." >&2
-    exit 1
-fi
-
 format_for_fzf() {
     while IFS='|' read -r ts tool id cwd msg; do
-        date_str=$("${DATE_CMD[@]}" "$ts" "+%m/%d %H:%M" 2>/dev/null || echo "??/?? ??:??")
+        date_str=$(format_epoch "$ts" 2>/dev/null || echo "??/?? ??:??")
         case "$tool" in
             cc) label="claude  " ;;
             cx) label="codex   " ;;
@@ -195,7 +196,7 @@ format_for_fzf() {
     done
 }
 
-selected=$(echo "$sessions" | format_for_fzf | \
+selected=$(collect_sessions | sort -rn | head -n "$MAX_SESSIONS" | format_for_fzf | \
     fzf --no-sort \
         --reverse \
         --height=50% \

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TEST_TMP=$(mktemp -d)
+trap 'rm -rf "$TEST_TMP"' EXIT
+
+export HOME="$TEST_TMP/home"
+export TEST_TMP
+FAKE_BIN="$TEST_TMP/bin"
+mkdir -p "$HOME/.codex/sessions" "$FAKE_BIN"
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+touch "$TEST_TMP/fzf-started"
+cat > "$TEST_TMP/fzf-input"
+exit 1
+EOF
+cat > "$FAKE_BIN/find" <<'EOF'
+#!/usr/bin/env bash
+sleep 0.2
+[[ -e "$TEST_TMP/fzf-started" ]] || printf 'fzf did not start before scan emitted data\n' > "$TEST_TMP/async-failure"
+exec /usr/bin/find "$@"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/find"
+PATH="$FAKE_BIN:$PATH"
+export PATH
+
+session="$HOME/.codex/sessions/rollout-2024-07-03T18-46-40-test-session.jsonl"
+cat > "$session" <<'EOF'
+{"payload":{"thread_source":"","cwd":"/tmp/project"}}
+{"type":"response_item","role":"user","payload":{"content":[{"type":"input_text","text":"Fix timestamp display"}]}}
+EOF
+touch -t 202407031846.40 "$session"
+
+if "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/stderr"; then
+    echo "FAIL: fake fzf should cancel resume" >&2
+    exit 1
+fi
+
+[[ -s "$TEST_TMP/fzf-input" ]] \
+    || { echo "FAIL: resume did not send rows to fzf" >&2; exit 1; }
+[[ ! -e "$TEST_TMP/async-failure" ]] \
+    || { echo "FAIL: $(cat "$TEST_TMP/async-failure")" >&2; exit 1; }
+[[ -e "$TEST_TMP/fzf-started" ]] \
+    || { echo "FAIL: fzf did not start" >&2; exit 1; }
+
+row=$(cat "$TEST_TMP/fzf-input")
+[[ "$row" == 07/03\ 18:46* ]] \
+    || { echo "FAIL: resume timestamp was not formatted from epoch: $row" >&2; exit 1; }
+[[ "$row" != *"??/?? ??:??"* ]] \
+    || { echo "FAIL: resume used fallback timestamp: $row" >&2; exit 1; }
+[[ "$row" == *"codex"* && "$row" == *"Fix timestamp display"* ]] \
+    || { echo "FAIL: resume row did not include expected session metadata: $row" >&2; exit 1; }
+
+echo "resume format tests passed"
