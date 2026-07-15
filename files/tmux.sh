@@ -177,6 +177,22 @@ _as_root() {
 _ensure_tmux() {
     command -v tmux >/dev/null 2>&1 && return 0
 
+    # On macOS, brew's shellenv is only sourced in interactive login shells.
+    # Non-interactive SSH sessions lack brew's PATH entries, so probe the two
+    # well-known install locations and eval shellenv for this invocation only.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        local _brew_bin=""
+        for _brew_bin in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            [[ -x "$_brew_bin" ]] && break
+            _brew_bin=""
+        done
+        if [[ -n "$_brew_bin" ]]; then
+            eval "$("$_brew_bin" shellenv)"
+            # tmux may already be installed via brew — just missing from PATH.
+            command -v tmux >/dev/null 2>&1 && return 0
+        fi
+    fi
+
     echo "tmux is not installed; installing it now..."
     case "$(uname -s)" in
         Darwin)
