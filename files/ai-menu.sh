@@ -13,7 +13,9 @@
 MODULE="ai-menu"
 PAYLOAD_TARGET="$HOME/.bashrc.d/ai-menu"
 SRC_REPO="${AI_MENU_SRC_REPO:-https://github.com/LPFchan/setup.git}"
-SRC_CLONE="${STATE_DIR:-$HOME/.local/state/setup}/ai-menu-src"
+SETUP_STATE_DIR="${STATE_DIR:-$HOME/.local/state/setup}"
+SRC_CLONE="$SETUP_STATE_DIR/ai-menu-src"
+SOURCE_PATHS=(files/ai-menu files/ai-menu.sh)
 
 BLOCK_CONTENT='[[ ${(t)AI_AUTO_LAUNCHED} == *export* ]] && unset AI_AUTO_LAUNCHED
 [[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
@@ -23,15 +25,18 @@ if (( ${+functions[ai]} )) && (( ! ${+AI_AUTO_LAUNCHED} )); then
 fi'
 
 _sync_src() {
-    if [[ -d "$SRC_CLONE/.git" ]]; then
-        git_pull_ff "$SRC_CLONE" >/dev/null 2>&1 || true
-    else
-        git_clone_if_missing "$SRC_REPO" "$SRC_CLONE"
-    fi
+    case "$SRC_CLONE" in
+        "$SETUP_STATE_DIR"/*) ;;
+        *) echo "ai-menu: refusing to reset source clone outside $SETUP_STATE_DIR: $SRC_CLONE" >&2; return 1 ;;
+    esac
+    git_sync_private_clone_to_origin_head "$SRC_REPO" "$SRC_CLONE" || {
+        echo "ai-menu: failed to sync source clone from $SRC_REPO" >&2
+        return 1
+    }
 }
 
 _install_payload() {
-    _sync_src
+    _sync_src || return 1
     if [[ ! -f "$SRC_CLONE/files/ai-menu" ]]; then
         echo "ai-menu: payload missing at $SRC_CLONE/files/ai-menu — push files/ai-menu to $SRC_REPO first" >&2
         return 1
@@ -58,13 +63,13 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local expected actual local_ref remote_ref
-    local_ref=$(git_local_ref "$SRC_CLONE")
-    remote_ref=$(git_remote_ref "$SRC_CLONE")
-    if [[ -n "$remote_ref" && "$local_ref" != "$remote_ref" ]]; then
+    local expected actual local_hash remote_hash local_ref remote_ref
+    IFS=$'\t' read -r local_hash remote_hash local_ref remote_ref \
+        < <(git_scoped_content_refs "$SRC_CLONE" "${SOURCE_PATHS[@]}" || true)
+    if [[ -n "$remote_hash" && "$local_hash" != "$remote_hash" ]]; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" \
-            "${local_ref:0:7}" "${remote_ref:0:7}" "$PAYLOAD_TARGET"
-        record_script_state "$MODULE" "git" "${local_ref:0:7}" "${remote_ref:0:7}"
+            "${local_hash:0:7}" "${remote_hash:0:7}" "$PAYLOAD_TARGET"
+        record_script_state "$MODULE" "path" "${local_hash:0:7}" "${remote_hash:0:7}"
         return 1
     fi
 

@@ -11,7 +11,9 @@
 MODULE="agents"
 AGENTS_DIR="$HOME/.agents"
 SRC_REPO="${AGENTS_SRC_REPO:-https://github.com/LPFchan/setup.git}"
-SRC_CLONE="${STATE_DIR:-$HOME/.local/state/setup}/agents-src"
+SETUP_STATE_DIR="${STATE_DIR:-$HOME/.local/state/setup}"
+SRC_CLONE="$SETUP_STATE_DIR/agents-src"
+SOURCE_PATHS=(agents files/agents.sh)
 
 # AGENTS.md symlink targets (canonical: $AGENTS_DIR/AGENTS.md)
 AGENTS_LINKS=(
@@ -27,11 +29,14 @@ SKILLS_LINK_DIRS=(
 )
 
 _sync_src() {
-    if [[ -d "$SRC_CLONE/.git" ]]; then
-        git_pull_ff "$SRC_CLONE" >/dev/null 2>&1 || true
-    else
-        git_clone_if_missing "$SRC_REPO" "$SRC_CLONE"
-    fi
+    case "$SRC_CLONE" in
+        "$SETUP_STATE_DIR"/*) ;;
+        *) echo "agents: refusing to reset source clone outside $SETUP_STATE_DIR: $SRC_CLONE" >&2; return 1 ;;
+    esac
+    git_sync_private_clone_to_origin_head "$SRC_REPO" "$SRC_CLONE" || {
+        echo "agents: failed to sync source clone from $SRC_REPO" >&2
+        return 1
+    }
 }
 
 # Symlink $target -> $src, backing up an existing real file/dir once.
@@ -77,7 +82,7 @@ _post_install() {
 }
 
 install() {
-    _sync_src
+    _sync_src || return 1
     if [[ ! -d "$SRC_CLONE/agents" ]]; then
         echo "agents: payload missing at $SRC_CLONE/agents — push the agents/ dir to $SRC_REPO first" >&2
         return 1
@@ -106,20 +111,20 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local lr rr
-    lr=$(git_local_ref "$SRC_CLONE")
-    rr=$(git_remote_ref "$SRC_CLONE")
-    if [[ -n "$rr" && "$lr" != "$rr" ]]; then
-        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${lr:0:7}" "${rr:0:7}" "$AGENTS_DIR"
-        record_script_state "$MODULE" "git" "${lr:0:7}" "${rr:0:7}"
+    local local_hash remote_hash local_ref remote_ref
+    IFS=$'\t' read -r local_hash remote_hash local_ref remote_ref \
+        < <(git_scoped_content_refs "$SRC_CLONE" "${SOURCE_PATHS[@]}" || true)
+    if [[ -n "$remote_hash" && "$local_hash" != "$remote_hash" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${local_hash:0:7}" "${remote_hash:0:7}" "$AGENTS_DIR"
+        record_script_state "$MODULE" "path" "${local_hash:0:7}" "${remote_hash:0:7}"
         return 1
     fi
     # Legacy artifacts that need cleanup trigger an update even when git refs match.
     if [[ -e "$AGENTS_DIR/FLEET.md" || -L "$AGENTS_DIR/FLEET.md" ]]; then
-        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${lr:0:7}" "${rr:0:7}" "$AGENTS_DIR"
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${local_hash:0:7}" "${remote_hash:0:7}" "$AGENTS_DIR"
         return 1
     fi
-    printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${lr:0:7}" "${rr:0:7}" "$AGENTS_DIR"
+    printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "current" "${local_hash:0:7}" "${remote_hash:0:7}" "$AGENTS_DIR"
     _record_state
     return 0
 }
@@ -147,7 +152,7 @@ uninstall() {
 }
 
 _record_state() {
-    local lr
-    lr=$(git_local_ref "$SRC_CLONE")
-    record_script_state "$MODULE" "git" "${lr:0:7}" "${lr:0:7}"
+    local h
+    h=$(git_path_content_hash "$SRC_CLONE" HEAD "${SOURCE_PATHS[@]}" 2>/dev/null || git_local_ref "$SRC_CLONE")
+    record_script_state "$MODULE" "path" "${h:0:7}" "${h:0:7}"
 }

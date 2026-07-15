@@ -20,6 +20,57 @@ git_remote_ref() {
     git -C "$1" ls-remote origin HEAD 2>/dev/null | cut -f1
 }
 
+git_fetch_origin_head() {
+    local dir="$1"
+    [[ -d "$dir/.git" ]] || return 1
+    git -C "$dir" fetch --quiet origin HEAD 2>/dev/null || return 1
+    git -C "$dir" rev-parse FETCH_HEAD 2>/dev/null
+}
+
+git_path_content_hash() {
+    local dir="$1" ref="$2"
+    shift 2
+    local path obj type
+    for path in "$@"; do
+        if obj=$(git -C "$dir" rev-parse "${ref}:${path}" 2>/dev/null); then
+            type=$(git -C "$dir" cat-file -t "$obj" 2>/dev/null || echo unknown)
+            printf '%s\t%s\t%s\n' "$path" "$type" "$obj"
+        else
+            printf '%s\tmissing\t-\n' "$path"
+        fi
+    done | setup_sha256_string
+}
+
+git_scoped_content_refs() {
+    local dir="$1"
+    shift
+    [[ -d "$dir/.git" ]] || return 2
+
+    local local_ref remote_ref local_hash remote_hash
+    local_ref=$(git_local_ref "$dir") || return 2
+    local_hash=$(git_path_content_hash "$dir" "$local_ref" "$@")
+
+    if remote_ref=$(git_fetch_origin_head "$dir"); then
+        remote_hash=$(git_path_content_hash "$dir" "$remote_ref" "$@")
+    else
+        remote_ref=""
+        remote_hash=""
+    fi
+
+    printf '%s\t%s\t%s\t%s\n' "$local_hash" "$remote_hash" "$local_ref" "$remote_ref"
+}
+
+git_sync_private_clone_to_origin_head() {
+    local repo="$1" dir="$2" remote_ref
+    if [[ -d "$dir/.git" ]]; then
+        remote_ref=$(git_fetch_origin_head "$dir") || return 1
+        git -C "$dir" reset --hard "$remote_ref" >/dev/null
+        git -C "$dir" clean -fd >/dev/null
+    else
+        git_clone_if_missing "$repo" "$dir"
+    fi
+}
+
 git_check_status() {
     local dir="$1"
     if [[ ! -d "$dir/.git" ]]; then
