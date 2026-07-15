@@ -11,28 +11,30 @@
 MODULE="ssh-aliases"
 SSH_CONFIG="$HOME/.ssh/config"
 
-# alias | hostname | user
+# alias | hostname | user | optional TERM fallback
 FLEET=(
     "yeowoolmac|mac.lost.plus|yeowool"
     "grimoire|grimoire.lost.plus|yeowool"
     "oci-ubuntu|oci.lost.plus|ubuntu"
-    "bingus|bingus.lost.plus|yeowool"
+    "bingus|bingus.lost.plus|yeowool|xterm-256color"
     "yeowoolair|yeowool-air.tailaa113.ts.net|yeowool"
 )
 
 _self() { echo "${SSH_ALIASES_SELF:-$(hostname -s 2>/dev/null || hostname)}"; }
 
 _build_block() {
-    local self entry alias hn user
+    local self entry alias hn user term
     self=$(_self)
     for entry in "${FLEET[@]}"; do
-        IFS='|' read -r alias hn user <<< "$entry"
+        IFS='|' read -r alias hn user term <<< "$entry"
         [[ "$alias" == "$self" ]] && continue
         printf 'Host %s\n' "$alias"
         printf '    HostName %s\n' "$hn"
         printf '    User %s\n' "$user"
         printf '    IdentityFile ~/.ssh/id_ed25519\n'
+        [[ -n "$term" ]] && printf '    SetEnv TERM=%s\n' "$term"
     done
+    return 0
 }
 
 _block_hash() {

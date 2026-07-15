@@ -82,7 +82,10 @@ Edit the payload under `agents/` here, push, and `setup update` syncs every mach
 
 Manages a marker-delimited block of `Host` stanzas in `~/.ssh/config`, built from
 the fleet table in `files/ssh-aliases.sh` and **omitting the current machine**
-(matched by `hostname`; override with `SSH_ALIASES_SELF`). Also normalizes
+(matched by `hostname`; override with `SSH_ALIASES_SELF`). The fleet table can
+attach a per-host terminal fallback; `bingus` uses `xterm-256color` because
+Synology DSM lacks the `tmux-256color` terminfo entry advertised by SSH clients
+running inside tmux. Also normalizes
 `~/.ssh` (700) and `~/.ssh/config` (600) permissions. Keep the table in sync with
 `agents/FLEET.md`.
 
