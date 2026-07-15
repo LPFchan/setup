@@ -71,6 +71,9 @@ status() {
 update() {
     touch "$TEST_TMP/outdated-update-invoked"
 }
+install() {
+    touch "$TEST_TMP/outdated-install-invoked"
+}
 EOF
 
 cat > "$fixtures/probe-error.sh" <<'EOF'
@@ -175,6 +178,25 @@ interactive_update_output=$(cmd_reconfigure 2>&1)
     || fail "interactive update-all invoked update() for a current script module"
 [[ -e "$TEST_TMP/outdated-update-invoked" ]] \
     || fail "interactive update-all did not reuse cmd_update semantics for an outdated script module"
+
+rm -f "$TEST_TMP/outdated-update-invoked" "$TEST_TMP/outdated-install-invoked"
+printf '0\n' > "$fzf_count"
+fzf() {
+    local n input
+    input=$(cat)
+    n=$(( $(cat "$fzf_count") + 1 ))
+    printf '%s\n' "$n" > "$fzf_count"
+    case "$n" in
+        1) awk '$1 == "outdated-update" { print; exit }' <<< "$input" ;;
+        2) printf 'update\n' ;;
+        *) return 1 ;;
+    esac
+}
+cmd_reconfigure >/dev/null 2>&1
+[[ -e "$TEST_TMP/outdated-update-invoked" ]] \
+    || fail "interactive single-module update did not call update() for a script module"
+[[ ! -e "$TEST_TMP/outdated-install-invoked" ]] \
+    || fail "interactive single-module update called install() for a script module"
 
 fields=$(script_status_fields absent '~/.local/bin/absent' uninstalled.sh)
 IFS=$'\t' read -r target state display local_ref remote_ref installed extra <<< "$fields"

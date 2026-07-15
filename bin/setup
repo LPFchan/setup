@@ -1502,7 +1502,11 @@ cmd_reconfigure() {
                     fi
                 } ;;
             update)
-                install_one "$mod" "$target" "$mode" "$source" ;;
+                if [[ "$mode" == "script" ]]; then
+                    _script_update "$mod" "$target" "$source"
+                else
+                    install_one "$mod" "$target" "$mode" "$source"
+                fi ;;
             reinstall)
                 FORCE=1
                 install_one "$mod" "$target" "$mode" "$source"
