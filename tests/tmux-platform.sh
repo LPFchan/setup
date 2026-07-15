@@ -26,6 +26,9 @@ source "$ROOT/files/tmux.sh"
 [[ "$BLOCK_CONTENT" == *'set -s terminal-features[90] "xterm*:RGB"'* \
    && "$BLOCK_CONTENT" == *'set -s terminal-features[91] "tmux*:RGB"'* ]] \
     || fail "tmux does not advertise idempotent RGB support for direct and nested clients"
+[[ "$BLOCK_CONTENT" == *'set -s terminal-features[92] "tmux*:clipboard"'* \
+   && "$BLOCK_CONTENT" == *'set -s set-clipboard on'* ]] \
+    || fail "tmux does not relay clipboard writes from nested clients"
 [[ "$BLOCK_CONTENT" == *'set-environment -g COLORTERM truecolor'* ]] \
     || fail "tmux panes do not advertise truecolor to applications"
 [[ "$BLOCK_CONTENT" == *'set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1'* ]] \
@@ -79,6 +82,7 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     rendered_inactive_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-style)
     rendered_current_style=$("$tmux_bin" -L "$test_server" show-options -gwv window-status-current-style)
     rendered_terminal_features=$("$tmux_bin" -L "$test_server" show-options -gs terminal-features)
+    rendered_set_clipboard=$("$tmux_bin" -L "$test_server" show-options -sv set-clipboard)
     rendered_colorterm=$("$tmux_bin" -L "$test_server" show-environment -g COLORTERM)
     rendered_claude_truecolor=$("$tmux_bin" -L "$test_server" show-environment -g CLAUDE_CODE_TMUX_TRUECOLOR)
     mouse_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep 'MouseDown1Status ' || true)
@@ -107,8 +111,11 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
        && "$rendered_terminal_features" == *'terminal-features[91] tmux*:RGB'* ]] \
         || fail "tmux did not load direct and nested RGB features: '$rendered_terminal_features'"
     [[ $(printf '%s\n' "$rendered_terminal_features" | grep -cF 'xterm*:RGB') -eq 1 \
-       && $(printf '%s\n' "$rendered_terminal_features" | grep -cF 'tmux*:RGB') -eq 1 ]] \
-        || fail "tmux duplicated RGB features after repeated reloads: '$rendered_terminal_features'"
+       && $(printf '%s\n' "$rendered_terminal_features" | grep -cF 'tmux*:RGB') -eq 1 \
+       && $(printf '%s\n' "$rendered_terminal_features" | grep -cF 'tmux*:clipboard') -eq 1 ]] \
+        || fail "tmux duplicated terminal features after repeated reloads: '$rendered_terminal_features'"
+    [[ "$rendered_set_clipboard" == 'on' ]] \
+        || fail "tmux did not enable nested clipboard relay: '$rendered_set_clipboard'"
     [[ "$rendered_colorterm" == 'COLORTERM=truecolor' ]] \
         || fail "tmux did not export truecolor capability: '$rendered_colorterm'"
     [[ "$rendered_claude_truecolor" == 'CLAUDE_CODE_TMUX_TRUECOLOR=1' ]] \

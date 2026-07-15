@@ -19,6 +19,10 @@ BLOCK_CONTENT='set -g default-terminal "tmux-256color"
 # pattern covers nested fleet sessions whose outer terminal is another tmux.
 set -s terminal-features[90] "xterm*:RGB"
 set -s terminal-features[91] "tmux*:RGB"
+# Let an inner tmux advertise OSC 52 clipboard writes to an outer tmux, and
+# let the outer tmux relay those writes to the local terminal clipboard.
+set -s terminal-features[92] "tmux*:clipboard"
+set -s set-clipboard on
 # Some applications use COLORTERM rather than terminfo to enable direct RGB.
 set-environment -g COLORTERM truecolor
 # Claude Code otherwise deliberately caps its renderer at ANSI-256 in tmux,
