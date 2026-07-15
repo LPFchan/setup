@@ -7,7 +7,7 @@
 MODULE="zsh-autocomplete"
 DIR1="$ZSH_PLUGINS_DIR/zsh-autocomplete"
 DIR2="$ZSH_PLUGINS_DIR/zsh-defer"
-REPO1="git@github.com:LPFchan/zsh-autocomplete.git"
+REPO1="https://github.com/LPFchan/zsh-autocomplete.git"
 REPO2="https://github.com/romkatv/zsh-defer.git"
 
 BLOCK_CONTENT='if [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]; then
@@ -23,9 +23,9 @@ BLOCK_CONTENT='if [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defe
 fi'
 
 install() {
-    git_clone_if_missing "$REPO1" "$DIR1"
-    git_clone_if_missing "$REPO2" "$DIR2"
-    _upsert_block
+    git_clone_if_missing "$REPO1" "$DIR1" || return 1
+    git_clone_if_missing "$REPO2" "$DIR2" || return 1
+    _upsert_block || return 1
     _record_state
 }
 

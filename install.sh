@@ -160,7 +160,14 @@ configure_shell() {
     done
     rm -f "$HOME/.bashrc.d/ai-start-menu"
 
-    path_block='case ":$PATH:" in
+    path_block='for _setup_brew in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [[ -x "$_setup_brew" ]]; then
+        eval "$("$_setup_brew" shellenv)"
+        break
+    fi
+done
+unset _setup_brew
+case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac'
@@ -171,6 +178,75 @@ esac'
         append_block_once "$HOME/.zshenv" path "$path_block"
     fi
 }
+
+find_homebrew() {
+    local brew_bin
+    if command -v brew >/dev/null 2>&1; then
+        command -v brew
+        return 0
+    fi
+    for brew_bin in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [[ -x "$brew_bin" ]]; then
+            printf '%s\n' "$brew_bin"
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_homebrew() {
+    local installer
+    echo "Homebrew is not installed; installing it now..."
+    if ! installer=$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh); then
+        echo "setup: failed to download the Homebrew installer" >&2
+        return 1
+    fi
+    if [[ -r /dev/tty ]]; then
+        /bin/bash -c "$installer" </dev/tty
+    else
+        /bin/bash -c "$installer"
+    fi
+}
+
+ensure_macos_bootstrap_dependencies() {
+    [[ "$(uname -s)" == "Darwin" ]] || return 0
+
+    local brew_bin brew_env
+    if ! brew_bin=$(find_homebrew); then
+        install_homebrew || {
+            echo "setup: Homebrew installation failed; install it manually and rerun setup" >&2
+            return 1
+        }
+        if ! brew_bin=$(find_homebrew); then
+            echo "setup: Homebrew installation finished, but brew could not be found" >&2
+            return 1
+        fi
+    fi
+
+    if ! brew_env=$("$brew_bin" shellenv) || ! eval "$brew_env"; then
+        echo "setup: failed to load the Homebrew shell environment" >&2
+        return 1
+    fi
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "fzf is not installed; installing it with Homebrew..."
+        "$brew_bin" install fzf || {
+            echo "setup: fzf installation failed; run '$brew_bin install fzf' and rerun setup" >&2
+            return 1
+        }
+        hash -r
+    fi
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "setup: Homebrew reported success, but fzf could not be found" >&2
+        return 1
+    fi
+}
+
+if [[ "${SETUP_INSTALL_SOURCE_ONLY:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+# A fresh macOS install needs fzf for setup's interactive module picker.
+ensure_macos_bootstrap_dependencies
 
 mkdir -p "$BIN_DIR"
 

@@ -11,7 +11,11 @@ Repo: https://github.com/LPFchan/setup
 curl -fsSL https://setup.lost.plus/install.sh | bash
 ```
 
-Installs `setup` CLI to `~/.local/bin/`, then runs `setup` (interactive fzf reconfigure) or batch-installs all modules.
+Installs `setup` CLI to `~/.local/bin/`, then runs its interactive `fzf`
+reconfigure. On macOS, the bootstrap installs Homebrew when missing and then
+installs `fzf` with Homebrew, makes Homebrew available to future shells, and
+stops with an actionable error if either installation fails. On other platforms
+without `fzf`, it falls back to the non-interactive update report.
 
 ## Modules
 

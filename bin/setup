@@ -377,7 +377,14 @@ configure_shell() {
         manage_block "$HOME/.zshrc" "zsh-ai" "" "remove"
     fi
 
-    path_block='case ":$PATH:" in
+    path_block='for _setup_brew in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [[ -x "$_setup_brew" ]]; then
+        eval "$("$_setup_brew" shellenv)"
+        break
+    fi
+done
+unset _setup_brew
+case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac'
