@@ -1264,6 +1264,32 @@ detect_env_summary() {
     echo "${os} ${arch} · ${distro} · ${fs}"
 }
 
+confirm_action() {
+    local prompt="$1" answer
+    if command -v fzf >/dev/null 2>&1; then
+        answer=$(printf '%s\n' yes no | fzf \
+            --layout=reverse \
+            --height=8 \
+            --cycle \
+            --bind='esc:abort' \
+            --header="$prompt" 2>/dev/null || true)
+    else
+        printf '%s [y/N] ' "$prompt" >&2
+        read -r answer || answer=""
+        case "$answer" in
+            y|Y|yes|YES|Yes) answer="yes" ;;
+            *) answer="no" ;;
+        esac
+    fi
+
+    if [[ "$answer" == "yes" ]]; then
+        echo "Confirmed: $prompt"
+        return 0
+    fi
+    echo "Canceled: $prompt"
+    return 1
+}
+
 cmd_reconfigure() {
     fetch_manifest || true
     local env_summary
@@ -1363,32 +1389,12 @@ cmd_reconfigure() {
                     continue
                     ;;
                 "update all")
-                    local confirm setup_entry
-                    confirm=$(echo -e "yes\nno" | fzf --layout=reverse --height=3 --cycle --bind='esc:abort' --header="Update ALL installed modules?" 2>/dev/null || true)
-                    [[ "$confirm" == "yes" ]] || continue
-                    while IFS=$'\t' read -r m t mo s; do
-                        [[ -z "${m:-}" || "$m" == \#* ]] && continue
-                        if [[ "$mo" == "script" ]]; then
-                            local _ss; _ss=$(script_state_for "$m" || true)
-                            [[ -n "$_ss" ]] && _script_update "$m" "$t" "$s"
-                        elif [[ "$m" == "setup" ]]; then
-                            setup_entry="$t"$'\t'"$mo"$'\t'"$s"
-                            continue
-                        else
-                            local_hash=$(installed_hash_for "$(expand_path "$t")" || true)
-                            [[ -n "$local_hash" ]] && install_one "$m" "$t" "$mo" "$s"
-                        fi
-                    done < "$MANIFEST_FILE"
-                    if [[ -n "${setup_entry:-}" ]]; then
-                        IFS=$'\t' read -r st smo ss <<< "$setup_entry"
-                        local_hash=$(installed_hash_for "$(expand_path "$st")" || true)
-                        [[ -n "$local_hash" ]] && install_one setup "$st" "$smo" "$ss"
-                    fi
+                    confirm_action "Update ALL installed modules?" || continue
+                    cmd_update
                     ;;
                 "reinstall all")
-                    local confirm setup_entry
-                    confirm=$(echo -e "yes\nno" | fzf --layout=reverse --height=3 --cycle --bind='esc:abort' --header="Reinstall ALL modules (overwrites local changes)?" 2>/dev/null || true)
-                    [[ "$confirm" == "yes" ]] || continue
+                    local setup_entry
+                    confirm_action "Reinstall ALL modules (overwrites local changes)?" || continue
                     FORCE=1
                     while IFS=$'\t' read -r m t mo s; do
                         [[ -z "${m:-}" || "$m" == \#* ]] && continue
@@ -1405,9 +1411,7 @@ cmd_reconfigure() {
                     FORCE=0
                     ;;
                 "uninstall all")
-                    local confirm
-                    confirm=$(echo -e "yes\nno" | fzf --layout=reverse --height=3 --cycle --bind='esc:abort' --header="Uninstall ALL modules? This is destructive." 2>/dev/null || true)
-                    [[ "$confirm" == "yes" ]] || continue
+                    confirm_action "Uninstall ALL modules? This is destructive." || continue
                     while IFS=$'\t' read -r m t mo s; do
                         [[ -z "${m:-}" || "$m" == \#* ]] && continue
                         local dc; dc=$(module_disable_cmd "$m") && {
