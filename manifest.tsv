@@ -2,6 +2,7 @@
 setup	~/.local/bin/setup	0755	bin/setup
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
+claudex	~/.local/bin/claudex	script	files/claudex.sh
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer
 service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol
