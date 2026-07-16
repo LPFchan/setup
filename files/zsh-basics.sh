@@ -13,6 +13,9 @@ BLOCK_CONTENT='[[ -o interactive && -t 0 ]] || return
 alias /exit='"'"'exit'"'"'
 
 setopt NO_NOMATCH
+# NFD Hangul (macOS drag-and-drop paths, APFS filenames) renders as <11xx>
+# placeholders and garbles ZLE redraw/cursor math without this.
+setopt COMBINING_CHARS
 bindkey -e
 WORDCHARS=${WORDCHARS//\//}'
 
