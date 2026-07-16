@@ -623,7 +623,8 @@ def cmd_enable():
         miss_list = ", ".join(missing)
         print(f"  {len(missing)} provider(s) missing API keys: {miss_list}")
         if not sys.stdin.isatty():
-            marker = os.path.expanduser("~/.local/state/setup/refresh-models.needs-auth")
+            state_home = os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))
+            marker = os.path.join(state_home, "setup", "refresh-models.needs-auth")
             pathlib.Path(os.path.dirname(marker)).mkdir(parents=True, exist_ok=True)
             with open(marker, "w") as f:
                 f.write("\n".join(missing) + "\n")

@@ -11,11 +11,16 @@ Repo: https://github.com/LPFchan/setup
 curl -fsSL https://setup.lost.plus/install.sh | bash
 ```
 
-Installs `setup` CLI to `~/.local/bin/`, then runs its interactive `fzf`
-reconfigure. On macOS, the bootstrap installs Homebrew when missing and then
-installs `fzf` with Homebrew, makes Homebrew available to future shells, and
-stops with an actionable error if either installation fails. On other platforms
-without `fzf`, it falls back to the non-interactive update report.
+Installs `setup` CLI to `~/.local/bin/`, then an argument-free interactive run
+bootstraps the managed `fzf-multicolumn` module and opens its span-aware,
+six-track reconfigure UI. Existing managed binaries that predate
+`--grid-span-prefix` are upgraded before use. Stock `fzf` and Homebrew are not
+setup UI dependencies on Linux or macOS. When no interactive terminal is
+available, setup prints an actionable warning and falls back to the
+non-interactive update report; explicit commands never bootstrap the picker.
+The supported span-capable release floor is `fzf-multicolumn
+v0.74.0-multicolumn.3`, whose published release assets are used by fresh
+bootstrap installs.
 
 ## Modules
 
@@ -45,7 +50,7 @@ window title before resuming the session.
 | `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
-| `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
+| `ai-menu` | `~/.bashrc.d/ai-menu` (three-column span-aware picker; setup/resume/neither are full-width rows; repairs and reprobes the managed picker, with stock `fzf` fallback only here) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
 | `claudex` | `~/.local/bin/claudex` (StringKe/claudex) + a `codex` profile in `~/.config/claudex/config.toml` | — | `files/claudex.sh` |
 | `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and home-started new tabs/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive TTY autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 

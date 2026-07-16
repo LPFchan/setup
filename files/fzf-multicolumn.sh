@@ -9,12 +9,22 @@ BIN="$HOME/.local/bin/fzf-multicolumn"
 REPO="LPFchan/fzf-multicolumn"
 
 install() {
-    if [[ -x "$BIN" ]]; then
+    if [[ -x "$BIN" ]] && _has_span_capability "$BIN"; then
         echo "fzf-multicolumn already installed: $("$BIN" --version)"
     else
+        if [[ -x "$BIN" ]]; then
+            echo "fzf-multicolumn lacks --grid-span-prefix; upgrading managed binary..."
+        fi
         _download_release || return 1
     fi
     _record_state
+}
+
+_has_span_capability() {
+    local candidate="${1:-$BIN}" help
+    [[ -x "$candidate" ]] || return 1
+    help=$("$candidate" --help 2>&1) || return 1
+    [[ "$help" == *--grid-span-prefix* ]]
 }
 
 status() {
@@ -24,6 +34,11 @@ status() {
     fi
     local installed_ver latest_ver
     installed_ver=$("$BIN" --version 2>/dev/null | awk 'NR==1{print $1}')
+    if ! _has_span_capability "$BIN"; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${installed_ver:-unknown}" "span-capable" "$BIN"
+        record_script_state "$MODULE" "version" "${installed_ver:-unknown}" "span-capable"
+        return 1
+    fi
     latest_ver=$(_latest_tag || true)
     latest_ver="${latest_ver#v}"
     if [[ -z "$latest_ver" ]]; then
@@ -108,6 +123,12 @@ _download_release() {
         return 1
     fi
     chmod +x "$BIN.new"
+    if ! _has_span_capability "$BIN.new"; then
+        echo "fzf-multicolumn: staged binary lacks required --grid-span-prefix capability; keeping existing binary" >&2
+        rm -f "$BIN.new"
+        rm -rf "$tmp"
+        return 1
+    fi
     # rm before replacing (not mv-over): on macOS, overwriting a signed
     # binary in place invalidates the kernel's per-vnode code-signature
     # cache and the next launch is SIGKILLed with no error message.

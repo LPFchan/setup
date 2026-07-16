@@ -112,16 +112,23 @@ fetch_manifest() {
     cp "$TEST_TMP/manifest.tsv" "$MANIFEST_FILE"
 }
 fetch_checksums() { :; }
-fzf() {
+managed_picker() { printf '%s\n' fzf-multicolumn; }
+printf '0\n' > "$TEST_TMP/status-picker-count"
+fzf-multicolumn() {
     cat > "$TEST_TMP/interactive-rows"
-    return 1
+    local n=$(( $(cat "$TEST_TMP/status-picker-count") + 1 )) delim=$'\x1f'
+    printf '%s\n' "$n" > "$TEST_TMP/status-picker-count"
+    case "$n" in
+        1|2) printf 'module%slive-block%s[ ]\n' "$delim" "$delim" ;;
+        *) return 1 ;;
+    esac
 }
 cmd_reconfigure
-interactive_row=$(awk '$1 == "live-block" { print; exit }' "$TEST_TMP/interactive-rows")
+interactive_row=$(grep 'live-block' "$TEST_TMP/interactive-rows" | tail -1)
 [[ "$interactive_row" == *"aaaaaaa"* && "$interactive_row" == *"bbbbbbb"* \
    && "$interactive_row" == *"installed"* && "$interactive_row" == *"update available"* ]] \
     || fail "interactive row did not use the normalized live result: $interactive_row"
-assert_eq 2 "$(cat "$TEST_TMP/probe-count")" "one interactive row evaluation must invoke status once"
+assert_eq 2 "$(cat "$TEST_TMP/probe-count")" "selection-only redraws must reuse one cached script probe"
 
 cli=$(status_one live-block '~/.zshrc' script live-outdated.sh)
 [[ "$cli" == *"outdated"* && "$cli" == *"local=aaaaaaa remote=bbbbbbb"* ]] \
@@ -135,7 +142,12 @@ outdated-update	~/.local/outdated-update	script	outdated-update.sh
 absent	~/.local/absent	script	uninstalled.sh
 probe-error	~/.local/probe-error	script	probe-error.sh
 EOF
-cmd_update_output=$(cmd_update 2>&1)
+if cmd_update_output=$(cmd_update 2>&1); then
+    cmd_update_rc=0
+else
+    cmd_update_rc=$?
+fi
+[[ "$cmd_update_rc" -ne 0 ]] || fail "setup update masked a failed script probe"
 [[ ! -e "$TEST_TMP/current-update-invoked" ]] \
     || fail "setup update invoked update() for a current script module"
 [[ -e "$TEST_TMP/outdated-update-invoked" ]] \
@@ -149,54 +161,65 @@ cmd_update_output=$(cmd_update 2>&1)
 [[ "$cmd_update_output" == *"could not probe probe-error; skipping update"* ]] \
     || fail "setup update did not warn about the failed status probe: $cmd_update_output"
 
+# Span UI: selecting a module redraws the top row into select-all + five
+# contextual actions, then update dispatches directly (no nested action menu).
 cat > "$TEST_TMP/manifest.tsv" <<'EOF'
 # module	target	mode	source
 current-update	~/.local/current-update	script	current-update.sh
 outdated-update	~/.local/outdated-update	script	outdated-update.sh
 EOF
 rm -f "$TEST_TMP/current-update-invoked" "$TEST_TMP/outdated-update-invoked"
-fzf_count="$TEST_TMP/fzf-count"
-printf '0\n' > "$fzf_count"
-fzf() {
-    local n input
+printf '0\n' > "$TEST_TMP/fzf-count"
+fzf-multicolumn() {
+    local n input delim=$'\x1f'
     input=$(cat)
-    n=$(( $(cat "$fzf_count") + 1 ))
-    printf '%s\n' "$n" > "$fzf_count"
+    n=$(( $(cat "$TEST_TMP/fzf-count") + 1 ))
+    printf '%s\n' "$n" > "$TEST_TMP/fzf-count"
     case "$n" in
-        1) awk '$1 == "<ALL" { print; exit }' <<< "$input" ;;
-        2) printf 'update all\n' ;;
-        3) printf 'confirmation-ui-visible\n' >&2; printf 'yes\n' ;;
+        1)
+            grep -q '@@5@@heading' <<< "$input" || fail "initial row lacks span5 heading"
+            ! grep -q '<ALL MODULES>' <<< "$input" || fail "legacy ALL row remains"
+            printf 'module%soutdated-update%s[*]\n' "$delim" "$delim"
+            ;;
+        2)
+            [[ $(grep -c '^action' <<< "$input") -eq 5 ]] || fail "selected top row did not contain five actions"
+            grep -q "select-all${delim}all${delim}\[ \] 1/2" <<< "$input" || fail "partial select-all marker was not unchecked with count"
+            grep -q '@@5@@module' <<< "$input" || fail "module detail lacks span5"
+            grep "^action${delim}update${delim}" <<< "$input" | head -1
+            ;;
         *) return 1 ;;
     esac
 }
-interactive_update_output=$(cmd_reconfigure 2>&1)
-[[ "$interactive_update_output" == *"confirmation-ui-visible"* ]] \
-    || fail "interactive update-all hid the confirmation fzf UI stream: $interactive_update_output"
-[[ "$interactive_update_output" == *"Confirmed: Update ALL installed modules?"* ]] \
-    || fail "interactive update-all did not print a visible confirmation: $interactive_update_output"
+cmd_reconfigure >/dev/null
 [[ ! -e "$TEST_TMP/current-update-invoked" ]] \
-    || fail "interactive update-all invoked update() for a current script module"
+    || fail "interactive update invoked update() for an unselected current module"
 [[ -e "$TEST_TMP/outdated-update-invoked" ]] \
-    || fail "interactive update-all did not reuse cmd_update semantics for an outdated script module"
+    || fail "interactive selected update did not call script update()"
 
-rm -f "$TEST_TMP/outdated-update-invoked" "$TEST_TMP/outdated-install-invoked"
-printf '0\n' > "$fzf_count"
-fzf() {
-    local n input
-    input=$(cat)
-    n=$(( $(cat "$fzf_count") + 1 ))
-    printf '%s\n' "$n" > "$fzf_count"
+# A selected/current setup reinstall is deferred until last and must still see
+# FORCE=1. install_one is stubbed because a real setup install execs itself.
+cat > "$TEST_TMP/manifest.tsv" <<'EOF'
+# module	target	mode	source
+setup	~/.local/bin/setup	0755	bin/setup
+EOF
+mkdir -p "$HOME/.local/bin"
+printf '# setup-module: setup\n' > "$HOME/.local/bin/setup"
+printf '0\n' > "$TEST_TMP/fzf-count"
+fzf-multicolumn() {
+    local n input delim=$'\x1f'
+    input=$(cat); n=$(( $(cat "$TEST_TMP/fzf-count") + 1 )); printf '%s\n' "$n" > "$TEST_TMP/fzf-count"
     case "$n" in
-        1) awk '$1 == "outdated-update" { print; exit }' <<< "$input" ;;
-        2) printf 'update\n' ;;
+        1) printf 'module%ssetup%s[ ]\n' "$delim" "$delim" ;;
+        2) grep "^action${delim}reinstall${delim}" <<< "$input" | head -1 ;;
         *) return 1 ;;
     esac
 }
-cmd_reconfigure >/dev/null 2>&1
-[[ -e "$TEST_TMP/outdated-update-invoked" ]] \
-    || fail "interactive single-module update did not call update() for a script module"
-[[ ! -e "$TEST_TMP/outdated-install-invoked" ]] \
-    || fail "interactive single-module update called install() for a script module"
+confirm_action() { return 0; }
+install_one() { printf '%s:%s\n' "$1" "$FORCE" >> "$TEST_TMP/reinstall-log"; }
+FORCE=0
+cmd_reconfigure >/dev/null
+assert_eq 'setup:1' "$(cat "$TEST_TMP/reinstall-log")" "deferred setup reinstall lost FORCE=1"
+assert_eq 0 "$FORCE" "reinstall did not restore FORCE after deferred setup"
 
 fields=$(script_status_fields absent '~/.local/bin/absent' uninstalled.sh)
 IFS=$'\t' read -r target state display local_ref remote_ref installed extra <<< "$fields"
@@ -234,7 +257,7 @@ assert_eq 0 "$starship_rc" "managed Starship should be current"
 # The second managed binary module follows the same lifecycle identity rule.
 cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
 #!/usr/bin/env bash
-echo '0.74.0-multicolumn.2'
+if [[ "${1:-}" == --help ]]; then echo '--grid-span-prefix=STR'; else echo '0.74.0-multicolumn.2'; fi
 EOF
 cat > "$TEST_TMP/shadow-bin/fzf-multicolumn" <<'EOF'
 #!/usr/bin/env bash

@@ -45,7 +45,7 @@ Commands:
   schedule [status]    Install daily auto-update timer or show its state
   unschedule           Remove daily auto-update timer
 
-Run without arguments for interactive fzf reconfigure.
+Run without arguments for interactive span-aware reconfigure.
 
 Environment:
   LINUX_SETUP_SOURCE_URL Override source URL root
@@ -106,6 +106,7 @@ is_service_module() {
 module_is_active() {
     local unit user_flag=""
     unit=$(module_service_unit "$1") || return 1
+    [[ "$unit" == tool ]] && return 1
     if echo " ${USER_SERVICE_MODULES} " | grep -q " $1 "; then
         user_flag="--user"
     fi
@@ -115,6 +116,30 @@ module_is_active() {
         return 1
     fi
     [[ "$(systemctl ${user_flag} is-active "${unit}" 2>/dev/null)" == "active" ]]
+}
+
+module_service_transition() {
+    local action="$1" module="$2" cmd command_ok=0 state_ok=0 unit
+    unit=$(module_service_unit "$module") || { echo "Not a service module: $module" >&2; return 1; }
+    [[ "$unit" != tool ]] || { echo "Not an enable/disable service: $module (installed tool only)" >&2; return 1; }
+    if [[ "$action" == enable ]]; then cmd=$(module_enable_cmd "$module")
+    else cmd=$(module_disable_cmd "$module")
+    fi
+    case "$action" in enable) echo "Enabling $module..." ;; disable) echo "Disabling $module..." ;; esac
+    if echo " ${USER_SERVICE_MODULES} " | grep -q " $module "; then
+        ${cmd} && command_ok=1
+    else
+        sudo -E ${cmd} && command_ok=1
+    fi
+    if (( command_ok == 1 )); then
+        if [[ "$action" == enable ]]; then module_is_active "$module" && state_ok=1
+        else module_is_active "$module" || state_ok=1
+        fi
+    fi
+    (( state_ok == 1 )) || {
+        echo "Failed: $action $module (service did not reach desired state)" >&2
+        return 1
+    }
 }
 
 sha256() {
@@ -145,7 +170,20 @@ expand_path() {
 
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    curl -fsSL --connect-timeout 8 --max-time 60 "$MANIFEST_URL" -o "$MANIFEST_FILE" 2>/dev/null || true
+    local tmp
+    tmp=$(mktemp)
+    if curl -fsSL --connect-timeout 8 --max-time 60 "$MANIFEST_URL" -o "$tmp" 2>/dev/null \
+       && grep -q '^# module' "$tmp"; then
+        if mv "$tmp" "$MANIFEST_FILE"; then
+            return 0
+        fi
+        rm -f "$tmp"
+        echo "Failed to install fetched manifest at $MANIFEST_FILE" >&2
+        return 1
+    fi
+    rm -f "$tmp"
+    echo "Failed to fetch manifest from $MANIFEST_URL" >&2
+    return 1
 }
 
 module_selected() {
@@ -893,7 +931,7 @@ status_one() {
 }
 
 cmd_list() {
-    fetch_manifest
+    fetch_manifest || return 1
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         printf '%-25s %s\n' "$module" "$target"
@@ -901,7 +939,7 @@ cmd_list() {
 }
 
 cmd_status() {
-    fetch_manifest
+    fetch_manifest || return 1
     local found=0
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
@@ -933,36 +971,31 @@ shell_status_one() {
 
 cmd_install() {
     local modules=("$@")
-    fetch_manifest
-    local found=0
+    fetch_manifest || return 1
+    local found=0 failures=0
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if module_selected "$module" "${modules[@]}"; then
             found=1
-            install_one "$module" "$target" "$mode" "$source"
+            install_one "$module" "$target" "$mode" "$source" || { failures=$((failures + 1)); echo "Failed: install $module" >&2; }
         fi
     done < "$MANIFEST_FILE"
-    ((found == 1)) || { echo "No matching modules." >&2; exit 1; }
+    ((found == 1)) || { echo "No matching modules." >&2; return 1; }
 
-    # Enable each installed service module
+    # Explicitly selected real service modules are enabled after installation.
     for module in "${modules[@]}"; do
         is_service_module "$module" || continue
-        local ec; ec=$(module_enable_cmd "$module")
-        echo "Enabling $module..."
-        if echo " ${USER_SERVICE_MODULES} " | grep -q " ${module} "; then
-            ${ec} 2>&1 || echo "(enable failed — check above for errors)"
-        else
-            sudo -E ${ec} 2>&1 || echo "(enable failed — run 'setup enable $module' with sudo)"
-        fi
+        [[ "$(module_service_unit "$module")" != tool ]] || continue
+        module_service_transition enable "$module" || failures=$((failures + 1))
     done
 
-    # A module install may have added a .zshrc block; keep canonical order.
     normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+    (( failures == 0 ))
 }
 
 cmd_update() {
     configure_shell || true
-    fetch_manifest
+    fetch_manifest || return 1
     local new_count=0 new_names=() failure_count=0 failure_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
     for target_module in "$@"; do
@@ -1019,13 +1052,21 @@ cmd_update() {
                 new_count=$((new_count + 1))
                 new_names+=("$module")
             else
-                install_one "$module" "$target" "$mode" "$source"
+                if ! install_one "$module" "$target" "$mode" "$source"; then
+                    echo "Warning: $module update failed." >&2
+                    failure_count=$((failure_count + 1))
+                    failure_names+=("$module")
+                fi
             fi
         fi
     done < "$MANIFEST_FILE"
     # Update setup last — self-update exec restarts the process
     if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
-        install_one setup "$setup_target" "$setup_mode" "$setup_source"
+        if ! install_one setup "$setup_target" "$setup_mode" "$setup_source"; then
+            echo "Warning: setup update failed." >&2
+            failure_count=$((failure_count + 1))
+            failure_names+=(setup)
+        fi
     fi
     # All .zshrc blocks now exist (configure_shell + module loop); enforce order.
     normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
@@ -1039,39 +1080,47 @@ cmd_update() {
     elif [[ "$new_count" -eq 0 ]]; then
         echo "All modules up to date."
     fi
+    (( failure_count == 0 ))
 }
 
 cmd_uninstall() {
-    fetch_manifest
-    local found=0
+    fetch_manifest || return 1
+    local found=0 failures=0 target_path
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if module_selected "$module" "$@"; then
             found=1
-            if (($# > 0)); then
-                local dc; dc=$(module_disable_cmd "$module") && {
-                    echo "Disabling $module..."
-                    if echo " ${USER_SERVICE_MODULES} " | grep -q " ${module} "; then
-                        ${dc} 2>&1 || true
-                    else
-                        sudo -E ${dc} 2>&1 || true
-                    fi
-                }
+            if (($# > 0)) && is_service_module "$module" && [[ "$(module_service_unit "$module")" != tool ]]; then
+                if ! module_service_transition disable "$module"; then
+                    failures=$((failures + 1))
+                    echo "Failed: disable $module before uninstall; target retained" >&2
+                    continue
+                fi
             fi
-            uninstall_one "$module" "$target" "$mode" "$source"
+            if uninstall_one "$module" "$target" "$mode" "$source"; then
+                if [[ "$mode" == script ]]; then
+                    if is_script_installed "$module"; then failures=$((failures + 1)); echo "Failed: uninstall $module (still installed)" >&2; fi
+                else
+                    target_path=$(expand_path "$target")
+                    if [[ -e "$target_path" ]]; then failures=$((failures + 1)); echo "Failed: uninstall $module (target retained)" >&2; fi
+                fi
+            else
+                failures=$((failures + 1)); echo "Failed: uninstall $module" >&2
+            fi
         fi
     done < "$MANIFEST_FILE"
-    ((found == 1)) || { echo "No matching modules." >&2; exit 1; }
+    ((found == 1)) || { echo "No matching modules." >&2; return 1; }
 
     if (($# == 0)); then
         remove_shell_config
         rm -f "$MANIFEST_FILE" "$HASH_FILE"
         rmdir "$STATE_DIR" 2>/dev/null || true
     fi
+    (( failures == 0 ))
 }
 
 cmd_diff() {
-    fetch_manifest
+    fetch_manifest || return 1
     local module target mode source local_path payload found=0
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
@@ -1092,33 +1141,31 @@ cmd_diff() {
 }
 
 cmd_enable() {
-    local modules=("$@")
+    local modules=("$@") module failures=0
     ((${#modules[@]} == 0)) && modules=(${SERVICE_MODULES})
     for module in "${modules[@]}"; do
-        is_service_module "$module" || { echo "Not a service module: $module" >&2; continue; }
-        local cmd; cmd=$(module_enable_cmd "$module")
-        echo "Enabling $module..."
-        if echo " ${USER_SERVICE_MODULES} " | grep -q " ${module} "; then
-            ${cmd}
-        else
-            sudo -E ${cmd}
+        if ! is_service_module "$module" || [[ "$(module_service_unit "$module" 2>/dev/null || true)" == tool ]]; then
+            echo "Not an enable/disable service: $module" >&2
+            failures=$((failures + 1))
+            continue
         fi
+        module_service_transition enable "$module" || failures=$((failures + 1))
     done
+    (( failures == 0 ))
 }
 
 cmd_disable() {
-    local modules=("$@")
+    local modules=("$@") module failures=0
     ((${#modules[@]} == 0)) && modules=(${SERVICE_MODULES})
     for module in "${modules[@]}"; do
-        is_service_module "$module" || { echo "Not a service module: $module" >&2; continue; }
-        local cmd; cmd=$(module_disable_cmd "$module")
-        echo "Disabling $module..."
-        if echo " ${USER_SERVICE_MODULES} " | grep -q " ${module} "; then
-            ${cmd}
-        else
-            sudo -E ${cmd}
+        if ! is_service_module "$module" || [[ "$(module_service_unit "$module" 2>/dev/null || true)" == tool ]]; then
+            echo "Not an enable/disable service: $module" >&2
+            failures=$((failures + 1))
+            continue
         fi
+        module_service_transition disable "$module" || failures=$((failures + 1))
     done
+    (( failures == 0 ))
 }
 
 cmd_doctor() {
@@ -1243,18 +1290,68 @@ cmd_schedule_status() {
     return 1
 }
 
+systemctl_inactive_state() {
+    local state="$1" rc="$2"
+    case "$state:$rc" in
+        inactive:3|failed:3) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+systemctl_disabled_state() {
+    local state="$1" rc="$2"
+    case "$state:$rc" in
+        disabled:1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 cmd_unschedule() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         local plist="$HOME/Library/LaunchAgents/com.lost.plus.setup-update.plist"
-        local _uid; _uid=$(id -u)
-        launchctl bootout "gui/$_uid/com.lost.plus.setup-update" 2>/dev/null || true
-        rm -f "$plist"
+        local _uid output rc
+        _uid=$(id -u)
+        if output=$(launchctl bootout "gui/$_uid/com.lost.plus.setup-update" 2>&1); then
+            :
+        else
+            rc=$?
+            # launchctl reports an already-unloaded job as "Could not find
+            # service" / "No such process". That is the desired terminal state.
+            case "$output" in
+                *"Could not find service"*|*"No such process"*) ;;
+                *)
+                    echo "setup: failed to unload auto-update launchd job; retaining $plist" >&2
+                    [[ -n "$output" ]] && echo "$output" >&2
+                    return "$rc"
+                    ;;
+            esac
+        fi
+        rm -f "$plist" || return 1
         echo "setup auto-update unscheduled"
     else
-        systemctl --user disable --now setup-update.timer 2>/dev/null || true
-        rm -f "$HOME/.config/systemd/gui/setup-update.service" \
-              "$HOME/.config/systemd/gui/setup-update.timer"
-        systemctl --user daemon-reload
+        local timer="$HOME/.config/systemd/user/setup-update.timer"
+        local service="$HOME/.config/systemd/user/setup-update.service"
+        if ! systemctl --user disable --now setup-update.timer; then
+            # A failed disable may mean the desired state already holds, but
+            # quiet nonzero statuses are ambiguous with D-Bus/user-manager
+            # errors. Accept only successful textual queries with documented,
+            # explicitly inactive + disabled terminal values.
+            local active_state enabled_state active_rc enabled_rc
+            if active_state=$(systemctl --user is-active setup-update.timer 2>/dev/null); then active_rc=0; else active_rc=$?; fi
+            if enabled_state=$(systemctl --user is-enabled setup-update.timer 2>/dev/null); then enabled_rc=0; else enabled_rc=$?; fi
+            if systemctl_inactive_state "$active_state" "$active_rc" \
+               && systemctl_disabled_state "$enabled_state" "$enabled_rc"; then
+                :
+            else
+                echo "setup: failed to disable auto-update timer; state indeterminate or still enabled/active; retaining $service and $timer" >&2
+                return 1
+            fi
+        fi
+        rm -f "$service" "$timer" || return 1
+        systemctl --user daemon-reload || {
+            echo "setup: removed units but daemon-reload failed" >&2
+            return 1
+        }
         echo "setup auto-update unscheduled"
     fi
 }
@@ -1279,10 +1376,43 @@ detect_env_summary() {
     echo "${os} ${arch} · ${distro} · ${fs}"
 }
 
+picker_has_span_capability() {
+    local picker="$1" help
+    [[ -x "$picker" ]] || return 1
+    help=$("$picker" --help 2>&1) || return 1
+    [[ "$help" == *--grid-span-prefix* ]]
+}
+
+managed_picker() {
+    local picker="$HOME/.local/bin/fzf-multicolumn"
+    picker_has_span_capability "$picker" && printf '%s\n' "$picker"
+}
+
+bootstrap_managed_picker() {
+    local picker="$HOME/.local/bin/fzf-multicolumn"
+    picker_has_span_capability "$picker" && return 0
+
+    fetch_manifest || return 1
+    local module target mode source found=0
+    while IFS=$'\t' read -r module target mode source; do
+        [[ "$module" == "fzf-multicolumn" ]] || continue
+        found=1
+        echo "Bootstrapping managed span-aware picker..."
+        _script_install "$module" "$target" "$source" || return 1
+        break
+    done < "$MANIFEST_FILE"
+    (( found == 1 )) || { echo "setup: fzf-multicolumn is missing from the manifest" >&2; return 1; }
+    picker_has_span_capability "$picker" || {
+        echo "setup: installed picker does not advertise --grid-span-prefix" >&2
+        return 1
+    }
+}
+
 confirm_action() {
-    local prompt="$1" answer
-    if command -v fzf >/dev/null 2>&1; then
-        answer=$(printf '%s\n' yes no | fzf \
+    local prompt="$1" answer picker
+    picker=$(managed_picker || true)
+    if [[ -n "$picker" && -t 0 && -t 1 ]]; then
+        answer=$(printf '%s\n' yes no | "$picker" \
             --layout=reverse \
             --height=8 \
             --cycle \
@@ -1290,7 +1420,7 @@ confirm_action() {
             --header="$prompt" || true)
     else
         printf '%s [y/N] ' "$prompt" >&2
-        read -r answer || answer=""
+        read -r answer </dev/tty 2>/dev/null || answer=""
         case "$answer" in
             y|Y|yes|YES|Yes) answer="yes" ;;
             *) answer="no" ;;
@@ -1306,241 +1436,263 @@ confirm_action() {
 }
 
 cmd_reconfigure() {
-    fetch_manifest || true
-    local env_summary
+    fetch_manifest || return 1
+    fetch_checksums
+    local picker env_summary delim=$'\x1f'
+    picker=$(managed_picker) || {
+        echo "setup: managed picker is unavailable; run 'setup install fzf-multicolumn' and retry" >&2
+        return 1
+    }
     env_summary="$(hostname -s) · $(detect_env_summary)"
 
-    # Fetch remote checksums (one small file)
-    fetch_checksums
+    # Bash 3 compatible indexed state. Snapshot rows are:
+    # module<TAB>target<TAB>mode<TAB>source<TAB>state<TAB>installed<TAB>service<TAB>active<TAB>detail
+    local -a selected_modules=() snapshot=()
 
-    build_list() {
-        # Rows are buffered so column widths can be sized to their content.
-        local -a rows=("module|local|service|remote|status" "<ALL MODULES>|-|-|-|-")
-        local -a non_svc=() svc=()
-
+    selection_has() {
+        local wanted="$1" item
+        for item in "${selected_modules[@]}"; do [[ "$item" == "$wanted" ]] && return 0; done
+        return 1
+    }
+    selection_add() {
+        selection_has "$1" || selected_modules+=("$1")
+    }
+    selection_remove() {
+        local wanted="$1" item out=()
+        for item in "${selected_modules[@]}"; do [[ "$item" == "$wanted" ]] || out+=("$item"); done
+        selected_modules=("${out[@]}")
+    }
+    selection_toggle() {
+        if selection_has "$1"; then selection_remove "$1"; else selection_add "$1"; fi
+    }
+    snapshot_refresh() {
+        snapshot=()
+        local m t mo s target state status_label local_label remote_label installed extra svc=0 active=0 detail
         while IFS=$'\t' read -r m t mo s; do
             [[ -z "${m:-}" || "$m" == \#* ]] && continue
-            local target state file_installed extra \
-                   svc_label local_label remote_label status_label
-
-            # Script modules use one live probe for both CLI and table status.
-            if [[ "$mo" == "script" ]]; then
-                IFS=$'\t' read -r target state status_label local_label remote_label file_installed extra \
+            if [[ "$mo" == script ]]; then
+                IFS=$'\t' read -r target state status_label local_label remote_label installed extra \
                     < <(script_status_fields "$m" "$t" "$s")
-                svc_label=$([[ "$file_installed" == "1" ]] && echo installed || echo uninstalled)
-                non_svc+=("$m|${local_label}|${svc_label}|${remote_label}|${status_label}")
-                continue
-            fi
-
-            IFS=$'\t' read -r target state status_label local_label remote_label file_installed extra \
-                < <(file_status_fields "$m" "$t" "$s")
-
-            if is_service_module "$m"; then
-                local unit; unit=$(module_service_unit "$m")
-                if [[ "$unit" == "tool" ]]; then
-                    svc_label=$([[ "$file_installed" == "1" ]] && echo "installed" || echo "uninstalled")
-                elif [[ "$file_installed" == "1" ]] && module_is_active "$m"; then
-                    svc_label="active"
-                else
-                    svc_label="inactive"
-                fi
-                svc+=("$m|${local_label}|${svc_label}|${remote_label}|${status_label}")
             else
-                if [[ "$file_installed" == "1" ]]; then
-                    svc_label="installed"
-                else
-                    svc_label="uninstalled"
-                fi
-                non_svc+=("$m|${local_label}|${svc_label}|${remote_label}|${status_label}")
+                IFS=$'\t' read -r target state status_label local_label remote_label installed extra \
+                    < <(file_status_fields "$m" "$t" "$s")
             fi
+            svc=0; active=0
+            if is_service_module "$m" && [[ "$(module_service_unit "$m")" != tool ]]; then
+                svc=1
+                [[ "$installed" == 1 ]] && module_is_active "$m" && active=1
+            fi
+            detail="$m  local=$local_label  service=$([[ $svc == 1 ]] && { [[ $active == 1 ]] && echo active || echo inactive; } || { [[ $installed == 1 ]] && echo installed || echo uninstalled; })  remote=$remote_label  status=$status_label"
+            snapshot+=("$m"$'\t'"$t"$'\t'"$mo"$'\t'"$s"$'\t'"$state"$'\t'"$installed"$'\t'"$svc"$'\t'"$active"$'\t'"$detail")
         done < "$MANIFEST_FILE"
-
-        # Sort each group alphabetically by module name
-        IFS=$'\n' non_svc=($(sort <<<"${non_svc[*]}")); unset IFS
-        IFS=$'\n' svc=($(sort <<<"${svc[*]}")); unset IFS
-        rows+=("${non_svc[@]}" "${svc[@]}")
-
-        # Size each column to its widest value across every row.
-        local w0=0 w1=0 w2=0 w3=0 c0 c1 c2 c3 c4 entry
-        for entry in "${rows[@]}"; do
-            IFS='|' read -r c0 c1 c2 c3 c4 <<< "$entry"
-            (( ${#c0} > w0 )) && w0=${#c0}
-            (( ${#c1} > w1 )) && w1=${#c1}
-            (( ${#c2} > w2 )) && w2=${#c2}
-            (( ${#c3} > w3 )) && w3=${#c3}
-        done
-
-        # Print with dynamic widths (final column left unpadded).
-        for entry in "${rows[@]}"; do
-            IFS='|' read -r c0 c1 c2 c3 c4 <<< "$entry"
-            printf "%-*s %-*s %-*s %-*s %s\n" "$w0" "$c0" "$w1" "$c1" "$w2" "$c2" "$w3" "$c3" "$c4"
+    }
+    snapshot_field() {
+        local wanted="$1" field="$2" row m t mo s state installed svc active detail
+        for row in "${snapshot[@]}"; do
+            IFS=$'\t' read -r m t mo s state installed svc active detail <<< "$row"
+            [[ "$m" == "$wanted" ]] || continue
+            case "$field" in
+                target) printf '%s\n' "$t" ;; mode) printf '%s\n' "$mo" ;; source) printf '%s\n' "$s" ;;
+                state) printf '%s\n' "$state" ;; installed) printf '%s\n' "$installed" ;;
+                service) printf '%s\n' "$svc" ;; active) printf '%s\n' "$active" ;;
+            esac
+            return
         done
     }
-
-    while true; do
-        local selected mod target mode source action actions has_svc
-
-        selected=$(build_list | fzf \
-            --layout=reverse --cycle \
-            --header="${env_summary}  |  ↑↓=navigate  Enter=actions  Esc=finish" \
-            --bind='esc:abort' \
-            --preview-window=hidden
-        ) || break
-
-        mod=$(echo "$selected" | awk '{print $1}')
-        [[ -z "$mod" ]] && break
-
-        if [[ "$mod" == "<ALL" ]]; then
-            action=$(echo -e "update all\nreinstall all\nuninstall all\nrefresh list\ncancel" | fzf \
-                --layout=reverse --cycle \
-                --header="<ALL MODULES>" \
-                --bind='esc:abort'
-            ) || continue
-
+    eligible_count() {
+        local action="$1" m state installed svc active n=0
+        for m in "${selected_modules[@]}"; do
+            state=$(snapshot_field "$m" state); installed=$(snapshot_field "$m" installed)
+            svc=$(snapshot_field "$m" service); active=$(snapshot_field "$m" active)
             case "$action" in
-                "refresh list")
-                    _CSUM_CACHE=""
-                    fetch_checksums
-                    continue
-                    ;;
-                "update all")
-                    confirm_action "Update ALL installed modules?" || continue
-                    cmd_update
-                    ;;
-                "reinstall all")
-                    local setup_entry
-                    confirm_action "Reinstall ALL modules (overwrites local changes)?" || continue
-                    FORCE=1
-                    while IFS=$'\t' read -r m t mo s; do
-                        [[ -z "${m:-}" || "$m" == \#* ]] && continue
-                        if [[ "$m" == "setup" ]]; then
-                            setup_entry="$t"$'\t'"$mo"$'\t'"$s"
-                            continue
-                        fi
-                        install_one "$m" "$t" "$mo" "$s"
-                    done < "$MANIFEST_FILE"
-                    if [[ -n "${setup_entry:-}" ]]; then
-                        IFS=$'\t' read -r st smo ss <<< "$setup_entry"
-                        install_one setup "$st" "$smo" "$ss"
-                    fi
-                    FORCE=0
-                    ;;
-                "uninstall all")
-                    confirm_action "Uninstall ALL modules? This is destructive." || continue
-                    while IFS=$'\t' read -r m t mo s; do
-                        [[ -z "${m:-}" || "$m" == \#* ]] && continue
-                        local dc; dc=$(module_disable_cmd "$m") && {
-                            echo "Disabling $m..."
-                            if echo " ${USER_SERVICE_MODULES} " | grep -q " ${m} "; then
-                                ${dc} 2>&1 || true
-                            else
-                                sudo -E ${dc} 2>&1 || true
-                            fi
-                        }
-                        uninstall_one "$m" "$t" "$mo" "$s"
-                    done < "$MANIFEST_FILE"
-                    ;;
+                install) [[ "$installed" == 0 ]] && n=$((n + 1)) ;;
+                update) [[ "$installed" == 1 && "$state" == @(outdated|modified|unknown) ]] && n=$((n + 1)) ;;
+                reinstall) [[ "$installed" == 1 ]] && n=$((n + 1)) ;;
+                uninstall) [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] && n=$((n + 1)) ;;
+                enable) [[ "$installed" == 1 && "$svc" == 1 && "$active" == 0 ]] && n=$((n + 1)) ;;
+                disable) [[ "$installed" == 1 && "$svc" == 1 && "$active" == 1 ]] && n=$((n + 1)) ;;
             esac
-            continue
-        fi
-
-        while IFS=$'\t' read -r m t mo s; do
-            [[ "$m" == "$mod" ]] && { target="$t"; mode="$mo"; source="$s"; break; }
-        done < "$MANIFEST_FILE"
-        [[ -z "$target" ]] && continue
-
-        # Use cached values for state detection
-        has_svc=0
-        local file_installed=0 svc_active=0
-        if [[ "$mode" == "script" ]]; then
-            file_installed=$(is_script_installed "$mod" && echo 1 || echo 0)
-        else
-            got_local_hash=$(installed_hash_for "$(expand_path "$target")" || true)
-            is_service_module "$mod" && has_svc=1
-            if [[ -n "$got_local_hash" ]] || [[ -f "$(expand_path "$target")" ]]; then
-                file_installed=1
-            fi
-            (( has_svc && file_installed )) && module_is_active "$mod" && svc_active=1
-        fi
-
-        actions=""
-        if (( file_installed )); then
-            (( has_svc && svc_active ))  && actions="${actions}disable"$'\n'
-            (( has_svc && !svc_active )) && actions="${actions}enable"$'\n'
-            actions="${actions}update"$'\n'
-            actions="${actions}reinstall"$'\n'
-            actions="${actions}uninstall"$'\n'
-        else
-            if (( has_svc )); then
-                actions="install + enable"$'\n'
-            else
-                actions="install"$'\n'
-            fi
-        fi
-        actions="${actions}cancel"
-
-        action=$(echo "$actions" | fzf \
-            --layout=reverse --cycle \
-            --header="${mod}" \
-            --bind='esc:abort'
-        ) || continue
-
-        case "$action" in
-            cancel)    continue ;;
-            install)   install_one "$mod" "$target" "$mode" "$source" ;;
-            "install + enable")
-                install_one "$mod" "$target" "$mode" "$source"
-                local ec; ec=$(module_enable_cmd "$mod") && {
-                    echo "Enabling $mod..."
-                    if echo " ${USER_SERVICE_MODULES} " | grep -q " ${mod} "; then
-                        ${ec} 2>&1 || echo "(enable failed — see above)"
-                    else
-                        sudo -E ${ec} 2>&1 || echo "(enable failed — see above)"
-                    fi
-                } ;;
-            enable)
-                local ec; ec=$(module_enable_cmd "$mod") && {
-                    echo "Enabling $mod..."
-                    if echo " ${USER_SERVICE_MODULES} " | grep -q " ${mod} "; then
-                        ${ec} 2>&1 || echo "(enable failed — see above)"
-                    else
-                        sudo -E ${ec} 2>&1 || echo "(enable failed — see above)"
-                    fi
-                } ;;
-            disable)
-                local dc; dc=$(module_disable_cmd "$mod") && {
-                    echo "Disabling $mod..."
-                    if echo " ${USER_SERVICE_MODULES} " | grep -q " ${mod} "; then
-                        ${dc} 2>&1 || true
-                    else
-                        sudo -E ${dc} 2>&1 || true
-                    fi
-                } ;;
-            update)
-                if [[ "$mode" == "script" ]]; then
-                    _script_update "$mod" "$target" "$source"
-                else
-                    install_one "$mod" "$target" "$mode" "$source"
-                fi ;;
-            reinstall)
-                FORCE=1
-                install_one "$mod" "$target" "$mode" "$source"
-                FORCE=0 ;;
-            uninstall)
-                local dc; dc=$(module_disable_cmd "$mod") && {
-                    echo "Disabling $mod..."
-                    if echo " ${USER_SERVICE_MODULES} " | grep -q " ${mod} "; then
-                        ${dc} 2>&1 || true
-                    else
-                        sudo -E ${dc} 2>&1 || true
-                    fi
-                }
-                uninstall_one "$mod" "$target" "$mode" "$source" ;;
+        done
+        printf '%s\n' "$n"
+    }
+    capitalize() {
+        case "$1" in
+            install) echo Install ;; update) echo Update ;; reinstall) echo Reinstall ;;
+            uninstall) echo Uninstall ;; enable) echo Enable ;; disable) echo Disable ;;
+            *) printf '%s\n' "$1" ;;
         esac
-        # A .zshrc block may have just been (re)written; keep canonical order.
+    }
+    build_picker_rows() {
+        local count=${#selected_modules[@]} total=${#snapshot[@]} row m t mo s state installed svc active detail mark
+        local install_n update_n reinstall_n uninstall_n enable_n disable_n service_action service_n
+        local top_mark='[ ]'
+        (( count == total && total > 0 )) && top_mark='[*]'
+        if (( count == 0 )); then
+            printf 'select-all%sall%s%s %d/%d%s\n' "$delim" "$delim" "$top_mark" "$count" "$total" "$delim"
+            printf '@@5@@heading%snone%sModules · %s · Enter selects modules%s\n' "$delim" "$delim" "$env_summary" "$delim"
+        else
+            install_n=$(eligible_count install); update_n=$(eligible_count update)
+            reinstall_n=$(eligible_count reinstall); uninstall_n=$(eligible_count uninstall)
+            enable_n=$(eligible_count enable); disable_n=$(eligible_count disable)
+            # The fifth action is contextual: enabling takes priority for a mixed
+            # inactive/active service selection; once none need enabling it becomes disable.
+            if (( enable_n > 0 )); then service_action=enable; service_n=$enable_n
+            else service_action=disable; service_n=$disable_n; fi
+            printf 'select-all%sall%s%s %d/%d%s\n' "$delim" "$delim" "$top_mark" "$count" "$total" "$delim"
+            printf 'action%sinstall%sInstall %d%s\n' "$delim" "$delim" "$install_n" "$delim"
+            printf 'action%supdate%sUpdate %d%s\n' "$delim" "$delim" "$update_n" "$delim"
+            printf 'action%sreinstall%sReinstall %d%s\n' "$delim" "$delim" "$reinstall_n" "$delim"
+            printf 'action%suninstall%sUninstall %d%s\n' "$delim" "$delim" "$uninstall_n" "$delim"
+            printf 'action%s%s%s%s %d%s\n' "$delim" "$service_action" "$delim" "$(capitalize "$service_action")" "$service_n" "$delim"
+        fi
+        for row in "${snapshot[@]}"; do
+            IFS=$'\t' read -r m t mo s state installed svc active detail <<< "$row"
+            selection_has "$m" && mark='[*]' || mark='[ ]'
+            printf 'module%s%s%s%s%s\n' "$delim" "$m" "$delim" "$mark" "$delim"
+            printf '@@5@@module%s%s%s%s%s\n' "$delim" "$m" "$delim" "$detail" "$delim"
+        done
+    }
+    action_summary() {
+        local action="$1" attempted="$2" succeeded="$3" failed="$4" skipped="$5"
+        echo "$(capitalize "$action"): attempted=$attempted succeeded=$succeeded failed=$failed skipped=$skipped"
+        (( failed == 0 ))
+    }
+    run_service_action() {
+        local action="$1" m cmd attempted=0 succeeded=0 failed=0 skipped=0 installed svc active
+        for m in "${selected_modules[@]}"; do
+            installed=$(snapshot_field "$m" installed); svc=$(snapshot_field "$m" service); active=$(snapshot_field "$m" active)
+            if [[ "$installed" == 1 && "$svc" == 1 ]] && { [[ "$action" == enable && "$active" == 0 ]] || [[ "$action" == disable && "$active" == 1 ]]; }; then
+                attempted=$((attempted + 1))
+                if [[ "$action" == enable ]]; then cmd=$(module_enable_cmd "$m"); else cmd=$(module_disable_cmd "$m"); fi
+                if module_service_transition "$action" "$m"; then
+                    succeeded=$((succeeded + 1))
+                else
+                    failed=$((failed + 1))
+                fi
+            else skipped=$((skipped + 1))
+            fi
+        done
+        action_summary "$action" "$attempted" "$succeeded" "$failed" "$skipped"
+    }
+    run_module_action() {
+        local action="$1" m row t mo s state installed svc active attempted=0 succeeded=0 failed=0 skipped=0 old_force=$FORCE setup_row=""
+        if [[ "$action" == uninstall || "$action" == reinstall ]]; then
+            confirm_action "$(capitalize "$action") eligible selected modules?" || return 0
+        fi
+        [[ "$action" == reinstall ]] && FORCE=1
+        for row in "${snapshot[@]}"; do
+            IFS=$'\t' read -r m t mo s state installed svc active _ <<< "$row"
+            selection_has "$m" || continue
+            case "$action" in
+                install) [[ "$installed" == 0 ]] || { skipped=$((skipped + 1)); continue; } ;;
+                update) [[ "$installed" == 1 && "$state" == @(outdated|modified|unknown) ]] || { skipped=$((skipped + 1)); continue; } ;;
+                reinstall) [[ "$installed" == 1 ]] || { skipped=$((skipped + 1)); continue; } ;;
+                uninstall) [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] || { skipped=$((skipped + 1)); continue; } ;;
+            esac
+            attempted=$((attempted + 1))
+            # setup is always last because install_one may exec the new CLI.
+            if [[ "$m" == setup ]]; then setup_row="$row"; continue; fi
+            local ok=0 target_path
+            case "$action" in
+                install|reinstall) install_one "$m" "$t" "$mo" "$s" && ok=1 ;;
+                update)
+                    if [[ "$mo" == script ]]; then _script_update "$m" "$t" "$s" && ok=1
+                    else install_one "$m" "$t" "$mo" "$s" && ok=1
+                    fi ;;
+                uninstall)
+                    local disable_ok=1
+                    if is_service_module "$m" && [[ "$(module_service_unit "$m")" != tool ]]; then
+                        disable_ok=0
+                        module_service_transition disable "$m" && disable_ok=1
+                        if (( disable_ok == 0 )); then
+                            echo "Failed: disable $m before uninstall; target retained" >&2
+                        fi
+                    fi
+                    if (( disable_ok == 1 )) && uninstall_one "$m" "$t" "$mo" "$s"; then
+                        if [[ "$mo" == script ]]; then is_script_installed "$m" || ok=1
+                        else target_path=$(expand_path "$t"); [[ ! -e "$target_path" ]] && ok=1
+                        fi
+                    fi ;;
+            esac
+            if (( ok )); then succeeded=$((succeeded + 1))
+            else failed=$((failed + 1)); echo "Failed: $action $m" >&2
+            fi
+        done
         normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+        if [[ -n "$setup_row" ]]; then
+            IFS=$'\t' read -r m t mo s _ <<< "$setup_row"
+            local setup_ok=0 setup_path
+            case "$action" in
+                uninstall)
+                    if uninstall_one "$m" "$t" "$mo" "$s"; then
+                        setup_path=$(expand_path "$t"); [[ ! -e "$setup_path" ]] && setup_ok=1
+                    fi ;;
+                *) install_one "$m" "$t" "$mo" "$s" && setup_ok=1 ;;
+            esac
+            if (( setup_ok )); then succeeded=$((succeeded + 1))
+            else failed=$((failed + 1)); echo "Failed: $action setup" >&2
+            fi
+        fi
+        FORCE=$old_force
+        action_summary "$action" "$attempted" "$succeeded" "$failed" "$skipped"
+    }
+
+    local interactive_failed=0
+    snapshot_refresh
+    while true; do
+        local choice kind key display row m all_selected=1 refresh_snapshot=0
+        choice=$(build_picker_rows | "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
+            --delimiter="$delim" --with-nth=3 --layout=reverse --cycle \
+            --header='Enter=select/action  Esc=finish' --bind='esc:abort' --preview-window=hidden) || break
+        IFS="$delim" read -r kind key display <<< "$choice"
+        case "$kind" in
+            module) selection_toggle "$key" ;;
+            select-all)
+                for row in "${snapshot[@]}"; do
+                    m=${row%%$'\t'*}; selection_has "$m" || { all_selected=0; break; }
+                done
+                if (( all_selected )); then selected_modules=()
+                else
+                    selected_modules=()
+                    for row in "${snapshot[@]}"; do selection_add "${row%%$'\t'*}"; done
+                fi ;;
+            action)
+                [[ $(eligible_count "$key") -gt 0 ]] || { echo "$key: 0 eligible, ${#selected_modules[@]} skipped."; continue; }
+                case "$key" in
+                    enable|disable) run_service_action "$key" || interactive_failed=1 ;;
+                    *) run_module_action "$key" || interactive_failed=1 ;;
+                esac
+                refresh_snapshot=1 ;;
+        esac
+        (( refresh_snapshot == 1 )) && snapshot_refresh
     done
+    return "$interactive_failed"
 }
+# Post-install: check if refresh-models needs auth onboarding
+_post_auth_check() {
+    local auth_marker="$STATE_DIR/refresh-models.needs-auth"
+    [[ -f "$auth_marker" ]] || return 0
+
+    local auth_bin="$HOME/.local/bin/refresh-models"
+    [[ -x "$auth_bin" ]] || auth_bin=$(command -v refresh-models 2>/dev/null || true)
+    if [[ ! -x "$auth_bin" ]]; then
+        echo "Warning: refresh-models needs API keys, but its executable is unavailable. Run 'setup install refresh-models', then 'refresh-models auth'." >&2
+        return 1
+    fi
+    if [[ -t 1 && -r /dev/tty ]]; then
+        echo
+        echo "refresh-models is installed but needs API keys. Launching auth..."
+        if "$auth_bin" auth </dev/tty >/dev/tty 2>&1; then
+            rm -f "$auth_marker"
+            return 0
+        fi
+        echo "Warning: refresh-models auth failed; onboarding will be retried next time." >&2
+        return 1
+    fi
+    echo "Warning: refresh-models is installed but needs API keys. Run 'setup' or '$auth_bin auth' to configure." >&2
+    return 1
+}
+
 
 if [[ "${SETUP_SOURCE_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
@@ -1555,40 +1707,43 @@ while (($# > 0)); do
     esac
 done
 
-# Post-install: check if refresh-models needs auth onboarding
-_post_auth_check() {
-    local auth_marker="$STATE_DIR/refresh-models.needs-auth"
-    if [[ -f "$auth_marker" ]]; then
-        if [[ -t 1 ]] && command -v fzf >/dev/null 2>&1; then
-            echo
-            echo "refresh-models is installed but needs API keys. Launching auth..."
-            rm -f "$auth_marker"
-            refresh-models auth
-        else
-            echo "Warning: refresh-models is installed but needs API keys. Run 'setup' or 'refresh-models auth' to configure." >&2
-        fi
-    fi
-}
-
 cmd="${1:-}"
 shift || true
 
 if [[ -z "$cmd" ]]; then
-    if [[ -t 1 ]] && command -v fzf >/dev/null 2>&1; then
+    main_rc=0
+    if [[ -t 1 && -r /dev/tty && "$BATCH" -eq 0 ]]; then
         configure_shell || true
-        cmd_reconfigure
+        if bootstrap_managed_picker; then
+            cmd_reconfigure || main_rc=$?
+        else
+            echo "Warning: interactive setup needs the managed span-aware picker." >&2
+            echo "Run 'setup install fzf-multicolumn', then rerun 'setup'. Falling back to non-interactive update." >&2
+            cmd_update || main_rc=$?
+        fi
     else
-        cmd_update || true
+        echo "Warning: no interactive terminal; running non-interactive update. Use 'setup' in a terminal for module selection." >&2
+        cmd_update || main_rc=$?
     fi
-    _post_auth_check
-    exit 0
+    _post_auth_check || true
+    exit "$main_rc"
 fi
 
 case "$cmd" in
     list) cmd_list "$@" ;;
     status) cmd_status "$@" ;;
-    install) cmd_install "$@"; _post_auth_check ;;
-    update) cmd_update "$@"; _post_auth_check ;;
+    install)
+        command_rc=0
+        cmd_install "$@" || command_rc=$?
+        _post_auth_check || true
+        exit "$command_rc"
+        ;;
+    update)
+        command_rc=0
+        cmd_update "$@" || command_rc=$?
+        _post_auth_check || true
+        exit "$command_rc"
+        ;;
     uninstall) cmd_uninstall "$@" ;;
     enable) cmd_enable "$@" ;;
     disable) cmd_disable "$@" ;;
