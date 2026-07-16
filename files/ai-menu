@@ -61,6 +61,22 @@ _ai_recent_dirs() {
 }
 
 ai() {
+    local autolaunch_state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/setup
+    local autolaunch_disabled=$autolaunch_state_dir/ai-menu-autolaunch-disabled
+    case ${1:-} in
+        enable)
+            rm -f -- $autolaunch_disabled
+            echo "ai-menu: auto-launch enabled"
+            return
+            ;;
+        disable)
+            mkdir -p -- $autolaunch_state_dir || return
+            : >| $autolaunch_disabled
+            echo "ai-menu: auto-launch disabled"
+            return
+            ;;
+    esac
+
     local choice line
     local -a options ssh_hosts words tools folders
     local -A folder_paths

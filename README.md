@@ -45,7 +45,7 @@ window title before resuming the session.
 | `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
-| `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc`; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
+| `ai-menu` | `~/.bashrc.d/ai-menu` (fzf picker) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
 | `claudex` | `~/.local/bin/claudex` (StringKe/claudex) + a `codex` profile in `~/.config/claudex/config.toml` | — | `files/claudex.sh` |
 | `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and home-started new tabs/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive TTY autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
@@ -184,7 +184,8 @@ Each block is guarded so missing plugins don't break the shell:
 **Local-only content** (not managed by setup, stays in user space):
 - Env vars, PATH additions, MCP tokens (should be in `.zshenv`)
 - `_BREW_PREFIX="/opt/homebrew"` (Apple Silicon specific)
-- fzf shell integration (intentionally disabled)
+- `fzf` shell integration (intentionally disabled)
+- The ai-menu autolaunch preference (`${XDG_STATE_HOME:-~/.local/state}/setup/ai-menu-autolaunch-disabled`), managed through `ai enable` and `ai disable` rather than by editing `.zshrc`
 - `COMBINING_CHARS`, `disable log` (macOS `/etc/zshrc` replacements)
 
 ### Cleanup after first install
