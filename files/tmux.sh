@@ -30,6 +30,12 @@ set-environment -g COLORTERM truecolor
 # even when COLORTERM and the client RGB feature both advertise truecolor.
 set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1
 set -g mouse on
+# Let vim/nvim, shells, and TUIs see terminal focus gain/loss so they can fire
+# FocusGained/FocusLost (autoread, cursor shape, redraws).
+set -g focus-events on
+# Scrollback is allocated lazily, so this caps rather than reserves; a pane that
+# fills it costs a few hundred MB.
+set -g history-limit 2000000
 bind c new-window -c ~
 bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
 bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""
