@@ -107,8 +107,15 @@ collect_sessions() {
             [[ -n "$cwd" ]] || cwd=$(_cc_proj_path "$(basename "$(dirname "$f")")")
             [[ "$cwd" == *"CodexBar"* ]] && continue
             _cc_is_print_session "$f" && continue
+            # claudex runs the claude binary through the codex proxy, so its
+            # sessions land here indistinguishable from native claude ones
+            # except that assistant turns record model "claudex-proxy". Tag
+            # those so resume relaunches them on the codex backend, not bare
+            # claude (which would resume on the Anthropic subscription).
+            tag=cc
+            grep -m1 -q '"model":"claudex-proxy"' "$f" 2>/dev/null && tag=clx
             msg=$(_cc_first_msg "$f")
-            echo "$mtime|cc|$id|$cwd|${msg:-}"
+            echo "$mtime|$tag|$id|$cwd|${msg:-}"
         done || true
     fi
 
@@ -186,6 +193,7 @@ format_for_fzf() {
         date_str=$(format_epoch "$ts" 2>/dev/null || echo "??/?? ??:??")
         case "$tool" in
             cc) label="claude  " ;;
+            clx) label="claudex " ;;
             cx) label="codex   " ;;
             oc) label="opencode" ;;
             fg) label="forge   " ;;
@@ -223,6 +231,7 @@ echo "Resuming $tool session $id..."
 
 case "$tool" in
     cc) harness=claude; resume_args=(--resume "$id") ;;
+    clx) harness=claudex; resume_args=(run codex --config "$HOME/.config/claudex/config.toml" --resume "$id") ;;
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;

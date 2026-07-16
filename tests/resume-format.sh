@@ -81,4 +81,47 @@ actual_harness_args=$(cat "$TEST_TMP/harness-args")
 [[ "$actual_harness_args" == "$expected_harness_args" ]] \
     || { echo "FAIL: resume did not dispatch the harness after tmux title failure: $actual_harness_args" >&2; exit 1; }
 
+# A claude session launched through claudex lands under ~/.claude/projects like
+# any native claude session, distinguished only by assistant turns recording
+# model "claudex-proxy". resume must tag it clx and relaunch it via
+# `claudex run codex --config <cfg> --resume <id>` (codex backend), not bare
+# claude (which would resume it on the Anthropic subscription).
+cxid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+cxcwd="$HOME/claudex-proj"
+mkdir -p "$cxcwd" "$HOME/.claude/projects/-home-claudex-proj"
+cxsession="$HOME/.claude/projects/-home-claudex-proj/$cxid.jsonl"
+{
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Resume claudex work"}}\n' "$cxcwd"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"claudex-proxy","content":[{"type":"text","text":"ok"}]}}\n'
+} > "$cxsession"
+touch -t 202407041200.00 "$cxsession"
+
+# fzf stub that selects exactly the claudex row (its hidden ref carries "clx|").
+# It drains all input first (a partial read would SIGPIPE resume's collection
+# pipeline under `set -o pipefail`), then emits the matching row.
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+printf '%s\n' "$selection" | grep 'clx|' | head -1
+EOF
+cat > "$FAKE_BIN/claudex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/claudex-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/claudex"
+rm -f "$TEST_TMP/tmux-args" "$TEST_TMP/harness-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/claudex-stderr"
+
+expected_tmux_args=$'rename-window\n--\nclaudex'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the claudex tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_claudex_args=$(printf '%s\nrun\ncodex\n--config\n%s/.config/claudex/config.toml\n--resume\n%s' \
+    "$FAKE_BIN/claudex" "$HOME" "$cxid")
+actual_claudex_args=$(cat "$TEST_TMP/claudex-args")
+[[ "$actual_claudex_args" == "$expected_claudex_args" ]] \
+    || { echo "FAIL: resume did not dispatch claudex for a claudex-proxy session: $actual_claudex_args" >&2; exit 1; }
+
 echo "resume format tests passed"
