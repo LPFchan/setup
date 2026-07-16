@@ -319,7 +319,10 @@ manage_block() {
             echo "Added $label -> $file"
             ;;
         upsert)
-            local new_hash; new_hash=$(printf '%s' "$content" | sed '$ { /^$/ d; }' | sha256)
+            # printf '%s\n' so the hashed bytes end with a newline exactly like
+            # the awk-extracted block body; '%s' made the hashes never match and
+            # every upsert rewrote an unchanged block ("Updated" on every run).
+            local new_hash; new_hash=$(printf '%s\n' "$content" | sed '$ { /^$/ d; }' | sha256)
             if ! grep -Fq "$begin_mark" "$file" && ! grep -Fq "$old_begin_mark" "$file"; then
                 if [[ "$position" == "prepend" ]]; then
                     local _tmp; _tmp=$(mktemp)
@@ -522,6 +525,23 @@ fetch_payload() {
     return 1
 }
 
+# Run one entry point of a script-module payload in a subshell. Sourcing in
+# this process would leak the module's install/update/status/uninstall
+# functions and globals; a leaked `install` shadows /usr/bin/install and
+# silently breaks every later file-module write (including self-update).
+run_script_payload() {
+    local payload="$1" fn="$2"
+    (
+        # shellcheck disable=SC1090
+        source "$payload" || exit 1
+        declare -F "$fn" >/dev/null || {
+            echo "Payload defines no $fn()" >&2
+            exit 1
+        }
+        "$fn"
+    )
+}
+
 _script_install() {
     local module="$1" target="$2" source="$3"
     local payload
@@ -530,9 +550,7 @@ _script_install() {
         rm -f "$payload"
         return 1
     fi
-    # shellcheck disable=SC1090
-    source "$payload"
-    install
+    run_script_payload "$payload" install
     local rc=$?
     rm -f "$payload"
     return $rc
@@ -559,15 +577,7 @@ script_status_fields() {
         return 0
     fi
 
-    # shellcheck disable=SC1090
-    if ! source "$payload"; then
-        installed=$(is_script_installed "$module" && echo 1 || echo 0)
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$target" "error" "probe failed" "-" "-" "$installed" "load failed"
-        rm -f "$payload" "$result"
-        return 0
-    fi
-    if status > "$result"; then
+    if run_script_payload "$payload" status > "$result"; then
         rc=0
     else
         rc=$?
@@ -615,8 +625,7 @@ _script_uninstall() {
         rm -f "$payload"
         return 1
     fi
-    source "$payload"
-    uninstall
+    run_script_payload "$payload" uninstall
     local rc=$?
     rm -f "$payload"
     return $rc
@@ -630,8 +639,7 @@ _script_update() {
         rm -f "$payload"
         return 1
     fi
-    source "$payload"
-    update
+    run_script_payload "$payload" update
     local rc=$?
     rm -f "$payload"
     return $rc
@@ -772,7 +780,7 @@ install_one() {
     if [[ -f "$target" && -n "$old_hash" ]] && { [[ "$new_hash" != "$old_hash" ]] || [[ "$disk_hash" != "$old_hash" ]]; }; then
         :
     elif [[ -f "$target" ]]; then
-        install -m "$mode" "$payload" "$target" || {
+        command install -m "$mode" "$payload" "$target" || {
             echo "Failed to write $module -> $target" >&2
             rm -f "$payload"
             return 1
@@ -790,7 +798,7 @@ install_one() {
         return 0
     fi
 
-    install -m "$mode" "$payload" "$target" || {
+    command install -m "$mode" "$payload" "$target" || {
         echo "Failed to write $module -> $target" >&2
         rm -f "$payload"
         return 1
