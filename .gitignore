@@ -1,2 +1,3 @@
 __pycache__/
 .DS_Store
+.tmp_commit_msg_*.txt
