@@ -119,7 +119,12 @@ fzf-multicolumn() {
     local n=$(( $(cat "$TEST_TMP/status-picker-count") + 1 )) delim=$'\x1f'
     printf '%s\n' "$n" > "$TEST_TMP/status-picker-count"
     case "$n" in
-        1|2) printf 'module%slive-block%s[ ]\n' "$delim" "$delim" ;;
+        1)
+            _setup_picker_toggle checkbox live-block
+            _setup_picker_render > "$TEST_TMP/interactive-selected-rows"
+            _setup_picker_toggle checkbox live-block
+            return 1
+            ;;
         *) return 1 ;;
     esac
 }
@@ -128,6 +133,8 @@ interactive_row=$(grep 'live-block' "$TEST_TMP/interactive-rows" | tail -1)
 [[ "$interactive_row" == *"aaaaaaa"* && "$interactive_row" == *"bbbbbbb"* \
    && "$interactive_row" == *"installed"* && "$interactive_row" == *"update available"* ]] \
     || fail "interactive row did not use the normalized live result: $interactive_row"
+grep -Eq 'module +local +service +remote +status' "$TEST_TMP/interactive-rows" \
+    || fail "interactive detail columns lack an aligned heading"
 assert_eq 2 "$(cat "$TEST_TMP/probe-count")" "selection-only redraws must reuse one cached script probe"
 
 cli=$(status_one live-block '~/.zshrc' script live-outdated.sh)
@@ -161,8 +168,8 @@ fi
 [[ "$cmd_update_output" == *"could not probe probe-error; skipping update"* ]] \
     || fail "setup update did not warn about the failed status probe: $cmd_update_output"
 
-# Span UI: selecting a module redraws the top row into select-all + five
-# contextual actions, then update dispatches directly (no nested action menu).
+# Span UI: selecting a checkbox reloads the same picker into select-all + five
+# contextual actions, tracks focus by identity, and dispatches a batch action.
 cat > "$TEST_TMP/manifest.tsv" <<'EOF'
 # module	target	mode	source
 current-update	~/.local/current-update	script	current-update.sh
@@ -179,11 +186,18 @@ fzf-multicolumn() {
         1)
             grep -q '@@5@@heading' <<< "$input" || fail "initial row lacks span5 heading"
             ! grep -q '<ALL MODULES>' <<< "$input" || fail "legacy ALL row remains"
-            printf 'module%soutdated-update%s[*]\n' "$delim" "$delim"
-            ;;
-        2)
-            [[ $(grep -c '^action' <<< "$input") -eq 5 ]] || fail "selected top row did not contain five actions"
-            grep -q "select-all${delim}all${delim}\[ \] 1/2" <<< "$input" || fail "partial select-all marker was not unchecked with count"
+            [[ "$*" == *'enter:transform:_setup_picker_transform'* ]] || fail "checkboxes do not use in-process transform"
+            [[ "$*" == *'--id-nth=1,2'* ]] || fail "reload lacks stable row identity"
+            [[ "$*" == *'result:transform:_setup_picker_result_transform'* ]] || fail "reload does not restore its deterministic position"
+            [[ "$*" == *'result:+transform-header:_setup_picker_header'* ]] || fail "reload does not refresh the selection header"
+            transform=$(_setup_picker_transform checkbox outdated-update)
+            [[ "$transform" == 'reload-sync(_setup_picker_render)' ]] || fail "checkbox transform does not reload in place: $transform"
+            [[ "$(_setup_picker_result_transform)" == 'pos(7)' ]] || fail "checkbox reload does not restore its deterministic position"
+            input=$(_setup_picker_render)
+            [[ $(grep -c 'action' <<< "$input") -eq 3 ]] || fail "selected top row did not contain only its three applicable actions"
+            ! grep -Eq 'action.* 0([^0-9]|$)' <<< "$input" || fail "selected top row surfaced a zero-count action"
+            grep -q "select-all${delim}all${delim}\[ \]${delim}" <<< "$input" || fail "partial select-all marker was not unchecked"
+            [[ "$(_setup_picker_header)" == *'Selected 1/2'* ]] || fail "selection count was not updated in the header"
             grep -q '@@5@@module' <<< "$input" || fail "module detail lacks span5"
             grep "^action${delim}update${delim}" <<< "$input" | head -1
             ;;
@@ -191,6 +205,7 @@ fzf-multicolumn() {
     esac
 }
 cmd_reconfigure >/dev/null
+assert_eq 2 "$(cat "$TEST_TMP/fzf-count")" "checkbox toggle caused an extra picker restart before the action"
 [[ ! -e "$TEST_TMP/current-update-invoked" ]] \
     || fail "interactive update invoked update() for an unselected current module"
 [[ -e "$TEST_TMP/outdated-update-invoked" ]] \
@@ -209,8 +224,10 @@ fzf-multicolumn() {
     local n input delim=$'\x1f'
     input=$(cat); n=$(( $(cat "$TEST_TMP/fzf-count") + 1 )); printf '%s\n' "$n" > "$TEST_TMP/fzf-count"
     case "$n" in
-        1) printf 'module%ssetup%s[ ]\n' "$delim" "$delim" ;;
-        2) grep "^action${delim}reinstall${delim}" <<< "$input" | head -1 ;;
+        1)
+            _setup_picker_transform checkbox setup >/dev/null
+            _setup_picker_render | grep "^action${delim}reinstall${delim}" | head -1
+            ;;
         *) return 1 ;;
     esac
 }
@@ -218,8 +235,38 @@ confirm_action() { return 0; }
 install_one() { printf '%s:%s\n' "$1" "$FORCE" >> "$TEST_TMP/reinstall-log"; }
 FORCE=0
 cmd_reconfigure >/dev/null
+assert_eq 2 "$(cat "$TEST_TMP/fzf-count")" "setup checkbox caused an extra picker restart before the action"
 assert_eq 'setup:1' "$(cat "$TEST_TMP/reinstall-log")" "deferred setup reinstall lost FORCE=1"
 assert_eq 0 "$FORCE" "reinstall did not restore FORCE after deferred setup"
+
+# Selecting the detail cell opens the individual submenu without toggling its
+# checkbox. Returning from the submenu restores focus to that same detail cell.
+cat > "$TEST_TMP/manifest.tsv" <<'EOF'
+# module	target	mode	source
+current-update	~/.local/current-update	script	current-update.sh
+outdated-update	~/.local/outdated-update	script	outdated-update.sh
+EOF
+rm -f "$TEST_TMP/outdated-update-invoked"
+printf '0\n' > "$TEST_TMP/fzf-count"
+fzf-multicolumn() {
+    local n input delim=$'\x1f'
+    input=$(cat); n=$(( $(cat "$TEST_TMP/fzf-count") + 1 )); printf '%s\n' "$n" > "$TEST_TMP/fzf-count"
+    case "$n" in
+        1) printf 'module%soutdated-update%sdetail\n' "$delim" "$delim" ;;
+        2)
+            grep -q "action${delim}update${delim}Update" <<< "$input" || fail "individual submenu omitted update"
+            grep "^action${delim}update${delim}" <<< "$input" | head -1
+            ;;
+        3)
+            [[ "$*" == *'Selected 0/2'* ]] || fail "individual action toggled the batch checkbox"
+            [[ "$*" == *'load:pos(6)'* ]] || fail "detail focus was not restored after individual submenu"
+            return 1
+            ;;
+    esac
+}
+cmd_reconfigure >/dev/null
+[[ -e "$TEST_TMP/outdated-update-invoked" ]] \
+    || fail "individual submenu update did not call script update()"
 
 fields=$(script_status_fields absent '~/.local/bin/absent' uninstalled.sh)
 IFS=$'\t' read -r target state display local_ref remote_ref installed extra <<< "$fields"

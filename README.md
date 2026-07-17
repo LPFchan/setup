@@ -13,7 +13,12 @@ curl -fsSL https://setup.lost.plus/install.sh | bash
 
 Installs `setup` CLI to `~/.local/bin/`, then an argument-free interactive run
 bootstraps the managed `fzf-multicolumn` module and opens its span-aware,
-six-track reconfigure UI. Existing managed binaries that predate
+six-track reconfigure UI. Each module has a batch-selection checkbox and a
+separate, column-aligned detail cell that opens its individual action menu; the header reports
+the batch selection count, shows only actions applicable to at least one selected
+module, and redraws checkbox toggles in place without restarting the picker while
+retaining the focused cell. Canceling an individual action menu reuses the current
+status snapshot instead of reprobeing remote state. Existing managed binaries that predate
 `--grid-span-prefix` are upgraded before use. Stock `fzf` and Homebrew are not
 setup UI dependencies on Linux or macOS. When no interactive terminal is
 available, setup prints an actionable warning and falls back to the

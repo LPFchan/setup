@@ -1376,6 +1376,166 @@ detect_env_summary() {
     echo "${os} ${arch} · ${distro} · ${fs}"
 }
 
+_setup_picker_selection_has() {
+    grep -Fqx -- "$1" "$SETUP_PICKER_SELECTION_FILE" 2>/dev/null
+}
+
+_setup_picker_header() {
+    local selected total
+    selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
+    total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
+    printf 'Selected %d/%d · %s · Enter=toggle/open/action · Esc=finish\n' \
+        "$selected" "$total" "$SETUP_PICKER_ENV_SUMMARY"
+}
+
+_setup_picker_action_counts() {
+    local m t mo s state installed svc active detail
+    SETUP_PICKER_INSTALL_N=0
+    SETUP_PICKER_UPDATE_N=0
+    SETUP_PICKER_REINSTALL_N=0
+    SETUP_PICKER_UNINSTALL_N=0
+    SETUP_PICKER_ENABLE_N=0
+    SETUP_PICKER_DISABLE_N=0
+    while IFS=$'\t' read -r m t mo s state installed svc active detail; do
+        _setup_picker_selection_has "$m" || continue
+        [[ "$installed" == 0 ]] && SETUP_PICKER_INSTALL_N=$((SETUP_PICKER_INSTALL_N + 1))
+        [[ "$installed" == 1 && "$state" == @(outdated|modified|unknown) ]] && SETUP_PICKER_UPDATE_N=$((SETUP_PICKER_UPDATE_N + 1))
+        [[ "$installed" == 1 ]] && SETUP_PICKER_REINSTALL_N=$((SETUP_PICKER_REINSTALL_N + 1))
+        [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] && SETUP_PICKER_UNINSTALL_N=$((SETUP_PICKER_UNINSTALL_N + 1))
+        [[ "$installed" == 1 && "$svc" == 1 && "$active" == 0 ]] && SETUP_PICKER_ENABLE_N=$((SETUP_PICKER_ENABLE_N + 1))
+        [[ "$installed" == 1 && "$svc" == 1 && "$active" == 1 ]] && SETUP_PICKER_DISABLE_N=$((SETUP_PICKER_DISABLE_N + 1))
+    done < "$SETUP_PICKER_SNAPSHOT_FILE"
+    if (( SETUP_PICKER_ENABLE_N > 0 )); then
+        SETUP_PICKER_SERVICE_ACTION=enable
+        SETUP_PICKER_SERVICE_N=$SETUP_PICKER_ENABLE_N
+    else
+        SETUP_PICKER_SERVICE_ACTION=disable
+        SETUP_PICKER_SERVICE_N=$SETUP_PICKER_DISABLE_N
+    fi
+    SETUP_PICKER_VISIBLE_ACTIONS=0
+    (( SETUP_PICKER_INSTALL_N > 0 )) && SETUP_PICKER_VISIBLE_ACTIONS=$((SETUP_PICKER_VISIBLE_ACTIONS + 1))
+    (( SETUP_PICKER_UPDATE_N > 0 )) && SETUP_PICKER_VISIBLE_ACTIONS=$((SETUP_PICKER_VISIBLE_ACTIONS + 1))
+    (( SETUP_PICKER_REINSTALL_N > 0 )) && SETUP_PICKER_VISIBLE_ACTIONS=$((SETUP_PICKER_VISIBLE_ACTIONS + 1))
+    (( SETUP_PICKER_UNINSTALL_N > 0 )) && SETUP_PICKER_VISIBLE_ACTIONS=$((SETUP_PICKER_VISIBLE_ACTIONS + 1))
+    (( SETUP_PICKER_SERVICE_N > 0 )) && SETUP_PICKER_VISIBLE_ACTIONS=$((SETUP_PICKER_VISIBLE_ACTIONS + 1))
+}
+
+_setup_picker_render() {
+    local delim="$SETUP_PICKER_DELIM" selected total top_mark='[ ]'
+    local row m t mo s state installed svc active detail mark
+    local -a action_rows=()
+    local i last_span
+    selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
+    total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
+    (( selected == total && total > 0 )) && top_mark='[*]'
+    if (( selected == 0 )); then
+        printf 'select-all%sall%s%s%s\n' "$delim" "$delim" "$top_mark" "$delim"
+        printf '@@5@@heading%snone%s%s%s\n' "$delim" "$delim" "$SETUP_PICKER_DETAIL_HEADER" "$delim"
+    else
+        _setup_picker_action_counts
+        printf 'select-all%sall%s%s%s\n' "$delim" "$delim" "$top_mark" "$delim"
+        (( SETUP_PICKER_INSTALL_N > 0 )) && action_rows+=("action${delim}install${delim}Install $SETUP_PICKER_INSTALL_N${delim}")
+        (( SETUP_PICKER_UPDATE_N > 0 )) && action_rows+=("action${delim}update${delim}Update $SETUP_PICKER_UPDATE_N${delim}")
+        (( SETUP_PICKER_REINSTALL_N > 0 )) && action_rows+=("action${delim}reinstall${delim}Reinstall $SETUP_PICKER_REINSTALL_N${delim}")
+        (( SETUP_PICKER_UNINSTALL_N > 0 )) && action_rows+=("action${delim}uninstall${delim}Uninstall $SETUP_PICKER_UNINSTALL_N${delim}")
+        if (( SETUP_PICKER_SERVICE_N > 0 )); then
+            action_rows+=("action${delim}${SETUP_PICKER_SERVICE_ACTION}${delim}$([[ "$SETUP_PICKER_SERVICE_ACTION" == enable ]] && echo Enable || echo Disable) $SETUP_PICKER_SERVICE_N${delim}")
+        fi
+        last_span=$((6 - SETUP_PICKER_VISIBLE_ACTIONS))
+        for ((i = 0; i < ${#action_rows[@]}; i++)); do
+            if (( i == ${#action_rows[@]} - 1 && last_span > 1 )); then
+                printf '@@%d@@%s\n' "$last_span" "${action_rows[i]}"
+            else
+                printf '%s\n' "${action_rows[i]}"
+            fi
+        done
+    fi
+    while IFS=$'\t' read -r m t mo s state installed svc active detail; do
+        _setup_picker_selection_has "$m" && mark='[*]' || mark='[ ]'
+        printf 'checkbox%s%s%s%s%s\n' "$delim" "$m" "$delim" "$mark" "$delim"
+        printf '@@5@@module%s%s%s%s%s\n' "$delim" "$m" "$delim" "$detail" "$delim"
+    done < "$SETUP_PICKER_SNAPSHOT_FILE"
+}
+
+_setup_picker_toggle() {
+    local kind="$1" key="$2" selected total tmp
+    case "$kind" in
+        checkbox)
+            tmp="$SETUP_PICKER_SELECTION_FILE.new.$$"
+            if _setup_picker_selection_has "$key"; then
+                grep -Fvx -- "$key" "$SETUP_PICKER_SELECTION_FILE" > "$tmp" || true
+            else
+                cp "$SETUP_PICKER_SELECTION_FILE" "$tmp"
+                printf '%s\n' "$key" >> "$tmp"
+            fi
+            mv "$tmp" "$SETUP_PICKER_SELECTION_FILE"
+            ;;
+        select-all)
+            selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
+            total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
+            if (( selected == total && total > 0 )); then
+                : > "$SETUP_PICKER_SELECTION_FILE"
+            else
+                : > "$SETUP_PICKER_SELECTION_FILE"
+                while IFS=$'\t' read -r key _; do printf '%s\n' "$key"; done \
+                    < "$SETUP_PICKER_SNAPSHOT_FILE" > "$SETUP_PICKER_SELECTION_FILE"
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+_setup_picker_position() {
+    local kind="$1" key="$2" selected base=3 index=0 row module pos
+    case "$kind" in
+        select-all) echo 1; return ;;
+        action)
+            _setup_picker_action_counts
+            pos=2
+            if (( SETUP_PICKER_INSTALL_N > 0 )); then [[ "$key" == install ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_UPDATE_N > 0 )); then [[ "$key" == update ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_REINSTALL_N > 0 )); then [[ "$key" == reinstall ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_UNINSTALL_N > 0 )); then [[ "$key" == uninstall ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_SERVICE_N > 0 )) && [[ "$key" == "$SETUP_PICKER_SERVICE_ACTION" ]]; then echo "$pos"; return; fi
+            echo 1
+            return
+            ;;
+    esac
+    selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
+    if (( selected > 0 )); then
+        _setup_picker_action_counts
+        base=$((2 + SETUP_PICKER_VISIBLE_ACTIONS))
+    fi
+    while IFS=$'\t' read -r module _; do
+        if [[ "$module" == "$key" ]]; then
+            [[ "$kind" == module ]] && echo $((base + index * 2 + 1)) || echo $((base + index * 2))
+            return
+        fi
+        index=$((index + 1))
+    done < "$SETUP_PICKER_SNAPSHOT_FILE"
+    echo 1
+}
+
+_setup_picker_transform() {
+    local kind="$1" key="$2" pos
+    case "$kind" in
+        checkbox|select-all)
+            _setup_picker_toggle "$kind" "$key" || return
+            pos=$(_setup_picker_position "$kind" "$key")
+            printf '%d\n' "$pos" > "$SETUP_PICKER_POSITION_FILE"
+            echo 'reload-sync(_setup_picker_render)'
+            ;;
+        module|action) echo accept ;;
+    esac
+}
+
+_setup_picker_result_transform() {
+    local pos
+    read -r pos < "$SETUP_PICKER_POSITION_FILE" || return 0
+    : > "$SETUP_PICKER_POSITION_FILE"
+    [[ "$pos" == +([0-9]) ]] && printf 'pos(%d)\n' "$pos"
+}
+
 picker_has_span_capability() {
     local picker="$1" help
     [[ -x "$picker" ]] || return 1
@@ -1438,16 +1598,30 @@ confirm_action() {
 cmd_reconfigure() {
     fetch_manifest || return 1
     fetch_checksums
-    local picker env_summary delim=$'\x1f'
+    local picker env_summary delim=$'\x1f' picker_state_dir
     picker=$(managed_picker) || {
         echo "setup: managed picker is unavailable; run 'setup install fzf-multicolumn' and retry" >&2
         return 1
     }
     env_summary="$(hostname -s) · $(detect_env_summary)"
+    picker_state_dir=$(mktemp -d)
+    SETUP_PICKER_SNAPSHOT_FILE="$picker_state_dir/snapshot.tsv"
+    SETUP_PICKER_SELECTION_FILE="$picker_state_dir/selected"
+    SETUP_PICKER_POSITION_FILE="$picker_state_dir/position"
+    SETUP_PICKER_DELIM="$delim"
+    SETUP_PICKER_ENV_SUMMARY="$env_summary"
+    SETUP_PICKER_DETAIL_HEADER=""
+    export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_DELIM \
+        SETUP_PICKER_ENV_SUMMARY SETUP_PICKER_DETAIL_HEADER
+    export -f _setup_picker_selection_has _setup_picker_header _setup_picker_action_counts _setup_picker_render \
+        _setup_picker_toggle _setup_picker_position _setup_picker_transform _setup_picker_result_transform
+    : > "$SETUP_PICKER_SELECTION_FILE"
+    : > "$SETUP_PICKER_POSITION_FILE"
 
     # Bash 3 compatible indexed state. Snapshot rows are:
     # module<TAB>target<TAB>mode<TAB>source<TAB>state<TAB>installed<TAB>service<TAB>active<TAB>detail
     local -a selected_modules=() snapshot=()
+    local detail_header=""
 
     selection_has() {
         local wanted="$1" item
@@ -1467,7 +1641,9 @@ cmd_reconfigure() {
     }
     snapshot_refresh() {
         snapshot=()
-        local m t mo s target state status_label local_label remote_label installed extra svc=0 active=0 detail
+        local -a raw_snapshot=()
+        local m t mo s target state status_label local_label remote_label installed extra svc=0 active=0 detail service_label row
+        local w_module=6 w_local=5 w_service=7 w_remote=6
         while IFS=$'\t' read -r m t mo s; do
             [[ -z "${m:-}" || "$m" == \#* ]] && continue
             if [[ "$mo" == script ]]; then
@@ -1482,9 +1658,25 @@ cmd_reconfigure() {
                 svc=1
                 [[ "$installed" == 1 ]] && module_is_active "$m" && active=1
             fi
-            detail="$m  local=$local_label  service=$([[ $svc == 1 ]] && { [[ $active == 1 ]] && echo active || echo inactive; } || { [[ $installed == 1 ]] && echo installed || echo uninstalled; })  remote=$remote_label  status=$status_label"
-            snapshot+=("$m"$'\t'"$t"$'\t'"$mo"$'\t'"$s"$'\t'"$state"$'\t'"$installed"$'\t'"$svc"$'\t'"$active"$'\t'"$detail")
+            if [[ "$svc" == 1 ]]; then
+                [[ "$active" == 1 ]] && service_label=active || service_label=inactive
+            else
+                [[ "$installed" == 1 ]] && service_label=installed || service_label=uninstalled
+            fi
+            raw_snapshot+=("$m"$'\t'"$t"$'\t'"$mo"$'\t'"$s"$'\t'"$state"$'\t'"$installed"$'\t'"$svc"$'\t'"$active"$'\t'"$local_label"$'\t'"$service_label"$'\t'"$remote_label"$'\t'"$status_label")
+            (( ${#m} > w_module )) && w_module=${#m}
+            (( ${#local_label} > w_local )) && w_local=${#local_label}
+            (( ${#service_label} > w_service )) && w_service=${#service_label}
+            (( ${#remote_label} > w_remote )) && w_remote=${#remote_label}
         done < "$MANIFEST_FILE"
+        printf -v detail_header '%-*s  %-*s  %-*s  %-*s  %s' \
+            "$w_module" module "$w_local" local "$w_service" service "$w_remote" remote status
+        for row in "${raw_snapshot[@]}"; do
+            IFS=$'\t' read -r m t mo s state installed svc active local_label service_label remote_label status_label <<< "$row"
+            printf -v detail '%-*s  %-*s  %-*s  %-*s  %s' \
+                "$w_module" "$m" "$w_local" "$local_label" "$w_service" "$service_label" "$w_remote" "$remote_label" "$status_label"
+            snapshot+=("$m"$'\t'"$t"$'\t'"$mo"$'\t'"$s"$'\t'"$state"$'\t'"$installed"$'\t'"$svc"$'\t'"$active"$'\t'"$detail")
+        done
     }
     snapshot_field() {
         local wanted="$1" field="$2" row m t mo s state installed svc active detail
@@ -1522,35 +1714,19 @@ cmd_reconfigure() {
             *) printf '%s\n' "$1" ;;
         esac
     }
-    build_picker_rows() {
-        local count=${#selected_modules[@]} total=${#snapshot[@]} row m t mo s state installed svc active detail mark
-        local install_n update_n reinstall_n uninstall_n enable_n disable_n service_action service_n
-        local top_mark='[ ]'
-        (( count == total && total > 0 )) && top_mark='[*]'
-        if (( count == 0 )); then
-            printf 'select-all%sall%s%s %d/%d%s\n' "$delim" "$delim" "$top_mark" "$count" "$total" "$delim"
-            printf '@@5@@heading%snone%sModules · %s · Enter selects modules%s\n' "$delim" "$delim" "$env_summary" "$delim"
-        else
-            install_n=$(eligible_count install); update_n=$(eligible_count update)
-            reinstall_n=$(eligible_count reinstall); uninstall_n=$(eligible_count uninstall)
-            enable_n=$(eligible_count enable); disable_n=$(eligible_count disable)
-            # The fifth action is contextual: enabling takes priority for a mixed
-            # inactive/active service selection; once none need enabling it becomes disable.
-            if (( enable_n > 0 )); then service_action=enable; service_n=$enable_n
-            else service_action=disable; service_n=$disable_n; fi
-            printf 'select-all%sall%s%s %d/%d%s\n' "$delim" "$delim" "$top_mark" "$count" "$total" "$delim"
-            printf 'action%sinstall%sInstall %d%s\n' "$delim" "$delim" "$install_n" "$delim"
-            printf 'action%supdate%sUpdate %d%s\n' "$delim" "$delim" "$update_n" "$delim"
-            printf 'action%sreinstall%sReinstall %d%s\n' "$delim" "$delim" "$reinstall_n" "$delim"
-            printf 'action%suninstall%sUninstall %d%s\n' "$delim" "$delim" "$uninstall_n" "$delim"
-            printf 'action%s%s%s%s %d%s\n' "$delim" "$service_action" "$delim" "$(capitalize "$service_action")" "$service_n" "$delim"
-        fi
-        for row in "${snapshot[@]}"; do
-            IFS=$'\t' read -r m t mo s state installed svc active detail <<< "$row"
-            selection_has "$m" && mark='[*]' || mark='[ ]'
-            printf 'module%s%s%s%s%s\n' "$delim" "$m" "$delim" "$mark" "$delim"
-            printf '@@5@@module%s%s%s%s%s\n' "$delim" "$m" "$delim" "$detail" "$delim"
-        done
+    sync_picker_state() {
+        : > "$SETUP_PICKER_SNAPSHOT_FILE"
+        ((${#snapshot[@]} == 0)) || printf '%s\n' "${snapshot[@]}" > "$SETUP_PICKER_SNAPSHOT_FILE"
+        : > "$SETUP_PICKER_SELECTION_FILE"
+        ((${#selected_modules[@]} == 0)) || printf '%s\n' "${selected_modules[@]}" > "$SETUP_PICKER_SELECTION_FILE"
+        SETUP_PICKER_DETAIL_HEADER="$detail_header"
+        export SETUP_PICKER_DETAIL_HEADER
+    }
+    load_picker_selection() {
+        local item
+        selected_modules=()
+        while IFS= read -r item; do [[ -n "$item" ]] && selected_modules+=("$item"); done \
+            < "$SETUP_PICKER_SELECTION_FILE"
     }
     action_summary() {
         local action="$1" attempted="$2" succeeded="$3" failed="$4" skipped="$5"
@@ -1575,8 +1751,9 @@ cmd_reconfigure() {
         action_summary "$action" "$attempted" "$succeeded" "$failed" "$skipped"
     }
     run_module_action() {
-        local action="$1" m row t mo s state installed svc active attempted=0 succeeded=0 failed=0 skipped=0 old_force=$FORCE setup_row=""
-        if [[ "$action" == uninstall || "$action" == reinstall ]]; then
+        local action="$1" ask_confirmation="${2:-1}" allow_current_update="${3:-0}"
+        local m row t mo s state installed svc active attempted=0 succeeded=0 failed=0 skipped=0 old_force=$FORCE setup_row=""
+        if (( ask_confirmation == 1 )) && [[ "$action" == uninstall || "$action" == reinstall ]]; then
             confirm_action "$(capitalize "$action") eligible selected modules?" || return 0
         fi
         [[ "$action" == reinstall ]] && FORCE=1
@@ -1585,7 +1762,7 @@ cmd_reconfigure() {
             selection_has "$m" || continue
             case "$action" in
                 install) [[ "$installed" == 0 ]] || { skipped=$((skipped + 1)); continue; } ;;
-                update) [[ "$installed" == 1 && "$state" == @(outdated|modified|unknown) ]] || { skipped=$((skipped + 1)); continue; } ;;
+                update) [[ "$installed" == 1 && ( "$allow_current_update" == 1 || "$state" == @(outdated|modified|unknown) ) ]] || { skipped=$((skipped + 1)); continue; } ;;
                 reinstall) [[ "$installed" == 1 ]] || { skipped=$((skipped + 1)); continue; } ;;
                 uninstall) [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] || { skipped=$((skipped + 1)); continue; } ;;
             esac
@@ -1636,17 +1813,83 @@ cmd_reconfigure() {
         FORCE=$old_force
         action_summary "$action" "$attempted" "$succeeded" "$failed" "$skipped"
     }
+    build_individual_action_rows() {
+        local wanted="$1" row m t mo s state installed svc active detail
+        for row in "${snapshot[@]}"; do
+            IFS=$'\t' read -r m t mo s state installed svc active detail <<< "$row"
+            [[ "$m" == "$wanted" ]] || continue
+            if [[ "$installed" == 1 ]]; then
+                if [[ "$svc" == 1 ]]; then
+                    if [[ "$active" == 1 ]]; then
+                        printf 'action%sdisable%sDisable%s\n' "$delim" "$delim" "$delim"
+                    else
+                        printf 'action%senable%sEnable%s\n' "$delim" "$delim" "$delim"
+                    fi
+                fi
+                printf 'action%supdate%sUpdate%s\n' "$delim" "$delim" "$delim"
+                printf 'action%sreinstall%sReinstall%s\n' "$delim" "$delim" "$delim"
+                [[ "$m" == fzf-multicolumn ]] || printf 'action%suninstall%sUninstall%s\n' "$delim" "$delim" "$delim"
+            elif [[ "$svc" == 1 ]]; then
+                printf 'action%sinstall-enable%sInstall + enable%s\n' "$delim" "$delim" "$delim"
+            else
+                printf 'action%sinstall%sInstall%s\n' "$delim" "$delim" "$delim"
+            fi
+            printf 'action%scancel%sCancel%s\n' "$delim" "$delim" "$delim"
+            return
+        done
+    }
+    run_individual_action() {
+        local action="$1" module="$2" rc=0
+        local -a saved_selection=("${selected_modules[@]}")
+        selected_modules=("$module")
+        case "$action" in
+            enable|disable) run_service_action "$action" || rc=$? ;;
+            install-enable)
+                if run_module_action install 0 1; then
+                    module_service_transition enable "$module" || rc=$?
+                else
+                    rc=$?
+                fi
+                ;;
+            install|update|reinstall|uninstall)
+                run_module_action "$action" 0 1 || rc=$?
+                ;;
+        esac
+        selected_modules=("${saved_selection[@]}")
+        return "$rc"
+    }
+    open_individual_menu() {
+        local module="$1" choice kind action display
+        individual_action_ran=0
+        choice=$(build_individual_action_rows "$module" | "$picker" \
+            --delimiter="$delim" --with-nth=3 --layout=reverse --cycle \
+            --header="$module · individual action" --bind='esc:abort') || return 0
+        IFS="$delim" read -r kind action display <<< "$choice"
+        [[ "$kind" == action && "$action" != cancel ]] || return 0
+        individual_action_ran=1
+        run_individual_action "$action" "$module"
+    }
 
     local interactive_failed=0
+    local picker_pos=1 individual_action_ran=0
     snapshot_refresh
     while true; do
         local choice kind key display row m all_selected=1 refresh_snapshot=0
-        choice=$(build_picker_rows | "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
-            --delimiter="$delim" --with-nth=3 --layout=reverse --cycle \
-            --header='Enter=select/action  Esc=finish' --bind='esc:abort' --preview-window=hidden) || break
+        sync_picker_state
+        choice=$(_setup_picker_render | "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
+            --delimiter="$delim" --with-nth=3 --id-nth=1,2 --layout=reverse --cycle \
+            --with-shell='bash -c' --header="$(_setup_picker_header)" \
+            --bind='enter:transform:_setup_picker_transform {1} {2}' \
+            --bind='result:transform:_setup_picker_result_transform' \
+            --bind='result:+transform-header:_setup_picker_header' \
+            --bind='esc:abort' --bind="load:pos($picker_pos)" --preview-window=hidden) || break
+        load_picker_selection
         IFS="$delim" read -r kind key display <<< "$choice"
         case "$kind" in
-            module) selection_toggle "$key" ;;
+            module)
+                open_individual_menu "$key" || interactive_failed=1
+                (( individual_action_ran == 1 )) && refresh_snapshot=1
+                ;;
             select-all)
                 for row in "${snapshot[@]}"; do
                     m=${row%%$'\t'*}; selection_has "$m" || { all_selected=0; break; }
@@ -1665,7 +1908,10 @@ cmd_reconfigure() {
                 refresh_snapshot=1 ;;
         esac
         (( refresh_snapshot == 1 )) && snapshot_refresh
+        sync_picker_state
+        picker_pos=$(_setup_picker_position "$kind" "$key")
     done
+    rm -rf "$picker_state_dir"
     return "$interactive_failed"
 }
 # Post-install: check if refresh-models needs auth onboarding

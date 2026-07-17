@@ -29,8 +29,18 @@ snapshot=(
 selected_modules=(service-ctl backup)
 [[ $(eligible_count enable) -eq 0 ]] || fail "service-ctl tool became enable-eligible"
 [[ $(eligible_count disable) -eq 1 ]] || fail "active service was not disable-eligible"
-rows=$(build_picker_rows)
+picker_fixture="$TMP/picker-fixture"
+mkdir -p "$picker_fixture"
+SETUP_PICKER_SNAPSHOT_FILE="$picker_fixture/snapshot.tsv"
+SETUP_PICKER_SELECTION_FILE="$picker_fixture/selected"
+SETUP_PICKER_DELIM=$'\x1f'
+SETUP_PICKER_DETAIL_HEADER='module local service remote status'
+printf '%s\n' "${snapshot[@]}" > "$SETUP_PICKER_SNAPSHOT_FILE"
+printf '%s\n' "${selected_modules[@]}" > "$SETUP_PICKER_SELECTION_FILE"
+rows=$(_setup_picker_render)
 [[ "$rows" == *"Disable 1"* ]] || fail "tool suppressed contextual Disable action"
+[[ "$rows" != *"Install 0"* && "$rows" != *"Update 0"* && "$rows" != *"Enable 0"* ]] \
+    || fail "renderer surfaced a zero-count action"
 
 assert_summary() {
     local action="$1" expected="$2" output rc
@@ -109,6 +119,35 @@ if output=$(run_module_action uninstall 2>&1); then rc=0; else rc=$?; fi
 [[ "$output" == *'Failed: disable fail before uninstall; target retained'* ]] || fail "pre-disable failure was not visible"
 [[ "$output" == *'Uninstall: attempted=2 succeeded=1 failed=1 skipped=0'* ]] || fail "pre-disable summary mismatch: $output"
 
+# Canceling an individual submenu returns to the existing snapshot instead of
+# reprobeing module status before reopening the main picker.
+fetch_manifest() {
+    cat > "$MANIFEST_FILE" <<'EOF'
+# module	target	mode	source
+cancel-probe	~/cancel-probe	0755	x
+EOF
+}
+printf '0\n' > "$TMP/status-probe-count"
+file_status_fields() {
+    local n=$(( $(cat "$TMP/status-probe-count") + 1 ))
+    printf '%s\n' "$n" > "$TMP/status-probe-count"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$HOME/cancel-probe" uninstalled 'not installed' - x 0 x
+}
+printf '0\n' > "$TMP/picker-count"
+fake-picker() {
+    cat >/dev/null
+    local n=$(( $(cat "$TMP/picker-count") + 1 )) d=$'\x1f'
+    printf '%s\n' "$n" > "$TMP/picker-count"
+    case "$n" in
+      1) printf 'module%scancel-probe%sdetail\n' "$d" "$d" ;;
+      2) printf 'action%scancel%sCancel\n' "$d" "$d" ;;
+      *) return 1 ;;
+    esac
+}
+cmd_reconfigure >/dev/null
+[[ $(cat "$TMP/status-probe-count") -eq 1 ]] \
+    || fail "canceling an individual submenu refreshed remote status"
+
 # cmd_reconfigure remembers an action failure across redraw/refresh and returns
 # it only after the picker exits (Esc/abort).
 fetch_manifest() {
@@ -125,8 +164,10 @@ fake-picker() {
     local n=$(( $(cat "$TMP/picker-count") + 1 )) d=$'\x1f'
     printf '%s\n' "$n" > "$TMP/picker-count"
     case "$n" in
-      1) printf 'module%sfail%s[ ]\n' "$d" "$d" ;;
-      2) printf 'action%sinstall%sInstall 1\n' "$d" "$d" ;;
+      1)
+          _setup_picker_transform checkbox fail >/dev/null
+          printf 'action%sinstall%sInstall 1\n' "$d" "$d"
+          ;;
       *) return 1 ;;
     esac
 }
