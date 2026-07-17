@@ -89,6 +89,14 @@ ai() {
     for tool in claude codex claudex opencode hermes grok; do
         (( ${+commands[$tool]} )) && tools+=("$tool")
     done
+    # claudex-cc is a second claudex profile (Command Code catalog), shown
+    # only when claudex exists AND the global config carries the profile —
+    # $(<file) + literal match, no external probe. With the profile absent
+    # (module not yet applied here), the entry stays out of the menu.
+    if (( ${+commands[claudex]} )) && [[ -f $HOME/.config/claudex/config.toml ]] \
+        && [[ "$(<$HOME/.config/claudex/config.toml)" == *'name = "commandcode"'* ]]; then
+        tools+=(claudex-cc)
+    fi
     tools+=(setup resume neither)
 
     # Forkless parse: $(<file) + (z) word-split instead of $(grep | awk).
@@ -243,6 +251,7 @@ ai() {
             fi
             ;;
         claudex) claudex run codex --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
+        claudex-cc) claudex run commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
         hermes) hermes ;;
         grok) grok ;;
