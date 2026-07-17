@@ -16,9 +16,18 @@ SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring refresh-mod
 USER_SERVICE_MODULES="refresh-models"
 BATCH=0
 
+# SOURCE_URL normally points at a moving GitHub branch.  Raw GitHub caches each
+# path independently, so checksums.tsv and its payload can otherwise describe
+# different commits for up to five minutes.  Revalidate every source fetch so
+# status and install observe one current branch state instead of repeatedly
+# "updating" an already-current file.
+fetch_source_url() {
+    curl -fsSL -H 'Cache-Control: no-cache' --connect-timeout 8 --max-time 60 "$@"
+}
+
 fetch_script_helpers() {
     mkdir -p "$(dirname "$SCRIPT_HELPERS_FILE")"
-    curl -fsSL --connect-timeout 8 --max-time 60 "$SOURCE_URL/lib/script-helpers.sh" -o "$SCRIPT_HELPERS_FILE" 2>/dev/null \
+    fetch_source_url "$SOURCE_URL/lib/script-helpers.sh" -o "$SCRIPT_HELPERS_FILE" 2>/dev/null \
         || echo "Warning: could not fetch lib/script-helpers.sh" >&2
     # shellcheck disable=SC1090
     [[ -f "$SCRIPT_HELPERS_FILE" ]] && source "$SCRIPT_HELPERS_FILE"
@@ -172,7 +181,7 @@ fetch_manifest() {
     mkdir -p "$STATE_DIR"
     local tmp
     tmp=$(mktemp)
-    if curl -fsSL --connect-timeout 8 --max-time 60 "$MANIFEST_URL" -o "$tmp" 2>/dev/null \
+    if fetch_source_url "$MANIFEST_URL" -o "$tmp" 2>/dev/null \
        && grep -q '^# module' "$tmp"; then
         if mv "$tmp" "$MANIFEST_FILE"; then
             return 0
@@ -213,7 +222,7 @@ fetch_checksums() {
     fi
     local tmp
     tmp=$(mktemp)
-    if curl -fsSL --connect-timeout 8 --max-time 60 "$SOURCE_URL/checksums.tsv" -o "$tmp" 2>/dev/null \
+    if fetch_source_url "$SOURCE_URL/checksums.tsv" -o "$tmp" 2>/dev/null \
         && grep -q '^# source' "$tmp"; then
         _CSUM_CACHE=$(cat "$tmp")
     else
@@ -555,7 +564,7 @@ normalize_block_order() {
 
 fetch_payload() {
     local source="$1" payload="$2"
-    if curl -fsSL --connect-timeout 8 --max-time 60 "$SOURCE_URL/$source" -o "$payload" 2>/dev/null \
+    if fetch_source_url "$SOURCE_URL/$source" -o "$payload" 2>/dev/null \
         && grep -q '^# setup-module: ' "$payload"; then
         return 0
     fi
