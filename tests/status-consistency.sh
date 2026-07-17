@@ -197,7 +197,7 @@ fzf-multicolumn() {
             [[ $(grep -c 'action' <<< "$input") -eq 3 ]] || fail "selected top row did not contain only its three applicable actions"
             ! grep -Eq 'action.* 0([^0-9]|$)' <<< "$input" || fail "selected top row surfaced a zero-count action"
             grep -q "select-all${delim}all${delim}\[ \]${delim}" <<< "$input" || fail "partial select-all marker was not unchecked"
-            [[ "$(_setup_picker_header)" == *'Selected 1/2'* ]] || fail "selection count was not updated in the header"
+            [[ "$(_setup_picker_header)" == '1/2 · '* ]] || fail "selection count was not updated in the header"
             grep -q '@@5@@module' <<< "$input" || fail "module detail lacks span5"
             grep "^action${delim}update${delim}" <<< "$input" | head -1
             ;;
@@ -258,7 +258,7 @@ fzf-multicolumn() {
             grep "^action${delim}update${delim}" <<< "$input" | head -1
             ;;
         3)
-            [[ "$*" == *'Selected 0/2'* ]] || fail "individual action toggled the batch checkbox"
+            [[ "$*" == *'0/2 · '* ]] || fail "individual action toggled the batch checkbox"
             [[ "$*" == *'load:pos(6)'* ]] || fail "detail focus was not restored after individual submenu"
             return 1
             ;;

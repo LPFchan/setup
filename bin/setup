@@ -1393,7 +1393,7 @@ _setup_picker_header() {
     local selected total
     selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
     total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
-    printf 'Selected %d/%d · %s · Enter=toggle/open/action · Esc=finish\n' \
+    printf '%d/%d · %s · Enter=toggle/open/action · Esc=finish\n' \
         "$selected" "$total" "$SETUP_PICKER_ENV_SUMMARY"
 }
 
