@@ -1,5 +1,7 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # lib/script-helpers.sh — shared helpers for script-type modules
+
+[[ -n "${ZSH_VERSION:-}" ]] || { echo "script helpers must be sourced by zsh" >&2; return 1 2>/dev/null || exit 1; }
 
 ZSH_PLUGINS_DIR="${ZSH_PLUGINS_DIR:-$HOME/.zsh}"
 
@@ -30,13 +32,13 @@ git_fetch_origin_head() {
 git_path_content_hash() {
     local dir="$1" ref="$2"
     shift 2
-    local path obj type
-    for path in "$@"; do
-        if obj=$(git -C "$dir" rev-parse "${ref}:${path}" 2>/dev/null); then
+    local rel_path obj type
+    for rel_path in "$@"; do
+        if obj=$(git -C "$dir" rev-parse "${ref}:${rel_path}" 2>/dev/null); then
             type=$(git -C "$dir" cat-file -t "$obj" 2>/dev/null || echo unknown)
-            printf '%s\t%s\t%s\n' "$path" "$type" "$obj"
+            printf '%s\t%s\t%s\n' "$rel_path" "$type" "$obj"
         else
-            printf '%s\tmissing\t-\n' "$path"
+            printf '%s\tmissing\t-\n' "$rel_path"
         fi
     done | setup_sha256_string
 }

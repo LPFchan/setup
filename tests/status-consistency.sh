@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=${0:A:h:h}
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT
 
@@ -186,10 +186,11 @@ fzf-multicolumn() {
         1)
             grep -q '@@5@@all-menu' <<< "$input" || fail "initial row lacks span5 ALL menu cell"
             [[ "$(_setup_picker_transform all-menu all)" == accept ]] || fail "ALL menu cell is not interactive"
-            [[ "$*" == *'enter:transform:_setup_picker_transform'* ]] || fail "checkboxes do not use in-process transform"
+            [[ "$*" == *'enter:transform:'*'_setup_picker_transform'* ]] || fail "checkboxes do not use the zsh callback transform"
+            [[ "$*" == *'--with-shell=zsh -f -c'* ]] || fail "picker callbacks do not run through zsh"
             [[ "$*" == *'--id-nth=1,2'* ]] || fail "reload lacks stable row identity"
-            [[ "$*" == *'result:transform:_setup_picker_result_transform'* ]] || fail "reload does not restore its deterministic position"
-            [[ "$*" == *'result:+transform-header:_setup_picker_header'* ]] || fail "reload does not refresh the selection header"
+            [[ "$*" == *'result:transform:'*'_setup_picker_result_transform'* ]] || fail "reload does not restore its deterministic position"
+            [[ "$*" == *'result:+transform-header:'*'_setup_picker_header'* ]] || fail "reload does not refresh the selection header"
             transform=$(_setup_picker_transform checkbox outdated-update)
             [[ "$transform" == 'reload-sync(_setup_picker_render)' ]] || fail "checkbox transform does not reload in place: $transform"
             [[ "$(_setup_picker_result_transform)" == 'pos(7)' ]] || fail "checkbox reload does not restore its deterministic position"

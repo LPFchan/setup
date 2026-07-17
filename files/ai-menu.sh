@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # setup-module: ai-menu
 # setup-type: script
 #
@@ -8,7 +8,7 @@
 # autolaunch block. Source of truth for the payload lives in this repo at
 # files/ai-menu.
 
-[[ "$(type -t git_clone_if_missing)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
+(( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
 MODULE="ai-menu"
 PAYLOAD_TARGET="$HOME/.bashrc.d/ai-menu"

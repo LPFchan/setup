@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # setup-module: claudex
 # setup-type: script
 #
@@ -24,7 +24,7 @@
 # append a duplicate profile. Presence + index therefore come from an anchored
 # scan of the real `[[profiles]]` tables instead.
 
-[[ "$(type -t git_clone_if_missing)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
+(( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
 MODULE="claudex"
 BIN="$HOME/.local/bin/claudex"

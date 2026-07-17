@@ -1,5 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env zsh
+[[ -n "${ZSH_VERSION:-}" ]] || { echo "setup installer must be run with zsh" >&2; exit 1; }
+emulate -R zsh
+setopt KSH_ARRAYS SH_WORD_SPLIT ERR_EXIT NO_UNSET PIPE_FAIL
 
 SOURCE_URL="${LINUX_SETUP_SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}"
 BIN_DIR="$HOME/.local/bin"

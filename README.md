@@ -7,11 +7,14 @@ Repo: https://github.com/LPFchan/setup
 
 ## Install
 
-```bash
-curl -fsSL https://setup.lost.plus/install.sh | bash
+```zsh
+curl -fsSL https://setup.lost.plus/install.sh | zsh
 ```
 
-Installs `setup` CLI to `~/.local/bin/`, then an argument-free interactive run
+`zsh` is the sole setup runtime and must already be available on the machine.
+The installer, `setup` CLI, shared helper library, and in-process script-module
+payloads run exclusively under zsh. The installer places the CLI in
+`~/.local/bin/`, then an argument-free interactive run
 bootstraps the managed `fzf-multicolumn` module and opens its span-aware,
 six-track reconfigure UI. Each module has a batch-selection checkbox and a
 separate, column-aligned detail cell that opens its individual action menu; the header reports
@@ -249,4 +252,5 @@ After cloning, enable the tracked pre-commit hook:
 git config core.hooksPath hooks
 ```
 
-The hook runs `bash -n` syntax checks and regenerates `checksums.tsv` on commit.
+The hook checks the setup runtime with `zsh -n`, checks separately installed
+Bash tools with `bash -n`, and regenerates `checksums.tsv` on commit.

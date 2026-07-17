@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # setup-module: agents
 # setup-type: script
 #
@@ -6,7 +6,7 @@
 # into ~/.agents/ and symlinks it into each harness. Source of truth lives in
 # this repo under agents/; edit there and `setup update` to sync every machine.
 
-[[ "$(type -t git_clone_if_missing)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
+(( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
 MODULE="agents"
 AGENTS_DIR="$HOME/.agents"

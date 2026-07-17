@@ -1,7 +1,9 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # setup-module: setup
 # setup-source: bin/setup
-set -uo pipefail
+[[ -n "${ZSH_VERSION:-}" ]] || { echo "setup must be run with zsh" >&2; exit 1; }
+emulate -R zsh
+setopt KSH_ARRAYS SH_WORD_SPLIT NO_UNSET PIPE_FAIL
 ORIG_ARGS=("$@")
 
 SOURCE_URL="${LINUX_SETUP_SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}"
@@ -63,9 +65,9 @@ EOF
 
 _resolve_bin() {
     local name="$1"
-    local path="$HOME/.local/bin/$name"
-    if [[ -x "$path" ]]; then
-        echo "$path"
+    local bin_path="$HOME/.local/bin/$name"
+    if [[ -x "$bin_path" ]]; then
+        echo "$bin_path"
     else
         echo "$name"
     fi
@@ -210,9 +212,10 @@ module_selected() {
 
 installed_hash_for() {
     local target="$1"
+    local recorded_path hash version
     [[ -f "$HASH_FILE" ]] || return 0
-    while IFS=$'\t' read -r path hash version; do
-        [[ "$path" == "$target" ]] && printf '%s\n' "$hash" && return 0
+    while IFS=$'\t' read -r recorded_path hash version; do
+        [[ "$recorded_path" == "$target" ]] && printf '%s\n' "$hash" && return 0
     done < "$HASH_FILE"
 }
 fetch_checksums() {
@@ -441,7 +444,7 @@ esac'
 
     for entry in "${BLOCK_REGISTRY[@]}"; do
         IFS="$BLOCK_DELIM" read -r file_key label content_var mode position <<< "$entry"
-        manage_block "$HOME/.$file_key" "$label" "${!content_var}" "$mode" "$position"
+        manage_block "$HOME/.$file_key" "$label" "${(P)content_var}" "$mode" "$position"
     done
 
     # Ownership migration: core used to install zsh-init on every host. Keep it
@@ -581,7 +584,7 @@ run_script_payload() {
     (
         # shellcheck disable=SC1090
         source "$payload" || exit 1
-        declare -F "$fn" >/dev/null || {
+        (( ${+functions[$fn]} )) || {
             echo "Payload defines no $fn()" >&2
             exit 1
         }
@@ -693,13 +696,13 @@ _script_update() {
 }
 
 record_hash() {
-    local target="$1" hash="$2" version="$3" tmp
+    local target="$1" hash="$2" version="$3" tmp recorded_path old_hash old_version
     mkdir -p "$STATE_DIR"
     tmp=$(mktemp)
     if [[ -f "$HASH_FILE" ]]; then
-        while IFS=$'\t' read -r path old_hash old_version; do
-            [[ "$path" == "$target" ]] && continue
-            printf '%s\t%s\t%s\n' "$path" "$old_hash" "${old_version:-}"
+        while IFS=$'\t' read -r recorded_path old_hash old_version; do
+            [[ "$recorded_path" == "$target" ]] && continue
+            printf '%s\t%s\t%s\n' "$recorded_path" "$old_hash" "${old_version:-}"
         done < "$HASH_FILE" > "$tmp"
     fi
     printf '%s\t%s\t%s\n' "$target" "$hash" "$version" >> "$tmp"
@@ -707,12 +710,12 @@ record_hash() {
 }
 
 remove_hash() {
-    local target="$1" tmp
+    local target="$1" tmp recorded_path old_hash old_version
     [[ -f "$HASH_FILE" ]] || return 0
     tmp=$(mktemp)
-    while IFS=$'\t' read -r path old_hash old_version; do
-        [[ "$path" == "$target" ]] && continue
-        printf '%s\t%s\t%s\n' "$path" "$old_hash" "${old_version:-}"
+    while IFS=$'\t' read -r recorded_path old_hash old_version; do
+        [[ "$recorded_path" == "$target" ]] && continue
+        printf '%s\t%s\t%s\n' "$recorded_path" "$old_hash" "${old_version:-}"
     done < "$HASH_FILE" > "$tmp"
     mv "$tmp" "$HASH_FILE"
 }
@@ -1389,6 +1392,13 @@ _setup_picker_selection_has() {
     grep -Fqx -- "$1" "$SETUP_PICKER_SELECTION_FILE" 2>/dev/null
 }
 
+_setup_state_needs_update() {
+    case "$1" in
+        outdated|modified|unknown) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 _setup_picker_header() {
     local selected total
     selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
@@ -1408,7 +1418,7 @@ _setup_picker_action_counts() {
     while IFS=$'\t' read -r m t mo s state installed svc active detail; do
         _setup_picker_selection_has "$m" || continue
         [[ "$installed" == 0 ]] && SETUP_PICKER_INSTALL_N=$((SETUP_PICKER_INSTALL_N + 1))
-        [[ "$installed" == 1 && "$state" == @(outdated|modified|unknown) ]] && SETUP_PICKER_UPDATE_N=$((SETUP_PICKER_UPDATE_N + 1))
+        [[ "$installed" == 1 ]] && _setup_state_needs_update "$state" && SETUP_PICKER_UPDATE_N=$((SETUP_PICKER_UPDATE_N + 1))
         [[ "$installed" == 1 ]] && SETUP_PICKER_REINSTALL_N=$((SETUP_PICKER_REINSTALL_N + 1))
         [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] && SETUP_PICKER_UNINSTALL_N=$((SETUP_PICKER_UNINSTALL_N + 1))
         [[ "$installed" == 1 && "$svc" == 1 && "$active" == 0 ]] && SETUP_PICKER_ENABLE_N=$((SETUP_PICKER_ENABLE_N + 1))
@@ -1543,7 +1553,10 @@ _setup_picker_result_transform() {
     local pos
     read -r pos < "$SETUP_PICKER_POSITION_FILE" || return 0
     : > "$SETUP_PICKER_POSITION_FILE"
-    [[ "$pos" == +([0-9]) ]] && printf 'pos(%d)\n' "$pos"
+    case "$pos" in
+        ''|*[!0-9]*) return 0 ;;
+        *) printf 'pos(%d)\n' "$pos" ;;
+    esac
 }
 
 picker_has_span_capability() {
@@ -1608,7 +1621,7 @@ confirm_action() {
 cmd_reconfigure() {
     fetch_manifest || return 1
     fetch_checksums
-    local picker env_summary delim=$'\x1f' picker_state_dir
+    local picker env_summary delim=$'\x1f' picker_state_dir picker_callbacks
     picker=$(managed_picker) || {
         echo "setup: managed picker is unavailable; run 'setup install fzf-multicolumn' and retry" >&2
         return 1
@@ -1619,19 +1632,26 @@ cmd_reconfigure() {
     SETUP_PICKER_SELECTION_FILE="$picker_state_dir/selected"
     SETUP_PICKER_POSITION_FILE="$picker_state_dir/position"
     SETUP_PICKER_DETAIL_HEADER_FILE="$picker_state_dir/detail-header"
+    picker_callbacks="$picker_state_dir/callbacks.zsh"
     SETUP_PICKER_DELIM="$delim"
     SETUP_PICKER_ENV_SUMMARY="$env_summary"
     SETUP_PICKER_DETAIL_HEADER=""
     export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_DETAIL_HEADER_FILE SETUP_PICKER_DELIM \
         SETUP_PICKER_ENV_SUMMARY SETUP_PICKER_DETAIL_HEADER
-    export -f _setup_picker_selection_has _setup_picker_header _setup_picker_action_counts _setup_picker_render \
-        _setup_picker_toggle _setup_picker_position _setup_picker_transform _setup_picker_result_transform
+    {
+        printf '%s\n' '#!/usr/bin/env zsh' 'emulate -R zsh' 'setopt KSH_ARRAYS SH_WORD_SPLIT NO_UNSET PIPE_FAIL'
+        functions _setup_picker_selection_has _setup_state_needs_update _setup_picker_header \
+            _setup_picker_action_counts _setup_picker_render _setup_picker_toggle \
+            _setup_picker_position _setup_picker_transform _setup_picker_result_transform
+        printf '%s\n' '"$@"'
+    } > "$picker_callbacks"
+    chmod 0700 "$picker_callbacks"
     : > "$SETUP_PICKER_SNAPSHOT_FILE"
     : > "$SETUP_PICKER_SELECTION_FILE"
     : > "$SETUP_PICKER_POSITION_FILE"
     : > "$SETUP_PICKER_DETAIL_HEADER_FILE"
 
-    # Bash 3 compatible indexed state. Snapshot rows are:
+    # Indexed state shared by the parent zsh process and picker callbacks. Rows are:
     # module<TAB>target<TAB>mode<TAB>source<TAB>state<TAB>installed<TAB>service<TAB>active<TAB>detail
     local -a selected_modules=() snapshot=()
     local detail_header=""
@@ -1711,7 +1731,7 @@ cmd_reconfigure() {
             svc=$(snapshot_field "$m" service); active=$(snapshot_field "$m" active)
             case "$action" in
                 install) [[ "$installed" == 0 ]] && n=$((n + 1)) ;;
-                update) [[ "$installed" == 1 && "$state" == @(outdated|modified|unknown) ]] && n=$((n + 1)) ;;
+                update) [[ "$installed" == 1 ]] && _setup_state_needs_update "$state" && n=$((n + 1)) ;;
                 reinstall) [[ "$installed" == 1 ]] && n=$((n + 1)) ;;
                 uninstall) [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] && n=$((n + 1)) ;;
                 enable) [[ "$installed" == 1 && "$svc" == 1 && "$active" == 0 ]] && n=$((n + 1)) ;;
@@ -1783,7 +1803,11 @@ cmd_reconfigure() {
             selection_has "$m" || continue
             case "$action" in
                 install) [[ "$installed" == 0 ]] || { skipped=$((skipped + 1)); continue; } ;;
-                update) [[ "$installed" == 1 && ( "$allow_current_update" == 1 || "$state" == @(outdated|modified|unknown) ) ]] || { skipped=$((skipped + 1)); continue; } ;;
+                update)
+                    [[ "$installed" == 1 ]] \
+                        && { [[ "$allow_current_update" == 1 ]] || _setup_state_needs_update "$state"; } \
+                        || { skipped=$((skipped + 1)); continue; }
+                    ;;
                 reinstall) [[ "$installed" == 1 ]] || { skipped=$((skipped + 1)); continue; } ;;
                 uninstall) [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] || { skipped=$((skipped + 1)); continue; } ;;
             esac
@@ -1955,10 +1979,10 @@ cmd_reconfigure() {
     main_picker() {
         "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
             --delimiter="$delim" --with-nth=3 --id-nth=1,2 --layout=reverse --cycle \
-            --with-shell='bash -c' --header="$(_setup_picker_header)" \
-            --bind='enter:transform:_setup_picker_transform {1} {2}' \
-            --bind='result:transform:_setup_picker_result_transform' \
-            --bind='result:+transform-header:_setup_picker_header' \
+            --with-shell='zsh -f -c' --header="$(_setup_picker_header)" \
+            --bind="enter:transform:$picker_callbacks _setup_picker_transform {1} {2}" \
+            --bind="result:transform:$picker_callbacks _setup_picker_result_transform" \
+            --bind="result:+transform-header:$picker_callbacks _setup_picker_header" \
             --bind='esc:abort' --bind="load:pos($picker_pos)" --preview-window=hidden
     }
     while true; do
@@ -2046,7 +2070,7 @@ while (($# > 0)); do
 done
 
 cmd="${1:-}"
-shift || true
+(( $# > 0 )) && shift
 
 if [[ -z "$cmd" ]]; then
     main_rc=0

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # setup-module: ssh-aliases
 # setup-type: script
 #
@@ -6,7 +6,7 @@
 # built from the fleet table below and omitting the current machine. Keep the
 # table in sync with agents/FLEET.md.
 
-[[ "$(type -t setup_sha256_string)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
+(( ${+functions[setup_sha256_string]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
 MODULE="ssh-aliases"
 SSH_CONFIG="$HOME/.ssh/config"

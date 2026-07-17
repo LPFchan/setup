@@ -4,10 +4,26 @@ on:
   push:
     branches: [main]
     paths:
+      - 'install.sh'
       - 'bin/**'
       - 'files/**'
+      - 'lib/**'
+      - 'manifest.tsv'
 
 jobs:
+  macos-zsh-compatibility:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: parse the setup runtime with macOS system zsh
+        run: |
+          /bin/zsh -n install.sh
+          /bin/zsh -n bin/setup
+          /bin/zsh -n lib/script-helpers.sh
+          awk -F '\t' '$3 == "script" { print $4 }' manifest.tsv | while read -r source; do
+            /bin/zsh -n "$source"
+          done
+
   refresh:
     runs-on: ubuntu-latest
     permissions:
@@ -16,8 +32,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: syntax check shell scripts
         run: |
+          zsh -n install.sh
+          zsh -n bin/setup
+          zsh -n lib/script-helpers.sh
+          awk -F '\t' '$3 == "script" { print $4 }' manifest.tsv | while read -r source; do
+            zsh -n "$source"
+          done
           for f in bin/*; do
-            [[ -f "$f" ]] && bash -n "$f"
+            [[ -f "$f" && "$f" != bin/setup ]] && bash -n "$f"
           done
       - name: syntax check python scripts
         run: |

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # setup-module: tmux
 # setup-type: script
 #
@@ -8,7 +8,7 @@
 # removes the three setup-owned surfaces but leaves the system tmux package
 # installed.
 
-[[ "$(type -t setup_sha256_string)" == "function" ]] || source "$(dirname "${BASH_SOURCE[0]}")/../lib/script-helpers.sh"
+(( ${+functions[setup_sha256_string]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
 MODULE="tmux"
 TMUX_CONF="$HOME/.tmux.conf"

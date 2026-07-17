@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env zsh
 # Regression test: script-module payloads must not leak their
 # install/update/status/uninstall functions into the setup process.
 # A leaked `install` shadowed /usr/bin/install and made every later
@@ -6,7 +6,7 @@
 # while record_hash still recorded the new hash ("modified" drift).
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=${0:A:h:h}
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT
 
@@ -42,9 +42,9 @@ run_script_payload "$payload" install >/dev/null \
 [[ -f "$TEST_TMP/hijack-ran" ]] \
     || fail "payload install() did not run inside the subshell"
 
-declare -F install >/dev/null \
+(( ${+functions[install]} )) \
     && fail "install() leaked into the parent process"
-declare -F update >/dev/null \
+(( ${+functions[update]} )) \
     && fail "update() leaked into the parent process"
 [[ -z "${MODULE_LEAK_CANARY:-}" ]] \
     || fail "payload globals leaked into the parent process"
