@@ -1422,15 +1422,16 @@ _setup_picker_action_counts() {
 
 _setup_picker_render() {
     local delim="$SETUP_PICKER_DELIM" selected total top_mark='[ ]'
-    local row m t mo s state installed svc active detail mark
+    local row m t mo s state installed svc active detail mark detail_header="${SETUP_PICKER_DETAIL_HEADER:-}"
     local -a action_rows=()
     local i last_span
     selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
     total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
+    [[ -f "${SETUP_PICKER_DETAIL_HEADER_FILE:-}" ]] && detail_header=$(<"$SETUP_PICKER_DETAIL_HEADER_FILE")
     (( selected == total && total > 0 )) && top_mark='[*]'
     if (( selected == 0 )); then
         printf 'select-all%sall%s%s%s\n' "$delim" "$delim" "$top_mark" "$delim"
-        printf '@@5@@heading%snone%s%s%s\n' "$delim" "$delim" "$SETUP_PICKER_DETAIL_HEADER" "$delim"
+        printf '@@5@@all-menu%sall%s%s%s\n' "$delim" "$delim" "$detail_header" "$delim"
     else
         _setup_picker_action_counts
         printf 'select-all%sall%s%s%s\n' "$delim" "$delim" "$top_mark" "$delim"
@@ -1525,7 +1526,7 @@ _setup_picker_transform() {
             printf '%d\n' "$pos" > "$SETUP_PICKER_POSITION_FILE"
             echo 'reload-sync(_setup_picker_render)'
             ;;
-        module|action) echo accept ;;
+        module|action|all-menu) echo accept ;;
     esac
 }
 
@@ -1608,15 +1609,18 @@ cmd_reconfigure() {
     SETUP_PICKER_SNAPSHOT_FILE="$picker_state_dir/snapshot.tsv"
     SETUP_PICKER_SELECTION_FILE="$picker_state_dir/selected"
     SETUP_PICKER_POSITION_FILE="$picker_state_dir/position"
+    SETUP_PICKER_DETAIL_HEADER_FILE="$picker_state_dir/detail-header"
     SETUP_PICKER_DELIM="$delim"
     SETUP_PICKER_ENV_SUMMARY="$env_summary"
     SETUP_PICKER_DETAIL_HEADER=""
-    export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_DELIM \
+    export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_DETAIL_HEADER_FILE SETUP_PICKER_DELIM \
         SETUP_PICKER_ENV_SUMMARY SETUP_PICKER_DETAIL_HEADER
     export -f _setup_picker_selection_has _setup_picker_header _setup_picker_action_counts _setup_picker_render \
         _setup_picker_toggle _setup_picker_position _setup_picker_transform _setup_picker_result_transform
+    : > "$SETUP_PICKER_SNAPSHOT_FILE"
     : > "$SETUP_PICKER_SELECTION_FILE"
     : > "$SETUP_PICKER_POSITION_FILE"
+    : > "$SETUP_PICKER_DETAIL_HEADER_FILE"
 
     # Bash 3 compatible indexed state. Snapshot rows are:
     # module<TAB>target<TAB>mode<TAB>source<TAB>state<TAB>installed<TAB>service<TAB>active<TAB>detail
@@ -1721,6 +1725,14 @@ cmd_reconfigure() {
         ((${#selected_modules[@]} == 0)) || printf '%s\n' "${selected_modules[@]}" > "$SETUP_PICKER_SELECTION_FILE"
         SETUP_PICKER_DETAIL_HEADER="$detail_header"
         export SETUP_PICKER_DETAIL_HEADER
+        printf '%s\n' "$detail_header" > "$SETUP_PICKER_DETAIL_HEADER_FILE"
+    }
+    load_picker_snapshot() {
+        local row
+        snapshot=()
+        while IFS= read -r row; do [[ -n "$row" ]] && snapshot+=("$row"); done \
+            < "$SETUP_PICKER_SNAPSHOT_FILE"
+        [[ -f "$SETUP_PICKER_DETAIL_HEADER_FILE" ]] && detail_header=$(<"$SETUP_PICKER_DETAIL_HEADER_FILE")
     }
     load_picker_selection() {
         local item
@@ -1869,26 +1881,97 @@ cmd_reconfigure() {
         individual_action_ran=1
         run_individual_action "$action" "$module"
     }
+    build_all_modules_action_rows() {
+        printf 'all-action%supdate%supdate all%s\n' "$delim" "$delim" "$delim"
+        printf 'all-action%sreinstall%sreinstall all%s\n' "$delim" "$delim" "$delim"
+        printf 'all-action%suninstall%suninstall all%s\n' "$delim" "$delim" "$delim"
+        printf 'all-action%srefresh%srefresh list%s\n' "$delim" "$delim" "$delim"
+        printf 'all-action%scancel%scancel%s\n' "$delim" "$delim" "$delim"
+    }
+    open_all_modules_menu() {
+        local choice kind action display row m t mo s setup_row="" old_force=$FORCE rc=0
+        local -a saved_selection=("${selected_modules[@]}")
+        all_menu_action_ran=0
+        choice=$(build_all_modules_action_rows | "$picker" \
+            --delimiter="$delim" --with-nth=3 --layout=reverse --cycle \
+            --header='<ALL MODULES>' --bind='esc:abort') || return 0
+        IFS="$delim" read -r kind action display <<< "$choice"
+        [[ "$kind" == all-action && "$action" != cancel ]] || return 0
+        case "$action" in
+            refresh)
+                all_menu_action_ran=1
+                _CSUM_CACHE=""
+                fetch_checksums
+                ;;
+            update)
+                if confirm_action "Update ALL installed modules?"; then
+                    all_menu_action_ran=1
+                    cmd_update || rc=$?
+                fi
+                ;;
+            reinstall)
+                if confirm_action "Reinstall ALL modules (overwrites local changes)?"; then
+                    all_menu_action_ran=1
+                    FORCE=1
+                    for row in "${snapshot[@]}"; do
+                        IFS=$'\t' read -r m t mo s _ <<< "$row"
+                        if [[ "$m" == setup ]]; then setup_row="$row"; continue; fi
+                        install_one "$m" "$t" "$mo" "$s" || rc=$?
+                    done
+                    if [[ -n "$setup_row" ]]; then
+                        IFS=$'\t' read -r m t mo s _ <<< "$setup_row"
+                        install_one "$m" "$t" "$mo" "$s" || rc=$?
+                    fi
+                    FORCE=$old_force
+                    normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+                fi
+                ;;
+            uninstall)
+                if confirm_action "Uninstall ALL modules? This is destructive."; then
+                    all_menu_action_ran=1
+                    selected_modules=()
+                    for row in "${snapshot[@]}"; do selection_add "${row%%$'\t'*}"; done
+                    run_module_action uninstall 0 || rc=$?
+                    selected_modules=("${saved_selection[@]}")
+                fi
+                ;;
+        esac
+        FORCE=$old_force
+        selected_modules=("${saved_selection[@]}")
+        return "$rc"
+    }
 
     local interactive_failed=0
-    local picker_pos=1 individual_action_ran=0
-    snapshot_refresh
-    while true; do
-        local choice kind key display row m all_selected=1 refresh_snapshot=0
-        sync_picker_state
-        choice=$(_setup_picker_render | "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
+    local picker_pos=1 individual_action_ran=0 all_menu_action_ran=0 initial_snapshot=1
+    main_picker() {
+        "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
             --delimiter="$delim" --with-nth=3 --id-nth=1,2 --layout=reverse --cycle \
             --with-shell='bash -c' --header="$(_setup_picker_header)" \
             --bind='enter:transform:_setup_picker_transform {1} {2}' \
             --bind='result:transform:_setup_picker_result_transform' \
             --bind='result:+transform-header:_setup_picker_header' \
-            --bind='esc:abort' --bind="load:pos($picker_pos)" --preview-window=hidden) || break
+            --bind='esc:abort' --bind="load:pos($picker_pos)" --preview-window=hidden
+    }
+    while true; do
+        local choice kind key display row m all_selected=1 refresh_snapshot=0
+        if (( initial_snapshot == 1 )); then
+            choice=$({ snapshot_refresh; sync_picker_state; _setup_picker_render; } | main_picker) || break
+            initial_snapshot=0
+        else
+            sync_picker_state
+            choice=$(_setup_picker_render | main_picker) || break
+        fi
+        load_picker_snapshot
         load_picker_selection
         IFS="$delim" read -r kind key display <<< "$choice"
         case "$kind" in
             module)
                 open_individual_menu "$key" || interactive_failed=1
                 (( individual_action_ran == 1 )) && refresh_snapshot=1
+                ;;
+            all-menu)
+                open_all_modules_menu || interactive_failed=1
+                (( all_menu_action_ran == 1 )) && refresh_snapshot=1
                 ;;
             select-all)
                 for row in "${snapshot[@]}"; do

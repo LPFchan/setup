@@ -184,8 +184,8 @@ fzf-multicolumn() {
     printf '%s\n' "$n" > "$TEST_TMP/fzf-count"
     case "$n" in
         1)
-            grep -q '@@5@@heading' <<< "$input" || fail "initial row lacks span5 heading"
-            ! grep -q '<ALL MODULES>' <<< "$input" || fail "legacy ALL row remains"
+            grep -q '@@5@@all-menu' <<< "$input" || fail "initial row lacks span5 ALL menu cell"
+            [[ "$(_setup_picker_transform all-menu all)" == accept ]] || fail "ALL menu cell is not interactive"
             [[ "$*" == *'enter:transform:_setup_picker_transform'* ]] || fail "checkboxes do not use in-process transform"
             [[ "$*" == *'--id-nth=1,2'* ]] || fail "reload lacks stable row identity"
             [[ "$*" == *'result:transform:_setup_picker_result_transform'* ]] || fail "reload does not restore its deterministic position"

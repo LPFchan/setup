@@ -18,7 +18,9 @@ separate, column-aligned detail cell that opens its individual action menu; the 
 the batch selection count, shows only actions applicable to at least one selected
 module, and redraws checkbox toggles in place without restarting the picker while
 retaining the focused cell. Canceling an individual action menu reuses the current
-status snapshot instead of reprobeing remote state. Existing managed binaries that predate
+status snapshot instead of reprobing remote state. The initial picker opens before
+status probing completes and shows fzf's loading spinner; its column-heading cell
+opens the legacy `<ALL MODULES>` action menu. Existing managed binaries that predate
 `--grid-span-prefix` are upgraded before use. Stock `fzf` and Homebrew are not
 setup UI dependencies on Linux or macOS. When no interactive terminal is
 available, setup prints an actionable warning and falls back to the

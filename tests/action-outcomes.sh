@@ -119,6 +119,58 @@ if output=$(run_module_action uninstall 2>&1); then rc=0; else rc=$?; fi
 [[ "$output" == *'Failed: disable fail before uninstall; target retained'* ]] || fail "pre-disable failure was not visible"
 [[ "$output" == *'Uninstall: attempted=2 succeeded=1 failed=1 skipped=0'* ]] || fail "pre-disable summary mismatch: $output"
 
+# The main picker must start consuming the stream before the initial status
+# snapshot finishes, so fzf can render its loading spinner instead of leaving
+# the user at a seemingly hung shell.
+fetch_manifest() {
+    cat > "$MANIFEST_FILE" <<'EOF'
+# module	target	mode	source
+startup-probe	~/startup-probe	0755	x
+EOF
+}
+file_status_fields() {
+    local i
+    for ((i = 0; i < 100; i++)); do
+        [[ -e "$TMP/picker-started" ]] && break
+        sleep 0.01
+    done
+    [[ -e "$TMP/picker-started" ]] || touch "$TMP/status-started-before-picker"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$HOME/startup-probe" uninstalled 'not installed' - x 0 x
+}
+printf '0\n' > "$TMP/picker-count"
+fake-picker() {
+    touch "$TMP/picker-started"
+    cat >/dev/null
+    local n=$(( $(cat "$TMP/picker-count") + 1 ))
+    printf '%s\n' "$n" > "$TMP/picker-count"
+    return 1
+}
+cmd_reconfigure >/dev/null
+[[ ! -e "$TMP/status-started-before-picker" ]] \
+    || fail "initial status probing started before fzf"
+
+# The five-track column-heading cell opens the legacy ALL MODULES submenu.
+printf '0\n' > "$TMP/picker-count"
+fake-picker() {
+    local input n d=$'\x1f'
+    input=$(cat); n=$(( $(cat "$TMP/picker-count") + 1 )); printf '%s\n' "$n" > "$TMP/picker-count"
+    case "$n" in
+      1)
+          grep -q '@@5@@all-menu' <<< "$input" || fail "main picker omitted ALL menu cell"
+          printf 'all-menu%sall%scolumns\n' "$d" "$d"
+          ;;
+      2)
+          [[ "$input" == *"update all"* && "$input" == *"reinstall all"* \
+             && "$input" == *"uninstall all"* && "$input" == *"refresh list"* ]] \
+              || fail "ALL MODULES submenu omitted legacy actions"
+          printf 'all-action%scancel%scancel\n' "$d" "$d"
+          ;;
+      *) return 1 ;;
+    esac
+}
+cmd_reconfigure >/dev/null
+[[ $(cat "$TMP/picker-count") -eq 3 ]] || fail "ALL MODULES submenu did not return to main picker"
+
 # Canceling an individual submenu returns to the existing snapshot instead of
 # reprobeing module status before reopening the main picker.
 fetch_manifest() {
