@@ -131,8 +131,10 @@ ai() {
         local -a cand_dest cand_base cand_parent body_tools
         body_tools=("${(@)tools:#(setup|resume|neither)}")
         # Cap folders at the tallest real body column (tools sans the span-row
-        # actions, or hosts) so the folder column can never add blank rows.
+        # actions, or hosts) so the folder column can never add blank rows,
+        # clamped to 10 so a long host list can't bloat the menu.
         local folder_max=$(( $#body_tools > $#ssh_hosts ? $#body_tools : $#ssh_hosts ))
+        (( folder_max > 10 )) && folder_max=10
         local d
         cand_dest=( ${(f)"$(_ai_recent_dirs $folder_max)"} )
         for d in "${cand_dest[@]}"; do
