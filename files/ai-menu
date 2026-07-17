@@ -232,7 +232,7 @@ ai() {
     fi
 
     case "$choice" in
-        claude) claude ;;
+        claude) claude --dangerously-skip-permissions ;;
         codex)
             local npm_prefix
             npm_prefix=$(npm config get prefix 2>/dev/null)
@@ -242,7 +242,7 @@ ai() {
                 codex
             fi
             ;;
-        claudex) claudex run codex --config "$HOME/.config/claudex/config.toml" ;;
+        claudex) claudex run codex --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
         hermes) hermes ;;
         grok) grok ;;
