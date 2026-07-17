@@ -93,7 +93,7 @@ setup_nfs() {
 
     mkdir -p /mnt/bingus-backups
     grep -q 'mnt.bingus-backups' /etc/fstab || \
-        echo 'bingus:/volume1/bak /mnt/bingus-backups nfs defaults,noatime,nofail 0 0' >> /etc/fstab
+        echo 'bingus:/volume1/bak /mnt/bingus-backups nfs defaults,noatime,nofail,soft,timeo=10,retrans=3 0 0' >> /etc/fstab
     mountpoint -q /mnt/bingus-backups || mount -t nfs bingus:/volume1/bak /mnt/bingus-backups || true
     mountpoint -q /mnt/bingus-backups || die "cannot mount bingus NFS — check Synology export for this host's IP"
 
@@ -159,10 +159,20 @@ docker images --format '{{.Repository}}:{{.Tag}}' > "$DEST/rebuild/docker-images
 ENGINE
 
         cat <<'SHIP'
-SNAP="/bak-$(date +%Y%m%d)"
+TODAY="$(date +%Y%m%d)"
+SNAP="/bak-${TODAY}"
+LOCAL_SEND="/tmp/grimoire-send-${TODAY}.bin"
+cleanup() {
+    rm -f "$LOCAL_SEND" /var/lock/backup.lock
+    btrfs subvolume delete "$SNAP" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 btrfs subvolume snapshot -r /bak "$SNAP"
-btrfs send "$SNAP" > "$REMOTE/$(date +%Y%m%d)-full.bin"
+btrfs send "$SNAP" > "$LOCAL_SEND"
 btrfs subvolume delete "$SNAP"
+timeout 3600 cp "$LOCAL_SEND" "$REMOTE/${TODAY}-full.bin"
+rm -f "$LOCAL_SEND"
 SHIP
 
         cat <<'PRUNE'
@@ -202,6 +212,7 @@ After=remote-fs.target
 Wants=remote-fs.target
 [Service]
 Type=oneshot
+TimeoutStartSec=3600
 ExecStart=/usr/local/bin/backup-${period}
 UNIT
     done
