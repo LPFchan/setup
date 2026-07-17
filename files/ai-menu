@@ -128,8 +128,11 @@ ai() {
         # Semantic 3-column body: tools, SSH hosts, and recent directories.
         # setup/resume/neither are separate full-width physical rows.
         local host_icon=$'' folder_icon=$''
-        local folder_max=$(( $#tools > $#ssh_hosts ? $#tools : $#ssh_hosts ))
         local -a cand_dest cand_base cand_parent body_tools
+        body_tools=("${(@)tools:#(setup|resume|neither)}")
+        # Cap folders at the tallest real body column (tools sans the span-row
+        # actions, or hosts) so the folder column can never add blank rows.
+        local folder_max=$(( $#body_tools > $#ssh_hosts ? $#body_tools : $#ssh_hosts ))
         local d
         cand_dest=( ${(f)"$(_ai_recent_dirs $folder_max)"} )
         for d in "${cand_dest[@]}"; do
@@ -149,7 +152,6 @@ ai() {
             folders+=("$disp")
             folder_paths[$key]=$cand_dest[ci]
         done
-        body_tools=("${(@)tools:#(setup|resume|neither)}")
         local -i i rows=$#body_tools
         (( $#ssh_hosts > rows )) && rows=$#ssh_hosts
         (( $#folders > rows )) && rows=$#folders
