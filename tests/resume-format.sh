@@ -124,4 +124,39 @@ actual_claudex_args=$(cat "$TEST_TMP/claudex-args")
 [[ "$actual_claudex_args" == "$expected_claudex_args" ]] \
     || { echo "FAIL: resume did not dispatch claudex for a claudex-proxy session: $actual_claudex_args" >&2; exit 1; }
 
+# A claudex-proxy session mapped to the "commandcode" profile (via
+# ~/.config/claudex/sessions.tsv) must resume via `claudex run commandcode`,
+# not `claudex run codex`. The mapping is written by _claudex_launch in
+# ai-menu and read by _claudex_profile_for in resume.
+ccid="aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
+cccwd="$HOME/cc-proj"
+mkdir -p "$cccwd" "$HOME/.claude/projects/-home-cc-proj"
+ccsession="$HOME/.claude/projects/-home-cc-proj/$ccid.jsonl"
+{
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Command code session"}}\n' "$cccwd"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"claudex-proxy","content":[{"type":"text","text":"ok"}]}}\n'
+} > "$ccsession"
+touch -t 202407051200.00 "$ccsession"
+
+# Write the sidecar mapping so resume knows this is a commandcode session
+mkdir -p "$HOME/.config/claudex"
+printf '%s\t%s\n' "$ccid" "commandcode" > "$HOME/.config/claudex/sessions.tsv"
+
+# fzf stub that selects exactly the claudex-cc row (its hidden ref carries "clxcc|")
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+printf '%s\n' "$selection" | grep 'clxcc|' | head -1
+EOF
+chmod +x "$FAKE_BIN/fzf"
+rm -f "$TEST_TMP/tmux-args" "$TEST_TMP/claudex-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/claudex-cc-stderr"
+
+expected_cc_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claudex/config.toml\n--resume\n%s' \
+    "$FAKE_BIN/claudex" "$HOME" "$ccid")
+actual_cc_args=$(cat "$TEST_TMP/claudex-args")
+[[ "$actual_cc_args" == "$expected_cc_args" ]] \
+    || { echo "FAIL: resume did not dispatch claudex with commandcode profile: $actual_cc_args" >&2; exit 1; }
+
 echo "resume format tests passed"

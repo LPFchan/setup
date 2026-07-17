@@ -96,6 +96,18 @@ _cc_cwd() {
     grep -m1 '"cwd":' "$1" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | head -1
 }
 
+# Look up which claudex profile launched a session. The mapping is written by
+# _claudex_launch in ai-menu. Defaults to "codex" for sessions predating the
+# mapping or when the file is absent.
+_claudex_profile_for() {
+    local sid="$1"
+    local mapping="$HOME/.config/claudex/sessions.tsv"
+    [[ -f "$mapping" ]] || { echo "codex"; return; }
+    local profile
+    profile=$(grep "^${sid}	" "$mapping" 2>/dev/null | tail -1 | cut -f2)
+    echo "${profile:-codex}"
+}
+
 collect_sessions() {
     if [[ -d "$CLAUDE_DIR" ]]; then
         find "$CLAUDE_DIR" -maxdepth 2 -type f -name '*.jsonl' "${STAT_EXEC[@]}" 2>/dev/null \
@@ -110,10 +122,18 @@ collect_sessions() {
             # claudex runs the claude binary through the codex proxy, so its
             # sessions land here indistinguishable from native claude ones
             # except that assistant turns record model "claudex-proxy". Tag
-            # those so resume relaunches them on the codex backend, not bare
-            # claude (which would resume on the Anthropic subscription).
+            # those so resume relaunches them on the correct claudex backend,
+            # not bare claude (which would resume on the Anthropic subscription).
+            # The sidecar mapping (~/.config/claudex/sessions.tsv) tells us
+            # whether this was a codex or commandcode session; unmapped sessions
+            # (predating the mapping) default to codex.
             tag=cc
-            grep -m1 -q '"model":"claudex-proxy"' "$f" 2>/dev/null && tag=clx
+            if grep -m1 -q '"model":"claudex-proxy"' "$f" 2>/dev/null; then
+                local clx_profile
+                clx_profile=$(_claudex_profile_for "$id")
+                tag=clx
+                [[ "$clx_profile" == "commandcode" ]] && tag=clxcc
+            fi
             msg=$(_cc_first_msg "$f")
             echo "$mtime|$tag|$id|$cwd|${msg:-}"
         done || true
@@ -194,6 +214,7 @@ format_for_fzf() {
         case "$tool" in
             cc) label="claude  " ;;
             clx) label="claudex " ;;
+            clxcc) label="claudxcc" ;;
             cx) label="codex   " ;;
             oc) label="opencode" ;;
             fg) label="forge   " ;;
@@ -232,6 +253,7 @@ echo "Resuming $tool session $id..."
 case "$tool" in
     cc) harness=claude; resume_args=(--resume "$id") ;;
     clx) harness=claudex; resume_args=(run codex --config "$HOME/.config/claudex/config.toml" --resume "$id") ;;
+    clxcc) harness=claudex; resume_args=(run commandcode --config "$HOME/.config/claudex/config.toml" --resume "$id") ;;
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;
