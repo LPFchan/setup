@@ -69,8 +69,9 @@ run_ai enable
 [[ $(_state_hash) == "$block_hash_before" ]] \
     || fail "ai enable changed the managed payload or block hash"
 
-# Span-aware path: semantic three-column records, three full-width rows, hidden
-# metadata stripped before setup dispatch, and physical-row-based height.
+# Span-aware path: semantic three-column records, three 2-track action rows
+# with folder-overflow cells beside them, hidden metadata stripped before
+# setup dispatch, and physical-row-based height.
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
 #!/bin/sh
@@ -91,8 +92,8 @@ rm -f "$TEST_TMP/launches"
 AI_MENU_TEST_LOG="$TEST_TMP/launches" AI_MENU_GRID_INPUT="$TEST_TMP/grid-input" \
 AI_MENU_GRID_ARGS="$TEST_TMP/grid-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
     "$zsh_bin" -f -c 'source "$1"; ai' zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
-[[ $(grep -c '^@@3@@action' "$TEST_TMP/grid-input") -eq 3 ]] \
-    || fail "setup/resume/neither were not three full-width span3 rows"
+[[ $(grep -c '^@@2@@action' "$TEST_TMP/grid-input") -eq 3 ]] \
+    || fail "setup/resume/neither were not three 2-track span rows"
 grep -q -- '--grid=3' "$TEST_TMP/grid-args" || fail "ai-menu did not request a three-column grid"
 grep -q -- '--grid-span-prefix=@@' "$TEST_TMP/grid-args" || fail "ai-menu omitted span prefix"
 grep -q 'setup-dispatched' "$TEST_TMP/launches" || fail "typed setup metadata was not stripped for dispatch"
