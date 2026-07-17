@@ -93,6 +93,12 @@ _apply_all_profiles
 rtk grep -q '^api_key = "user_rotated456"$' "$HOME/.config/claudex/config.toml" \
     || fail "rotated key was not applied"
 
+# --- auth_type is claudex's hyphenated "api-key" variant ---------------------
+# claudex rejects `api_key` for auth_type (unknown variant) and then refuses
+# to parse the WHOLE config — the profile exists on disk but claudex errors.
+rtk grep -q '^auth_type = "api-key"$' "$HOME/.config/claudex/config.toml" \
+    || fail 'commandcode auth_type must be "api-key" (hyphenated claudex variant)'
+
 # --- missing auth.json: profile still seeds with an empty key ----------------
 rm -f "$HOME/.local/share/opencode/auth.json"
 [[ -z "$(_commandcode_api_key)" ]] \

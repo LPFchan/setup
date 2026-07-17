@@ -121,7 +121,7 @@ default_model = "$COMMANDCODE_DEFAULT_MODEL"
 backup_providers = []
 priority = 90
 enabled = true
-auth_type = "api_key"
+auth_type = "api-key"
 strip_params = "Auto"
 
 [profiles.custom_headers]
