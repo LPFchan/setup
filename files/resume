@@ -212,15 +212,15 @@ format_for_fzf() {
     while IFS='|' read -r ts tool id cwd msg; do
         date_str=$(format_epoch "$ts" 2>/dev/null || echo "??/?? ??:??")
         case "$tool" in
-            cc) label="claude  " ;;
-            clx) label="claudex " ;;
-            clxcc) label="claudxcc" ;;
-            cx) label="codex   " ;;
+            cc) label="claude" ;;
+            clx) label="claudex" ;;
+            clxcc) label="claudex-cc" ;;
+            cx) label="codex" ;;
             oc) label="opencode" ;;
-            fg) label="forge   " ;;
+            fg) label="forge" ;;
         esac
         display_cwd=$(echo "$cwd" | sed "s|^$HOME|~|")
-        printf "%s  %s  %-22s  %s\t%s|%s|%s\n" \
+        printf "%s  %-10s  %-22s  %s\t%s|%s|%s\n" \
             "$date_str" "$label" "${display_cwd:0:22}" "$msg" "$tool" "$id" "$cwd"
     done
 }
@@ -251,9 +251,9 @@ fi
 echo "Resuming $tool session $id..."
 
 case "$tool" in
-    cc) harness=claude; resume_args=(--resume "$id") ;;
-    clx) harness=claudex; resume_args=(run codex --config "$HOME/.config/claudex/config.toml" --resume "$id") ;;
-    clxcc) harness=claudex; resume_args=(run commandcode --config "$HOME/.config/claudex/config.toml" --resume "$id") ;;
+    cc) harness=claude; resume_args=(--dangerously-skip-permissions --resume "$id") ;;
+    clx) harness=claudex; resume_args=(run codex --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions --resume "$id") ;;
+    clxcc) harness=claudex; resume_args=(run commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions --resume "$id") ;;
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;
