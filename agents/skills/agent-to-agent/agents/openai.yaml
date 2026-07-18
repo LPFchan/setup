@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent to Agent"
+  short_description: "Invoke and continue external agent sessions"
+  default_prompt: "Use $agent-to-agent to delegate this task to another agent and continue the same conversation."
