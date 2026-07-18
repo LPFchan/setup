@@ -16,6 +16,7 @@ HELPER="$HOME/.local/bin/tmux-cpu-mem"
 ZSHRC="$HOME/.zshrc"
 
 BLOCK_CONTENT='set -g default-terminal "tmux-256color"
+set -g allow-passthrough on
 # Fixed array indexes keep repeated `source-file` reloads idempotent. The tmux
 # pattern covers nested fleet sessions whose outer terminal is another tmux.
 set -s terminal-features[90] "xterm*:RGB"
