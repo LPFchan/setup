@@ -33,6 +33,16 @@
 # comments whenever it rewrites the file, which would orphan the markers and
 # append a duplicate profile. Presence + index therefore come from an anchored
 # scan of the real `[[profiles]]` tables instead.
+#
+# FORK PIN: while PR StringKe/claudex#6 (proxy 2MB body-limit fix for /compact
+# 413s) is unmerged upstream, FORK_TAG pins the binary to a release built on
+# the LPFchan/claudex fork. While pinned, `claudex update` self-update is
+# SKIPPED — it points at upstream releases, and upstream 0.2.4 sorts above the
+# fork's 0.2.4-fork.1 prerelease, so it would silently replace the fork build.
+# Version drift (installed != FORK_TAG) is a live check in status(), so
+# bumping FORK_TAG here flags every machine outdated and `setup update`
+# reinstalls. Set FORK_TAG="" once upstream merges + releases to revert the
+# module to stock behavior (install.sh + self-update).
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
@@ -40,6 +50,8 @@ MODULE="claudex"
 BIN="$HOME/.local/bin/claudex"
 GLOBAL_CONFIG="$HOME/.config/claudex/config.toml"
 INSTALL_URL="https://raw.githubusercontent.com/StringKe/claudex/main/install.sh"
+FORK_REPO="LPFchan/claudex"
+FORK_TAG="v0.2.4-fork.1"   # "" -> upstream
 
 # Codex subscription model mapping. These drift over time (gpt-5.3-codex ->
 # gpt-5.6-*); bump them here and `setup update` re-applies (the hash below
@@ -62,6 +74,66 @@ COMMANDCODE_MODEL_OPUS="moonshotai/Kimi-K3"
 # auth.json (the store, not the env export) so this works from cron/systemd
 # contexts where .zshenv was never sourced.
 AUTH_JSON="$HOME/.local/share/opencode/auth.json"
+
+# Release-asset target triple, mirroring upstream install.sh's detection
+# (linux gnu/musl x86_64/aarch64, darwin arm64/x86_64 — covers the whole fleet).
+_detect_target() {
+    local os arch libc
+    os=$(uname -s) arch=$(uname -m)
+    case "$os" in
+        Darwin)
+            case "$arch" in
+                arm64|aarch64) echo "aarch64-apple-darwin" ;;
+                *)             echo "x86_64-apple-darwin" ;;
+            esac ;;
+        Linux)
+            libc=gnu
+            case "$(ldd --version 2>&1)" in *musl*) libc=musl ;; esac
+            case "$arch" in
+                arm64|aarch64) echo "aarch64-unknown-linux-$libc" ;;
+                *)             echo "x86_64-unknown-linux-$libc" ;;
+            esac ;;
+    esac
+}
+
+_installed_version() {
+    "$BIN" --version 2>/dev/null | awk '{print $2; exit}'
+}
+
+# Install the pinned fork release tarball. Fails loudly when the asset is
+# missing (e.g. the fork's Actions run has not produced it yet) and leaves any
+# existing binary untouched.
+_install_fork_bin() {
+    local target url tmp
+    target=$(_detect_target)
+    url="https://github.com/$FORK_REPO/releases/download/$FORK_TAG/claudex-$FORK_TAG-$target.tar.gz"
+    tmp=$(mktemp -d)
+    if ! curl -fsSL "$url" -o "$tmp/claudex.tar.gz"; then
+        echo "claudex: fork release asset not available: $url" >&2
+        echo "claudex: check https://github.com/$FORK_REPO/releases and Actions runs" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+    tar xzf "$tmp/claudex.tar.gz" -C "$tmp"
+    mkdir -p "$(dirname "$BIN")"
+    mv "$tmp/claudex" "$BIN"
+    chmod +x "$BIN"
+    rm -rf "$tmp"
+    echo "claudex: installed fork build $("$BIN" --version 2>/dev/null | head -1) from $FORK_REPO $FORK_TAG"
+}
+
+# Ensure the binary matches the pinned source: fork tag when pinned, any
+# installed upstream otherwise. Used by both install() and update().
+_ensure_bin() {
+    if [[ -n "$FORK_TAG" ]]; then
+        [[ "$(_installed_version)" == "${FORK_TAG#v}" ]] && return 0
+        _install_fork_bin
+    elif [[ -x "$BIN" ]]; then
+        "$BIN" update >/dev/null 2>&1 || curl -fsSL "$INSTALL_URL" | bash
+    else
+        curl -fsSL "$INSTALL_URL" | bash
+    fi
+}
 
 _commandcode_api_key() {
     [[ -f "$AUTH_JSON" ]] || return 0
@@ -231,8 +303,8 @@ _auth_login() {
 }
 
 install() {
-    if [[ ! -x "$BIN" ]]; then
-        curl -fsSL "$INSTALL_URL" | bash
+    if [[ -n "$FORK_TAG" || ! -x "$BIN" ]]; then
+        _ensure_bin || return 1
     else
         echo "claudex already installed: $("$BIN" --version 2>/dev/null | head -1)"
     fi
@@ -264,6 +336,14 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
+    # Live version check while pinned to the fork: an upstream binary (manual
+    # reinstall, stray `claudex update`) or a stale fork build reports outdated
+    # regardless of profile state, so `setup update` re-pins it.
+    if [[ -n "$FORK_TAG" && "$(_installed_version)" != "${FORK_TAG#v}" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' \
+            "$MODULE" "outdated" "$(_installed_version)" "${FORK_TAG#v}" "$BIN"
+        return 1
+    fi
     desired=$(_desired_hash)
     if [[ -z "$codex_idx" || -z "$cc_idx" ]]; then
         local missing="codex"
@@ -290,11 +370,7 @@ status() {
 }
 
 update() {
-    if [[ -x "$BIN" ]]; then
-        "$BIN" update >/dev/null 2>&1 || curl -fsSL "$INSTALL_URL" | bash
-    else
-        curl -fsSL "$INSTALL_URL" | bash
-    fi
+    _ensure_bin || return 1
     _ensure_config
     _apply_all_profiles
     _record_state
