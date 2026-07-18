@@ -1795,9 +1795,11 @@ cmd_reconfigure() {
     run_module_action() {
         local action="$1" ask_confirmation="${2:-1}" allow_current_update="${3:-0}"
         local m row t mo s state installed svc active attempted=0 succeeded=0 failed=0 skipped=0 old_force=$FORCE setup_row=""
+        module_action_ran=0
         if (( ask_confirmation == 1 )) && [[ "$action" == uninstall || "$action" == reinstall ]]; then
             confirm_action "$(capitalize "$action") eligible selected modules?" || return 0
         fi
+        module_action_ran=1
         [[ "$action" == reinstall ]] && FORCE=1
         for row in "${snapshot[@]}"; do
             IFS=$'\t' read -r m t mo s state installed svc active _ <<< "$row"
@@ -1976,7 +1978,7 @@ cmd_reconfigure() {
     }
 
     local interactive_failed=0
-    local picker_pos=1 individual_action_ran=0 all_menu_action_ran=0 initial_snapshot=1
+    local picker_pos=1 individual_action_ran=0 all_menu_action_ran=0 module_action_ran=0 initial_snapshot=1
     main_picker() {
         "$picker" --grid=6 --grid-gap=2 --grid-span-prefix=@@ \
             --delimiter="$delim" --with-nth=3 --id-nth=1,2 --layout=reverse --cycle \
@@ -2019,8 +2021,14 @@ cmd_reconfigure() {
             action)
                 [[ $(eligible_count "$key") -gt 0 ]] || { echo "$key: 0 eligible, ${#selected_modules[@]} skipped."; continue; }
                 case "$key" in
-                    enable|disable) run_service_action "$key" || interactive_failed=1 ;;
-                    *) run_module_action "$key" || interactive_failed=1 ;;
+                    enable|disable)
+                        run_service_action "$key" || interactive_failed=1
+                        selected_modules=()
+                        ;;
+                    *)
+                        run_module_action "$key" || interactive_failed=1
+                        (( module_action_ran == 1 )) && selected_modules=()
+                        ;;
                 esac
                 refresh_snapshot=1 ;;
         esac

@@ -212,6 +212,12 @@ fzf-multicolumn() {
             grep -q '@@5@@module' <<< "$input" || fail "module detail lacks span5"
             grep "^action${delim}update${delim}" <<< "$input" | head -1
             ;;
+        2)
+            [[ "$*" == *'0/2 · '* ]] || fail "completed batch action did not reset the selection header"
+            ! grep -q 'checkbox.*\[\*\]' <<< "$input" || fail "completed batch action left module checkboxes selected"
+            ! grep -q '^action' <<< "$input" || fail "completed batch action left contextual actions visible"
+            return 1
+            ;;
         *) return 1 ;;
     esac
 }
