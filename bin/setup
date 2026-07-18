@@ -1543,7 +1543,7 @@ _setup_picker_transform() {
             _setup_picker_toggle "$kind" "$key" || return
             pos=$(_setup_picker_position "$kind" "$key")
             printf '%d\n' "$pos" > "$SETUP_PICKER_POSITION_FILE"
-            echo 'reload-sync(_setup_picker_render)'
+            echo 'reload-sync("$SETUP_PICKER_CALLBACK_SCRIPT" _setup_picker_render)'
             ;;
         module|action|all-menu) echo accept ;;
     esac
@@ -1633,11 +1633,12 @@ cmd_reconfigure() {
     SETUP_PICKER_POSITION_FILE="$picker_state_dir/position"
     SETUP_PICKER_DETAIL_HEADER_FILE="$picker_state_dir/detail-header"
     picker_callbacks="$picker_state_dir/callbacks.zsh"
+    SETUP_PICKER_CALLBACK_SCRIPT="$picker_callbacks"
     SETUP_PICKER_DELIM="$delim"
     SETUP_PICKER_ENV_SUMMARY="$env_summary"
     SETUP_PICKER_DETAIL_HEADER=""
     export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_DETAIL_HEADER_FILE SETUP_PICKER_DELIM \
-        SETUP_PICKER_ENV_SUMMARY SETUP_PICKER_DETAIL_HEADER
+        SETUP_PICKER_ENV_SUMMARY SETUP_PICKER_DETAIL_HEADER SETUP_PICKER_CALLBACK_SCRIPT
     {
         printf '%s\n' '#!/usr/bin/env zsh' 'emulate -R zsh' 'setopt KSH_ARRAYS SH_WORD_SPLIT NO_UNSET PIPE_FAIL'
         functions _setup_picker_selection_has _setup_state_needs_update _setup_picker_header \

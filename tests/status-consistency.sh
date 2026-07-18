@@ -191,10 +191,20 @@ fzf-multicolumn() {
             [[ "$*" == *'--id-nth=1,2'* ]] || fail "reload lacks stable row identity"
             [[ "$*" == *'result:transform:'*'_setup_picker_result_transform'* ]] || fail "reload does not restore its deterministic position"
             [[ "$*" == *'result:+transform-header:'*'_setup_picker_header'* ]] || fail "reload does not refresh the selection header"
+            transform=$(_setup_picker_transform select-all all)
+            [[ "$transform" == 'reload-sync("$SETUP_PICKER_CALLBACK_SCRIPT" _setup_picker_render)' ]] || fail "select-all transform does not reload through the callback script: $transform"
+            reload_command=${transform#reload-sync\(}
+            reload_command=${reload_command%\)}
+            input=$(zsh -f -c "$reload_command")
+            [[ $(grep -c "checkbox.*\\[\*\\]" <<< "$input") -eq 2 ]] || fail "select-all reload did not render both modules selected"
+            grep -q "select-all${delim}all${delim}\\[\*\\]${delim}" <<< "$input" || fail "select-all reload did not render its selected marker"
+            _setup_picker_transform select-all all >/dev/null
             transform=$(_setup_picker_transform checkbox outdated-update)
-            [[ "$transform" == 'reload-sync(_setup_picker_render)' ]] || fail "checkbox transform does not reload in place: $transform"
+            [[ "$transform" == 'reload-sync("$SETUP_PICKER_CALLBACK_SCRIPT" _setup_picker_render)' ]] || fail "checkbox transform does not reload through the callback script: $transform"
             [[ "$(_setup_picker_result_transform)" == 'pos(7)' ]] || fail "checkbox reload does not restore its deterministic position"
-            input=$(_setup_picker_render)
+            reload_command=${transform#reload-sync\(}
+            reload_command=${reload_command%\)}
+            input=$(zsh -f -c "$reload_command")
             [[ $(grep -c 'action' <<< "$input") -eq 3 ]] || fail "selected top row did not contain only its three applicable actions"
             ! grep -Eq 'action.* 0([^0-9]|$)' <<< "$input" || fail "selected top row surfaced a zero-count action"
             grep -q "select-all${delim}all${delim}\[ \]${delim}" <<< "$input" || fail "partial select-all marker was not unchecked"
