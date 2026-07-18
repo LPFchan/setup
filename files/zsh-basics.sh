@@ -11,6 +11,7 @@ BLOCK_CONTENT='[[ -o interactive && -t 0 ]] || return
 [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
 
 alias /exit='"'"'exit'"'"'
+alias ll='"'"'ls -alFh'"'"'
 
 setopt NO_NOMATCH
 # NFD Hangul (macOS drag-and-drop paths, APFS filenames) renders as <11xx>

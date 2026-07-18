@@ -57,7 +57,7 @@ window title before resuming the session.
 | `zsh-autocomplete` | `~/.zsh/zsh-autocomplete/` + `~/.zsh/zsh-defer/` | plugin source + history + autocomplete settings | `files/zsh-autocomplete.sh` |
 | `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
 | `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
-| `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit`, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
+| `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit` and `ll` aliases, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (three-column span-aware picker; setup/resume/neither are full-width rows; repairs and reprobes the managed picker, with stock `fzf` fallback only here) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
@@ -154,7 +154,7 @@ fixed **canonical order** (top → bottom):
 ```
 # >>> setup:tmux-autostart >>>  — replace every interactive TTY shell outside tmux with `tmux new-session -A -s main`
 # >>> setup:tmux-title >>>      — name windows from launched commands and SSH destinations
-# >>> setup:zsh-basics >>>      — interactive/tty/terminal guards + /exit alias + baseline zsh behavior
+# >>> setup:zsh-basics >>>      — interactive/tty/terminal guards + /exit and ll aliases + baseline zsh behavior
 # >>> setup:starship >>>        — cached starship init
 # >>> setup:zsh-autocomplete >>> — plugin source + history settings + autocomplete config (loads zsh-defer)
 # >>> setup:zsh-syntax-highlighting >>> — deferred syntax highlighting (needs zsh-defer → after zsh-autocomplete)

@@ -43,6 +43,8 @@ install >/dev/null
     || fail "system color values were not exported"
 has_managed_block "$HOME/.zshenv" system-color \
     || fail "zsh-basics did not install the .zshenv system-color block"
+grep -Fq "alias ll='ls -alFh'" "$HOME/.zshrc" \
+    || fail "zsh-basics did not install the ll alias"
 
 # Full saturation/value means every generated RGB triplet has at least one
 # channel at 00 and at least one at FF.
