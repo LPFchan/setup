@@ -36,13 +36,18 @@
 #
 # FORK PIN: while PR StringKe/claudex#6 (proxy 2MB body-limit fix for /compact
 # 413s) is unmerged upstream, FORK_TAG pins the binary to a release built on
-# the LPFchan/claudex fork. While pinned, `claudex update` self-update is
-# SKIPPED — it points at upstream releases, and upstream 0.2.4 sorts above the
-# fork's 0.2.4-fork.1 prerelease, so it would silently replace the fork build.
-# Version drift (installed != FORK_TAG) is a live check in status(), so
-# bumping FORK_TAG here flags every machine outdated and `setup update`
-# reinstalls. Set FORK_TAG="" once upstream merges + releases to revert the
-# module to stock behavior (install.sh + self-update).
+# the LPFchan/claudex fork. Fork builds (>= 0.2.4-fork.2) have their
+# self-update repointed at the fork's releases, so a manual `claudex update`
+# is safe — it can only move between fork releases, never back to upstream.
+# The module still installs the exact FORK_TAG tarball itself rather than
+# calling self-update: the pin stays deterministic, and it also covers the
+# bootstrap case where the installed binary is an upstream build (whose
+# self-update still points at upstream and would ignore the fork's prerelease
+# versions, which sort below upstream 0.2.4). Version drift (installed !=
+# FORK_TAG) is a live check in status(), so bumping FORK_TAG here flags every
+# machine outdated and `setup update` reinstalls. Set FORK_TAG="" once
+# upstream merges + releases to revert the module to stock behavior
+# (install.sh + self-update).
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
@@ -51,7 +56,7 @@ BIN="$HOME/.local/bin/claudex"
 GLOBAL_CONFIG="$HOME/.config/claudex/config.toml"
 INSTALL_URL="https://raw.githubusercontent.com/StringKe/claudex/main/install.sh"
 FORK_REPO="LPFchan/claudex"
-FORK_TAG="v0.2.4-fork.1"   # "" -> upstream
+FORK_TAG="v0.2.4-fork.2"   # "" -> upstream
 
 # Codex subscription model mapping. These drift over time (gpt-5.3-codex ->
 # gpt-5.6-*); bump them here and `setup update` re-applies (the hash below
