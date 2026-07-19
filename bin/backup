@@ -43,13 +43,15 @@ write_if_missing() {
 }
 
 write_default_policy() {
-    local host="$1" user="$2" home="$3"
+    local host="$1" user="$2" home="$3" default_repository legacy_repository tmp
+    default_repository="sftp:${user}@bingus.lost.plus:/bak/${host}-restic"
+    legacy_repository="sftp:${user}@bingus.lost.plus:/volume1/bak/${host}-restic"
     mkdir -p "$CONF_DIR" "$STATE_DIR/provenance"
     chmod 755 "$CONF_DIR"
     chmod 700 "$STATE_DIR"
 
     write_if_missing "$CONF_DIR/config" 644 \
-        "RESTIC_REPOSITORY=sftp:${user}@bingus.lost.plus:/volume1/bak/${host}-restic" \
+        "RESTIC_REPOSITORY=${default_repository}" \
         "BACKUP_USER=${user}" \
         "SFTP_IDENTITY=${home}/.ssh/id_ed25519" \
         "SFTP_KNOWN_HOSTS=${home}/.ssh/known_hosts" \
@@ -59,6 +61,14 @@ write_default_policy() {
         "KEEP_WEEKLY=5" \
         "KEEP_MONTHLY=12" \
         "KEEP_YEARLY=3"
+    if grep -Fqx "RESTIC_REPOSITORY=${legacy_repository}" "$CONF_DIR/config"; then
+        tmp=$(mktemp)
+        awk -v old="RESTIC_REPOSITORY=${legacy_repository}" \
+            -v new="RESTIC_REPOSITORY=${default_repository}" \
+            '{ if ($0 == old) $0 = new; print }' "$CONF_DIR/config" > "$tmp"
+        install -m 0644 "$tmp" "$CONF_DIR/config"
+        rm -f "$tmp"
+    fi
 
     write_if_missing "$CONF_DIR/sources" 644 \
         "# Paths backed up automatically, subject to excludes and MAX_FILE_SIZE." \

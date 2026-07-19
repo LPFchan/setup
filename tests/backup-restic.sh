@@ -26,6 +26,8 @@ mkdir -p "$TEST_TMP/home/.ssh" "$TEST_TMP/data" "$TEST_TMP/bin"
 : > "$TEST_TMP/home/.ssh/known_hosts"
 
 write_default_policy grimoire yeowool "$TEST_TMP/home"
+grep -qx 'RESTIC_REPOSITORY=sftp:yeowool@bingus.lost.plus:/bak/grimoire-restic' \
+    "$BACKUP_CONF_DIR/config" || fail "default repository does not use DSM's SFTP share path"
 grep -qx 'MAX_FILE_SIZE=20M' "$BACKUP_CONF_DIR/config" || fail "default threshold is not 20M"
 grep -qx 'BACKUP_USER=yeowool' "$BACKUP_CONF_DIR/config" || fail "backup operator is not configured"
 grep -Fqx '**/node_modules/**' "$BACKUP_CONF_DIR/excludes" || fail "node_modules is not excluded"
@@ -33,8 +35,13 @@ grep -q 'override both' "$BACKUP_CONF_DIR/large-whitelist" || fail "whitelist se
 grep -Fqx "$TEST_TMP/home/Eastself" "$BACKUP_CONF_DIR/large-whitelist" \
     || fail "Eastself is not whitelisted"
 
+sed -i 's|:/bak/grimoire-restic$|:/volume1/bak/grimoire-restic|' "$BACKUP_CONF_DIR/config"
+write_default_policy grimoire yeowool "$TEST_TMP/home"
+grep -qx 'RESTIC_REPOSITORY=sftp:yeowool@bingus.lost.plus:/bak/grimoire-restic' \
+    "$BACKUP_CONF_DIR/config" || fail "legacy repository path was not migrated"
+
 cat > "$BACKUP_CONF_DIR/config" <<EOF
-RESTIC_REPOSITORY=sftp:yeowool@bingus.lost.plus:/volume1/bak/grimoire-restic
+RESTIC_REPOSITORY=sftp:yeowool@bingus.lost.plus:/bak/grimoire-restic
 BACKUP_USER=$(id -un)
 SFTP_IDENTITY=$TEST_TMP/home/.ssh/id_ed25519
 SFTP_KNOWN_HOSTS=$TEST_TMP/home/.ssh/known_hosts
