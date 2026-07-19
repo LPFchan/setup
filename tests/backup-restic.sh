@@ -150,6 +150,11 @@ run_backup
 [[ $(wc -l < "$TEST_LOG") -eq 2 ]] || fail "expected separate automatic and whitelist snapshots"
 grep -q -- '--exclude-larger-than 20M' "$TEST_LOG" || fail "automatic backup lacks size threshold"
 grep -q -- '--insecure-no-password' "$TEST_LOG" || fail "empty-password mode is not enabled"
+grep -q -- 'sftp.args=-i .*IdentitiesOnly=yes' "$TEST_LOG" \
+    || fail "SFTP SSH options do not preserve Restic's default SSH command"
+if grep -q -- 'sftp.command=' "$TEST_LOG"; then
+    fail "SFTP options replace Restic's default SSH command"
+fi
 grep -q -- '--exclude-file' "$TEST_LOG" || fail "automatic backup lacks blacklist"
 grep -q -- '--one-file-system' "$TEST_LOG" || fail "backup can cross source filesystems"
 grep -q -- '--tag large-whitelist' "$TEST_LOG" || fail "large whitelist was not backed up"

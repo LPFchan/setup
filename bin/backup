@@ -109,14 +109,14 @@ load_config() {
 }
 
 restic_cmd() {
-    local sftp_command identity_q known_hosts_q
+    local sftp_args identity_q known_hosts_q
     printf -v identity_q '%q' "$SFTP_IDENTITY"
     printf -v known_hosts_q '%q' "$SFTP_KNOWN_HOSTS"
-    sftp_command="ssh -i ${identity_q} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${known_hosts_q} -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+    sftp_args="-i ${identity_q} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${known_hosts_q} -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
     (
         unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND
         export RESTIC_REPOSITORY
-        restic --insecure-no-password -o "sftp.command=${sftp_command}" \
+        restic --insecure-no-password -o "sftp.args=${sftp_args}" \
             --limit-upload "$UPLOAD_LIMIT_KIB" "$@"
     )
 }
