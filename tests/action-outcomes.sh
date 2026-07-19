@@ -70,6 +70,32 @@ assert_summary update 'Update: attempted=2 succeeded=1 failed=1 skipped=0'
 install_one() { [[ "$1" == ok ]]; }
 assert_summary reinstall 'Reinstall: attempted=2 succeeded=1 failed=1 skipped=0'
 
+# Menu-driven executable updates preserve active service state only when the
+# installed payload actually changes.
+(
+    for module in active-update inactive-update unchanged-update; do
+        printf 'old\n' > "$HOME/.local/bin/$module"
+    done
+    snapshot=(
+      "active-update"$'\t''~/.local/bin/active-update'$'\t''0755'$'\t''x'$'\t''outdated'$'\t''1'$'\t''1'$'\t''1'$'\t''x'
+      "inactive-update"$'\t''~/.local/bin/inactive-update'$'\t''0755'$'\t''x'$'\t''outdated'$'\t''1'$'\t''1'$'\t''0'$'\t''x'
+      "unchanged-update"$'\t''~/.local/bin/unchanged-update'$'\t''0755'$'\t''x'$'\t''outdated'$'\t''1'$'\t''1'$'\t''1'$'\t''x'
+    )
+    selected_modules=(active-update inactive-update unchanged-update)
+    install_one() {
+        local module="$1" target
+        target=$(expand_path "$2")
+        [[ "$module" == unchanged-update ]] || printf 'new\n' > "$target"
+    }
+    module_service_transition() { printf '%s\t%s\n' "$1" "$2" >> "$TMP/update-transitions"; }
+    run_module_action update >/dev/null || fail "menu-driven service update failed"
+    grep -qx $'enable\tactive-update' "$TMP/update-transitions" \
+        || fail "menu-driven update did not restore active service state"
+    if grep -qE 'inactive-update|unchanged-update' "$TMP/update-transitions"; then
+        fail "menu-driven update enabled an inactive or unchanged service"
+    fi
+)
+
 # A nominally successful uninstall that retains a locally modified file counts
 # as failed, while another selected module still proceeds.
 touch "$HOME/fail" "$HOME/ok"

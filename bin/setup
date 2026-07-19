@@ -1833,7 +1833,11 @@ cmd_reconfigure() {
             attempted=$((attempted + 1))
             # setup is always last because install_one may exec the new CLI.
             if [[ "$m" == setup ]]; then setup_row="$row"; continue; fi
-            local ok=0 target_path
+            local ok=0 target_path disk_hash_before="" disk_hash_after=""
+            target_path=$(expand_path "$t")
+            if [[ "$action" == update && "$svc" == 1 && "$active" == 1 && "$mo" != script ]]; then
+                disk_hash_before=$(sha256 "$target_path" 2>/dev/null || true)
+            fi
             case "$action" in
                 install|reinstall) install_one "$m" "$t" "$mo" "$s" && ok=1 ;;
                 update)
@@ -1851,10 +1855,16 @@ cmd_reconfigure() {
                     fi
                     if (( disable_ok == 1 )) && uninstall_one "$m" "$t" "$mo" "$s"; then
                         if [[ "$mo" == script ]]; then is_script_installed "$m" || ok=1
-                        else target_path=$(expand_path "$t"); [[ ! -e "$target_path" ]] && ok=1
+                        else [[ ! -e "$target_path" ]] && ok=1
                         fi
                     fi ;;
             esac
+            if (( ok )) && [[ "$action" == update && "$svc" == 1 && "$active" == 1 && "$mo" != script ]]; then
+                disk_hash_after=$(sha256 "$target_path" 2>/dev/null || true)
+                if [[ "$disk_hash_before" != "$disk_hash_after" ]] && ! module_service_transition enable "$m"; then
+                    ok=0
+                fi
+            fi
             if (( ok )); then succeeded=$((succeeded + 1))
             else failed=$((failed + 1)); echo "Failed: $action $m" >&2
             fi
