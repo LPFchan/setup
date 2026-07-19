@@ -118,7 +118,7 @@ actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
 [[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
     || { echo "FAIL: resume did not set the claudex tmux title: $actual_tmux_args" >&2; exit 1; }
 
-expected_claudex_args=$(printf '%s\nrun\ncodex\n--config\n%s/.config/claudex/config.toml\n--resume\n%s' \
+expected_claudex_args=$(printf '%s\nrun\ncodex\n--config\n%s/.config/claudex/config.toml\n--dangerously-skip-permissions\n--resume\n%s' \
     "$FAKE_BIN/claudex" "$HOME" "$cxid")
 actual_claudex_args=$(cat "$TEST_TMP/claudex-args")
 [[ "$actual_claudex_args" == "$expected_claudex_args" ]] \
@@ -153,7 +153,7 @@ rm -f "$TEST_TMP/tmux-args" "$TEST_TMP/claudex-args"
 
 TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/claudex-cc-stderr"
 
-expected_cc_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claudex/config.toml\n--resume\n%s' \
+expected_cc_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claudex/config.toml\n--dangerously-skip-permissions\n--resume\n%s' \
     "$FAKE_BIN/claudex" "$HOME" "$ccid")
 actual_cc_args=$(cat "$TEST_TMP/claudex-args")
 [[ "$actual_cc_args" == "$expected_cc_args" ]] \
