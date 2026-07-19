@@ -1022,7 +1022,7 @@ cmd_update() {
             done
             [[ "$found" -eq 0 ]] && continue
         fi
-        local target_path local_hash
+        local target_path local_hash disk_hash_before disk_hash_after was_active
         target_path=$(expand_path "$target")
         if [[ "$mode" == "script" ]]; then
             local script_target script_state script_status script_local script_remote script_installed script_extra
@@ -1064,10 +1064,26 @@ cmd_update() {
                 new_count=$((new_count + 1))
                 new_names+=("$module")
             else
+                disk_hash_before=$(sha256 "$target_path" 2>/dev/null || true)
+                was_active=0
+                if is_service_module "$module" \
+                    && [[ "$(module_service_unit "$module" 2>/dev/null || true)" != tool ]] \
+                    && module_is_active "$module"; then
+                    was_active=1
+                fi
                 if ! install_one "$module" "$target" "$mode" "$source"; then
                     echo "Warning: $module update failed." >&2
                     failure_count=$((failure_count + 1))
                     failure_names+=("$module")
+                else
+                    disk_hash_after=$(sha256 "$target_path" 2>/dev/null || true)
+                    if ((was_active == 1)) && [[ "$disk_hash_before" != "$disk_hash_after" ]]; then
+                        if ! module_service_transition enable "$module"; then
+                            echo "Warning: $module updated but could not restore its active service state." >&2
+                            failure_count=$((failure_count + 1))
+                            failure_names+=("$module")
+                        fi
+                    fi
                 fi
             fi
         fi

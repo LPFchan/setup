@@ -132,6 +132,11 @@ setup schedule status     # show whether the timer is configured and active
 setup                     # interactive fzf reconfigure
 ```
 
+When an executable update changes an active service module, `setup update`
+re-runs that module's enable transition. Inactive services remain inactive.
+Machines running an older updater must run `setup update setup` once before
+using this behavior.
+
 The `backup` module uses incremental Restic snapshots over SFTP to `bingus`.
 The repository uses Restic's empty-password mode. By default it backs up files
 up to 20 MiB, excludes known disposable dependency/cache trees, and records
