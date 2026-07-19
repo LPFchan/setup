@@ -564,6 +564,42 @@ stop_backup_units() {
         backup-daily.service backup-weekly.service 2>/dev/null || true
 }
 
+install_restic_standalone() (
+    set -e
+    local version=0.19.1 arch checksum asset archive binary install_path
+    [[ "$(uname -s)" == Linux ]] || die "automatic Restic installation only supports Linux"
+    case "$(uname -m)" in
+        x86_64|amd64)
+            arch=amd64
+            checksum=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+            ;;
+        aarch64|arm64)
+            arch=arm64
+            checksum=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+            ;;
+        *) die "unsupported architecture for Restic: $(uname -m)" ;;
+    esac
+
+    command -v apt-get >/dev/null 2>&1 || die "install Restic 0.17 or newer, then retry"
+    local packages=()
+    command -v curl >/dev/null 2>&1 || packages+=(ca-certificates curl)
+    command -v bzip2 >/dev/null 2>&1 || packages+=(bzip2)
+    ((${#packages[@]} == 0)) || apt-get install -y "${packages[@]}"
+
+    asset="restic_${version}_linux_${arch}.bz2"
+    archive=$(mktemp)
+    binary=$(mktemp)
+    trap 'rm -f -- "$archive" "$binary"' EXIT
+    curl --fail --location --retry 3 \
+        --output "$archive" "https://github.com/restic/restic/releases/download/v${version}/${asset}"
+    printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --status - \
+        || die "Restic release checksum verification failed"
+    bzip2 --decompress --stdout "$archive" > "$binary"
+    install_path=${RESTIC_INSTALL_PATH:-/usr/local/bin/restic}
+    mkdir -p "$(dirname "$install_path")"
+    install -m 0755 "$binary" "$install_path"
+)
+
 install_restic() {
     if ! command -v restic >/dev/null 2>&1; then
         command -v apt-get >/dev/null 2>&1 || die "install Restic 0.17 or newer, then retry"
@@ -573,9 +609,8 @@ install_restic() {
         return 0
     fi
 
-    info "updating Restic for empty-password repository support..."
-    mkdir -p /usr/local/bin
-    restic self-update --output /usr/local/bin/restic
+    info "installing current Restic for empty-password repository support..."
+    install_restic_standalone
     hash -r
     restic --help 2>/dev/null | grep -q -- '--insecure-no-password' || \
         die "Restic 0.17 or newer is required"

@@ -54,6 +54,58 @@ awk '{print "bingus.lost.plus " $1 " " $2}' "$TEST_TMP/host-key.pub" \
     > "$TEST_TMP/home/.ssh/known_hosts"
 verify_bingus_host_key
 
+# Ubuntu's Restic package omits self-update and predates empty-password mode.
+# Enabling must replace it with a checksum-verified official binary.
+(
+    export TEST_TMP
+    mkdir -p "$TEST_TMP/restic-install" "$TEST_TMP/restic-old-bin"
+    cat > "$TEST_TMP/restic-old-bin/restic" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --help ]]; then
+    echo 'old restic help'
+elif [[ "${1:-}" == self-update ]]; then
+    touch "$TEST_TMP/self-update-called"
+    exit 1
+fi
+EOF
+    cat > "$TEST_TMP/restic-old-bin/curl" <<'EOF'
+#!/usr/bin/env bash
+while (($#)); do
+    case "$1" in
+        --output) output="$2"; shift 2 ;;
+        http*) printf '%s\n' "$1" > "$TEST_TMP/restic-download-url"; shift ;;
+        *) shift ;;
+    esac
+done
+cat > "$output" <<'BINARY'
+#!/usr/bin/env bash
+[[ "${1:-}" == --help ]] && echo --insecure-no-password
+BINARY
+EOF
+    cat > "$TEST_TMP/restic-old-bin/bzip2" <<'EOF'
+#!/usr/bin/env bash
+cat "${@: -1}"
+EOF
+    cat > "$TEST_TMP/restic-old-bin/sha256sum" <<'EOF'
+#!/usr/bin/env bash
+cat > "$TEST_TMP/restic-checksum-input"
+EOF
+    chmod +x "$TEST_TMP/restic-old-bin/"*
+    export RESTIC_INSTALL_PATH="$TEST_TMP/restic-install/restic"
+    PATH="$TEST_TMP/restic-install:$TEST_TMP/restic-old-bin:/usr/bin:/bin"
+    export PATH
+    install_restic
+    [[ -x "$RESTIC_INSTALL_PATH" ]] || fail "official Restic binary was not installed"
+    "$RESTIC_INSTALL_PATH" --help | grep -q -- '--insecure-no-password' \
+        || fail "installed Restic lacks empty-password support"
+    grep -Eq '/v0\.19\.1/restic_0\.19\.1_linux_(amd64|arm64)\.bz2$' \
+        "$TEST_TMP/restic-download-url" || fail "unexpected Restic release asset"
+    grep -Eq '^[0-9a-f]{64}  ' "$TEST_TMP/restic-checksum-input" \
+        || fail "Restic release checksum was not verified"
+    [[ ! -e "$TEST_TMP/self-update-called" ]] \
+        || fail "unsupported distro self-update path was used"
+)
+
 printf '%s\n' "$TEST_TMP/data" > "$BACKUP_CONF_DIR/sources"
 printf '%s\n' '**/node_modules/**' > "$BACKUP_CONF_DIR/excludes"
 truncate -s 21M "$TEST_TMP/data/large-model.bin"

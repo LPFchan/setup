@@ -146,6 +146,8 @@ dependency trees and toolchains, Rust projects and toolchains, and Hugging Face
 repository revisions; each environment is graded `exact`, `partial`, or
 `unknown`. Its policy lives in
 `/etc/backup/{config,sources,excludes,large-whitelist}`.
+If the distro package lacks empty-password support, enable installs a pinned
+official Restic binary after verifying its published SHA-256 checksum.
 
 Before enabling the schedule, compare Bingus's SSH fingerprint against DSM and
 add the confirmed key to `~/.ssh/known_hosts`; setup refuses unconfirmed host
