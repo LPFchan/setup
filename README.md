@@ -132,6 +132,20 @@ setup schedule status     # show whether the timer is configured and active
 setup                     # interactive fzf reconfigure
 ```
 
+The `backup` module uses incremental Restic snapshots over SFTP to `bingus`.
+The repository uses Restic's empty-password mode. By default it backs up files
+up to 20 MiB, excludes known disposable dependency/cache trees, and records
+metadata for larger files. `~/Eastself` is included in full as a large-path
+exception. Reconstruction manifests capture Python environments, JavaScript
+dependency trees and toolchains, Rust projects and toolchains, and Hugging Face
+repository revisions; each environment is graded `exact`, `partial`, or
+`unknown`. Its policy lives in
+`/etc/backup/{config,sources,excludes,large-whitelist}`.
+
+Before enabling the schedule, compare Bingus's SSH fingerprint against DSM and
+add the confirmed key to `~/.ssh/known_hosts`; setup refuses unconfirmed host
+keys. Backups run daily around 09:00 without catch-up runs after downtime.
+
 ## Global system color
 
 The `zsh-basics` module owns a `system-color` block in `~/.zshenv` that exports

@@ -2,371 +2,724 @@
 # setup-module: backup
 # setup-source: bin/backup
 #
-# backup — unified backup to bingus NAS via NFS
-#
-# btrfs send over NFS mount to bingus. Zero local retention —
-# the only copy lives on bingus.
-#
-# Commands:
-#   enable              Install backup infrastructure
-#   disable             Remove backup scripts, timers, NFS config
-#   status              Show backup config, last/next run
-#   trigger [daily|weekly]  Run backup now
-#   restore [date]      Interactively pick or restore specific date
-#   help                Show this message
+# Incremental backups to bingus over SFTP using Restic.
 
 set -euo pipefail
 
 NAME="backup"
-CONF_DIR="/etc/${NAME}"
-
-# --- helpers ----------------------------------------------------------
+CONF_DIR="${BACKUP_CONF_DIR:-/etc/backup}"
+STATE_DIR="${BACKUP_STATE_DIR:-/var/lib/backup}"
+SYSTEMD_DIR="${BACKUP_SYSTEMD_DIR:-/etc/systemd/system}"
+LOCK_FILE="${BACKUP_LOCK_FILE:-/run/lock/backup.lock}"
+RECOVERY_DIR="${BACKUP_RECOVERY_DIR:-/var/tmp/backup-recovery}"
 
 die() { echo "error: $*" >&2; exit 1; }
 warn() { echo "warn: $*" >&2; }
 info() { echo "$*"; }
 
 require_root() {
-    [[ $EUID -eq 0 ]] || die "this command requires root — try sudo ${NAME} $*"
+    [[ $EUID -eq 0 || "${BACKUP_TEST_MODE:-0}" == 1 ]] || \
+        die "this command requires root — try sudo ${NAME} $*"
 }
 
-detect_fs() { stat -f -c '%T' "${1:-/}" 2>/dev/null || echo "unknown"; }
 detect_host() { hostname -s; }
 
-# --- paths config -----------------------------------------------------
+operator_identity() {
+    local user home
+    user="${SUDO_USER:-}"
+    [[ -n "$user" && "$user" != root ]] || user=$(getent passwd 1000 | cut -d: -f1)
+    [[ -n "$user" ]] || die "cannot determine the primary user"
+    home=$(getent passwd "$user" | cut -d: -f6)
+    [[ -n "$home" ]] || die "cannot determine home directory for ${user}"
+    printf '%s\t%s\n' "$user" "$home"
+}
 
-write_paths_file() {
-    local host="$1" file="${CONF_DIR}/paths.d/${1}"
-    mkdir -p "${CONF_DIR}/paths.d"
-    cat > "${file}" <<'PATHS'
-# Each line is an rsync source path (with -aR preserving full path).
-# Lines starting with # are ignored.
-# Lines starting with - are rsync --exclude patterns.
-# Strategy: blanket home + blacklist excludes (catches future projects automatically).
-/home/yeowool/
-- .cache/
-- .rustup/
-- .cargo/
-- .npm/
-- .local/
-- .snap/
-- .gnupg/
-- .docker/
-- .copilot/
-- .landscape/
-- .vscode-server/
-- .terminfo/
-- node_modules/
-- .venv/
-- __pycache__/
-- *.log
-- .git/
-/etc/fstab
-/etc/systemd/system/
-/etc/sysctl.d/
-/etc/default/earlyoom
-/etc/cloudflared/
-/etc/fail2ban/jail.d/
-/etc/ssh/ssh_host_*
-/etc/ssh/sshd_config.d/
-/usr/local/bin/
-/usr/local/sbin/
-PATHS
+write_if_missing() {
+    local path="$1" mode="$2"
+    shift 2
+    [[ -e "$path" ]] && return 0
+    install -m "$mode" /dev/null "$path"
+    printf '%s\n' "$@" > "$path"
+}
 
-    local home_dir sudo_user
-    sudo_user="${SUDO_USER:-}"
-    if [[ -n "$sudo_user" ]]; then
-        home_dir=$(getent passwd "$sudo_user" | cut -d: -f6)
+write_default_policy() {
+    local host="$1" user="$2" home="$3"
+    mkdir -p "$CONF_DIR" "$STATE_DIR/provenance"
+    chmod 755 "$CONF_DIR"
+    chmod 700 "$STATE_DIR"
+
+    write_if_missing "$CONF_DIR/config" 644 \
+        "RESTIC_REPOSITORY=sftp:${user}@bingus.lost.plus:/volume1/bak/${host}-restic" \
+        "BACKUP_USER=${user}" \
+        "SFTP_IDENTITY=${home}/.ssh/id_ed25519" \
+        "SFTP_KNOWN_HOSTS=${home}/.ssh/known_hosts" \
+        "MAX_FILE_SIZE=20M" \
+        "UPLOAD_LIMIT_KIB=30720" \
+        "KEEP_DAILY=7" \
+        "KEEP_WEEKLY=5" \
+        "KEEP_MONTHLY=12" \
+        "KEEP_YEARLY=3"
+
+    write_if_missing "$CONF_DIR/sources" 644 \
+        "# Paths backed up automatically, subject to excludes and MAX_FILE_SIZE." \
+        "$home" \
+        "/etc" \
+        "/usr/local/bin" \
+        "/usr/local/sbin" \
+        "$STATE_DIR/provenance"
+
+    write_if_missing "$CONF_DIR/excludes" 644 \
+        "# Restic exclude patterns for reproducible or disposable data." \
+        "**/.cache/**" \
+        "**/node_modules/**" \
+        "**/.venv/**" \
+        "**/__pycache__/**" \
+        "**/.npm/_cacache/**" \
+        "**/.cargo/registry/**" \
+        "**/.cargo/git/**" \
+        "**/.rustup/toolchains/**" \
+        "**/target/debug/**" \
+        "**/target/release/**"
+
+    write_if_missing "$CONF_DIR/large-whitelist" 644 \
+        "# Exact large files or directories that must be backed up despite the limit." \
+        "# One absolute path per line. These entries override both size and blacklist rules." \
+        "$home/Eastself"
+}
+
+load_config() {
+    [[ -r "$CONF_DIR/config" ]] || die "missing ${CONF_DIR}/config — run 'backup enable'"
+    # This root-owned file contains only shell assignments and is intentionally sourceable.
+    # shellcheck disable=SC1090
+    source "$CONF_DIR/config"
+    : "${RESTIC_REPOSITORY:?missing RESTIC_REPOSITORY}"
+    : "${BACKUP_USER:?missing BACKUP_USER}"
+    : "${SFTP_IDENTITY:?missing SFTP_IDENTITY}"
+    : "${SFTP_KNOWN_HOSTS:?missing SFTP_KNOWN_HOSTS}"
+    : "${MAX_FILE_SIZE:=20M}"
+    : "${UPLOAD_LIMIT_KIB:=30720}"
+    : "${KEEP_DAILY:=7}"
+    : "${KEEP_WEEKLY:=5}"
+    : "${KEEP_MONTHLY:=12}"
+    : "${KEEP_YEARLY:=3}"
+    [[ -r "$SFTP_IDENTITY" ]] || die "missing SFTP identity: ${SFTP_IDENTITY}"
+    [[ -r "$SFTP_KNOWN_HOSTS" ]] || die "missing SSH known_hosts: ${SFTP_KNOWN_HOSTS}"
+    BACKUP_HOME=$(getent passwd "$BACKUP_USER" | cut -d: -f6)
+    [[ -n "$BACKUP_HOME" ]] || die "cannot determine home directory for ${BACKUP_USER}"
+}
+
+restic_cmd() {
+    local sftp_command identity_q known_hosts_q
+    printf -v identity_q '%q' "$SFTP_IDENTITY"
+    printf -v known_hosts_q '%q' "$SFTP_KNOWN_HOSTS"
+    sftp_command="ssh -i ${identity_q} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${known_hosts_q} -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+    (
+        unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND
+        export RESTIC_REPOSITORY
+        restic --insecure-no-password -o "sftp.command=${sftp_command}" \
+            --limit-upload "$UPLOAD_LIMIT_KIB" "$@"
+    )
+}
+
+operator_path() {
+    local path latest_nvm=""
+    path="$BACKUP_HOME/.local/bin:$BACKUP_HOME/.cargo/bin:$BACKUP_HOME/.bun/bin"
+    path+=":$BACKUP_HOME/.local/share/fnm/aliases/default/bin"
+    if [[ -d "$BACKUP_HOME/.nvm/versions/node" ]]; then
+        latest_nvm=$(find "$BACKUP_HOME/.nvm/versions/node" -mindepth 1 -maxdepth 1 \
+            -type d -printf '%f\t%p/bin\n' 2>/dev/null | sort -V | tail -n 1 | cut -f2-)
+        [[ -z "$latest_nvm" ]] || path+=":$latest_nvm"
     fi
-    [[ -n "$home_dir" ]] || home_dir=$(getent passwd 1000 | cut -d: -f6)
-    [[ -n "$home_dir" ]] || die "cannot derive home directory — no SUDO_USER and no UID 1000 user"
-    if [[ "$home_dir" != "/home/yeowool" ]]; then
-        sed -i "s|/home/yeowool|${home_dir}|g" "$file"
+    printf '%s:%s\n' "$path" '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+}
+
+operator_tool() {
+    PATH="$(operator_path)" command -v "$1" 2>/dev/null
+}
+
+run_as_operator() {
+    if [[ $EUID -eq 0 && "$BACKUP_USER" != root ]]; then
+        runuser -u "$BACKUP_USER" -- env HOME="$BACKUP_HOME" PATH="$(operator_path)" "$@"
+    else
+        HOME="$BACKUP_HOME" PATH="$(operator_path)" "$@"
     fi
 }
 
-# --- enable-time setup ------------------------------------------------
-
-setup_nfs() {
-    local host="$1"
-    [[ "$(detect_fs /)" == "btrfs" ]] || die "requires btrfs root — this host has $(detect_fs /)"
-
-    mkdir -p /mnt/bingus-backups
-    grep -q 'mnt.bingus-backups' /etc/fstab || \
-        echo 'bingus:/volume1/bak /mnt/bingus-backups nfs defaults,noatime,nofail,soft,timeo=10,retrans=3 0 0' >> /etc/fstab
-    mountpoint -q /mnt/bingus-backups || mount -t nfs bingus:/volume1/bak /mnt/bingus-backups || true
-    mountpoint -q /mnt/bingus-backups || die "cannot mount bingus NFS — check Synology export for this host's IP"
-
-    btrfs subvolume show /bak &>/dev/null || {
-        mkdir -p /bak
-        btrfs subvolume create /bak
-    }
+read_path_list() {
+    local file="$1"
+    [[ -r "$file" ]] || return 0
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        -e '/^$/d' -e '/^#/d' "$file"
 }
 
-# --- script generation ------------------------------------------------
+provenance_id() {
+    printf '%s' "$1" | sha256sum | cut -c1-16
+}
 
-generate_daily_script() {
-    local host="$1"
+single_line() {
+    tr '\t\r\n' '   ' | sed -e 's/[[:space:]]*$//'
+}
+
+discover_environments() {
+    local root="$1" output="$2"
+    find "$root" -xdev \
+        \( -type d \( -name .cache -o -name .npm -o -name .bun -o -name .cargo \
+        -o -name .rustup -o -name .nvm -o -name __pycache__ \) -prune \) -o \
+        \( -type d -name .venv -printf 'python\t%p\0' -prune \) -o \
+        \( -type d -name node_modules -printf 'node\t%p\0' -prune \) -o \
+        \( -type d -name target -prune \) -o \
+        \( -type d -name .git -printf 'git\t%p\0' -prune \) -o \
+        \( -type f -name .git -printf 'git\t%p\0' \) -o \
+        \( -type f -name Cargo.toml -printf 'rust\t%p\0' \) \
+        2>/dev/null > "$output"
+}
+
+collect_python_provenance() {
+    local out="$1" health="$2" discovery="$3" kind venv python id version manifest status detail
+    local env_dir="$out/environments/python"
+    mkdir -p "$env_dir"
+    find "$env_dir" -type f -delete
+    printf 'path\tpython\tpackages\tstatus\n' > "$out/python-environments.tsv"
+
+    while IFS=$'\t' read -r -d '' kind venv; do
+        [[ "$kind" == python ]] || continue
+        python="$venv/bin/python"
+        id=$(provenance_id "$venv")
+        manifest="environments/python/${id}-pip-freeze.txt"
+        version=unavailable
+        status=unknown
+        detail="missing runnable Python environment"
+        if [[ -x "$python" ]]; then
+            version=$(run_as_operator "$python" --version 2>&1 | single_line || true)
+            if run_as_operator "$python" -m pip freeze --all > "$out/$manifest" 2>/dev/null; then
+                status=exact
+                detail="installed package versions captured"
+            else
+                rm -f "$out/$manifest"
+                manifest=""
+                detail="pip package inventory unavailable"
+            fi
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$venv" "$version" "$manifest" "$status" \
+            >> "$out/python-environments.tsv"
+        printf 'python\t%s\t%s\t%s\n' "$venv" "$status" "$detail" >> "$health"
+    done < "$discovery"
+}
+
+collect_node_provenance() {
+    local root="$1" out="$2" health="$3" discovery="$4"
+    local kind modules project lock candidate tool npm_tool bun_tool pnpm_tool id manifest status detail
+    local env_dir="$out/environments/node"
+    local -a locks=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb)
+    mkdir -p "$env_dir"
+    find "$env_dir" -type f -delete
+    printf 'project\tlockfile\tinstalled_tree\tstatus\n' > "$out/node-environments.tsv"
+    {
+        printf 'tool\tversion\n'
+        for candidate in node npm bun pnpm yarn; do
+            tool=$(operator_tool "$candidate" || true)
+            [[ -n "$tool" ]] || continue
+            printf '%s\t%s\n' "$candidate" \
+                "$(run_as_operator "$tool" --version 2>/dev/null | single_line || true)"
+        done
+    } > "$out/javascript-toolchains.tsv"
+    {
+        printf 'manager\tversion\tpath\n'
+        if [[ -d "$root/.nvm/versions/node" ]]; then
+            find "$root/.nvm/versions/node" -mindepth 1 -maxdepth 1 -type d \
+                -printf 'nvm\t%f\t%p\n' 2>/dev/null
+        fi
+        if [[ -d "$root/.local/share/fnm/node-versions" ]]; then
+            find "$root/.local/share/fnm/node-versions" -mindepth 1 -maxdepth 1 -type d \
+                -printf 'fnm\t%f\t%p\n' 2>/dev/null
+        fi
+    } > "$out/javascript-runtimes.tsv"
+    npm_tool=$(operator_tool npm || true)
+    bun_tool=$(operator_tool bun || true)
+    pnpm_tool=$(operator_tool pnpm || true)
+    [[ -z "$npm_tool" ]] || run_as_operator "$npm_tool" ls -g --depth=0 --json \
+        > "$out/npm-global.json" 2>/dev/null || true
+    [[ -z "$bun_tool" ]] || run_as_operator "$bun_tool" pm ls -g \
+        > "$out/bun-global.txt" 2>/dev/null || true
+    [[ -z "$pnpm_tool" ]] || run_as_operator "$pnpm_tool" ls -g --depth=0 --json \
+        > "$out/pnpm-global.json" 2>/dev/null || true
+
+    while IFS=$'\t' read -r -d '' kind modules; do
+        [[ "$kind" == node ]] || continue
+        project=${modules%/node_modules}
+        lock=""
+        manifest=""
+        status=unknown
+        detail="no project manifest"
+        for candidate in "${locks[@]}"; do
+            if [[ -f "$project/$candidate" ]]; then
+                lock="$project/$candidate"
+                status=exact
+                detail="lockfile preserved"
+                break
+            fi
+        done
+        if [[ -z "$lock" && -f "$project/package.json" && -n "$npm_tool" ]]; then
+            id=$(provenance_id "$project")
+            manifest="environments/node/${id}-installed-tree.json"
+            run_as_operator "$npm_tool" ls --all --json --prefix "$project" \
+                > "$out/$manifest" 2>/dev/null || true
+            if [[ -s "$out/$manifest" ]]; then
+                status=partial
+                detail="installed versions captured without a lockfile"
+            else
+                rm -f "$out/$manifest"
+                manifest=""
+                detail="dependency inventory unavailable"
+            fi
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$project" "$lock" "$manifest" "$status" \
+            >> "$out/node-environments.tsv"
+        printf 'node\t%s\t%s\t%s\n' "$project" "$status" "$detail" >> "$health"
+    done < "$discovery"
+}
+
+collect_rust_provenance() {
+    local out="$1" health="$2" discovery="$3" kind manifest project lock status detail tool
+    tool=$(operator_tool rustup || true)
+    [[ -z "$tool" ]] || run_as_operator "$tool" toolchain list -v \
+        > "$out/rust-toolchains.txt" 2>/dev/null || true
+    tool=$(operator_tool cargo || true)
+    [[ -z "$tool" ]] || run_as_operator "$tool" install --list \
+        > "$out/cargo-installed.txt" 2>/dev/null || true
+    printf 'project\tlockfile\tstatus\n' > "$out/rust-projects.tsv"
+    while IFS=$'\t' read -r -d '' kind manifest; do
+        [[ "$kind" == rust ]] || continue
+        project=${manifest%/Cargo.toml}
+        lock="$project/Cargo.lock"
+        if [[ -f "$lock" ]]; then
+            status=exact
+            detail="Cargo.lock preserved"
+        else
+            lock=""
+            status=partial
+            detail="Cargo manifest preserved without a lockfile"
+        fi
+        printf '%s\t%s\t%s\n' "$project" "$lock" "$status" >> "$out/rust-projects.tsv"
+        printf 'rust\t%s\t%s\t%s\n' "$project" "$status" "$detail" >> "$health"
+    done < "$discovery"
+}
+
+collect_huggingface_provenance() {
+    local root="$1" out="$2" health="$3" hub cache name kind repo_id ref revision found
+    hub="$root/.cache/huggingface/hub"
+    printf 'type\trepository\tref\trevision\tcache_path\n' > "$out/huggingface-cache.tsv"
+    [[ -d "$hub" ]] || return 0
+
+    while IFS= read -r -d '' cache; do
+        name=${cache##*/}
+        kind=${name%%--*}
+        repo_id=${name#*--}
+        repo_id=${repo_id//--//}
+        found=0
+        if [[ -d "$cache/refs" ]]; then
+            while IFS= read -r -d '' ref; do
+                revision=$(single_line < "$ref")
+                printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$repo_id" \
+                    "${ref#"$cache/refs/"}" "$revision" "$cache" >> "$out/huggingface-cache.tsv"
+                found=1
+            done < <(find "$cache/refs" -type f -print0 2>/dev/null)
+        fi
+        if ((found == 0)) && [[ -d "$cache/snapshots" ]]; then
+            while IFS= read -r -d '' revision; do
+                printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$repo_id" snapshot \
+                    "${revision##*/}" "$cache" >> "$out/huggingface-cache.tsv"
+                found=1
+            done < <(find "$cache/snapshots" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+        fi
+        if ((found == 1)); then
+            printf 'huggingface\t%s\texact\trepository revision captured\n' "$cache" >> "$health"
+        else
+            printf 'huggingface\t%s\tunknown\tno cached revision found\n' "$cache" >> "$health"
+        fi
+    done < <(find "$hub" -mindepth 1 -maxdepth 1 -type d \
+        \( -name 'models--*' -o -name 'datasets--*' -o -name 'spaces--*' \) -print0 2>/dev/null)
+}
+
+refresh_provenance() (
+    local out="$STATE_DIR/provenance" src repo path origin branch head dirty kind tool
+    local discovery
+    local -a sources=()
+    mkdir -p "$out"
+    discovery=$(mktemp "${TMPDIR:-/tmp}/backup-discovery.XXXXXXXX")
+    trap 'rm -f "$discovery"' EXIT
+    mapfile -t sources < <(read_path_list "$CONF_DIR/sources")
+    ((${#sources[@]} > 0)) || die "no backup sources configured"
 
     {
-        cat <<HEADER
-#!/bin/bash
-set -euo pipefail
-exec 9>/var/lock/backup.lock || exit 1
-trap 'rm -f /var/lock/backup.lock' EXIT
+        printf 'generated_at\t%s\n' "$(date --iso-8601=seconds)"
+        printf 'host\t%s\n' "$(detect_host)"
+        printf 'max_file_size\t%s\n' "$MAX_FILE_SIZE"
+        printf 'repository\t%s\n' "$RESTIC_REPOSITORY"
+    } > "$out/backup-policy.tsv"
 
-PATHS_FILE="/etc/backup/paths.d/${host}"
-HEADER
+    apt-mark showmanual > "$out/apt-manual.txt" 2>/dev/null || true
+    dpkg-query -W -f='${binary:Package}\t${Version}\n' > "$out/deb-versions.tsv" 2>/dev/null || true
+    snap list > "$out/snap-list.txt" 2>/dev/null || true
+    tool=$(operator_tool pipx || true)
+    [[ -z "$tool" ]] || run_as_operator "$tool" list --json \
+        > "$out/pipx-list.json" 2>/dev/null || true
+    docker image ls --digests --format '{{.Repository}}\t{{.Tag}}\t{{.Digest}}\t{{.ID}}' \
+        > "$out/docker-images.tsv" 2>/dev/null || true
+    lsblk --json --output NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS > "$out/block-devices.json" 2>/dev/null || true
+    systemctl list-unit-files --state=enabled --no-legend > "$out/enabled-units.txt" 2>/dev/null || true
 
-        echo "DEST=\"/bak\""
-        echo "REMOTE=\"/mnt/bingus-backups/${host}\""
-        echo 'PATTERN="*-full.*"'
-        echo 'RETENTION_DAYS="8"'
+    discover_environments "${sources[0]}" "$discovery"
+    printf 'ecosystem\tpath\tstatus\tdetail\n' > "$out/reconstruction-health.tsv"
+    collect_python_provenance "$out" "$out/reconstruction-health.tsv" "$discovery"
+    collect_node_provenance "${sources[0]}" "$out" "$out/reconstruction-health.tsv" "$discovery"
+    collect_rust_provenance "$out" "$out/reconstruction-health.tsv" "$discovery"
+    collect_huggingface_provenance "${sources[0]}" "$out" "$out/reconstruction-health.tsv"
+    {
+        printf 'ecosystem\tstatus\tcount\n'
+        awk -F '\t' 'NR > 1 { count[$1 FS $3]++ } END {
+            for (key in count) print key FS count[key]
+        }' "$out/reconstruction-health.tsv" | sort
+    } > "$out/reconstruction-summary.tsv"
 
-        cat <<'SETUP'
-mountpoint -q /mnt/bingus-backups || exit 1
-
-list_remote() { ls -1 "$REMOTE"/$1 2>/dev/null; }
-delete_remote() { rm -f "$REMOTE/$(basename "$1")"; }
-SETUP
-
-        cat <<'ENGINE'
-run_rsync() {
-    local excludes=() sources=()
-    while IFS= read -r line; do
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        if [[ "$line" == -* ]]; then
-            excludes+=("--exclude=${line#-}")
-        else
-            sources+=("$line")
-        fi
-    done < "$PATHS_FILE"
-    local expanded
+    local large_tmp="$out/large-files.unsorted.tsv"
+    : > "$large_tmp"
     for src in "${sources[@]}"; do
-        expanded=$(eval echo "$src" 2>/dev/null) || true
-        [ -n "$expanded" ] && rsync -aR --ignore-missing-args "${excludes[@]}" $expanded "$DEST"/ || true
+        [[ -e "$src" ]] || continue
+        find "$src" -xdev -type f -size "+${MAX_FILE_SIZE}" \
+            -printf '%s\t%T@\t%p\n' 2>/dev/null >> "$large_tmp" || true
     done
-}
-run_rsync
+    {
+        printf 'bytes\tmodified_epoch\tpath\n'
+        sort -n "$large_tmp"
+    } > "$out/large-files.tsv"
+    rm -f "$large_tmp"
 
-mkdir -p "$DEST/rebuild"
-apt-mark showmanual > "$DEST/rebuild/apt-manual.txt"
-npm ls -g --depth=0 --json > "$DEST/rebuild/npm-global.json" 2>/dev/null || true
-fnm ls > "$DEST/rebuild/fnm-versions.txt" 2>/dev/null || true
-pipx list --json > "$DEST/rebuild/pipx-list.json" 2>/dev/null || true
-snap list > "$DEST/rebuild/snap-list.txt" 2>/dev/null || true
-docker images --format '{{.Repository}}:{{.Tag}}' > "$DEST/rebuild/docker-images.txt" 2>/dev/null || true
-ENGINE
+    : > "$out/git-repositories.tsv"
+    printf 'path\torigin\tbranch\thead\tdirty_entries\n' >> "$out/git-repositories.tsv"
+    tool=$(operator_tool git || true)
+    while IFS=$'\t' read -r -d '' kind repo; do
+        [[ "$kind" == git ]] || continue
+        path=${repo%/.git}
+        [[ -n "$tool" ]] || continue
+        origin=$(run_as_operator "$tool" -C "$path" remote get-url origin 2>/dev/null || true)
+        branch=$(run_as_operator "$tool" -C "$path" branch --show-current 2>/dev/null || true)
+        head=$(run_as_operator "$tool" -C "$path" rev-parse HEAD 2>/dev/null || true)
+        dirty=$({ run_as_operator "$tool" -C "$path" status --porcelain -uno \
+            2>/dev/null || true; } | wc -l)
+        printf '%s\t%s\t%s\t%s\t%s\n' "$path" "$origin" "$branch" "$head" "$dirty" \
+            >> "$out/git-repositories.tsv"
+    done < "$discovery"
+)
 
-        cat <<'SHIP'
-TODAY="$(date +%Y%m%d)"
-SNAP="/bak-${TODAY}"
-LOCAL_SEND="/tmp/grimoire-send-${TODAY}.bin"
-cleanup() {
-    rm -f "$LOCAL_SEND" /var/lock/backup.lock
-    btrfs subvolume delete "$SNAP" 2>/dev/null || true
-}
-trap cleanup EXIT
+run_backup() {
+    require_root
+    command -v restic >/dev/null 2>&1 || die "restic is not installed"
+    command -v flock >/dev/null 2>&1 || die "flock is not installed"
+    load_config
 
-btrfs subvolume snapshot -r /bak "$SNAP"
-btrfs send "$SNAP" > "$LOCAL_SEND"
-btrfs subvolume delete "$SNAP"
-timeout 3600 cp "$LOCAL_SEND" "$REMOTE/${TODAY}-full.bin"
-rm -f "$LOCAL_SEND"
-SHIP
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    exec 9> "$LOCK_FILE"
+    flock -n 9 || die "another backup operation is already running"
 
-        cat <<'PRUNE'
-CUTOFF=$(date -d "${RETENTION_DAYS} days ago" +%Y%m%d)
-list_remote "$PATTERN" 2>/dev/null | while read -r f; do
-    [ -z "$f" ] && continue
-    f_date=$(basename "$f" | grep -oP '^\d{8}' || true)
-    if [ -n "$f_date" ] && [ "$f_date" -lt "$CUTOFF" ]; then
-        delete_remote "$f" 2>/dev/null || true
+    refresh_provenance
+
+    local -a sources=() whitelist=() exclude_args=()
+    local automatic_rc=0 whitelist_rc=0 failure_rc=0
+    mapfile -t sources < <(read_path_list "$CONF_DIR/sources")
+    ((${#sources[@]} > 0)) || die "no backup sources configured"
+    [[ -s "$CONF_DIR/excludes" ]] && exclude_args=(--exclude-file "$CONF_DIR/excludes")
+
+    restic_cmd backup --host "$(detect_host)" --tag automatic --one-file-system \
+        --exclude-larger-than "$MAX_FILE_SIZE" "${exclude_args[@]}" "${sources[@]}" \
+        || automatic_rc=$?
+
+    mapfile -t whitelist < <(read_path_list "$CONF_DIR/large-whitelist")
+    if ((${#whitelist[@]} > 0)); then
+        local -a existing=()
+        local item
+        for item in "${whitelist[@]}"; do
+            [[ -e "$item" ]] && existing+=("$item") || warn "whitelist path missing: ${item}"
+        done
+        if ((${#existing[@]} > 0)); then
+            restic_cmd backup --host "$(detect_host)" --tag large-whitelist \
+                --one-file-system "${existing[@]}" || whitelist_rc=$?
+        fi
     fi
-done || true
-PRUNE
-    } > /usr/local/bin/backup-daily
 
-    chmod +x /usr/local/bin/backup-daily
-    bash -n /usr/local/bin/backup-daily || { rm -f /usr/local/bin/backup-daily; die "syntax error in generated backup-daily"; }
+    if ((automatic_rc == 3)); then
+        warn "automatic snapshot completed with unreadable source files"
+    elif ((automatic_rc != 0)); then
+        failure_rc=$automatic_rc
+    fi
+    if ((whitelist_rc == 3)); then
+        warn "large-whitelist snapshot completed with unreadable source files"
+    elif ((whitelist_rc != 0 && failure_rc == 0)); then
+        failure_rc=$whitelist_rc
+    fi
+    ((failure_rc == 0)) || return "$failure_rc"
 }
 
-generate_weekly() {
-    cp /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
-    sed -i 's/backup.lock/weekly.lock/' /usr/local/bin/backup-weekly
-    sed -i 's/RETENTION_DAYS="8"/RETENTION_DAYS="29"/' /usr/local/bin/backup-weekly
-    sed -i 's/-full\./-weekly./' /usr/local/bin/backup-weekly
-    chmod +x /usr/local/bin/backup-weekly
+run_maintenance() {
+    require_root
+    command -v restic >/dev/null 2>&1 || die "restic is not installed"
+    load_config
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    exec 9> "$LOCK_FILE"
+    flock -w 3600 9 || die "another backup operation is still running after one hour"
+    restic_cmd forget --host "$(detect_host)" \
+        --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" \
+        --keep-monthly "$KEEP_MONTHLY" --keep-yearly "$KEEP_YEARLY" --prune
+    restic_cmd check
 }
-
-# --- systemd units ----------------------------------------------------
 
 write_systemd_units() {
-    local host="$1"
+    local executable="$1" host="$2"
+    mkdir -p "$SYSTEMD_DIR"
 
-    for period in daily weekly; do
-        cat > "/etc/systemd/system/backup-${period}.service" <<UNIT
+    cat > "$SYSTEMD_DIR/backup-daily.service" <<UNIT
 [Unit]
-Description=Backup ${period} to bingus (${host} via NFS)
-After=remote-fs.target
-Wants=remote-fs.target
+Description=Incremental backup of ${host} to bingus over SFTP
+Wants=network-online.target
+After=network-online.target
+
 [Service]
 Type=oneshot
-TimeoutStartSec=3600
-ExecStart=/usr/local/bin/backup-${period}
+ExecStart=${executable} run
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+CPUWeight=10
+IOWeight=10
+MemoryHigh=4G
+MemoryMax=8G
+Environment=GOMAXPROCS=2
+Environment=RESTIC_READ_CONCURRENCY=1
+TimeoutStartSec=12h
+TimeoutStopSec=10min
+KillSignal=SIGINT
 UNIT
-    done
 
-    cat > /etc/systemd/system/backup-daily.timer <<TIMER
+    cat > "$SYSTEMD_DIR/backup-daily.timer" <<'UNIT'
+[Unit]
+Description=Daily incremental backup
+
 [Timer]
-OnCalendar=daily
-Persistent=true
+OnCalendar=*-*-* 09:00:00
+RandomizedDelaySec=15min
+Persistent=false
+
 [Install]
 WantedBy=timers.target
-TIMER
+UNIT
 
-    cat > /etc/systemd/system/backup-weekly.timer <<TIMER
+    cat > "$SYSTEMD_DIR/backup-weekly.service" <<UNIT
+[Unit]
+Description=Restic retention and integrity check for ${host}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${executable} maintain
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+CPUWeight=10
+IOWeight=10
+MemoryHigh=4G
+MemoryMax=8G
+Environment=GOMAXPROCS=2
+Environment=RESTIC_READ_CONCURRENCY=1
+TimeoutStartSec=12h
+TimeoutStopSec=10min
+KillSignal=SIGINT
+UNIT
+
+    cat > "$SYSTEMD_DIR/backup-weekly.timer" <<'UNIT'
+[Unit]
+Description=Weekly backup retention and integrity check
+
 [Timer]
-OnCalendar=Sun 03:00
-Persistent=true
+OnCalendar=Sun *-*-* 22:00:00
+RandomizedDelaySec=30min
+Persistent=false
+
 [Install]
 WantedBy=timers.target
-TIMER
-
-    systemctl daemon-reload
-    systemctl enable --now backup-daily.timer backup-weekly.timer
+UNIT
 }
 
-# --- commands ---------------------------------------------------------
+remove_legacy_nfs() {
+    umount -l /mnt/bingus-backups 2>/dev/null || true
+    if [[ -f /etc/fstab ]]; then
+        sed -i '\|[[:space:]]/mnt/bingus-backups[[:space:]]|d' /etc/fstab
+    fi
+    rm -f /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
+}
+
+stop_backup_units() {
+    systemctl disable backup-daily.timer backup-weekly.timer 2>/dev/null || true
+    systemctl stop --no-block backup-daily.timer backup-weekly.timer \
+        backup-daily.service backup-weekly.service 2>/dev/null || true
+}
+
+install_restic() {
+    if ! command -v restic >/dev/null 2>&1; then
+        command -v apt-get >/dev/null 2>&1 || die "install Restic 0.17 or newer, then retry"
+        apt-get install -y restic
+    fi
+    if restic --help 2>/dev/null | grep -q -- '--insecure-no-password'; then
+        return 0
+    fi
+
+    info "updating Restic for empty-password repository support..."
+    mkdir -p /usr/local/bin
+    restic self-update --output /usr/local/bin/restic
+    hash -r
+    restic --help 2>/dev/null | grep -q -- '--insecure-no-password' || \
+        die "Restic 0.17 or newer is required"
+}
+
+verify_bingus_host_key() {
+    local repository_host
+    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required"
+    [[ "$RESTIC_REPOSITORY" == sftp:* ]] || die "repository is not an SFTP URL"
+    repository_host=${RESTIC_REPOSITORY#sftp:}
+    repository_host=${repository_host%%:*}
+    repository_host=${repository_host##*@}
+    if ! ssh-keygen -F "$repository_host" -f "$SFTP_KNOWN_HOSTS" >/dev/null 2>&1; then
+        die "${repository_host} is absent from ${SFTP_KNOWN_HOSTS}; verify its fingerprint manually and add the key before enabling backup"
+    fi
+}
 
 cmd_enable() {
     require_root
-    local host
+    local host user home executable
     host=$(detect_host)
+    IFS=$'\t' read -r user home < <(operator_identity)
+    executable=$(readlink -f "$0")
 
-    [[ "$(detect_fs /)" == "btrfs" ]] || die "requires btrfs root"
-    timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null || die "bingus NFS unreachable"
+    install_restic
+    write_default_policy "$host" "$user" "$home"
+    load_config
+    verify_bingus_host_key
 
-    info "host:       ${host}"
-    info "filesystem: $(detect_fs /)"
+    stop_backup_units
+    remove_legacy_nfs
 
-    setup_nfs "$host"
-    write_paths_file "$host"
-    generate_daily_script "$host"
-    generate_weekly
-    write_systemd_units "$host"
-    info "backup enabled (btrfs → NFS → bingus)"
+    if ! restic_cmd cat config >/dev/null 2>&1; then
+        info "initializing Restic repository on bingus..."
+        restic_cmd init
+    fi
+
+    write_systemd_units "$executable" "$host"
+    systemctl daemon-reload
+    systemctl enable --now backup-daily.timer backup-weekly.timer
+    info "backup enabled: incremental Restic over SFTP (daily around 09:00)"
+    info "policy: ${CONF_DIR}/config, ${CONF_DIR}/sources, ${CONF_DIR}/excludes, ${CONF_DIR}/large-whitelist"
 }
 
 cmd_disable() {
     require_root
-
-    for unit in backup-daily backup-weekly; do
-        systemctl disable --now "${unit}.timer" 2>/dev/null || true
-        systemctl disable --now "${unit}.service" 2>/dev/null || true
-        rm -f "/etc/systemd/system/${unit}.timer" "/etc/systemd/system/${unit}.service"
-    done
+    stop_backup_units
+    rm -f "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
+        "$SYSTEMD_DIR/backup-weekly.service" "$SYSTEMD_DIR/backup-weekly.timer"
     systemctl daemon-reload
-    rm -f /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
-
-    umount /mnt/bingus-backups 2>/dev/null || true
-    sed -i '\|mnt.bingus-backups|d' /etc/fstab
-    info "backup disabled"
+    remove_legacy_nfs
+    info "backup schedule disabled; configuration, repository, and legacy /bak data retained"
 }
 
 cmd_status() {
-    echo "host:       $(detect_host)"
-    echo "filesystem: $(detect_fs /)"
-    echo "nfs mount:  $(mountpoint -q /mnt/bingus-backups 2>/dev/null && echo mounted || echo not-mounted)"
-    echo
+    echo "host:      $(detect_host)"
+    echo "transport: SFTP"
+    if [[ -r "$CONF_DIR/config" ]]; then
+        # shellcheck disable=SC1090
+        source "$CONF_DIR/config"
+        echo "repository: ${RESTIC_REPOSITORY:-not-configured}"
+        echo "threshold:  ${MAX_FILE_SIZE:-20M}"
+        echo "access:     empty-password"
+    else
+        echo "repository: not-configured"
+    fi
+    command -v restic >/dev/null 2>&1 && echo "restic:     $(restic version)" || echo "restic:     not-installed"
+    local unit state next
     for unit in backup-daily backup-weekly; do
-        local state next
-        state=$(systemctl is-active "${unit}.timer" 2>/dev/null || echo "not-installed")
-        if [[ "$state" != "not-installed" ]]; then
-            next=$(systemctl show -p NextElapseUSecRealtime "${unit}.timer" 2>/dev/null | cut -d= -f2- | xargs || echo "?")
-            echo "  ${unit}.timer: ${state} (next: ${next})"
-        fi
+        state=$(systemctl is-active "${unit}.timer" 2>/dev/null || true)
+        [[ -n "$state" ]] || state=not-installed
+        next=$(systemctl show -p NextElapseUSecRealtime --value "${unit}.timer" 2>/dev/null || true)
+        echo "${unit}: ${state}${next:+ (next: ${next})}"
     done
+    [[ ! -e /bak ]] || echo "legacy:     /bak retained (not used by this backup)"
 }
 
-cmd_trigger() {
+cmd_snapshots() {
     require_root
-    local period="${1:-daily}"
-    local script="/usr/local/bin/backup-${period}"
-    [[ -x "$script" ]] || die "no backup script for '${period}'"
-    "$script"
-    info "${period} backup completed"
+    load_config
+    restic_cmd snapshots
 }
 
 cmd_restore() {
-    local host
-    host=$(detect_host)
-    local files=""
-    local recover="/tmp/recovery"
-    local date_arg="${1:-}"
-
-    # NFS probe
-    if mountpoint -q /mnt/bingus-backups 2>/dev/null; then
-        files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || files=""
-    else
-        if timeout 3 bash -c 'echo > /dev/tcp/bingus/2049' 2>/dev/null; then
-            mkdir -p /mnt/bingus-backups
-            timeout 10 mount -t nfs bingus:/volume1/bak /mnt/bingus-backups 2>/dev/null && {
-                files=$(ls -1 /mnt/bingus-backups/"${host}"/[0-9]*-full.bin /mnt/bingus-backups/"${host}"/[0-9]*-weekly.bin 2>/dev/null) || files=""
-            }
-        fi
-    fi
-
-    [[ -n "$files" ]] || die "no backups found for ${host} on bingus NFS"
-
-    if [[ "$(detect_fs /)" != "btrfs" ]]; then
-        warn "NFS artifacts present but unrestorable on $(detect_fs /) (requires btrfs)"
-        echo "$files" | sed 's|.*/||' | sort -r | tail -5
-        return 1
-    fi
-
-    if [[ -z "$date_arg" ]]; then
-        if command -v fzf >/dev/null && [[ -t 1 ]]; then
-            date_arg=$(
-                echo "$files" | sed 's|.*/||' | sort -r | \
-                fzf --header="Select backup to restore (Enter=restore, Esc=cancel)"
-            ) || { info "cancelled"; return 0; }
-        else
-            echo "$files" | sed 's|.*/||' | sort -r | tail -5
-            echo "Run 'backup restore YYYYMMDD-full.bin' for a specific file"
-            return 0
-        fi
-    fi
-
-    local src="/mnt/bingus-backups/${host}/${date_arg}"
-    [[ -f "$src" ]] || die "no NFS artifact: ${date_arg}"
-    mkdir -p "${recover}/${date_arg%.bin}"
-    cat "$src" | btrfs receive "${recover}/${date_arg%.bin}"
-    info "Restored to ${recover}/${date_arg%.bin}"
+    require_root
+    local snapshot="${1:-latest}" target="${2:-$RECOVERY_DIR/$(date +%Y%m%d-%H%M%S)}" fstype
+    load_config
+    mkdir -p "$target"
+    fstype=$(findmnt -no FSTYPE --target "$target" 2>/dev/null || true)
+    [[ "$fstype" != tmpfs ]] || warn "restore target is memory-backed tmpfs: ${target}"
+    restic_cmd restore "$snapshot" --target "$target"
+    info "restored ${snapshot} to ${target}"
 }
 
-# --- main -------------------------------------------------------------
+cmd_trigger() {
+    case "${1:-backup}" in
+        backup|daily) run_backup ;;
+        maintenance|weekly) run_maintenance ;;
+        check)
+            require_root
+            load_config
+            mkdir -p "$(dirname "$LOCK_FILE")"
+            exec 9> "$LOCK_FILE"
+            flock -n 9 || die "another backup operation is already running"
+            restic_cmd check
+            ;;
+        *) die "trigger must be backup, maintenance, or check" ;;
+    esac
+}
 
-cmd="${1:-help}"; [[ $# -gt 0 ]] && shift
-
-case "$cmd" in
-    enable)  cmd_enable ;;
-    disable) cmd_disable ;;
-    status)  cmd_status ;;
-    trigger) cmd_trigger "${1:-daily}" ;;
-    restore) cmd_restore "$@" ;;
-    help|--help|-h)
-        cat <<HELP
+usage() {
+    cat <<HELP
 Usage: ${NAME} <command> [args]
 
 Commands:
-  enable              Install backup infrastructure
-  disable             Remove backup scripts and timers
-  status              Show backup config and schedule
-  trigger [daily|weekly]  Run backup now
-  restore [date]      Interactively pick or restore specific date
-  help                Show this message
+  enable                         Configure SFTP/Restic and enable timers
+  disable                        Disable timers; preserve config and data
+  status                         Show local configuration and schedule
+  trigger [backup|maintenance|check]
+  snapshots                      List available snapshots
+  restore [snapshot] [target]    Restore a snapshot (default: latest)
+  help                           Show this message
+
+Policy files:
+  ${CONF_DIR}/config             Size limit, repository, upload and retention settings
+  ${CONF_DIR}/sources            Roots included automatically
+  ${CONF_DIR}/excludes           Disposable paths excluded at any size
+  ${CONF_DIR}/large-whitelist    Large paths that override both rules
 HELP
-        ;;
-    *) die "unknown command. Try '${NAME} help'." ;;
-esac
+}
+
+if [[ "${BACKUP_SOURCE_ONLY:-0}" != 1 ]]; then
+    cmd="${1:-help}"
+    (($# == 0)) || shift
+    case "$cmd" in
+        enable) cmd_enable ;;
+        disable) cmd_disable ;;
+        status) cmd_status ;;
+        run) run_backup ;;
+        maintain) run_maintenance ;;
+        trigger) cmd_trigger "${1:-backup}" ;;
+        snapshots) cmd_snapshots ;;
+        restore) cmd_restore "$@" ;;
+        help|--help|-h) usage ;;
+        *) die "unknown command. Try '${NAME} help'." ;;
+    esac
+fi
