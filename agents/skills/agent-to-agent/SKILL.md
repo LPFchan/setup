@@ -1,8 +1,8 @@
 ---
 name: agent-to-agent
-description: Invoke another coding-agent harness as a subagent and continue the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, or OpenCode through a shell or Bash tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
-version: 1.0.0
-argument-hint: <codex|claude-code|opencode> [task to delegate]
+description: Invoke another coding-agent harness as a subagent and continue the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, or Hermes Agent through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
+version: 1.1.0
+argument-hint: <codex|claude-code|opencode|hermes> [task to delegate]
 ---
 
 # Agent to Agent
@@ -41,12 +41,26 @@ If the child may exceed the timeout, launch it in a new tmux window in the
 orchestrator's main session and poll its output file for progress; see the
 target's reference for its event format and progress signals.
 
+### Hermes Agent
+
+When Hermes is the orchestrator, call its terminal tool with `background=true`
+and `notify_on_complete=true`. Retain the returned process session ID and use
+the process tool's `poll`, `log`, `wait`, and `kill` actions for lifecycle
+control. Do not use shell-level `nohup` or `&`; native background execution
+keeps the process observable and preserves completion notification.
+
+This workflow runs a resumable external child-harness session. Hermes's native
+`delegate_task` is useful for ordinary delegation, but is not a substitute when
+the parent must retain and explicitly resume an external child conversation.
+
 ## Select the target
 
 - For Codex, read [references/codex.md](references/codex.md) and follow it.
 - For Claude Code, read [references/claude-code.md](references/claude-code.md)
   and follow it.
 - For OpenCode, read [references/opencode.md](references/opencode.md) and
+  follow it.
+- For Hermes Agent, read [references/hermes.md](references/hermes.md) and
   follow it.
 
 Keep one child session per delegated task. Give the child the goal, working
