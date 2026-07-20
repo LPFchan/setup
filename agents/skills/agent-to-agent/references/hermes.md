@@ -10,20 +10,30 @@ workflow.
 
 ## Choose the model and provider
 
-Hermes can use its configured default model and provider. To pin routing,
-specify model and provider together:
+Use the active Hermes profile's configured default provider and model unless
+the operator explicitly requests a particular model or provider/model pair.
+The orchestrator must not choose an override proactively.
+
+**Configured default:** leave `model_args` empty. This calls Hermes with no
+`--provider` or `--model` flags, so Hermes uses the active profile's configured
+default routing.
 
 ```bash
 model_args=()
-# To pin routing, uncomment and set both lines:
-# provider=openrouter
-# model=anthropic/claude-sonnet-4
-# model_args=(--provider "$provider" --model "$model")
 ```
 
-The recipes below work with an empty `model_args` array. If routing is pinned,
-pass the same pair on every resumed turn; change it only deliberately. Never
-set only one variable while implying that the pair is pinned.
+**Explicit operator-requested override:** set both the provider and model, then
+construct `model_args` with both flags.
+
+```bash
+provider=openrouter
+model=anthropic/claude-sonnet-4
+model_args=(--provider "$provider" --model "$model")
+```
+
+When routing is explicitly pinned, pass the same provider/model pair on every
+resumed turn unless the operator asks to change it. Never set only one flag
+while implying that the pair is pinned.
 
 ## Start a session
 
