@@ -2159,31 +2159,30 @@ cmd_reconfigure() {
     rm -rf "$picker_state_dir"
     return "$interactive_failed"
 }
-# Post-install: check if refresh-models needs auth onboarding
-_post_auth_check() {
-    local auth_marker="$STATE_DIR/refresh-models.needs-auth"
-    [[ -f "$auth_marker" ]] || return 0
 
-    local auth_bin="$HOME/.local/bin/refresh-models"
-    [[ -x "$auth_bin" ]] || auth_bin=$(command -v refresh-models 2>/dev/null || true)
-    if [[ ! -x "$auth_bin" ]]; then
-        echo "Warning: refresh-models needs API keys, but its executable is unavailable. Run 'setup install refresh-models', then 'refresh-models auth'." >&2
+_post_refresh_models_setup() {
+    local marker="$STATE_DIR/refresh-models.needs-provider-setup"
+    [[ -f "$marker" ]] || return 0
+
+    local refresh_bin="$HOME/.local/bin/refresh-models"
+    [[ -x "$refresh_bin" ]] || refresh_bin=$(command -v refresh-models 2>/dev/null || true)
+    if [[ ! -x "$refresh_bin" ]]; then
+        echo "Warning: refresh-models provider setup is pending, but its executable is unavailable." >&2
         return 1
     fi
     if [[ -t 1 && -r /dev/tty ]]; then
         echo
-        echo "refresh-models is installed but needs API keys. Launching auth..."
-        if "$auth_bin" auth </dev/tty >/dev/tty 2>&1; then
-            rm -f "$auth_marker"
+        echo "Choose which refresh-models providers to configure; blank keys stay disabled."
+        if "$refresh_bin" auth </dev/tty >/dev/tty 2>&1; then
+            rm -f "$marker"
             return 0
         fi
-        echo "Warning: refresh-models auth failed; onboarding will be retried next time." >&2
+        echo "Warning: refresh-models provider setup failed; it will be offered again." >&2
         return 1
     fi
-    echo "Warning: refresh-models is installed but needs API keys. Run 'setup' or '$auth_bin auth' to configure." >&2
+    echo "Warning: refresh-models provider setup is pending. Run '$refresh_bin auth' to choose providers." >&2
     return 1
 }
-
 
 if [[ "${SETUP_SOURCE_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
@@ -2216,7 +2215,7 @@ if [[ -z "$cmd" ]]; then
         echo "Warning: no interactive terminal; running non-interactive update. Use 'setup' in a terminal for module selection." >&2
         cmd_update || main_rc=$?
     fi
-    _post_auth_check || true
+    _post_refresh_models_setup || true
     exit "$main_rc"
 fi
 
@@ -2226,13 +2225,13 @@ case "$cmd" in
     install)
         command_rc=0
         cmd_install "$@" || command_rc=$?
-        _post_auth_check || true
+        _post_refresh_models_setup || true
         exit "$command_rc"
         ;;
     update)
         command_rc=0
         cmd_update "$@" || command_rc=$?
-        _post_auth_check || true
+        _post_refresh_models_setup || true
         exit "$command_rc"
         ;;
     uninstall) cmd_uninstall "$@" ;;

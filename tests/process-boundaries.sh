@@ -4,8 +4,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# Executable boundary: command failure wins; post-auth still runs and its own
-# failure cannot mask or replace the original command status.
+# A failed setup command remains failed even if optional provider onboarding
+# also fails afterward.
 make_source() {
     local dir="$1" body="$2"
     mkdir -p "$dir/lib"
@@ -24,10 +24,10 @@ export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state"
 mkdir -p "$HOME/.local/bin" "$XDG_STATE_HOME/setup"
 cp "$ROOT/files/refresh-models" "$HOME/.local/bin/refresh-models"
 chmod +x "$HOME/.local/bin/refresh-models"
-printf x > "$XDG_STATE_HOME/setup/refresh-models.needs-auth"
+printf x > "$XDG_STATE_HOME/setup/refresh-models.needs-provider-setup"
 if output=$(LINUX_SETUP_SOURCE_URL="file://$source_dir" zsh "$ROOT/bin/setup" install fail 2>&1); then rc=0; else rc=$?; fi
-[[ $rc -ne 0 ]] || { echo "install status was masked by post-auth" >&2; exit 1; }
-[[ "$output" == *'needs API keys'* ]] || { echo "post-auth did not run after failed install" >&2; exit 1; }
+[[ $rc -ne 0 ]] || { echo "install status was masked by provider setup" >&2; exit 1; }
+[[ "$output" == *'provider setup is pending'* ]] || { echo "provider setup did not run after failed install" >&2; exit 1; }
 
 # Fresh offline no-TTY fallback must fail at manifest fetch and never claim
 # current/up-to-date or create a stale manifest.

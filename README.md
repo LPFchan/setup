@@ -56,6 +56,16 @@ list and this repository are public. The fleet-only modules are `kernel-simmer`,
 | `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
 
+`refresh-models` keeps an explicit `enabled` status for each managed provider
+in `~/.config/opencode/refresh-models.json`. Existing providers are enabled on
+migration only when they already have a stored API key, and entering a key with
+`refresh-models auth` enables that provider. `refresh-models provider enable
+<provider>` and `refresh-models provider disable <provider>` toggle one provider
+without adding or deleting its key; disabled managed providers are mirrored
+into OpenCode's `disabled_providers` list and are skipped by manual and
+scheduled refreshes. Initial service setup offers each unkeyed provider once;
+leaving its prompt blank keeps it disabled.
+
 The `resume` picker reads Claude Code, Codex, OpenCode, ForgeCode, and Hermes
 session stores, then forwards the selected harness name to the current tmux
 window title before resuming the session. Hermes entries come from top-level

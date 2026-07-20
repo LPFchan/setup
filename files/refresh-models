@@ -4,12 +4,14 @@
 """refresh-models — probe /v1/models endpoints and update opencode.json provider blocks.
 
 Commands:
-  (no args)        Refresh all configured servers
-  <server>         Refresh a single server by name
-  --list           List configured server names
-  enable           Install systemd user timer (runs hourly)
-  disable          Remove systemd user timer
-  status           Show timer state and next run
+  (no args)                    Refresh all enabled providers
+  <server>                     Refresh one enabled provider by name
+  --list                       List configured provider names
+  enable                       Install the hourly systemd/launchd timer
+  disable                      Remove the timer
+  provider enable <provider>   Enable a provider that has an API key
+  provider disable <provider>  Disable a provider without deleting its key
+  status                       Show timer and provider state
 """
 
 import json, os, sys, urllib.request, urllib.error, subprocess, pathlib, getpass
@@ -422,7 +424,7 @@ def _is_macos():
 
 
 PROVIDER_URLS = {
-    "grimoire": "http://localhost:9001 (self-hosted, no key needed if open)",
+    "grimoire": "http://localhost:9001 (self-hosted)",
     "crofai": "https://crof.ai",
     "commandcode": "https://commandcode.ai/studio → Settings → API Keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
@@ -436,8 +438,69 @@ def _env_name(provider):
 def _get_key(provider):
     key = os.environ.get(_env_name(provider), "")
     if not key:
+        key = _read_env_block().get(_env_name(provider), "")
+    if not key:
         key = _fallback_auth_json(provider)
     return key
+
+
+def _provider_enabled(name, cfg):
+    if "enabled" in cfg:
+        return cfg["enabled"] is True
+    return bool(_get_key(name))
+
+
+def _migrate_provider_statuses(cfg):
+    """Give legacy providers an explicit status based on their stored key."""
+    changed = False
+    for name, provider in cfg.get("servers", {}).items():
+        if "enabled" not in provider:
+            provider["enabled"] = bool(_get_key(name))
+            changed = True
+    if changed:
+        save_json(CONFIG_PATH, cfg)
+    return cfg
+
+
+def _sync_opencode_provider_statuses(servers):
+    """Mirror managed provider status without changing unrelated providers."""
+    opencode = load_json(OPENCODE_PATH) if os.path.exists(OPENCODE_PATH) else {}
+    configured_disabled = opencode.get("disabled_providers", [])
+    if not isinstance(configured_disabled, list):
+        configured_disabled = []
+    managed = set(servers)
+    disabled = [name for name in configured_disabled if name not in managed]
+    disabled.extend(
+        name for name, cfg in servers.items() if not _provider_enabled(name, cfg)
+    )
+    if disabled:
+        opencode["disabled_providers"] = disabled
+    else:
+        opencode.pop("disabled_providers", None)
+    pathlib.Path(os.path.dirname(OPENCODE_PATH)).mkdir(parents=True, exist_ok=True)
+    save_json(OPENCODE_PATH, opencode)
+
+
+def _set_provider_enabled(provider, enabled):
+    cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {"servers": {}}
+    cfg = _migrate_provider_statuses(cfg)
+    servers = cfg.get("servers", {})
+    if provider not in servers:
+        print(f"Unknown provider: {provider}", file=sys.stderr)
+        print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
+        return False
+    if enabled and not _get_key(provider):
+        print(
+            f"Cannot enable {provider}: no API key. "
+            f"Run: refresh-models auth {provider} <key>",
+            file=sys.stderr,
+        )
+        return False
+    servers[provider]["enabled"] = enabled
+    save_json(CONFIG_PATH, cfg)
+    _sync_opencode_provider_statuses(servers)
+    print(f"{provider}: {'enabled' if enabled else 'disabled'}")
+    return True
 
 
 def _set_key(provider, key):
@@ -458,6 +521,7 @@ def cmd_auth():
     _export_auth_to_zsenv()
 
     cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {"servers": {}}
+    cfg = _migrate_provider_statuses(cfg)
     servers = cfg.get("servers", {})
 
     if len(sys.argv) >= 4:
@@ -468,7 +532,8 @@ def cmd_auth():
             print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
             sys.exit(1)
         _set_key(provider, key)
-        print(f"Wrote {provider.upper()}_API_KEY to {ZSENV_PATH}")
+        if not _set_provider_enabled(provider, True):
+            sys.exit(1)
         return
 
     existing_keys = _read_env_block()
@@ -482,16 +547,17 @@ def cmd_auth():
         print()
 
     if not missing:
-        print("All providers have API keys in ~/.zshenv.")
+        _sync_opencode_provider_statuses(servers)
+        print("All provider API keys are already stored in ~/.zshenv.")
         return
 
-    print("Missing API keys:")
+    print("Providers available to enable:")
     for s in missing:
         url = PROVIDER_URLS.get(s, "")
         print(f"  {s}" + (f"  — {url}" if url else ""))
     print()
 
-    updated = False
+    enabled = []
     for s in missing:
         url = PROVIDER_URLS.get(s, "")
         prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
@@ -502,12 +568,16 @@ def cmd_auth():
             break
         if key.strip():
             existing_keys[_env_name(s)] = key.strip()
-            updated = True
+            enabled.append(s)
 
-    if updated:
+    if enabled:
         lines = [f"export {k}={v}" for k, v in existing_keys.items()]
         _write_env_block(lines)
         _sync_zsenv_to_auth()
+        for name in enabled:
+            servers[name]["enabled"] = True
+        save_json(CONFIG_PATH, cfg)
+        _sync_opencode_provider_statuses(servers)
         print(f"\nSaved to {ZSENV_PATH}")
     else:
         print("\nNo keys entered.")
@@ -614,41 +684,39 @@ def cmd_enable():
         cfg["servers"] = existing
         save_json(CONFIG_PATH, cfg)
         print(f"  Added new providers to config: {', '.join(added)}")
-
-    servers = cfg.get("servers", {})
-    existing_keys = _read_env_block()
-    missing = [s for s in servers if _env_name(s) not in existing_keys]
-    if missing:
-        print()
-        miss_list = ", ".join(missing)
-        print(f"  {len(missing)} provider(s) missing API keys: {miss_list}")
-        if not sys.stdin.isatty():
-            state_home = os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))
-            marker = os.path.join(state_home, "setup", "refresh-models.needs-auth")
+    cfg = _migrate_provider_statuses(cfg)
+    _sync_opencode_provider_statuses(cfg.get("servers", {}))
+    enabled = [
+        name for name, provider in cfg.get("servers", {}).items()
+        if _provider_enabled(name, provider)
+    ]
+    print(f"  Enabled providers: {', '.join(enabled) if enabled else 'none'}")
+    available = [name for name in cfg.get("servers", {}) if not _get_key(name)]
+    if available:
+        if sys.stdin.isatty():
+            print("\n  Configure optional providers; leave a key blank to keep it disabled.\n")
+            cmd_auth()
+        else:
+            state_home = os.environ.get(
+                "XDG_STATE_HOME", os.path.expanduser("~/.local/state")
+            )
+            marker = os.path.join(
+                state_home, "setup", "refresh-models.needs-provider-setup"
+            )
             pathlib.Path(os.path.dirname(marker)).mkdir(parents=True, exist_ok=True)
             with open(marker, "w") as f:
-                f.write("\n".join(missing) + "\n")
-        else:
-            print()
-            updated = False
-            for s in missing:
-                url = PROVIDER_URLS.get(s, "")
-                prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
-                try:
-                    key = getpass.getpass(prompt)
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    break
-                if key.strip():
-                    existing_keys[_env_name(s)] = key.strip()
-                    updated = True
-            if updated:
-                lines = [f"export {k}={v}" for k, v in existing_keys.items()]
-                _write_env_block(lines)
-                _sync_zsenv_to_auth()
-                print(f"\nSaved to {ZSENV_PATH}")
-            else:
-                print("  Run: refresh-models auth")
+                f.write("\n".join(available) + "\n")
+
+
+def cmd_provider():
+    if len(sys.argv) != 4 or sys.argv[2] not in ("enable", "disable"):
+        print(
+            "Usage: refresh-models provider [enable|disable] <provider>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not _set_provider_enabled(sys.argv[3], sys.argv[2] == "enable"):
+        sys.exit(1)
 
 
 def cmd_disable():
@@ -704,11 +772,10 @@ def cmd_status():
     cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {"servers": {}}
     servers = cfg.get("servers", {})
     print(f"servers configured: {len(servers)}")
-    existing_keys = _read_env_block()
-    for name in servers:
-        env_name = _env_name(name)
-        status = "key: ✓" if env_name in existing_keys else "key: ✗"
-        print(f"  {name}: {servers[name].get('baseURL')}  {status}")
+    for name, provider in servers.items():
+        state = "enabled" if _provider_enabled(name, provider) else "disabled"
+        key_status = "key: ✓" if _get_key(name) else "key: ✗"
+        print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
 
 
 # --- main -------------------------------------------------------------
@@ -722,8 +789,12 @@ def main():
         _export_auth_to_zsenv()
         _sync_zsenv_to_auth()
         cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {}
+        cfg = _migrate_provider_statuses(cfg)
         servers = cfg.get("servers", {})
+        _sync_opencode_provider_statuses(servers)
         for name, srv_cfg in servers.items():
+            if not _provider_enabled(name, srv_cfg):
+                continue
             refresh_server(name, srv_cfg)
         return
 
@@ -751,29 +822,43 @@ def main():
         cmd_auth()
         return
 
+    if cmd == "provider":
+        cmd_provider()
+        return
+
     if cmd in ("--help", "-h", "help"):
         print("refresh-models — probe /v1/models and update opencode.json")
         print()
         print("Usage:")
-        print("  refresh-models              Refresh all configured servers")
-        print("  refresh-models <server>     Refresh a single server")
-        print("  refresh-models --list       List configured server names")
+        print("  refresh-models              Refresh all enabled providers")
+        print("  refresh-models <provider>   Refresh a single enabled provider")
+        print("  refresh-models --list       List configured provider names")
         print("  refresh-models enable       Install systemd/launchd timer (hourly)")
         print("  refresh-models disable      Remove timer")
         print("  refresh-models status       Show timer state and next run")
         print("  refresh-models auth         Interactive API key setup")
         print("  refresh-models auth <p> <k> Write key directly (agent-friendly)")
+        print("  refresh-models provider enable <p>   Enable a keyed provider")
+        print("  refresh-models provider disable <p>  Disable a provider")
         print("  refresh-models --help       Show this message")
         return
 
     cfg = load_json(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else {}
+    cfg = _migrate_provider_statuses(cfg)
     servers = cfg.get("servers", {})
     if cmd in servers:
+        if not _provider_enabled(cmd, servers[cmd]):
+            print(
+                f"{cmd} is disabled. Run: refresh-models provider enable {cmd}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _sync_opencode_provider_statuses(servers)
         refresh_server(cmd, servers[cmd])
         return
 
     print(f"Unknown: {cmd}", file=sys.stderr)
-    print(f"Usage: refresh-models [enable|disable|status|auth|--list|<server>]", file=sys.stderr)
+    print(f"Usage: refresh-models [enable|disable|status|auth|provider|--list|<provider>]", file=sys.stderr)
     sys.exit(1)
 
 
