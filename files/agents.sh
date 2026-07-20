@@ -65,6 +65,57 @@ _link_skills() {
     done
 }
 
+_skill_audience() {
+    awk -F ': *' '/^audience:/{print $2; exit}' "$1/SKILL.md" 2>/dev/null
+}
+
+_skill_is_visible() {
+    [[ "$(_skill_audience "$1")" != fleet || "${MACHINE_IS_FLEET:-0}" == 1 ]]
+}
+
+_refresh_machine_audience() {
+    local trust_rc=0
+    MACHINE_IS_FLEET=0
+    setup_machine_is_trusted || trust_rc=$?
+    (( trust_rc == 0 )) && MACHINE_IS_FLEET=1
+    if (( trust_rc == 2 )); then
+        echo "agents: warning: could not read the owner key list; fleet-only skills are hidden" >&2
+    fi
+}
+
+_prune_skill_links() {
+    local d skill name
+    for d in "${SKILLS_LINK_DIRS[@]}"; do
+        [[ -d "$d" ]] || continue
+        for skill in "$d"/*(N); do
+            [[ -L "$skill" && "$(readlink "$skill")" == "$AGENTS_DIR"/skills/* ]] || continue
+            name=$(basename "$skill")
+            [[ -d "$AGENTS_DIR/skills/$name" ]] && continue
+            rm -f "$skill"
+            [[ -e "$skill.pre-agents.bak" ]] && mv "$skill.pre-agents.bak" "$skill"
+        done
+    done
+}
+
+_installed_payload_matches() {
+    cmp -s "$SRC_CLONE/agents/AGENTS.md" "$AGENTS_DIR/AGENTS.md" || return 1
+    local skill name target
+    for skill in "$SRC_CLONE"/agents/skills/*(N/); do
+        name=$(basename "$skill")
+        target="$AGENTS_DIR/skills/$name"
+        if _skill_is_visible "$skill"; then
+            [[ -d "$target" ]] && diff -qr "$skill" "$target" >/dev/null || return 1
+        else
+            [[ ! -e "$target" ]] || return 1
+        fi
+    done
+    for target in "$AGENTS_DIR"/skills/*(N/); do
+        name=$(basename "$target")
+        [[ -d "$SRC_CLONE/agents/skills/$name" ]] || return 1
+        _skill_is_visible "$SRC_CLONE/agents/skills/$name" || return 1
+    done
+}
+
 _post_install() {
     # Clean up legacy FLEET.md symlinks — fleet topology now lives in the
     # fleet skill (agents/skills/fleet/SKILL.md).
@@ -87,13 +138,19 @@ install() {
         echo "agents: payload missing at $SRC_CLONE/agents — push the agents/ dir to $SRC_REPO first" >&2
         return 1
     fi
+    _refresh_machine_audience
     mkdir -p "$AGENTS_DIR"
     cp "$SRC_CLONE/agents/AGENTS.md" "$AGENTS_DIR/AGENTS.md"
     rm -rf "$AGENTS_DIR/skills"                       # mirror, don't accrete stale skills
-    cp -R "$SRC_CLONE/agents/skills" "$AGENTS_DIR/skills"
+    mkdir -p "$AGENTS_DIR/skills"
+    local skill
+    for skill in "$SRC_CLONE"/agents/skills/*(N/); do
+        _skill_is_visible "$skill" && cp -R "$skill" "$AGENTS_DIR/skills/"
+    done
 
     local t d
     for t in "${AGENTS_LINKS[@]}"; do _link "$AGENTS_DIR/AGENTS.md" "$t"; done
+    _prune_skill_links
     for d in "${SKILLS_LINK_DIRS[@]}"; do _link_skills "$d"; done
 
     _post_install
@@ -111,6 +168,7 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
+    _refresh_machine_audience
     local local_hash remote_hash local_ref remote_ref
     IFS=$'\t' read -r local_hash remote_hash local_ref remote_ref \
         < <(git_scoped_content_refs "$SRC_CLONE" "${SOURCE_PATHS[@]}" || true)
@@ -121,6 +179,10 @@ status() {
     fi
     # Legacy artifacts that need cleanup trigger an update even when git refs match.
     if [[ -e "$AGENTS_DIR/FLEET.md" || -L "$AGENTS_DIR/FLEET.md" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${local_hash:0:7}" "${remote_hash:0:7}" "$AGENTS_DIR"
+        return 1
+    fi
+    if ! _installed_payload_matches; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' "$MODULE" "outdated" "${local_hash:0:7}" "${remote_hash:0:7}" "$AGENTS_DIR"
         return 1
     fi
@@ -145,6 +207,7 @@ uninstall() {
         done
     done
     rm -rf "$AGENTS_DIR/AGENTS.md" "$AGENTS_DIR/skills"
+    _prune_skill_links
     rmdir "$AGENTS_DIR" 2>/dev/null || true
     rm -rf "$SRC_CLONE"
     remove_script_state "$MODULE"

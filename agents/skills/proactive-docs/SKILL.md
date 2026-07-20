@@ -3,6 +3,7 @@ name: proactive-docs
 version: 1.0
 description: Keep documentation fresh after a change by routing each edit to its one canonical surface. Trigger whenever you change shell/ssh config, an AI harness or MCP server, backup/kernel/monitoring setup, a `setup` module, a repo-template scaffold or skill, agent rules (AGENTS/FLEET/skills), or GPU/inference infra — i.e. any config, module, or workflow that has a documented home.
 argument-hint: "The change you just made (files touched, subsystem affected)"
+audience: fleet
 ---
 
 # Proactive Docs

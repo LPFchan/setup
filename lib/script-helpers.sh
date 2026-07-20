@@ -5,6 +5,33 @@
 
 ZSH_PLUGINS_DIR="${ZSH_PLUGINS_DIR:-$HOME/.zsh}"
 
+# Return success when any local SSH public key appears in the GitHub account's
+# published key list. This is an audience selector for the public setup catalog,
+# not an authentication boundary: both the repository and .keys endpoint are
+# public. A fetch failure returns 2 so callers can fail closed and distinguish it
+# from a successful fetch with no matching key.
+setup_machine_is_trusted() {
+    local keys_url="${SETUP_OWNER_KEYS_URL:-https://github.com/LPFchan.keys}"
+    local ssh_dir="${SETUP_SSH_DIR:-$HOME/.ssh}"
+    local remote_keys local_key normalized
+    remote_keys=$(mktemp) || return 2
+    if ! curl -fsSL --connect-timeout 8 --max-time 30 "$keys_url" -o "$remote_keys" 2>/dev/null; then
+        rm -f "$remote_keys"
+        return 2
+    fi
+
+    for local_key in "$ssh_dir"/*.pub(N); do
+        normalized=$(awk 'NF >= 2 { print $1 " " $2; exit }' "$local_key" 2>/dev/null)
+        [[ -n "$normalized" ]] || continue
+        if awk 'NF >= 2 { print $1 " " $2 }' "$remote_keys" | grep -Fqx -- "$normalized"; then
+            rm -f "$remote_keys"
+            return 0
+        fi
+    done
+    rm -f "$remote_keys"
+    return 1
+}
+
 git_clone_if_missing() {
     local repo="$1" dir="$2"
     if [[ -d "$dir/.git" ]]; then

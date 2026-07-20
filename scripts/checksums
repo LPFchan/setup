@@ -16,7 +16,7 @@ sha256() {
 
 {
     printf '# source\tsha256\n'
-    while IFS=$'\t' read -r module target mode source; do
+    while IFS=$'\t' read -r module target mode source _audience; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         [[ "$mode" == "script" ]] && continue
         [[ -f "$source" ]] || { echo "missing: $source" >&2; exit 1; }

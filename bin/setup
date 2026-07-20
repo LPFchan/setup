@@ -181,10 +181,24 @@ expand_path() {
 
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    local tmp
+    local trust_rc=0 tmp filtered
+    setup_machine_is_trusted || trust_rc=$?
     tmp=$(mktemp)
     if fetch_source_url "$MANIFEST_URL" -o "$tmp" 2>/dev/null \
        && grep -q '^# module' "$tmp"; then
+        filtered="${tmp}.visible"
+        awk -F '\t' -v include_fleet="$(( trust_rc == 0 ))" 'BEGIN { OFS="\t" }
+            /^#/ { print $1, $2, $3, $4; next }
+            NF && ($5 != "fleet" || include_fleet) { print $1, $2, $3, $4 }
+        ' "$tmp" > "$filtered"
+        mv "$filtered" "$tmp" || {
+            rm -f "$tmp" "$filtered"
+            echo "Failed to filter the fetched manifest" >&2
+            return 1
+        }
+        if (( trust_rc == 2 )); then
+            echo "Warning: could not read the owner key list; fleet-only catalog entries are hidden." >&2
+        fi
         if mv "$tmp" "$MANIFEST_FILE"; then
             return 0
         fi

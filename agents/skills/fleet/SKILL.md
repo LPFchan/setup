@@ -3,6 +3,7 @@ name: fleet
 description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
 argument-hint: "Host name (e.g. bingus, grimoire) or fleet question"
 tags: [fleet, ssh, remote, hosts, infrastructure]
+audience: fleet
 ---
 
 # FLEET

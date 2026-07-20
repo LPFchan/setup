@@ -9,7 +9,7 @@ fail() {
 }
 
 runtime_files=(install.sh bin/setup lib/script-helpers.sh)
-while IFS=$'\t' read -r _module _target mode source; do
+while IFS=$'\t' read -r _module _target mode source _audience; do
     [[ "$mode" == script ]] && runtime_files+=("$source")
 done < "$ROOT/manifest.tsv"
 

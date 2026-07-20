@@ -34,6 +34,15 @@ bootstrap installs.
 
 ## Modules
 
+Setup compares the key material in `~/.ssh/*.pub` with
+`https://github.com/LPFchan.keys` before publishing its local catalog. A
+matching machine sees the full manifest; otherwise entries whose manifest
+`audience` is `fleet` are omitted from list, status, install, update, diff, and
+the interactive picker. If the key list cannot be fetched, setup fails closed
+to the public catalog. This is catalog filtering, not access control: the key
+list and this repository are public. The fleet-only modules are `kernel-simmer`,
+`service-ctl`, `gpu-fancontrol`, `monitoring`, `backup`, and `ssh-aliases`.
+
 ### File modules
 
 | module | target | source |
@@ -96,6 +105,11 @@ and symlinks it into every harness so all machines share one source of truth:
 
 - `agents/AGENTS.md` → `~/.agents/AGENTS.md`, symlinked to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/AGENTS.md`, `~/.config/opencode/AGENTS.md`
 - `agents/skills/*` → `~/.agents/skills/`, symlinked per-skill into `~/.claude/skills/` and `~/.codex/skills/`
+
+Skills with `audience: fleet` in their frontmatter are copied and linked only
+on matching machines. An update removes their managed harness links if the
+machine is no longer in the GitHub key list. The fleet-only skills are `fleet`
+and `proactive-docs`.
 
 Existing real files/dirs at any target are backed up to `*.pre-agents.bak` before
 symlinking; `uninstall` removes the symlinks and restores the backups. The module
