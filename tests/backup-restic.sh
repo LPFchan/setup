@@ -9,6 +9,7 @@ export BACKUP_SOURCE_ONLY=1
 export BACKUP_TEST_MODE=1
 export BACKUP_CONF_DIR="$TEST_TMP/etc/backup"
 export BACKUP_STATE_DIR="$TEST_TMP/var/lib/backup"
+export BACKUP_CACHE_DIR="$TEST_TMP/var/cache/backup"
 export BACKUP_SYSTEMD_DIR="$TEST_TMP/systemd"
 export BACKUP_LOCK_FILE="$TEST_TMP/backup.lock"
 export BACKUP_RECOVERY_DIR="$TEST_TMP/recovery"
@@ -154,9 +155,22 @@ PATH="$TEST_TMP/bin:$PATH"
 
 run_backup
 
-[[ $(wc -l < "$TEST_LOG") -eq 2 ]] || fail "expected separate automatic and whitelist snapshots"
+[[ $(wc -l < "$TEST_LOG") -eq 4 ]] \
+    || fail "expected snapshots followed by retention and integrity maintenance"
+[[ $(sed -n '1s/.* \(backup\) .*/\1/p' "$TEST_LOG") == backup ]] \
+    || fail "automatic snapshot did not run first"
+[[ $(sed -n '2s/.* \(backup\) .*/\1/p' "$TEST_LOG") == backup ]] \
+    || fail "whitelist snapshot did not run second"
+[[ $(sed -n '3s/.* \(forget\) .*/\1/p' "$TEST_LOG") == forget ]] \
+    || fail "retention did not follow snapshots"
+[[ $(sed -n '4s/.* \(check\)$/\1/p' "$TEST_LOG") == check ]] \
+    || fail "integrity check did not run last"
 grep -q -- '--exclude-larger-than 20M' "$TEST_LOG" || fail "automatic backup lacks size threshold"
 grep -q -- '--insecure-no-password' "$TEST_LOG" || fail "empty-password mode is not enabled"
+[[ $(grep -Fc -- "--cache-dir $BACKUP_CACHE_DIR" "$TEST_LOG") -eq 4 ]] \
+    || fail "not every Restic operation uses the explicit cache directory"
+[[ -d "$BACKUP_CACHE_DIR" && $(stat -c %a "$BACKUP_CACHE_DIR") == 700 ]] \
+    || fail "dedicated Restic cache directory was not created securely"
 grep -q -- 'sftp.args=-i .*IdentitiesOnly=yes' "$TEST_LOG" \
     || fail "SFTP SSH options do not preserve Restic's default SSH command"
 if grep -q -- 'sftp.command=' "$TEST_LOG"; then
@@ -186,35 +200,66 @@ grep -q $'python\texact\t1' "$BACKUP_STATE_DIR/provenance/reconstruction-summary
 export RESTIC_AUTOMATIC_RC=3
 run_backup 2> "$TEST_TMP/exit-three.stderr"
 unset RESTIC_AUTOMATIC_RC
-[[ $(wc -l < "$TEST_LOG") -eq 2 ]] || fail "exit 3 prevented the whitelist snapshot"
+[[ $(wc -l < "$TEST_LOG") -eq 4 ]] || fail "exit 3 prevented backup maintenance"
 grep -q -- '--tag large-whitelist' "$TEST_LOG" || fail "whitelist did not run after exit 3"
 grep -q 'completed with unreadable source files' "$TEST_TMP/exit-three.stderr" \
     || fail "exit 3 did not produce a warning"
 
-: > "$TEST_LOG"
-run_maintenance
 grep -q -- 'forget.*--keep-daily 7.*--keep-weekly 5.*--keep-monthly 12.*--keep-yearly 3.*--prune' \
-    "$TEST_LOG" || fail "maintenance retention arguments are incomplete"
-grep -q -- 'check$' "$TEST_LOG" || fail "maintenance integrity check did not run"
+    "$TEST_LOG" || fail "retention arguments are incomplete"
+grep -q -- 'check$' "$TEST_LOG" || fail "integrity check did not run"
 
 : > "$TEST_LOG"
 cmd_restore latest
 grep -Fq "restore latest --target $BACKUP_RECOVERY_DIR/" "$TEST_LOG" \
     || fail "restore does not use the disk-backed recovery directory"
+grep -Fq -- "--cache-dir $BACKUP_CACHE_DIR" "$TEST_LOG" \
+    || fail "restore does not use the explicit cache directory"
 
+: > "$TEST_LOG"
+cmd_snapshots
+grep -Fq -- "--cache-dir $BACKUP_CACHE_DIR" "$TEST_LOG" \
+    || fail "snapshot listing does not use the explicit cache directory"
+grep -q -- 'snapshots$' "$TEST_LOG" || fail "snapshot listing did not run"
+
+: > "$TEST_LOG"
+cmd_trigger check
+grep -Fq -- "--cache-dir $BACKUP_CACHE_DIR" "$TEST_LOG" \
+    || fail "standalone integrity check does not use the explicit cache directory"
+grep -q -- 'check$' "$TEST_LOG" || fail "standalone integrity check did not run"
+
+mkdir -p "$BACKUP_SYSTEMD_DIR"
+touch "$BACKUP_SYSTEMD_DIR/backup-daily.service" "$BACKUP_SYSTEMD_DIR/backup-daily.timer" \
+    "$BACKUP_SYSTEMD_DIR/backup-weekly.service" "$BACKUP_SYSTEMD_DIR/backup-weekly.timer"
 write_systemd_units /home/yeowool/.local/bin/backup grimoire
-grep -q '^IOSchedulingClass=idle$' "$BACKUP_SYSTEMD_DIR/backup-daily.service" \
+[[ $(find "$BACKUP_SYSTEMD_DIR" -maxdepth 1 -type f -printf '%f\n' | sort) == $'backup.service\nbackup.timer' ]] \
+    || fail "systemd generation did not leave exactly backup.service and backup.timer"
+grep -q '^ExecStart=/home/yeowool/.local/bin/backup run$' "$BACKUP_SYSTEMD_DIR/backup.service" \
+    || fail "single service does not invoke the combined backup job"
+grep -q '^IOSchedulingClass=idle$' "$BACKUP_SYSTEMD_DIR/backup.service" \
     || fail "backup is not I/O deprioritized"
-grep -q '^CPUWeight=10$' "$BACKUP_SYSTEMD_DIR/backup-daily.service" \
+grep -q '^CPUWeight=10$' "$BACKUP_SYSTEMD_DIR/backup.service" \
     || fail "backup CPU weight is not constrained"
-grep -q '^MemoryMax=8G$' "$BACKUP_SYSTEMD_DIR/backup-daily.service" \
+grep -q '^MemoryMax=8G$' "$BACKUP_SYSTEMD_DIR/backup.service" \
     || fail "backup memory is not bounded"
-grep -q '^OnCalendar=\*-\*-\* 09:00:00$' "$BACKUP_SYSTEMD_DIR/backup-daily.timer" \
+grep -q '^OnCalendar=\*-\*-\* 09:00:00$' "$BACKUP_SYSTEMD_DIR/backup.timer" \
     || fail "daily schedule is not 09:00"
-grep -q '^Persistent=false$' "$BACKUP_SYSTEMD_DIR/backup-daily.timer" \
+grep -q '^Persistent=false$' "$BACKUP_SYSTEMD_DIR/backup.timer" \
     || fail "daily timer unexpectedly catches up missed runs"
-grep -q '^OnCalendar=Sun \*-\*-\* 22:00:00$' "$BACKUP_SYSTEMD_DIR/backup-weekly.timer" \
-    || fail "weekly maintenance is not sufficiently staggered"
+
+SYSTEMCTL_LOG="$TEST_TMP/systemctl.log"
+systemctl() { printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"; }
+stop_backup_units
+unset -f systemctl
+grep -q '^disable backup.timer backup-daily.timer backup-weekly.timer$' "$SYSTEMCTL_LOG" \
+    || fail "migration does not disable old timers"
+grep -q 'stop --no-block backup.timer backup.service backup-daily.timer backup-daily.service backup-weekly.timer backup-weekly.service' \
+    "$SYSTEMCTL_LOG" || fail "migration does not stop old units"
+disable_body=$(sed -n '/^cmd_disable()/,/^}/p' "$ROOT/bin/backup")
+grep -q 'backup-daily.service' <<< "$disable_body" \
+    || fail "disable path does not remove old daily units"
+grep -q 'backup-weekly.service' <<< "$disable_body" \
+    || fail "disable path does not remove old weekly units"
 
 if rg -qi 'btrfs|nfs' "$BACKUP_SYSTEMD_DIR" "$TEST_LOG"; then
     fail "generated backup path still references Btrfs or NFS"

@@ -9,6 +9,7 @@ set -euo pipefail
 NAME="backup"
 CONF_DIR="${BACKUP_CONF_DIR:-/etc/backup}"
 STATE_DIR="${BACKUP_STATE_DIR:-/var/lib/backup}"
+CACHE_DIR="${BACKUP_CACHE_DIR:-/var/cache/backup}"
 SYSTEMD_DIR="${BACKUP_SYSTEMD_DIR:-/etc/systemd/system}"
 LOCK_FILE="${BACKUP_LOCK_FILE:-/run/lock/backup.lock}"
 RECOVERY_DIR="${BACKUP_RECOVERY_DIR:-/var/tmp/backup-recovery}"
@@ -120,6 +121,12 @@ load_config() {
 
 restic_cmd() {
     local sftp_args identity_q known_hosts_q
+    if [[ $EUID -eq 0 ]]; then
+        install -d -o root -g root -m 0700 "$CACHE_DIR"
+    else
+        mkdir -p "$CACHE_DIR"
+        chmod 700 "$CACHE_DIR"
+    fi
     printf -v identity_q '%q' "$SFTP_IDENTITY"
     printf -v known_hosts_q '%q' "$SFTP_KNOWN_HOSTS"
     sftp_args="-i ${identity_q} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${known_hosts_q} -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
@@ -127,7 +134,7 @@ restic_cmd() {
         unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND
         export RESTIC_REPOSITORY
         restic --insecure-no-password -o "sftp.args=${sftp_args}" \
-            --limit-upload "$UPLOAD_LIMIT_KIB" "$@"
+            --cache-dir "$CACHE_DIR" --limit-upload "$UPLOAD_LIMIT_KIB" "$@"
     )
 }
 
@@ -468,15 +475,7 @@ run_backup() {
         failure_rc=$whitelist_rc
     fi
     ((failure_rc == 0)) || return "$failure_rc"
-}
 
-run_maintenance() {
-    require_root
-    command -v restic >/dev/null 2>&1 || die "restic is not installed"
-    load_config
-    mkdir -p "$(dirname "$LOCK_FILE")"
-    exec 9> "$LOCK_FILE"
-    flock -w 3600 9 || die "another backup operation is still running after one hour"
     restic_cmd forget --host "$(detect_host)" \
         --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" \
         --keep-monthly "$KEEP_MONTHLY" --keep-yearly "$KEEP_YEARLY" --prune
@@ -486,10 +485,12 @@ run_maintenance() {
 write_systemd_units() {
     local executable="$1" host="$2"
     mkdir -p "$SYSTEMD_DIR"
+    rm -f "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
+        "$SYSTEMD_DIR/backup-weekly.service" "$SYSTEMD_DIR/backup-weekly.timer"
 
-    cat > "$SYSTEMD_DIR/backup-daily.service" <<UNIT
+    cat > "$SYSTEMD_DIR/backup.service" <<UNIT
 [Unit]
-Description=Incremental backup of ${host} to bingus over SFTP
+Description=Incremental backup and repository maintenance for ${host} over SFTP
 Wants=network-online.target
 After=network-online.target
 
@@ -510,49 +511,13 @@ TimeoutStopSec=10min
 KillSignal=SIGINT
 UNIT
 
-    cat > "$SYSTEMD_DIR/backup-daily.timer" <<'UNIT'
+    cat > "$SYSTEMD_DIR/backup.timer" <<'UNIT'
 [Unit]
-Description=Daily incremental backup
+Description=Daily incremental backup and repository maintenance
 
 [Timer]
 OnCalendar=*-*-* 09:00:00
 RandomizedDelaySec=15min
-Persistent=false
-
-[Install]
-WantedBy=timers.target
-UNIT
-
-    cat > "$SYSTEMD_DIR/backup-weekly.service" <<UNIT
-[Unit]
-Description=Restic retention and integrity check for ${host}
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=${executable} maintain
-Nice=19
-IOSchedulingClass=idle
-CPUSchedulingPolicy=idle
-CPUWeight=10
-IOWeight=10
-MemoryHigh=4G
-MemoryMax=8G
-Environment=GOMAXPROCS=2
-Environment=RESTIC_READ_CONCURRENCY=1
-TimeoutStartSec=12h
-TimeoutStopSec=10min
-KillSignal=SIGINT
-UNIT
-
-    cat > "$SYSTEMD_DIR/backup-weekly.timer" <<'UNIT'
-[Unit]
-Description=Weekly backup retention and integrity check
-
-[Timer]
-OnCalendar=Sun *-*-* 22:00:00
-RandomizedDelaySec=30min
 Persistent=false
 
 [Install]
@@ -569,9 +534,9 @@ remove_legacy_nfs() {
 }
 
 stop_backup_units() {
-    systemctl disable backup-daily.timer backup-weekly.timer 2>/dev/null || true
-    systemctl stop --no-block backup-daily.timer backup-weekly.timer \
-        backup-daily.service backup-weekly.service 2>/dev/null || true
+    systemctl disable backup.timer backup-daily.timer backup-weekly.timer 2>/dev/null || true
+    systemctl stop --no-block backup.timer backup.service backup-daily.timer \
+        backup-daily.service backup-weekly.timer backup-weekly.service 2>/dev/null || true
 }
 
 install_restic_standalone() (
@@ -660,7 +625,7 @@ cmd_enable() {
 
     write_systemd_units "$executable" "$host"
     systemctl daemon-reload
-    systemctl enable --now backup-daily.timer backup-weekly.timer
+    systemctl enable --now backup.timer
     info "backup enabled: incremental Restic over SFTP (daily around 09:00)"
     info "policy: ${CONF_DIR}/config, ${CONF_DIR}/sources, ${CONF_DIR}/excludes, ${CONF_DIR}/large-whitelist"
 }
@@ -668,7 +633,8 @@ cmd_enable() {
 cmd_disable() {
     require_root
     stop_backup_units
-    rm -f "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
+    rm -f "$SYSTEMD_DIR/backup.service" "$SYSTEMD_DIR/backup.timer" \
+        "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
         "$SYSTEMD_DIR/backup-weekly.service" "$SYSTEMD_DIR/backup-weekly.timer"
     systemctl daemon-reload
     remove_legacy_nfs
@@ -688,13 +654,11 @@ cmd_status() {
         echo "repository: not-configured"
     fi
     command -v restic >/dev/null 2>&1 && echo "restic:     $(restic version)" || echo "restic:     not-installed"
-    local unit state next
-    for unit in backup-daily backup-weekly; do
-        state=$(systemctl is-active "${unit}.timer" 2>/dev/null || true)
-        [[ -n "$state" ]] || state=not-installed
-        next=$(systemctl show -p NextElapseUSecRealtime --value "${unit}.timer" 2>/dev/null || true)
-        echo "${unit}: ${state}${next:+ (next: ${next})}"
-    done
+    local state next
+    state=$(systemctl is-active backup.timer 2>/dev/null || true)
+    [[ -n "$state" ]] || state=not-installed
+    next=$(systemctl show -p NextElapseUSecRealtime --value backup.timer 2>/dev/null || true)
+    echo "backup:    ${state}${next:+ (next: ${next})}"
     [[ ! -e /bak ]] || echo "legacy:     /bak retained (not used by this backup)"
 }
 
@@ -717,8 +681,7 @@ cmd_restore() {
 
 cmd_trigger() {
     case "${1:-backup}" in
-        backup|daily) run_backup ;;
-        maintenance|weekly) run_maintenance ;;
+        backup) run_backup ;;
         check)
             require_root
             load_config
@@ -727,7 +690,7 @@ cmd_trigger() {
             flock -n 9 || die "another backup operation is already running"
             restic_cmd check
             ;;
-        *) die "trigger must be backup, maintenance, or check" ;;
+        *) die "trigger must be backup or check" ;;
     esac
 }
 
@@ -736,10 +699,10 @@ usage() {
 Usage: ${NAME} <command> [args]
 
 Commands:
-  enable                         Configure SFTP/Restic and enable timers
-  disable                        Disable timers; preserve config and data
+  enable                         Configure SFTP/Restic and enable the daily timer
+  disable                        Disable the timer; preserve config and data
   status                         Show local configuration and schedule
-  trigger [backup|maintenance|check]
+  trigger [backup|check]
   snapshots                      List available snapshots
   restore [snapshot] [target]    Restore a snapshot (default: latest)
   help                           Show this message
@@ -760,7 +723,6 @@ if [[ "${BACKUP_SOURCE_ONLY:-0}" != 1 ]]; then
         disable) cmd_disable ;;
         status) cmd_status ;;
         run) run_backup ;;
-        maintain) run_maintenance ;;
         trigger) cmd_trigger "${1:-backup}" ;;
         snapshots) cmd_snapshots ;;
         restore) cmd_restore "$@" ;;

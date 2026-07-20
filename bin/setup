@@ -104,7 +104,7 @@ module_service_unit() {
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;
         refresh-models) echo "refresh-models.timer" ;;
-        backup)         echo "backup-daily.timer" ;;
+        backup)         echo "backup.timer" ;;
     esac
 }
 
