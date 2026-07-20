@@ -51,9 +51,9 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux tabs do not close on double-click"
 [[ "$BLOCK_CONTENT" == *'bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c ~'* ]] \
     || fail "empty tmux status space does not append a home-started window on double-click"
-[[ "$BLOCK_CONTENT" == *'bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection'* \
-   && "$BLOCK_CONTENT" == *'bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection'* ]] \
-    || fail "tmux mouse copying does not remain at the current scroll position"
+[[ "$BLOCK_CONTENT" == *'bind -T copy-mode MouseDragEnd1Pane if-shell -F "#{scroll_position}" "send-keys -X copy-selection" "send-keys -X copy-selection-and-cancel"'* \
+   && "$BLOCK_CONTENT" == *'bind -T copy-mode-vi MouseDragEnd1Pane if-shell -F "#{scroll_position}" "send-keys -X copy-selection" "send-keys -X copy-selection-and-cancel"'* ]] \
+    || fail "tmux mouse copying is not conditional on the scroll position"
 [[ "$AUTOSTART_BLOCK_CONTENT" == *'tmux new-session -A -s main -c ~'* ]] \
     || fail "tmux autostart does not create the shared session in home"
 [[ "$AUTOSTART_BLOCK_CONTENT" == *'[[ -o interactive && -t 0 && -z $TMUX ]]'* ]] \
@@ -161,12 +161,10 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
        && "$double_empty_binding" == *'-t ":{end}"'* \
        && "$double_empty_binding" == *"-c $HOME"* ]] \
         || fail "tmux did not install home-started empty-space double-click append: '$double_empty_binding'"
-    [[ "$copy_drag_binding" == *'send-keys -X copy-selection'* \
-       && "$copy_drag_binding" != *'and-cancel'* ]] \
-        || fail "tmux emacs mouse copy still exits copy mode: '$copy_drag_binding'"
-    [[ "$copy_drag_vi_binding" == *'send-keys -X copy-selection'* \
-       && "$copy_drag_vi_binding" != *'and-cancel'* ]] \
-        || fail "tmux vi mouse copy still exits copy mode: '$copy_drag_vi_binding'"
+    [[ "$copy_drag_binding" == *'if-shell -F "#{scroll_position}" "send-keys -X copy-selection" "send-keys -X copy-selection-and-cancel"'* ]] \
+        || fail "tmux emacs mouse copy does not branch on scroll position: '$copy_drag_binding'"
+    [[ "$copy_drag_vi_binding" == *'if-shell -F "#{scroll_position}" "send-keys -X copy-selection" "send-keys -X copy-selection-and-cancel"'* ]] \
+        || fail "tmux vi mouse copy does not branch on scroll position: '$copy_drag_vi_binding'"
 fi
 
 # Exercise the zsh hook that captures the launched command before an executable

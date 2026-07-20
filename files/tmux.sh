@@ -48,10 +48,10 @@ bind -n DoubleClick1Status kill-window -t =
 bind -n DoubleClick1StatusDefault new-window -a -t ":{end}" -c ~
 bind -T copy-mode WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
 bind -T copy-mode WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
-bind -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection
+bind -T copy-mode MouseDragEnd1Pane if-shell -F "#{scroll_position}" "send-keys -X copy-selection" "send-keys -X copy-selection-and-cancel"
 bind -T copy-mode-vi WheelUpPane select-pane \; send-keys -X -N 1 scroll-up
 bind -T copy-mode-vi WheelDownPane select-pane \; send-keys -X -N 1 scroll-down
-bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection
+bind -T copy-mode-vi MouseDragEnd1Pane if-shell -F "#{scroll_position}" "send-keys -X copy-selection" "send-keys -X copy-selection-and-cancel"
 set -g status-interval 5
 set -g status-position top
 set -g status-left-length 64
