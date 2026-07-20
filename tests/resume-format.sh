@@ -159,4 +159,77 @@ actual_cc_args=$(cat "$TEST_TMP/claudex-args")
 [[ "$actual_cc_args" == "$expected_cc_args" ]] \
     || { echo "FAIL: resume did not dispatch claudex with commandcode profile: $actual_cc_args" >&2; exit 1; }
 
+# Hermes persists sessions in ~/.hermes/state.db. Only top-level interactive
+# CLI sessions belong in the human resume picker; tool and child sessions must
+# stay out of it.
+mkdir -p "$HOME/.hermes" "$HOME/hermes-proj"
+python3 - "$HOME/.hermes/state.db" "$HOME/hermes-proj" <<'PYEOF'
+import sqlite3, sys
+
+db, cwd = sys.argv[1], sys.argv[2]
+conn = sqlite3.connect(db)
+conn.executescript("""
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    parent_session_id TEXT,
+    cwd TEXT,
+    title TEXT,
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT,
+    timestamp REAL NOT NULL
+);
+""")
+conn.execute(
+    "INSERT INTO sessions VALUES (?, 'cli', NULL, ?, ?, ?, NULL, 0)",
+    ("20240706_120000_hermes", cwd, "Resume Hermes work", 1720267200),
+)
+conn.execute(
+    "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+    ("20240706_120000_hermes", "First Hermes prompt", 1720267200),
+)
+conn.execute(
+    "INSERT INTO sessions VALUES (?, 'tool', NULL, NULL, ?, ?, NULL, 0)",
+    ("20240706_130000_tool", "Hidden tool session", 1720270800),
+)
+conn.execute(
+    "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+    ("20240706_130000_tool", "Hidden", 1720270800),
+)
+conn.commit()
+conn.close()
+PYEOF
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+[[ "$selection" != *"Hidden tool session"* ]] || exit 2
+printf '%s\n' "$selection" | grep 'hm|' | head -1
+EOF
+cat > "$FAKE_BIN/hermes" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/hermes-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/hermes"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/hermes-stderr"
+
+expected_tmux_args=$'rename-window\n--\nhermes'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the Hermes tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_hermes_args=$(printf '%s\nchat\n--resume\n20240706_120000_hermes' "$FAKE_BIN/hermes")
+actual_hermes_args=$(cat "$TEST_TMP/hermes-args")
+[[ "$actual_hermes_args" == "$expected_hermes_args" ]] \
+    || { echo "FAIL: resume did not dispatch Hermes: $actual_hermes_args" >&2; exit 1; }
+
 echo "resume format tests passed"

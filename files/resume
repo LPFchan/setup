@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup-module: resume
 # setup-source: files/resume
-# resume - interactively pick and resume a Claude Code, Codex, OpenCode, or ForgeCode session
+# resume - interactively pick and resume an AI harness session
 
 set -euo pipefail
 
@@ -9,8 +9,8 @@ usage() {
     cat <<'EOF'
 Usage: resume [--help]
 
-  Interactively pick and resume a Claude Code, Codex, OpenCode, or
-  ForgeCode session via fzf.
+  Interactively pick and resume a Claude Code, Codex, OpenCode,
+  ForgeCode, or Hermes session via fzf.
 
   Without arguments, opens an fzf picker of recent sessions. Selecting
   a session resumes it with the appropriate tool.
@@ -27,6 +27,7 @@ CLAUDE_DIR="$HOME/.claude/projects"
 CODEX_DIR="$HOME/.codex/sessions"
 OC_DB="$HOME/.local/share/opencode/opencode.db"
 FG_DB="$HOME/.forge/.forge.db"
+HERMES_DB="$HOME/.hermes/state.db"
 MAX_SESSIONS=100
 # Only the newest SCAN_LIMIT files per source get the expensive per-file jq
 # extraction; the merged list is then trimmed to MAX_SESSIONS. Without this the
@@ -206,6 +207,48 @@ for cid, title, updated_at, context in conn.execute(
 conn.close()
 PYEOF
     fi
+
+    if [[ -f "$HERMES_DB" ]]; then
+        python3 - "$HERMES_DB" "$HOME" << 'PYEOF'
+import sqlite3, sys
+
+db, home = sys.argv[1], sys.argv[2]
+conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+for sid, cwd, title, ts in conn.execute(
+    """
+    SELECT s.id,
+           COALESCE(NULLIF(s.cwd, ''), ?),
+           COALESCE(
+               NULLIF(s.title, ''),
+               (SELECT m.content FROM messages m
+                WHERE m.session_id = s.id AND m.role = 'user'
+                  AND m.content IS NOT NULL
+                ORDER BY m.timestamp, m.id LIMIT 1),
+               ''
+           ),
+           CAST(COALESCE(
+               (SELECT MAX(m.timestamp) FROM messages m
+                WHERE m.session_id = s.id),
+               s.ended_at,
+               s.started_at,
+               0
+           ) AS INTEGER)
+    FROM sessions s
+    WHERE s.source = 'cli'
+      AND s.parent_session_id IS NULL
+      AND COALESCE(s.archived, 0) = 0
+      AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
+    ORDER BY 4 DESC
+    LIMIT 100
+    """,
+    (home,),
+):
+    clean_cwd = str(cwd).replace("|", "/").replace("\n", " ").replace("\r", " ")
+    clean_title = " ".join(str(title).replace("|", "/").split())
+    print(f"{ts}|hm|{sid}|{clean_cwd}|{clean_title}")
+conn.close()
+PYEOF
+    fi
 }
 
 format_for_fzf() {
@@ -218,6 +261,7 @@ format_for_fzf() {
             cx) label="codex" ;;
             oc) label="opencode" ;;
             fg) label="forge" ;;
+            hm) label="hermes" ;;
         esac
         display_cwd=$(echo "$cwd" | sed "s|^$HOME|~|")
         printf "%s  %-10s  %-22s  %s\t%s|%s|%s\n" \
@@ -257,6 +301,7 @@ case "$tool" in
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;
+    hm) harness=hermes; resume_args=(chat --resume "$id") ;;
     *) exit 0 ;;
 esac
 

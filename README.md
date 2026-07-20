@@ -47,8 +47,10 @@ bootstrap installs.
 | `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
 
-The `resume` picker forwards the selected harness name to the current tmux
-window title before resuming the session.
+The `resume` picker reads Claude Code, Codex, OpenCode, ForgeCode, and Hermes
+session stores, then forwards the selected harness name to the current tmux
+window title before resuming the session. Hermes entries come from top-level
+interactive CLI sessions in `~/.hermes/state.db`.
 
 ### Script modules
 
