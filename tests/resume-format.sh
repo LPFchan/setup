@@ -232,4 +232,60 @@ actual_hermes_args=$(cat "$TEST_TMP/hermes-args")
 [[ "$actual_hermes_args" == "$expected_hermes_args" ]] \
     || { echo "FAIL: resume did not dispatch Hermes: $actual_hermes_args" >&2; exit 1; }
 
+# Grok Build stores sessions under ~/.grok/sessions/<url-encoded-cwd>/<id>/
+# with summary.json. Empty sessions (no chat turns, no title) must stay out
+# of the picker; real sessions resume via `grok --resume <id>`.
+gkid="019f80cb-55c4-72a0-a994-e8687e2832d0"
+gkcwd="$HOME/grok-proj"
+gkdir="$HOME/.grok/sessions/%2Ftmp%2Fgrok-proj/$gkid"
+mkdir -p "$gkcwd" "$gkdir" "$HOME/.grok/sessions/%2Ftmp%2Fempty/019f0000-0000-7000-8000-000000000000"
+cat > "$gkdir/summary.json" <<EOF
+{
+  "info": {"id": "$gkid", "cwd": "$gkcwd"},
+  "session_summary": "Resume Grok work",
+  "generated_title": "Resume Grok work",
+  "created_at": "2024-07-07T12:00:00.000000Z",
+  "updated_at": "2024-07-07T12:00:00.000000Z",
+  "last_active_at": "2024-07-07T12:00:00.000000Z",
+  "num_chat_messages": 4,
+  "num_messages": 10
+}
+EOF
+cat > "$HOME/.grok/sessions/%2Ftmp%2Fempty/019f0000-0000-7000-8000-000000000000/summary.json" <<'EOF'
+{
+  "info": {"id": "019f0000-0000-7000-8000-000000000000", "cwd": "/tmp/empty"},
+  "session_summary": "",
+  "generated_title": "",
+  "created_at": "2024-07-07T13:00:00.000000Z",
+  "updated_at": "2024-07-07T13:00:00.000000Z",
+  "num_chat_messages": 0,
+  "num_messages": 0
+}
+EOF
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+[[ "$selection" != *"019f0000-0000-7000-8000-000000000000"* ]] || exit 2
+printf '%s\n' "$selection" | grep 'gk|' | head -1
+EOF
+cat > "$FAKE_BIN/grok" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/grok-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/grok"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/grok-stderr"
+
+expected_tmux_args=$'rename-window\n--\ngrok'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the Grok tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_grok_args=$(printf '%s\n--resume\n%s' "$FAKE_BIN/grok" "$gkid")
+actual_grok_args=$(cat "$TEST_TMP/grok-args")
+[[ "$actual_grok_args" == "$expected_grok_args" ]] \
+    || { echo "FAIL: resume did not dispatch Grok: $actual_grok_args" >&2; exit 1; }
+
 echo "resume format tests passed"

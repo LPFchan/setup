@@ -10,7 +10,7 @@ usage() {
 Usage: resume [--help]
 
   Interactively pick and resume a Claude Code, Codex, OpenCode,
-  ForgeCode, or Hermes session via fzf.
+  ForgeCode, Hermes, or Grok Build session via fzf.
 
   Without arguments, opens an fzf picker of recent sessions. Selecting
   a session resumes it with the appropriate tool.
@@ -28,6 +28,7 @@ CODEX_DIR="$HOME/.codex/sessions"
 OC_DB="$HOME/.local/share/opencode/opencode.db"
 FG_DB="$HOME/.forge/.forge.db"
 HERMES_DB="$HOME/.hermes/state.db"
+GROK_DIR="$HOME/.grok/sessions"
 MAX_SESSIONS=100
 # Only the newest SCAN_LIMIT files per source get the expensive per-file jq
 # extraction; the merged list is then trimmed to MAX_SESSIONS. Without this the
@@ -249,6 +250,51 @@ for sid, cwd, title, ts in conn.execute(
 conn.close()
 PYEOF
     fi
+
+    # Grok Build stores one directory per session under ~/.grok/sessions/<cwd-enc>/<id>/
+    # with summary.json holding id, cwd, title, and timestamps. Empty sessions
+    # (no chat turns and no title) are omitted so the picker stays useful.
+    if [[ -d "$GROK_DIR" ]]; then
+        python3 - "$GROK_DIR" "$HOME" "$SCAN_LIMIT" << 'PYEOF'
+import json, sys
+from datetime import datetime
+from pathlib import Path
+
+root, home, limit = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+rows = []
+for summary in root.rglob("summary.json"):
+    if summary.name != "summary.json":
+        continue
+    try:
+        data = json.loads(summary.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    info = data.get("info") or {}
+    sid = info.get("id") or summary.parent.name
+    if not sid:
+        continue
+    num_chat = int(data.get("num_chat_messages") or 0)
+    title = (data.get("generated_title") or data.get("session_summary") or "").strip()
+    if num_chat <= 0 and not title:
+        continue
+    cwd = info.get("cwd") or home
+    ts_raw = data.get("last_active_at") or data.get("updated_at") or data.get("created_at") or ""
+    try:
+        ts = int(datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        try:
+            ts = int(summary.stat().st_mtime)
+        except Exception:
+            ts = 0
+    clean_cwd = str(cwd).replace("|", "/").replace("\n", " ").replace("\r", " ")
+    clean_title = " ".join(str(title).replace("|", "/").split())
+    rows.append((ts, sid, clean_cwd, clean_title))
+
+rows.sort(key=lambda r: r[0], reverse=True)
+for ts, sid, cwd, title in rows[:limit]:
+    print(f"{ts}|gk|{sid}|{cwd}|{title}")
+PYEOF
+    fi
 }
 
 format_for_fzf() {
@@ -262,6 +308,7 @@ format_for_fzf() {
             oc) label="opencode" ;;
             fg) label="forge" ;;
             hm) label="hermes" ;;
+            gk) label="grok" ;;
         esac
         display_cwd=$(echo "$cwd" | sed "s|^$HOME|~|")
         printf "%s  %-10s  %-22s  %s\t%s|%s|%s\n" \
@@ -302,6 +349,7 @@ case "$tool" in
     oc) harness=opencode; resume_args=(--session "$id") ;;
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;
     hm) harness=hermes; resume_args=(chat --resume "$id") ;;
+    gk) harness=grok; resume_args=(--resume "$id") ;;
     *) exit 0 ;;
 esac
 

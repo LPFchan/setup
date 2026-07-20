@@ -66,10 +66,11 @@ into OpenCode's `disabled_providers` list and are skipped by manual and
 scheduled refreshes. Initial service setup offers each unkeyed provider once;
 leaving its prompt blank keeps it disabled.
 
-The `resume` picker reads Claude Code, Codex, OpenCode, ForgeCode, and Hermes
-session stores, then forwards the selected harness name to the current tmux
-window title before resuming the session. Hermes entries come from top-level
-interactive CLI sessions in `~/.hermes/state.db`.
+The `resume` picker reads Claude Code, Codex, OpenCode, ForgeCode, Hermes, and
+Grok Build session stores, then forwards the selected harness name to the
+current tmux window title before resuming the session. Hermes entries come from
+top-level interactive CLI sessions in `~/.hermes/state.db`. Grok entries come
+from `~/.grok/sessions/*/summary.json` and resume with `grok --resume <id>`.
 
 ### Script modules
 
