@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fan Out"
+  short_description: "Parallelize implementation across isolated agents"
+  default_prompt: "Use $fan-out to split and delegate this implementation across parallel subagents and worktrees."
