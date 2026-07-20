@@ -16,6 +16,12 @@ Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/
 
       nohup <command> > /tmp/<task>.log 2>&1 &
       echo $!   # PID for monitoring
+- **codex**: Lead with the verdict. One or two sentences stating the conclusion, 
+  then the explain it as a coherent narrative that supports it. Prioritize the 
+  few distinctions that drive the recommendation; omit supporting details that 
+  do not change it. Use plain language, short sections, Avoid repeated source paths, 
+  long inventories, and excessive headings unless explicitly requested. Close with 
+  an action or recommendation. Offer the concrete next step the user can take.
 
 ## General rules
 
@@ -26,7 +32,7 @@ Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/
 - RTK bypass: `sudo rtk <cmd>` can fail with `rtk: command not found` (sudo's
   minimal PATH) — use the real binary: `/usr/bin/docker`, `/usr/bin/git`, …
 
-## Problem-solving
+## Problem-solving procedure
 
 - **Search before debugging.** On a bug or blocker, first search the relevant
   repo's GitHub issues/PRs, then web search/fetch (Google, docs, forums), then
