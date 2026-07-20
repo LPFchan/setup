@@ -1418,8 +1418,51 @@ detect_env_summary() {
     echo "${os} ${arch} · ${distro} · ${fs}"
 }
 
+_setup_picker_state_reset() {
+    SETUP_PICKER_SELECTION_LOADED=0
+    SETUP_PICKER_SNAPSHOT_LOADED=0
+}
+
+_setup_picker_selection_load() {
+    (( ${SETUP_PICKER_SELECTION_LOADED:-0} == 1 )) && return
+    typeset -gA SETUP_PICKER_SELECTED_SET
+    typeset -ga SETUP_PICKER_SELECTED_ITEMS
+    typeset -gi SETUP_PICKER_SELECTED_N=0
+    SETUP_PICKER_SELECTED_SET=()
+    SETUP_PICKER_SELECTED_ITEMS=()
+    local item
+    while IFS= read -r item; do
+        [[ -n "$item" && -z "${SETUP_PICKER_SELECTED_SET[$item]-}" ]] || continue
+        SETUP_PICKER_SELECTED_SET[$item]=1
+        SETUP_PICKER_SELECTED_ITEMS+=("$item")
+        SETUP_PICKER_SELECTED_N=$((SETUP_PICKER_SELECTED_N + 1))
+    done < "$SETUP_PICKER_SELECTION_FILE"
+    SETUP_PICKER_SELECTION_LOADED=1
+}
+
+_setup_picker_snapshot_load() {
+    (( ${SETUP_PICKER_SNAPSHOT_LOADED:-0} == 1 )) && return
+    typeset -ga SETUP_PICKER_SNAPSHOT_ROWS
+    typeset -gi SETUP_PICKER_SNAPSHOT_N=0
+    SETUP_PICKER_SNAPSHOT_ROWS=()
+    local row
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        SETUP_PICKER_SNAPSHOT_ROWS+=("$row")
+        SETUP_PICKER_SNAPSHOT_N=$((SETUP_PICKER_SNAPSHOT_N + 1))
+    done < "$SETUP_PICKER_SNAPSHOT_FILE"
+    SETUP_PICKER_SNAPSHOT_LOADED=1
+}
+
 _setup_picker_selection_has() {
-    grep -Fqx -- "$1" "$SETUP_PICKER_SELECTION_FILE" 2>/dev/null
+    _setup_picker_selection_load
+    [[ -n "${SETUP_PICKER_SELECTED_SET[$1]-}" ]]
+}
+
+_setup_picker_selection_write() {
+    : > "$SETUP_PICKER_SELECTION_FILE"
+    (( SETUP_PICKER_SELECTED_N == 0 )) \
+        || printf '%s\n' "${SETUP_PICKER_SELECTED_ITEMS[@]}" > "$SETUP_PICKER_SELECTION_FILE"
 }
 
 _setup_state_needs_update() {
@@ -1430,22 +1473,28 @@ _setup_state_needs_update() {
 }
 
 _setup_picker_header() {
-    local selected total
-    selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
-    total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
+    _setup_picker_state_reset
+    _setup_picker_selection_load
+    _setup_picker_snapshot_load
     printf '%d/%d · %s · Enter=toggle/open/action · Esc=finish\n' \
-        "$selected" "$total" "$SETUP_PICKER_ENV_SUMMARY"
+        "$SETUP_PICKER_SELECTED_N" "$SETUP_PICKER_SNAPSHOT_N" "$SETUP_PICKER_ENV_SUMMARY"
 }
 
 _setup_picker_action_counts() {
-    local m t mo s state installed svc active detail
+    local m state installed svc active
+    local -a fields
+    _setup_picker_selection_load
+    _setup_picker_snapshot_load
     SETUP_PICKER_INSTALL_N=0
     SETUP_PICKER_UPDATE_N=0
     SETUP_PICKER_REINSTALL_N=0
     SETUP_PICKER_UNINSTALL_N=0
     SETUP_PICKER_ENABLE_N=0
     SETUP_PICKER_DISABLE_N=0
-    while IFS=$'\t' read -r m t mo s state installed svc active detail; do
+    local row
+    for row in "${SETUP_PICKER_SNAPSHOT_ROWS[@]}"; do
+        fields=("${(@ps:\t:)row}")
+        m=${fields[0]}; state=${fields[4]}; installed=${fields[5]}; svc=${fields[6]}; active=${fields[7]}
         _setup_picker_selection_has "$m" || continue
         [[ "$installed" == 0 ]] && SETUP_PICKER_INSTALL_N=$((SETUP_PICKER_INSTALL_N + 1))
         [[ "$installed" == 1 ]] && _setup_state_needs_update "$state" && SETUP_PICKER_UPDATE_N=$((SETUP_PICKER_UPDATE_N + 1))
@@ -1453,7 +1502,7 @@ _setup_picker_action_counts() {
         [[ "$installed" == 1 && "$m" != fzf-multicolumn ]] && SETUP_PICKER_UNINSTALL_N=$((SETUP_PICKER_UNINSTALL_N + 1))
         [[ "$installed" == 1 && "$svc" == 1 && "$active" == 0 ]] && SETUP_PICKER_ENABLE_N=$((SETUP_PICKER_ENABLE_N + 1))
         [[ "$installed" == 1 && "$svc" == 1 && "$active" == 1 ]] && SETUP_PICKER_DISABLE_N=$((SETUP_PICKER_DISABLE_N + 1))
-    done < "$SETUP_PICKER_SNAPSHOT_FILE"
+    done
     if (( SETUP_PICKER_ENABLE_N > 0 )); then
         SETUP_PICKER_SERVICE_ACTION=enable
         SETUP_PICKER_SERVICE_N=$SETUP_PICKER_ENABLE_N
@@ -1470,15 +1519,16 @@ _setup_picker_action_counts() {
 }
 
 _setup_picker_render() {
-    local delim="$SETUP_PICKER_DELIM" selected total top_mark='[ ]'
-    local row m t mo s state installed svc active detail mark detail_header="${SETUP_PICKER_DETAIL_HEADER:-}"
-    local -a action_rows=()
+    _setup_picker_state_reset
+    _setup_picker_selection_load
+    _setup_picker_snapshot_load
+    local delim="$SETUP_PICKER_DELIM" top_mark='[ ]'
+    local row m detail mark service_verb detail_header="${SETUP_PICKER_DETAIL_HEADER:-}"
+    local -a action_rows=() fields
     local i last_span
-    selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
-    total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
     [[ -f "${SETUP_PICKER_DETAIL_HEADER_FILE:-}" ]] && detail_header=$(<"$SETUP_PICKER_DETAIL_HEADER_FILE")
-    (( selected == total && total > 0 )) && top_mark='[*]'
-    if (( selected == 0 )); then
+    (( SETUP_PICKER_SELECTED_N == SETUP_PICKER_SNAPSHOT_N && SETUP_PICKER_SNAPSHOT_N > 0 )) && top_mark='[*]'
+    if (( SETUP_PICKER_SELECTED_N == 0 )); then
         printf 'select-all%sall%s%s%s\n' "$delim" "$delim" "$top_mark" "$delim"
         printf '@@5@@all-menu%sall%s%s%s\n' "$delim" "$delim" "$detail_header" "$delim"
     else
@@ -1489,7 +1539,8 @@ _setup_picker_render() {
         (( SETUP_PICKER_REINSTALL_N > 0 )) && action_rows+=("action${delim}reinstall${delim}Reinstall $SETUP_PICKER_REINSTALL_N${delim}")
         (( SETUP_PICKER_UNINSTALL_N > 0 )) && action_rows+=("action${delim}uninstall${delim}Uninstall $SETUP_PICKER_UNINSTALL_N${delim}")
         if (( SETUP_PICKER_SERVICE_N > 0 )); then
-            action_rows+=("action${delim}${SETUP_PICKER_SERVICE_ACTION}${delim}$([[ "$SETUP_PICKER_SERVICE_ACTION" == enable ]] && echo Enable || echo Disable) $SETUP_PICKER_SERVICE_N${delim}")
+            [[ "$SETUP_PICKER_SERVICE_ACTION" == enable ]] && service_verb=Enable || service_verb=Disable
+            action_rows+=("action${delim}${SETUP_PICKER_SERVICE_ACTION}${delim}${service_verb} $SETUP_PICKER_SERVICE_N${delim}")
         fi
         last_span=$((6 - SETUP_PICKER_VISIBLE_ACTIONS))
         for ((i = 0; i < ${#action_rows[@]}; i++)); do
@@ -1500,80 +1551,105 @@ _setup_picker_render() {
             fi
         done
     fi
-    while IFS=$'\t' read -r m t mo s state installed svc active detail; do
+    for row in "${SETUP_PICKER_SNAPSHOT_ROWS[@]}"; do
+        fields=("${(@ps:\t:)row}")
+        m=${fields[0]}; detail=${fields[8]-}
         _setup_picker_selection_has "$m" && mark='[*]' || mark='[ ]'
         printf 'checkbox%s%s%s%s%s\n' "$delim" "$m" "$delim" "$mark" "$delim"
         printf '@@5@@module%s%s%s%s%s\n' "$delim" "$m" "$delim" "$detail" "$delim"
-    done < "$SETUP_PICKER_SNAPSHOT_FILE"
+    done
 }
 
 _setup_picker_toggle() {
-    local kind="$1" key="$2" selected total tmp
+    local kind="$1" key="$2" item m
+    local -a out=()
+    _setup_picker_selection_load
     case "$kind" in
         checkbox)
-            tmp="$SETUP_PICKER_SELECTION_FILE.new.$$"
             if _setup_picker_selection_has "$key"; then
-                grep -Fvx -- "$key" "$SETUP_PICKER_SELECTION_FILE" > "$tmp" || true
+                unset 'SETUP_PICKER_SELECTED_SET[$key]'
+                for item in "${SETUP_PICKER_SELECTED_ITEMS[@]}"; do
+                    [[ "$item" == "$key" ]] || out+=("$item")
+                done
+                SETUP_PICKER_SELECTED_ITEMS=("${out[@]}")
+                SETUP_PICKER_SELECTED_N=$((SETUP_PICKER_SELECTED_N - 1))
             else
-                cp "$SETUP_PICKER_SELECTION_FILE" "$tmp"
-                printf '%s\n' "$key" >> "$tmp"
+                SETUP_PICKER_SELECTED_SET[$key]=1
+                SETUP_PICKER_SELECTED_ITEMS+=("$key")
+                SETUP_PICKER_SELECTED_N=$((SETUP_PICKER_SELECTED_N + 1))
             fi
-            mv "$tmp" "$SETUP_PICKER_SELECTION_FILE"
+            _setup_picker_selection_write
             ;;
         select-all)
-            selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
-            total=$(wc -l < "$SETUP_PICKER_SNAPSHOT_FILE")
-            if (( selected == total && total > 0 )); then
-                : > "$SETUP_PICKER_SELECTION_FILE"
+            _setup_picker_snapshot_load
+            SETUP_PICKER_SELECTED_SET=()
+            SETUP_PICKER_SELECTED_ITEMS=()
+            if (( SETUP_PICKER_SELECTED_N == SETUP_PICKER_SNAPSHOT_N && SETUP_PICKER_SNAPSHOT_N > 0 )); then
+                SETUP_PICKER_SELECTED_N=0
             else
-                : > "$SETUP_PICKER_SELECTION_FILE"
-                while IFS=$'\t' read -r key _; do printf '%s\n' "$key"; done \
-                    < "$SETUP_PICKER_SNAPSHOT_FILE" > "$SETUP_PICKER_SELECTION_FILE"
+                for item in "${SETUP_PICKER_SNAPSHOT_ROWS[@]}"; do
+                    m=${item%%$'\t'*}
+                    SETUP_PICKER_SELECTED_SET[$m]=1
+                    SETUP_PICKER_SELECTED_ITEMS+=("$m")
+                done
+                SETUP_PICKER_SELECTED_N=$SETUP_PICKER_SNAPSHOT_N
             fi
+            _setup_picker_selection_write
             ;;
         *) return 1 ;;
     esac
 }
 
-_setup_picker_position() {
-    local kind="$1" key="$2" selected base=3 index=0 row module pos
+_setup_picker_position_value() {
+    local kind="$1" key="$2" base=3 index=0 row module pos
+    _setup_picker_selection_load
+    _setup_picker_snapshot_load
     case "$kind" in
-        select-all) echo 1; return ;;
+        select-all) SETUP_PICKER_POS=1; return ;;
         action)
             _setup_picker_action_counts
             pos=2
-            if (( SETUP_PICKER_INSTALL_N > 0 )); then [[ "$key" == install ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
-            if (( SETUP_PICKER_UPDATE_N > 0 )); then [[ "$key" == update ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
-            if (( SETUP_PICKER_REINSTALL_N > 0 )); then [[ "$key" == reinstall ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
-            if (( SETUP_PICKER_UNINSTALL_N > 0 )); then [[ "$key" == uninstall ]] && { echo "$pos"; return; }; pos=$((pos + 1)); fi
-            if (( SETUP_PICKER_SERVICE_N > 0 )) && [[ "$key" == "$SETUP_PICKER_SERVICE_ACTION" ]]; then echo "$pos"; return; fi
-            echo 1
+            if (( SETUP_PICKER_INSTALL_N > 0 )); then [[ "$key" == install ]] && { SETUP_PICKER_POS=$pos; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_UPDATE_N > 0 )); then [[ "$key" == update ]] && { SETUP_PICKER_POS=$pos; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_REINSTALL_N > 0 )); then [[ "$key" == reinstall ]] && { SETUP_PICKER_POS=$pos; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_UNINSTALL_N > 0 )); then [[ "$key" == uninstall ]] && { SETUP_PICKER_POS=$pos; return; }; pos=$((pos + 1)); fi
+            if (( SETUP_PICKER_SERVICE_N > 0 )) && [[ "$key" == "$SETUP_PICKER_SERVICE_ACTION" ]]; then SETUP_PICKER_POS=$pos; return; fi
+            SETUP_PICKER_POS=1
             return
             ;;
     esac
-    selected=$(wc -l < "$SETUP_PICKER_SELECTION_FILE")
-    if (( selected > 0 )); then
+    if (( SETUP_PICKER_SELECTED_N > 0 )); then
         _setup_picker_action_counts
         base=$((2 + SETUP_PICKER_VISIBLE_ACTIONS))
     fi
-    while IFS=$'\t' read -r module _; do
+    for row in "${SETUP_PICKER_SNAPSHOT_ROWS[@]}"; do
+        module=${row%%$'\t'*}
         if [[ "$module" == "$key" ]]; then
-            [[ "$kind" == module ]] && echo $((base + index * 2 + 1)) || echo $((base + index * 2))
+            [[ "$kind" == module ]] \
+                && SETUP_PICKER_POS=$((base + index * 2 + 1)) \
+                || SETUP_PICKER_POS=$((base + index * 2))
             return
         fi
         index=$((index + 1))
-    done < "$SETUP_PICKER_SNAPSHOT_FILE"
-    echo 1
+    done
+    SETUP_PICKER_POS=1
+}
+
+_setup_picker_position() {
+    _setup_picker_position_value "$1" "$2"
+    printf '%d\n' "$SETUP_PICKER_POS"
 }
 
 _setup_picker_transform() {
-    local kind="$1" key="$2" pos
+    local kind="$1" key="$2"
+    _setup_picker_state_reset
     case "$kind" in
         checkbox|select-all)
             _setup_picker_toggle "$kind" "$key" || return
-            pos=$(_setup_picker_position "$kind" "$key")
-            printf '%d\n' "$pos" > "$SETUP_PICKER_POSITION_FILE"
-            echo 'reload-sync("$SETUP_PICKER_CALLBACK_SCRIPT" _setup_picker_render)'
+            _setup_picker_position_value "$kind" "$key"
+            printf '%d\n' "$SETUP_PICKER_POS" > "$SETUP_PICKER_POSITION_FILE"
+            _setup_picker_render > "$SETUP_PICKER_RENDER_FILE" || return
+            echo 'reload-sync(command cat "$SETUP_PICKER_RENDER_FILE")'
             ;;
         module|action|all-menu) echo accept ;;
     esac
@@ -1661,25 +1737,28 @@ cmd_reconfigure() {
     SETUP_PICKER_SNAPSHOT_FILE="$picker_state_dir/snapshot.tsv"
     SETUP_PICKER_SELECTION_FILE="$picker_state_dir/selected"
     SETUP_PICKER_POSITION_FILE="$picker_state_dir/position"
+    SETUP_PICKER_RENDER_FILE="$picker_state_dir/rendered"
     SETUP_PICKER_DETAIL_HEADER_FILE="$picker_state_dir/detail-header"
     picker_callbacks="$picker_state_dir/callbacks.zsh"
     SETUP_PICKER_CALLBACK_SCRIPT="$picker_callbacks"
     SETUP_PICKER_DELIM="$delim"
     SETUP_PICKER_ENV_SUMMARY="$env_summary"
     SETUP_PICKER_DETAIL_HEADER=""
-    export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_DETAIL_HEADER_FILE SETUP_PICKER_DELIM \
+    export SETUP_PICKER_SNAPSHOT_FILE SETUP_PICKER_SELECTION_FILE SETUP_PICKER_POSITION_FILE SETUP_PICKER_RENDER_FILE SETUP_PICKER_DETAIL_HEADER_FILE SETUP_PICKER_DELIM \
         SETUP_PICKER_ENV_SUMMARY SETUP_PICKER_DETAIL_HEADER SETUP_PICKER_CALLBACK_SCRIPT
     {
         printf '%s\n' '#!/usr/bin/env zsh' 'emulate -R zsh' 'setopt KSH_ARRAYS SH_WORD_SPLIT NO_UNSET PIPE_FAIL'
-        functions _setup_picker_selection_has _setup_state_needs_update _setup_picker_header \
+        functions _setup_picker_state_reset _setup_picker_selection_load _setup_picker_snapshot_load \
+            _setup_picker_selection_has _setup_picker_selection_write _setup_state_needs_update _setup_picker_header \
             _setup_picker_action_counts _setup_picker_render _setup_picker_toggle \
-            _setup_picker_position _setup_picker_transform _setup_picker_result_transform
+            _setup_picker_position_value _setup_picker_position _setup_picker_transform _setup_picker_result_transform
         printf '%s\n' '"$@"'
     } > "$picker_callbacks"
     chmod 0700 "$picker_callbacks"
     : > "$SETUP_PICKER_SNAPSHOT_FILE"
     : > "$SETUP_PICKER_SELECTION_FILE"
     : > "$SETUP_PICKER_POSITION_FILE"
+    : > "$SETUP_PICKER_RENDER_FILE"
     : > "$SETUP_PICKER_DETAIL_HEADER_FILE"
 
     # Indexed state shared by the parent zsh process and picker callbacks. Rows are:
@@ -2074,6 +2153,7 @@ cmd_reconfigure() {
         esac
         (( refresh_snapshot == 1 )) && snapshot_refresh
         sync_picker_state
+        _setup_picker_state_reset
         picker_pos=$(_setup_picker_position "$kind" "$key")
     done
     rm -rf "$picker_state_dir"

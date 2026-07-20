@@ -142,6 +142,43 @@ cli=$(status_one live-block '~/.zshrc' script live-outdated.sh)
     || fail "CLI normalization must reflect the same live result: $cli"
 assert_eq 3 "$(cat "$TEST_TMP/probe-count")" "one CLI row evaluation must invoke status once"
 
+# Checkbox callbacks must use zsh-native file reads and collection operations.
+# Spawning one grep/wc/cp/mv per row made a selection redraw visibly laggy.
+(
+    grep() { fail "picker callback spawned grep"; }
+    wc() { fail "picker callback spawned wc"; }
+    cp() { fail "picker callback spawned cp"; }
+    mv() { fail "picker callback spawned mv"; }
+    local picker_fast="$TEST_TMP/picker-fast" delim=$'\x1f' transform rows
+    mkdir -p "$picker_fast"
+    SETUP_PICKER_SNAPSHOT_FILE="$picker_fast/snapshot.tsv"
+    SETUP_PICKER_SELECTION_FILE="$picker_fast/selected"
+    SETUP_PICKER_POSITION_FILE="$picker_fast/position"
+    SETUP_PICKER_RENDER_FILE="$picker_fast/rendered"
+    SETUP_PICKER_DETAIL_HEADER_FILE="$picker_fast/detail-header"
+    SETUP_PICKER_CALLBACK_SCRIPT="$picker_fast/callbacks.zsh"
+    SETUP_PICKER_DELIM="$delim"
+    SETUP_PICKER_ENV_SUMMARY=fast
+    printf '%s\n' \
+        $'alpha\ttarget\tfile\tsource\tcurrent\t1\t0\t0\talpha detail' \
+        $'beta\ttarget\tfile\tsource\tuninstalled\t0\t0\t0\tbeta detail' \
+        > "$SETUP_PICKER_SNAPSHOT_FILE"
+    : > "$SETUP_PICKER_SELECTION_FILE"
+    : > "$SETUP_PICKER_POSITION_FILE"
+    : > "$SETUP_PICKER_RENDER_FILE"
+    : > "$SETUP_PICKER_DETAIL_HEADER_FILE"
+    transform=$(_setup_picker_transform checkbox alpha)
+    [[ "$transform" == 'reload-sync(command cat "$SETUP_PICKER_RENDER_FILE")' ]] \
+        || fail "native checkbox transform changed reload behavior: $transform"
+    rows=$(_setup_picker_render)
+    [[ "$rows" == *"checkbox${delim}alpha${delim}[*]${delim}"* ]] \
+        || fail "native checkbox render omitted selected marker"
+    [[ "$rows" == *"action${delim}reinstall${delim}Reinstall 1${delim}"* ]] \
+        || fail "native checkbox render omitted applicable action"
+    [[ "$(_setup_picker_header)" == '1/2 · fast · '* ]] \
+        || fail "native checkbox header did not reflect selection"
+)
+
 cat > "$TEST_TMP/manifest.tsv" <<'EOF'
 # module	target	mode	source
 current-update	~/.local/current-update	script	current-update.sh
@@ -192,7 +229,7 @@ fzf-multicolumn() {
             [[ "$*" == *'result:transform:'*'_setup_picker_result_transform'* ]] || fail "reload does not restore its deterministic position"
             [[ "$*" == *'result:+transform-header:'*'_setup_picker_header'* ]] || fail "reload does not refresh the selection header"
             transform=$(_setup_picker_transform select-all all)
-            [[ "$transform" == 'reload-sync("$SETUP_PICKER_CALLBACK_SCRIPT" _setup_picker_render)' ]] || fail "select-all transform does not reload through the callback script: $transform"
+            [[ "$transform" == 'reload-sync(command cat "$SETUP_PICKER_RENDER_FILE")' ]] || fail "select-all transform does not reload the pre-rendered picker state: $transform"
             reload_command=${transform#reload-sync\(}
             reload_command=${reload_command%\)}
             input=$(zsh -f -c "$reload_command")
@@ -200,7 +237,7 @@ fzf-multicolumn() {
             grep -q "select-all${delim}all${delim}\\[\*\\]${delim}" <<< "$input" || fail "select-all reload did not render its selected marker"
             _setup_picker_transform select-all all >/dev/null
             transform=$(_setup_picker_transform checkbox outdated-update)
-            [[ "$transform" == 'reload-sync("$SETUP_PICKER_CALLBACK_SCRIPT" _setup_picker_render)' ]] || fail "checkbox transform does not reload through the callback script: $transform"
+            [[ "$transform" == 'reload-sync(command cat "$SETUP_PICKER_RENDER_FILE")' ]] || fail "checkbox transform does not reload the pre-rendered picker state: $transform"
             [[ "$(_setup_picker_result_transform)" == 'pos(7)' ]] || fail "checkbox reload does not restore its deterministic position"
             reload_command=${transform#reload-sync\(}
             reload_command=${reload_command%\)}
