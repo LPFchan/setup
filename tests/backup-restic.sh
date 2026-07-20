@@ -145,6 +145,12 @@ printf '0123456789abcdef\n' \
 cat > "$TEST_TMP/bin/restic" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_LOG"
+if [[ "${RESTIC_BLOCK_AUTOMATIC:-0}" == 1 && "$*" == *"--tag automatic"* ]]; then
+    touch "$RESTIC_AUTOMATIC_STARTED"
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    while :; do sleep 1; done
+fi
 if [[ "${RESTIC_AUTOMATIC_RC:-0}" != 0 && "$*" == *"--tag automatic"* ]]; then
     exit "$RESTIC_AUTOMATIC_RC"
 fi
@@ -210,6 +216,35 @@ grep -q -- 'forget.*--keep-daily 7.*--keep-weekly 5.*--keep-monthly 12.*--keep-y
 grep -q -- 'check$' "$TEST_LOG" || fail "integrity check did not run"
 
 : > "$TEST_LOG"
+export RESTIC_BLOCK_AUTOMATIC=1
+export RESTIC_AUTOMATIC_STARTED="$TEST_TMP/restic-automatic-started"
+rm -f "$RESTIC_AUTOMATIC_STARTED"
+setsid env -u BACKUP_SOURCE_ONLY "$ROOT/bin/backup" run \
+    > "$TEST_TMP/interrupted.stdout" 2> "$TEST_TMP/interrupted.stderr" &
+signal_pid=$!
+for _ in {1..100}; do
+    [[ -e "$RESTIC_AUTOMATIC_STARTED" ]] && break
+    sleep 0.05
+done
+if [[ ! -e "$RESTIC_AUTOMATIC_STARTED" ]]; then
+    kill -TERM -- "-$signal_pid" 2>/dev/null || true
+    wait "$signal_pid" 2>/dev/null || true
+    fail "automatic snapshot did not start for signal test"
+fi
+kill -TERM -- "-$signal_pid"
+signal_rc=0
+wait "$signal_pid" || signal_rc=$?
+unset RESTIC_BLOCK_AUTOMATIC RESTIC_AUTOMATIC_STARTED
+[[ $signal_rc -eq 143 ]] || fail "signal cancellation returned $signal_rc instead of 143"
+[[ $(wc -l < "$TEST_LOG") -eq 1 ]] \
+    || fail "signal cancellation advanced past the in-flight Restic command"
+grep -q -- '--tag automatic' "$TEST_LOG" \
+    || fail "signal test did not run the automatic snapshot"
+if grep -Eq -- '--tag large-whitelist| forget | check$' "$TEST_LOG"; then
+    fail "signal cancellation launched a later Restic phase"
+fi
+
+: > "$TEST_LOG"
 cmd_restore latest
 grep -Fq "restore latest --target $BACKUP_RECOVERY_DIR/" "$TEST_LOG" \
     || fail "restore does not use the disk-backed recovery directory"
@@ -249,12 +284,29 @@ grep -q '^Persistent=false$' "$BACKUP_SYSTEMD_DIR/backup.timer" \
 
 SYSTEMCTL_LOG="$TEST_TMP/systemctl.log"
 systemctl() { printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"; }
+prepare_backup_units
+grep -q '^disable backup.timer backup-daily.timer backup-weekly.timer$' "$SYSTEMCTL_LOG" \
+    || fail "enable preparation does not disable current and legacy timers"
+grep -q '^stop --no-block backup.timer backup-daily.timer backup-daily.service backup-weekly.timer backup-weekly.service$' \
+    "$SYSTEMCTL_LOG" || fail "enable preparation does not stop legacy units"
+if grep -q 'backup.service' "$SYSTEMCTL_LOG"; then
+    fail "enable preparation stops the active backup service"
+fi
+: > "$SYSTEMCTL_LOG"
 stop_backup_units
 unset -f systemctl
 grep -q '^disable backup.timer backup-daily.timer backup-weekly.timer$' "$SYSTEMCTL_LOG" \
-    || fail "migration does not disable old timers"
-grep -q 'stop --no-block backup.timer backup.service backup-daily.timer backup-daily.service backup-weekly.timer backup-weekly.service' \
-    "$SYSTEMCTL_LOG" || fail "migration does not stop old units"
+    || fail "full disable does not disable current and legacy timers"
+grep -q '^stop --no-block backup.timer backup-daily.timer backup-daily.service backup-weekly.timer backup-weekly.service$' \
+    "$SYSTEMCTL_LOG" || fail "full disable does not stop legacy units"
+grep -q '^stop --no-block backup.service$' "$SYSTEMCTL_LOG" \
+    || fail "full disable does not stop the active backup service"
+enable_body=$(sed -n '/^cmd_enable()/,/^}/p' "$ROOT/bin/backup")
+grep -q 'prepare_backup_units' <<< "$enable_body" \
+    || fail "enable path does not use non-interrupting unit preparation"
+if grep -q 'stop_backup_units' <<< "$enable_body"; then
+    fail "enable path uses the full service stop"
+fi
 disable_body=$(sed -n '/^cmd_disable()/,/^}/p' "$ROOT/bin/backup")
 grep -q 'backup-daily.service' <<< "$disable_body" \
     || fail "disable path does not remove old daily units"

@@ -429,7 +429,10 @@ refresh_provenance() (
     done < "$discovery"
 )
 
-run_backup() {
+run_backup() (
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     require_root
     command -v restic >/dev/null 2>&1 || die "restic is not installed"
     command -v flock >/dev/null 2>&1 || die "flock is not installed"
@@ -480,7 +483,7 @@ run_backup() {
         --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" \
         --keep-monthly "$KEEP_MONTHLY" --keep-yearly "$KEEP_YEARLY" --prune
     restic_cmd check
-}
+)
 
 write_systemd_units() {
     local executable="$1" host="$2"
@@ -533,10 +536,15 @@ remove_legacy_nfs() {
     rm -f /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
 }
 
-stop_backup_units() {
+prepare_backup_units() {
     systemctl disable backup.timer backup-daily.timer backup-weekly.timer 2>/dev/null || true
-    systemctl stop --no-block backup.timer backup.service backup-daily.timer \
+    systemctl stop --no-block backup.timer backup-daily.timer \
         backup-daily.service backup-weekly.timer backup-weekly.service 2>/dev/null || true
+}
+
+stop_backup_units() {
+    prepare_backup_units
+    systemctl stop --no-block backup.service 2>/dev/null || true
 }
 
 install_restic_standalone() (
@@ -615,7 +623,7 @@ cmd_enable() {
     load_config
     verify_bingus_host_key
 
-    stop_backup_units
+    prepare_backup_units
     remove_legacy_nfs
 
     if ! restic_cmd cat config >/dev/null 2>&1; then
