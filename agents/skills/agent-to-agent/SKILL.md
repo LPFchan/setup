@@ -1,6 +1,6 @@
 ---
 name: agent-to-agent
-description: Invoke another coding-agent harness as a subagent and continue the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, or Hermes Agent through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
+description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, or Hermes Agent through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
 version: 1.1.0
 argument-hint: <codex|claude-code|opencode|hermes> [task to delegate]
 ---
