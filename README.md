@@ -34,14 +34,20 @@ bootstrap installs.
 
 ## Modules
 
-Setup compares the key material in `~/.ssh/*.pub` with
-`https://github.com/LPFchan.keys` before publishing its local catalog. A
-matching machine sees the full manifest; otherwise entries whose manifest
-`audience` is `fleet` are omitted from list, status, install, update, diff, and
-the interactive picker. If the key list cannot be fetched, setup fails closed
-to the public catalog. This is catalog filtering, not access control: the key
-list and this repository are public. The fleet-only modules are `kernel-simmer`,
-`service-ctl`, `gpu-fancontrol`, `monitoring`, `backup`, and `ssh-aliases`.
+Setup filters the local catalog before list, status, install, update, diff, and
+the interactive picker:
+
+1. **Audience** — compares key material in `~/.ssh/*.pub` with
+   `https://github.com/LPFchan.keys`. A matching machine sees fleet entries;
+   otherwise rows whose manifest `audience` is `fleet` are omitted. If the key
+   list cannot be fetched, setup fails closed to the public catalog. This is
+   catalog filtering, not access control: the key list and this repository are
+   public. Fleet-only modules: `kernel-simmer`, `service-ctl`, `gpu-fancontrol`,
+   `monitoring`, `backup`, and `ssh-aliases`.
+2. **Platform** — compares `uname -s` (lowercased) with the optional manifest
+   `platform` column. Empty platform means every OS; `linux` / `darwin` restrict
+   the row to that kernel. Linux-only modules: `kernel-simmer`, `service-ctl`,
+   `gpu-fancontrol`, `monitoring`, and `backup`.
 
 ### File modules
 
@@ -287,7 +293,8 @@ Helpers are fetched from `SOURCE_URL/lib/script-helpers.sh` at startup and cache
 - GitHub is the canonical code host.
 - GitHub Pages serves the public installer at `https://setup.lost.plus`.
 - `install.sh` bootstraps the updater CLI.
-- `manifest.tsv` declares module, target path, mode, and source path.
+- `manifest.tsv` declares module, target path, mode, source path, optional
+  `audience`, and optional `platform`.
 - `mode=script` modules are fetched from SOURCE_URL and executed locally.
 - Each managed source file declares its own module and version.
 - Secrets do not belong in this repo.

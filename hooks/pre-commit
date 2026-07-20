@@ -7,7 +7,7 @@ cd "$ROOT"
 for f in install.sh bin/setup lib/script-helpers.sh; do
     zsh -n "$f" || { echo "Syntax error in $f — commit blocked" >&2; exit 1; }
 done
-while IFS=$'\t' read -r _module _target mode source _audience; do
+while IFS=$'\t' read -r _module _target mode source _audience _platform; do
     [[ "$mode" == script ]] || continue
     zsh -n "$source" || { echo "Syntax error in $source — commit blocked" >&2; exit 1; }
 done < manifest.tsv

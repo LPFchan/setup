@@ -1,14 +1,14 @@
-# module	target	mode	source	audience
+# module	target	mode	source	audience	platform
 setup	~/.local/bin/setup	0755	bin/setup
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
 claudex	~/.local/bin/claudex	script	files/claudex.sh
-kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet
-service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl	fleet
-gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet
-monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet
+kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux
+service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl	fleet	linux
+gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
+monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
 refresh-models	~/.local/bin/refresh-models	0755	files/refresh-models
-backup	~/.local/bin/backup	0755	bin/backup	fleet
+backup	~/.local/bin/backup	0755	bin/backup	fleet	linux
 zsh-autocomplete	~/.zsh/zsh-autocomplete	script	files/zsh-autocomplete.sh
 zsh-syntax-highlighting	~/.zsh/zsh-syntax-highlighting	script	files/zsh-syntax-highlighting.sh
 starship	~/.local/bin/starship	script	files/starship.sh
