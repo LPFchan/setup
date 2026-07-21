@@ -121,9 +121,12 @@ run_ai
     || fail "ai-menu failure became permanently marked or did not retry repair"
 [[ ! -e "$STATE_DIR/ai-menu-grid-attempted" ]] || fail "legacy permanent failure marker was recreated"
 
-# --- Recency store: stamp / read / cap / HOME-skip / bubble / cold-start ----
+# --- Recency store: stamp / read / growth / HOME-skip / history intake --------
 # The store functions are called directly (like run_ai sources the payload),
 # with $PWD controlled per invocation so we can exercise stamping specific dirs.
+# Ordering is by epoch (sub-second EPOCHREALTIME), and each helper is a separate
+# process, so wall-clock time advances between calls and later writes outrank
+# earlier ones.
 STORE="$STATE_DIR/ai-menu-dirs"
 DIRS="$TEST_TMP/dirs"
 mkdir -p "$DIRS"
@@ -133,6 +136,12 @@ stamp_dir() {
     PATH="$TEST_TMP/bin:/usr/bin:/bin" \
         "$zsh_bin" -f -c 'source "$1"; cd "$2" || exit; _ai_stamp_recent_dir' \
         zsh "$PAYLOAD_TARGET" "$1" >/dev/null 2>&1
+}
+# run_intake: source the payload and intake new cd targets from $HISTFILE.
+run_intake() {
+    PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+        "$zsh_bin" -f -c 'source "$1"; _ai_intake_history' \
+        zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
 }
 # read_dirs <max>: source the payload and emit the recency column to stdout.
 read_dirs() {
@@ -176,26 +185,75 @@ done
     || fail "recency store evicted distinct dirs instead of growing to $n"
 grep -q "$DIRS/big1\$" "$STORE" \
     || fail "oldest distinct dir was evicted from the unbounded store"
-# _ai_recent_dirs exits nonzero when the list is shorter than max (as the
-# original did); capture first so the harness's pipefail doesn't misread it.
+# _ai_recent_dirs caps output to $max regardless of store size.
 [[ $(read_dirs 5 | wc -l) -eq 5 ]] \
     || fail "read did not cap display to the requested row count"
 big_out="$(read_dirs 5)"
 [[ "$(printf '%s\n' "$big_out" | head -1)" == "$DIRS/big$n" ]] \
     || fail "capped read did not return the newest dirs first"
 
-# (e) Cold-start seed from $history when the store is absent/empty. fc -R drops
+# (e) History intake fills the store from $history, newest cd first. fc -R drops
 # the final history line (a zsh quirk), so a throwaway sentinel goes last.
 rm -f "$STORE"
-mkdir -p "$DIRS/hist1" "$DIRS/hist2"
-printf 'cd %s\ncd %s\ncd /nonexistent-ai-menu-sentinel\n' \
-    "$DIRS/hist1" "$DIRS/hist2" > "$HOME/.zsh_history"
-seed_out="$(read_dirs 10)"
-[[ "$(printf '%s\n' "$seed_out" | head -1)" == "$DIRS/hist2" ]] \
-    || fail "cold-start seed did not surface the newest history dir first"
-printf '%s\n' "$seed_out" | grep -q "$DIRS/hist1\$" \
-    || fail "cold-start seed omitted an older history dir"
-[[ -f "$STORE" ]] || fail "cold-start seed did not persist the store"
+mkdir -p "$DIRS/h1" "$DIRS/h2" "$DIRS/h3"
+printf 'cd %s\ncd %s\ncd %s\ncd /nonexistent-ai-menu-sentinel\n' \
+    "$DIRS/h1" "$DIRS/h2" "$DIRS/h3" > "$HOME/.zsh_history"
+run_intake
+[[ -f "$STORE" ]] || fail "history intake did not create the store"
+intake_out="$(read_dirs 10)"
+[[ "$(printf '%s\n' "$intake_out" | head -1)" == "$DIRS/h3" ]] \
+    || fail "intake did not surface the newest history dir first"
+printf '%s\n' "$intake_out" | grep -q "$DIRS/h1\$" \
+    || fail "intake omitted an older history dir"
+
+# (f) Intake is once-per-dir: re-running it with unchanged history neither
+# duplicates entries nor re-anchors their epochs (store is byte-for-byte equal).
+store_snap="$(cat "$STORE")"
+run_intake
+[[ "$(cat "$STORE")" == "$store_snap" ]] \
+    || fail "re-running intake changed the store (duplicated or re-anchored)"
+
+# (g) A cd typed after the store exists is intaken and outranks older history.
+mkdir -p "$DIRS/fresh"
+printf 'cd %s\ncd /nonexistent-ai-menu-sentinel2\n' "$DIRS/fresh" >> "$HOME/.zsh_history"
+run_intake
+[[ "$(read_dirs 10 | head -1)" == "$DIRS/fresh" ]] \
+    || fail "a newly-typed cd did not surface at the top after intake"
+
+# (h) Stamping $PWD outranks every intaken history dir — even one that was the
+# oldest — which is how re-visiting a dir via the menu bumps it back up.
+stamp_dir "$DIRS/h1"
+[[ "$(read_dirs 10 | head -1)" == "$DIRS/h1" ]] \
+    || fail "stamped current dir did not outrank intaken history dirs"
+
+# (i) Errexit-cleanliness: a no-op intake (nothing new in history) and a read
+# that emits fewer than $max dirs must both return success, or a caller running
+# under ERR_EXIT unwinds on an ordinary path. The suite's own `set -e` is reset
+# when it sources bin/setup (emulate -R zsh), so assert the status explicitly.
+run_intake; rc=$?
+[[ $rc -eq 0 ]] || fail "no-op intake returned nonzero ($rc)"
+read_dirs 999 >/dev/null; rc=$?
+[[ $rc -eq 0 ]] || fail "reader returned nonzero on a short list ($rc)"
+stamp_dir "$DIRS/h2"; rc=$?
+[[ $rc -eq 0 ]] || fail "stamp returned nonzero ($rc)"
+stamp_dir "$HOME"; rc=$?
+[[ $rc -eq 0 ]] || fail "\$HOME-skip stamp returned nonzero ($rc)"
 rm -f "$HOME/.zsh_history"
+
+# (j) Reader ranks strictly by numeric epoch, deterministically (no timing): a
+# shared wall-clock second is broken by the sub-second fraction, and legacy
+# integer epochs interleave correctly with fractional ones. Hand-craft the store.
+rm -f "$STORE"
+mkdir -p "$DIRS/s_lo" "$DIRS/s_hi" "$DIRS/leg_old" "$DIRS/leg_new"
+{
+    printf '1784653598.100000\t%s\n' "$DIRS/s_lo"     # same second, lower fraction
+    printf '1784653598.900000\t%s\n' "$DIRS/s_hi"     # same second, higher fraction
+    printf '1784653000\t%s\n'        "$DIRS/leg_old"  # legacy integer epoch, oldest
+    printf '1784654000\t%s\n'        "$DIRS/leg_new"  # legacy integer epoch, newest
+} > "$STORE"
+ranked="$(read_dirs 10)"
+expected=$(printf '%s\n%s\n%s\n%s' "$DIRS/leg_new" "$DIRS/s_hi" "$DIRS/s_lo" "$DIRS/leg_old")
+[[ "$ranked" == "$expected" ]] \
+    || fail "reader mis-ranked mixed integer/fraction epochs: got [$ranked]"
 
 echo "ai-menu tests passed"

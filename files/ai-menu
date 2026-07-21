@@ -1,22 +1,24 @@
 # setup-module: ai-menu
 # setup-source: files/ai-menu
 
-# Cold-start seed depth: how many recent dirs to prime the store with, once, on
-# a fresh machine when the store is empty (see _ai_recent_dirs). NOT a storage
-# cap — the store keeps every distinct dir ever visited (dedup bounds it to one
-# line per directory, so it stays naturally modest). Decoupled from the folder
-# clamp; kept generous so the first menu open is well-primed regardless of the
-# momentary menu size. Plain (non-readonly) global so re-sourcing is harmless.
-_AI_RECENT_DIRS_SEED=50
+# History intake depth: how far back into $history to look for new cd targets on
+# each menu open (see _ai_intake_history). NOT a storage cap — the store keeps
+# every distinct dir ever visited (dedup bounds it to one line per directory, so
+# it stays naturally modest). Kept generous so a fresh machine's first open is
+# well-primed and later opens still catch newly-typed cds deeper in a burst of
+# history. Plain (non-readonly) global so re-sourcing is harmless.
+_AI_HISTORY_INTAKE_DEPTH=50
 
 # Recent cd targets parsed out of $history, newest first, as canonical absolute
 # paths (deduped by abs path, existence-checked). One path per line on stdout.
-# This is the COLD-START SEED source only: _ai_recent_dirs calls it once, when
-# the recency store is absent or empty, to prime the folder column on a fresh
-# machine before the first live access is stamped.
+# This is the HISTORY INTAKE source: _ai_intake_history calls it on every open
+# to discover cd targets that aren't in the recency store yet. History ORDER is
+# the recency signal, not its timestamps — EXTENDED_HISTORY is commonly off and
+# fc back-dates untimestamped lines to the session start, so timestamps here are
+# unreliable; the newest-first order the loop emits is not.
 #
-# It runs (via _ai_recent_dirs) inside a command substitution, so it executes in
-# a subshell — a hard failsafe boundary. Parsing arbitrary history strings is
+# It runs (via _ai_intake_history) inside a command substitution, so it executes
+# in a subshell — a hard failsafe boundary. Parsing arbitrary history strings is
 # the one place a malformed entry can raise a *fatal* expansion error (see the
 # ${~arg} note below); contained in that subshell it dies with it and the folder
 # column just comes back empty, instead of unwinding the whole shell / plugin
@@ -73,15 +75,16 @@ _ai_recent_dirs_from_history() {
 
 # Recent directories, newest first, as canonical absolute paths (deduped by abs
 # path, existence-checked). One path per line on stdout — the exact output
-# contract the display code at the ai() call site depends on. Reads the recency
-# store maintained by _ai_stamp_recent_dir; when that store is absent or empty
-# it seeds once from _ai_recent_dirs_from_history so a fresh machine still shows
-# a populated column on first open.
+# contract the display code at the ai() call site depends on. A pure reader over
+# the recency store: it does no seeding or writing. The store is filled before
+# this runs, by _ai_intake_history (new cd targets from history) and
+# _ai_stamp_recent_dir ($PWD), both called from ai() ahead of the menu build.
 #
 # `ai` calls this inside a command substitution, so it runs in a subshell — the
-# hard failsafe boundary described on _ai_recent_dirs_from_history. The
-# cold-start seed writes the store from inside that subshell; file writes escape
-# the subshell and persist to disk, which is the intended containment.
+# same failsafe boundary as before; a malformed store line cannot unwind the
+# shell. Reads the whole store (cheap — dedup bounds it to one line per distinct
+# dir ever visited) and stops at $max existing dirs, so an unbounded store never
+# bloats the column.
 _ai_recent_dirs() {
     emulate -L zsh
     local max=${1:-8}
@@ -89,27 +92,12 @@ _ai_recent_dirs() {
     local -a lines
     # Forkless read: $(<file) is optimized to not fork in zsh (same pattern as
     # the ssh-config / claudex-config reads in ai()). Records are epoch<TAB>path.
-    # The whole store is read in full — cheap, since dedup bounds it to one line
-    # per distinct dir ever visited — and the loop below stops at $max existing
-    # dirs (the only cap: load/display), so an unbounded store never bloats the
-    # column.
     [[ -r $store ]] && lines=( ${(f)"$(<$store)"} )
-    if (( ! $#lines )); then
-        # Cold start: seed the store once from history, newest-first, up to the
-        # seed depth. All seed records share one timestamp; recency order is
-        # carried by line order (the history parse is already newest-first).
-        local -a seed
-        seed=( ${(f)"$(_ai_recent_dirs_from_history $_AI_RECENT_DIRS_SEED)"} )
-        if (( $#seed )); then
-            zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null
-            local now=${EPOCHSECONDS:-0} d
-            local -a records
-            for d in "${seed[@]}"; do records+=( "$now"$'\t'"$d" ); done
-            mkdir -p -- ${store:h} 2>/dev/null \
-                && print -rl -- "${records[@]}" >| $store 2>/dev/null
-            lines=( "${records[@]}" )
-        fi
-    fi
+    # Rank by recency. Records lead with the epoch, so a reverse-numeric sort of
+    # the whole line orders by that epoch, newest first — a real sort, not line
+    # position, because intake and stamping append rather than rewrite in order.
+    # (On) is zsh's descending-numeric flag: forkless, no external `sort`.
+    lines=( ${(On)lines} )
     local -i n=0
     local rec dir
     local -A seen
@@ -121,6 +109,64 @@ _ai_recent_dirs() {
         print -r -- $dir
         (( ++n >= max )) && break
     done
+    # Explicit success: the loop's trailing `(( ++n >= max ))` is false (status 1)
+    # whenever fewer than $max dirs exist, and callers under ERR_EXIT would
+    # otherwise unwind on that ordinary short-list path.
+    return 0
+}
+
+# Intake new cd targets from shell history into the recency store. Called from
+# ai() on every open, BEFORE _ai_stamp_recent_dir. Order-based and once-per-dir:
+# a cd target enters the store the first time history surfaces it and is left
+# untouched forever after, so nothing re-anchors on later opens and menu-jump /
+# $PWD stamps keep their earned recency. This is what makes newly-typed cds show
+# up — they are simply the history entries not yet in the store.
+#
+# New arrivals are written just under "now" (now-1, now-2, ..., newest-history
+# first), so they surface at the top of the column but still sit below the
+# current dir, which _ai_stamp_recent_dir bumps to exactly `now` right after.
+#
+# Runs inline in ai() (outside the reader's $()), but the one throwing step —
+# parsing arbitrary history — is quarantined in a single command substitution
+# (a subshell): a fatal expansion error there dies with it, `hist` comes back
+# empty, and intake is a silent no-op instead of unwinding the shell at startup.
+_ai_intake_history() {
+    emulate -L zsh
+    # Every early exit returns 0: intake is best-effort, called inline in ai(),
+    # and a nonzero status on an ordinary "nothing to do" path would unwind a
+    # caller running under ERR_EXIT.
+    zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null || return 0
+    local store=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-dirs
+    local -a hist
+    # Failsafe boundary: history parsing can throw; the $() contains it. hist is
+    # newest-first canonical abs paths.
+    hist=( ${(f)"$(_ai_recent_dirs_from_history $_AI_HISTORY_INTAKE_DEPTH)"} )
+    (( $#hist )) || return 0
+    local -a lines add
+    local rec dir e
+    local -A known
+    [[ -r $store ]] && lines=( ${(f)"$(<$store)"} )
+    for rec in "${lines[@]}"; do known[${rec#*$'\t'}]=1; done
+    # Epochs are sub-second EPOCHREALTIME formatted %.6f: 1s resolution ties, and
+    # the reader's numeric sort breaks ties unpredictably, so microsecond stamps
+    # are what keep two accesses in the same wall-clock second correctly ordered.
+    # Append only dirs not already known, newest-history-first getting the
+    # highest (now-1) epoch — just under `now`, which _ai_stamp_recent_dir then
+    # takes for $PWD, so the current dir stays on top.
+    local now
+    printf -v now '%.6f' $EPOCHREALTIME
+    local -i k=1
+    for dir in "${hist[@]}"; do
+        (( ${+known[$dir]} )) && continue
+        known[$dir]=1
+        printf -v e '%.6f' $(( now - k ))
+        add+=( "$e"$'\t'"$dir" )
+        (( k++ ))
+    done
+    (( $#add )) || return 0
+    mkdir -p -- ${store:h} 2>/dev/null || return 0
+    print -rl -- "${lines[@]}" "${add[@]}" >| $store 2>/dev/null
+    return 0
 }
 
 # Stamp $PWD into the recency store so folders reached via the menu (the
@@ -135,17 +181,19 @@ _ai_recent_dirs() {
 # emulate -L zsh scopes options and locals, only non-throwing constructs are
 # used, dedup is a literal-string compare (not a glob), and every fallible
 # external step is guarded so any failure is a silent no-op. Forkless on the hot
-# path: EPOCHSECONDS (module param), $(<file) read, print redirection; the lone
+# path: EPOCHREALTIME (module param), $(<file) read, print redirection; the lone
 # mkdir matches the external mkdir the enable/disable block already runs
 # directly in ai().
 _ai_stamp_recent_dir() {
     emulate -L zsh
+    # Every early exit returns 0 (best-effort, called inline in ai(); see the
+    # matching note on _ai_intake_history).
     # No datetime module -> stamping is a graceful no-op (never an error).
-    zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null || return
+    zmodload -F zsh/datetime p:EPOCHREALTIME 2>/dev/null || return 0
     local dir=${PWD:a}
     # Skip $HOME: every interactive shell auto-launches `ai` from ~, which would
     # otherwise permanently pin $HOME to the top of the column.
-    [[ $dir == "$HOME" || $dir == "${HOME:a}" ]] && return
+    [[ $dir == "$HOME" || $dir == "${HOME:a}" ]] && return 0
     local store=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-dirs
     local -a lines kept
     local rec
@@ -156,13 +204,21 @@ _ai_stamp_recent_dir() {
     for rec in "${lines[@]}"; do
         [[ ${rec#*$'\t'} == "$dir" ]] || kept+=( "$rec" )
     done
-    # Prepend the fresh access (newest-first). No storage cap: dedup already
-    # bounds the store to one line per distinct dir ever visited, so it grows
-    # only with genuinely new directories. The read side caps load/display.
-    kept=( "$EPOCHSECONDS"$'\t'"$dir" "${kept[@]}" )
-    mkdir -p -- ${store:h} 2>/dev/null || return
+    # Record the access at `now` (sub-second EPOCHREALTIME, %.6f) — the highest
+    # epoch anyone writes, so $PWD always sorts to the top of the column (intake
+    # writes now-1 and below). Microsecond resolution keeps rapid successive
+    # opens — a folder jump and its recursive reopen land in the same second —
+    # correctly ordered where a 1s epoch would tie. The reader ranks by epoch, so
+    # line position is cosmetic; prepend anyway to keep the file human-readable
+    # newest-first. No storage cap: dedup already bounds the store to one line per
+    # distinct dir ever visited, so it grows only with genuinely new directories.
+    local now
+    printf -v now '%.6f' $EPOCHREALTIME
+    kept=( "$now"$'\t'"$dir" "${kept[@]}" )
+    mkdir -p -- ${store:h} 2>/dev/null || return 0
     # >| overwrites regardless of noclobber; single builtin redirection, no fork.
     print -rl -- "${kept[@]}" >| $store 2>/dev/null
+    return 0
 }
 
 # Launch claudex with a named profile and record the session→profile mapping
@@ -222,13 +278,16 @@ ai() {
             ;;
     esac
 
-    # Stamp the current directory into the recency store BEFORE building the menu
-    # (and after the enable/disable subcommands, which return early and must not
-    # stamp). Runs on every real open, including the recursive open after a
-    # folder jump — which is exactly how menu-driven navigation earns its place
-    # at the top of the folder column, with no special-casing at the jump site
-    # (line ~267). Runs outside the _ai_recent_dirs $() failsafe; it is written
-    # to be incapable of unwinding the shell (see _ai_stamp_recent_dir).
+    # Refresh the recency store BEFORE building the menu (and after enable/disable,
+    # which return early and must not write). Two steps, order matters:
+    #   1. intake newly-typed cd targets from history (new dirs -> just under now),
+    #   2. stamp the current dir at exactly now, so $PWD sits on top — including
+    #      the recursive open after a folder jump, which is how menu-driven
+    #      navigation earns its place with no special-casing at the jump site.
+    # Both run outside the _ai_recent_dirs $() failsafe and are written to be
+    # incapable of unwinding the shell (the history parse each does is quarantined
+    # in its own $(); see _ai_intake_history / _ai_stamp_recent_dir).
+    _ai_intake_history
     _ai_stamp_recent_dir
 
     local choice line
