@@ -488,8 +488,7 @@ run_backup() (
 write_systemd_units() {
     local executable="$1" host="$2"
     mkdir -p "$SYSTEMD_DIR"
-    rm -f "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
-        "$SYSTEMD_DIR/backup-weekly.service" "$SYSTEMD_DIR/backup-weekly.timer"
+    remove_legacy_systemd_artifacts
 
     cat > "$SYSTEMD_DIR/backup.service" <<UNIT
 [Unit]
@@ -536,15 +535,42 @@ remove_legacy_nfs() {
     rm -f /usr/local/bin/backup-daily /usr/local/bin/backup-weekly
 }
 
+remove_legacy_systemd_artifacts() {
+    rm -f "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
+        "$SYSTEMD_DIR/backup-weekly.service" "$SYSTEMD_DIR/backup-weekly.timer" \
+        "$SYSTEMD_DIR/timers.target.wants/backup-daily.timer" \
+        "$SYSTEMD_DIR/timers.target.wants/backup-weekly.timer"
+}
+
 prepare_backup_units() {
-    systemctl disable backup.timer backup-daily.timer backup-weekly.timer 2>/dev/null || true
-    systemctl stop --no-block backup.timer backup-daily.timer \
-        backup-daily.service backup-weekly.timer backup-weekly.service 2>/dev/null || true
+    local unit
+
+    systemctl disable backup.timer 2>/dev/null || true
+    for unit in backup-daily.timer backup-weekly.timer; do
+        systemctl disable "$unit" 2>/dev/null || true
+    done
+    rm -f "$SYSTEMD_DIR/timers.target.wants/backup-daily.timer" \
+        "$SYSTEMD_DIR/timers.target.wants/backup-weekly.timer"
+
+    for unit in backup.timer backup-daily.timer backup-daily.service \
+        backup-weekly.timer backup-weekly.service; do
+        systemctl stop --no-block "$unit" 2>/dev/null || true
+    done
 }
 
 stop_backup_units() {
     prepare_backup_units
     systemctl stop --no-block backup.service 2>/dev/null || true
+}
+
+reload_and_reset_legacy_units() {
+    local unit
+
+    systemctl daemon-reload
+    for unit in backup-daily.service backup-daily.timer \
+        backup-weekly.service backup-weekly.timer; do
+        systemctl reset-failed "$unit" 2>/dev/null || true
+    done
 }
 
 install_restic_standalone() (
@@ -632,7 +658,7 @@ cmd_enable() {
     fi
 
     write_systemd_units "$executable" "$host"
-    systemctl daemon-reload
+    reload_and_reset_legacy_units
     systemctl enable --now backup.timer
     info "backup enabled: incremental Restic over SFTP (daily around 09:00)"
     info "policy: ${CONF_DIR}/config, ${CONF_DIR}/sources, ${CONF_DIR}/excludes, ${CONF_DIR}/large-whitelist"
@@ -641,10 +667,9 @@ cmd_enable() {
 cmd_disable() {
     require_root
     stop_backup_units
-    rm -f "$SYSTEMD_DIR/backup.service" "$SYSTEMD_DIR/backup.timer" \
-        "$SYSTEMD_DIR/backup-daily.service" "$SYSTEMD_DIR/backup-daily.timer" \
-        "$SYSTEMD_DIR/backup-weekly.service" "$SYSTEMD_DIR/backup-weekly.timer"
-    systemctl daemon-reload
+    rm -f "$SYSTEMD_DIR/backup.service" "$SYSTEMD_DIR/backup.timer"
+    remove_legacy_systemd_artifacts
+    reload_and_reset_legacy_units
     remove_legacy_nfs
     info "backup schedule disabled; configuration, repository, and legacy /bak data retained"
 }

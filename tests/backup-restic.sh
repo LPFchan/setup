@@ -283,24 +283,56 @@ grep -q '^Persistent=false$' "$BACKUP_SYSTEMD_DIR/backup.timer" \
     || fail "daily timer unexpectedly catches up missed runs"
 
 SYSTEMCTL_LOG="$TEST_TMP/systemctl.log"
-systemctl() { printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"; }
+mkdir -p "$BACKUP_SYSTEMD_DIR/timers.target.wants"
+ln -s ../backup-daily.timer "$BACKUP_SYSTEMD_DIR/timers.target.wants/backup-daily.timer"
+ln -s ../backup-weekly.timer "$BACKUP_SYSTEMD_DIR/timers.target.wants/backup-weekly.timer"
+systemctl() {
+    printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+    [[ "$*" != 'disable backup-daily.timer' ]]
+}
 prepare_backup_units
-grep -q '^disable backup.timer backup-daily.timer backup-weekly.timer$' "$SYSTEMCTL_LOG" \
-    || fail "enable preparation does not disable current and legacy timers"
-grep -q '^stop --no-block backup.timer backup-daily.timer backup-daily.service backup-weekly.timer backup-weekly.service$' \
-    "$SYSTEMCTL_LOG" || fail "enable preparation does not stop legacy units"
-if grep -q 'backup.service' "$SYSTEMCTL_LOG"; then
+for timer in backup.timer backup-daily.timer backup-weekly.timer; do
+    grep -qx "disable $timer" "$SYSTEMCTL_LOG" \
+        || fail "enable preparation did not independently disable $timer"
+done
+for unit in backup.timer backup-daily.timer backup-daily.service \
+    backup-weekly.timer backup-weekly.service; do
+    grep -qx "stop --no-block $unit" "$SYSTEMCTL_LOG" \
+        || fail "enable preparation did not independently stop $unit"
+done
+[[ ! -e "$BACKUP_SYSTEMD_DIR/timers.target.wants/backup-daily.timer" \
+    && ! -L "$BACKUP_SYSTEMD_DIR/timers.target.wants/backup-daily.timer" ]] \
+    || fail "dangling daily timer enablement link survived preparation"
+[[ ! -e "$BACKUP_SYSTEMD_DIR/timers.target.wants/backup-weekly.timer" \
+    && ! -L "$BACKUP_SYSTEMD_DIR/timers.target.wants/backup-weekly.timer" ]] \
+    || fail "dangling weekly timer enablement link survived preparation"
+if grep -qE '(^| )backup\.service($| )' "$SYSTEMCTL_LOG"; then
     fail "enable preparation stops the active backup service"
 fi
 : > "$SYSTEMCTL_LOG"
 stop_backup_units
-unset -f systemctl
-grep -q '^disable backup.timer backup-daily.timer backup-weekly.timer$' "$SYSTEMCTL_LOG" \
-    || fail "full disable does not disable current and legacy timers"
-grep -q '^stop --no-block backup.timer backup-daily.timer backup-daily.service backup-weekly.timer backup-weekly.service$' \
-    "$SYSTEMCTL_LOG" || fail "full disable does not stop legacy units"
+for timer in backup.timer backup-daily.timer backup-weekly.timer; do
+    grep -qx "disable $timer" "$SYSTEMCTL_LOG" \
+        || fail "full disable did not independently disable $timer"
+done
 grep -q '^stop --no-block backup.service$' "$SYSTEMCTL_LOG" \
     || fail "full disable does not stop the active backup service"
+
+: > "$SYSTEMCTL_LOG"
+reload_and_reset_legacy_units
+[[ $(sed -n '1p' "$SYSTEMCTL_LOG") == daemon-reload ]] \
+    || fail "legacy failed state was reset before daemon-reload"
+[[ $(grep -c '^reset-failed ' "$SYSTEMCTL_LOG") -eq 4 ]] \
+    || fail "legacy failed-state cleanup did not target exactly four units"
+for unit in backup-daily.service backup-daily.timer backup-weekly.service backup-weekly.timer; do
+    grep -qx "reset-failed $unit" "$SYSTEMCTL_LOG" \
+        || fail "legacy failed-state cleanup omitted $unit"
+done
+if grep -qx 'reset-failed' "$SYSTEMCTL_LOG" \
+    || grep -qE '^reset-failed (backup\.service|[^ ]*unrelated[^ ]*)$' "$SYSTEMCTL_LOG"; then
+    fail "legacy failed-state cleanup resets non-legacy failures"
+fi
+unset -f systemctl
 enable_body=$(sed -n '/^cmd_enable()/,/^}/p' "$ROOT/bin/backup")
 grep -q 'prepare_backup_units' <<< "$enable_body" \
     || fail "enable path does not use non-interrupting unit preparation"
@@ -308,10 +340,12 @@ if grep -q 'stop_backup_units' <<< "$enable_body"; then
     fail "enable path uses the full service stop"
 fi
 disable_body=$(sed -n '/^cmd_disable()/,/^}/p' "$ROOT/bin/backup")
-grep -q 'backup-daily.service' <<< "$disable_body" \
-    || fail "disable path does not remove old daily units"
-grep -q 'backup-weekly.service' <<< "$disable_body" \
-    || fail "disable path does not remove old weekly units"
+grep -q 'remove_legacy_systemd_artifacts' <<< "$disable_body" \
+    || fail "disable path does not remove legacy unit files and links"
+grep -q 'reload_and_reset_legacy_units' <<< "$enable_body" \
+    || fail "enable path does not clear stale legacy failures after reload"
+grep -q 'reload_and_reset_legacy_units' <<< "$disable_body" \
+    || fail "disable path does not clear stale legacy failures after reload"
 
 if rg -qi 'btrfs|nfs' "$BACKUP_SYSTEMD_DIR" "$TEST_LOG"; then
     fail "generated backup path still references Btrfs or NFS"
