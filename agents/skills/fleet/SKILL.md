@@ -35,9 +35,13 @@ terminal, such as entering an admin password manually.
 - grimoire.lost.plus (10.0.0.51) · user yeowool
 - OpenAI-compatible API at https://chat.lost.plus/v1
 - custom llama.cpp fork (repo ~/grimoire); more in Obsidian `inference/`
-- ComfyUI image-gen server (:8188)
-- hosts hermes agent (@neoyeowoolbot on Telegram)
+- hosts ComfyUI image-gen server (:8188)
 - hosts eastself (@eastself_bot on Telegram, repo ~/Eastself/)
+- hosts hermes agent (@neoyeowoolbot on Telegram)
+	- google cloud CLI, oracle cloud CLI
+	- discord, twitter, instagram DM using Beeper Desktop Linux
+	- iCloud calendar and mail
+	- all credentials at vaultwarden
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
