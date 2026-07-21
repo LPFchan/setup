@@ -121,4 +121,81 @@ run_ai
     || fail "ai-menu failure became permanently marked or did not retry repair"
 [[ ! -e "$STATE_DIR/ai-menu-grid-attempted" ]] || fail "legacy permanent failure marker was recreated"
 
+# --- Recency store: stamp / read / cap / HOME-skip / bubble / cold-start ----
+# The store functions are called directly (like run_ai sources the payload),
+# with $PWD controlled per invocation so we can exercise stamping specific dirs.
+STORE="$STATE_DIR/ai-menu-dirs"
+DIRS="$TEST_TMP/dirs"
+mkdir -p "$DIRS"
+
+# stamp_dir <abs-pwd>: source the payload, cd into it, stamp once.
+stamp_dir() {
+    PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+        "$zsh_bin" -f -c 'source "$1"; cd "$2" || exit; _ai_stamp_recent_dir' \
+        zsh "$PAYLOAD_TARGET" "$1" >/dev/null 2>&1
+}
+# read_dirs <max>: source the payload and emit the recency column to stdout.
+read_dirs() {
+    PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+        "$zsh_bin" -f -c 'source "$1"; _ai_recent_dirs "$2"' \
+        zsh "$PAYLOAD_TARGET" "${1:-10}" 2>/dev/null
+}
+
+# (a) Stamping a non-HOME $PWD writes it to the store and it reads back first.
+rm -f "$STORE"
+mkdir -p "$DIRS/alpha" "$DIRS/beta"
+stamp_dir "$DIRS/alpha"
+stamp_dir "$DIRS/beta"
+[[ -f "$STORE" ]] || fail "stamping a dir did not create the recency store"
+[[ "$(read_dirs 10 | head -1)" == "$DIRS/beta" ]] \
+    || fail "most-recently-stamped dir did not read back first"
+[[ $(read_dirs 10 | grep -c "$DIRS/alpha") -eq 1 ]] \
+    || fail "an earlier-stamped dir dropped out of the store"
+
+# (b) Stamping $PWD == $HOME leaves the store byte-for-byte unchanged.
+store_before="$(cat "$STORE")"
+stamp_dir "$HOME"
+[[ "$(cat "$STORE")" == "$store_before" ]] \
+    || fail "stamping \$HOME modified the recency store"
+
+# (c) Re-stamping an older dir bubbles it back to the top (pure recency).
+stamp_dir "$DIRS/alpha"
+[[ "$(read_dirs 10 | head -1)" == "$DIRS/alpha" ]] \
+    || fail "re-stamped dir did not bubble to the top"
+
+# (d) The store grows unbounded (deduped by distinct dir); only the load/display
+# is capped, via the $max arg to _ai_recent_dirs. Stamp 12 distinct dirs: all 12
+# survive in the store, but a bounded read returns only that many rows.
+rm -f "$STORE"
+n=12
+for i in $(seq 1 $n); do
+    mkdir -p "$DIRS/big$i"
+    stamp_dir "$DIRS/big$i"
+done
+[[ $(wc -l < "$STORE") -eq $n ]] \
+    || fail "recency store evicted distinct dirs instead of growing to $n"
+grep -q "$DIRS/big1\$" "$STORE" \
+    || fail "oldest distinct dir was evicted from the unbounded store"
+# _ai_recent_dirs exits nonzero when the list is shorter than max (as the
+# original did); capture first so the harness's pipefail doesn't misread it.
+[[ $(read_dirs 5 | wc -l) -eq 5 ]] \
+    || fail "read did not cap display to the requested row count"
+big_out="$(read_dirs 5)"
+[[ "$(printf '%s\n' "$big_out" | head -1)" == "$DIRS/big$n" ]] \
+    || fail "capped read did not return the newest dirs first"
+
+# (e) Cold-start seed from $history when the store is absent/empty. fc -R drops
+# the final history line (a zsh quirk), so a throwaway sentinel goes last.
+rm -f "$STORE"
+mkdir -p "$DIRS/hist1" "$DIRS/hist2"
+printf 'cd %s\ncd %s\ncd /nonexistent-ai-menu-sentinel\n' \
+    "$DIRS/hist1" "$DIRS/hist2" > "$HOME/.zsh_history"
+seed_out="$(read_dirs 10)"
+[[ "$(printf '%s\n' "$seed_out" | head -1)" == "$DIRS/hist2" ]] \
+    || fail "cold-start seed did not surface the newest history dir first"
+printf '%s\n' "$seed_out" | grep -q "$DIRS/hist1\$" \
+    || fail "cold-start seed omitted an older history dir"
+[[ -f "$STORE" ]] || fail "cold-start seed did not persist the store"
+rm -f "$HOME/.zsh_history"
+
 echo "ai-menu tests passed"

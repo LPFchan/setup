@@ -1,17 +1,28 @@
 # setup-module: ai-menu
 # setup-source: files/ai-menu
 
-# Recent cd targets from $history, newest first, as canonical absolute paths
-# (deduped by abs path, existence-checked). One path per line on stdout.
+# Cold-start seed depth: how many recent dirs to prime the store with, once, on
+# a fresh machine when the store is empty (see _ai_recent_dirs). NOT a storage
+# cap — the store keeps every distinct dir ever visited (dedup bounds it to one
+# line per directory, so it stays naturally modest). Decoupled from the folder
+# clamp; kept generous so the first menu open is well-primed regardless of the
+# momentary menu size. Plain (non-readonly) global so re-sourcing is harmless.
+_AI_RECENT_DIRS_SEED=50
+
+# Recent cd targets parsed out of $history, newest first, as canonical absolute
+# paths (deduped by abs path, existence-checked). One path per line on stdout.
+# This is the COLD-START SEED source only: _ai_recent_dirs calls it once, when
+# the recency store is absent or empty, to prime the folder column on a fresh
+# machine before the first live access is stamped.
 #
-# `ai` calls this inside a command substitution, so it runs in a subshell —
-# a hard failsafe boundary. Parsing arbitrary history strings is the one place
-# a malformed entry can raise a *fatal* expansion error (see the ${~arg} note
-# below); contained here it dies with the subshell and the folder column just
-# comes back empty, instead of unwinding the whole shell / plugin stack during
-# startup auto-launch. Forkless within itself: $history assoc + builtin
-# modifiers, no external process.
-_ai_recent_dirs() {
+# It runs (via _ai_recent_dirs) inside a command substitution, so it executes in
+# a subshell — a hard failsafe boundary. Parsing arbitrary history strings is
+# the one place a malformed entry can raise a *fatal* expansion error (see the
+# ${~arg} note below); contained in that subshell it dies with it and the folder
+# column just comes back empty, instead of unwinding the whole shell / plugin
+# stack during startup auto-launch. Forkless within itself: $history assoc +
+# builtin modifiers, no external process.
+_ai_recent_dirs_from_history() {
     emulate -L zsh
     local max=${1:-8}
     zmodload -F zsh/parameter p:history 2>/dev/null
@@ -58,6 +69,100 @@ _ai_recent_dirs() {
         print -r -- $canon
         (( ${#seen_path} >= max )) && break
     done
+}
+
+# Recent directories, newest first, as canonical absolute paths (deduped by abs
+# path, existence-checked). One path per line on stdout — the exact output
+# contract the display code at the ai() call site depends on. Reads the recency
+# store maintained by _ai_stamp_recent_dir; when that store is absent or empty
+# it seeds once from _ai_recent_dirs_from_history so a fresh machine still shows
+# a populated column on first open.
+#
+# `ai` calls this inside a command substitution, so it runs in a subshell — the
+# hard failsafe boundary described on _ai_recent_dirs_from_history. The
+# cold-start seed writes the store from inside that subshell; file writes escape
+# the subshell and persist to disk, which is the intended containment.
+_ai_recent_dirs() {
+    emulate -L zsh
+    local max=${1:-8}
+    local store=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-dirs
+    local -a lines
+    # Forkless read: $(<file) is optimized to not fork in zsh (same pattern as
+    # the ssh-config / claudex-config reads in ai()). Records are epoch<TAB>path.
+    # The whole store is read in full — cheap, since dedup bounds it to one line
+    # per distinct dir ever visited — and the loop below stops at $max existing
+    # dirs (the only cap: load/display), so an unbounded store never bloats the
+    # column.
+    [[ -r $store ]] && lines=( ${(f)"$(<$store)"} )
+    if (( ! $#lines )); then
+        # Cold start: seed the store once from history, newest-first, up to the
+        # seed depth. All seed records share one timestamp; recency order is
+        # carried by line order (the history parse is already newest-first).
+        local -a seed
+        seed=( ${(f)"$(_ai_recent_dirs_from_history $_AI_RECENT_DIRS_SEED)"} )
+        if (( $#seed )); then
+            zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null
+            local now=${EPOCHSECONDS:-0} d
+            local -a records
+            for d in "${seed[@]}"; do records+=( "$now"$'\t'"$d" ); done
+            mkdir -p -- ${store:h} 2>/dev/null \
+                && print -rl -- "${records[@]}" >| $store 2>/dev/null
+            lines=( "${records[@]}" )
+        fi
+    fi
+    local -i n=0
+    local rec dir
+    local -A seen
+    for rec in "${lines[@]}"; do
+        dir=${rec#*$'\t'}                      # strip the epoch<TAB> prefix
+        [[ -n $dir && -d $dir ]] || continue   # skip blank / vanished dirs
+        (( ${+seen[$dir]} )) && continue
+        seen[$dir]=1
+        print -r -- $dir
+        (( ++n >= max )) && break
+    done
+}
+
+# Stamp $PWD into the recency store so folders reached via the menu (the
+# recursive `ai` after a jump), or by any other navigation, bubble to the top of
+# the folder column next time. Called directly from ai() on every real menu
+# open — OUTSIDE the _ai_recent_dirs $() failsafe — including during startup
+# auto-launch, so it MUST NOT raise a fatal error that unwinds the shell.
+#
+# $PWD is always a real existing directory, so ${PWD:a} and the string / array /
+# redirection ops below cannot throw (unlike the ${~arg} history parsing that is
+# deliberately quarantined in a subshell). Run inline in a dedicated function:
+# emulate -L zsh scopes options and locals, only non-throwing constructs are
+# used, dedup is a literal-string compare (not a glob), and every fallible
+# external step is guarded so any failure is a silent no-op. Forkless on the hot
+# path: EPOCHSECONDS (module param), $(<file) read, print redirection; the lone
+# mkdir matches the external mkdir the enable/disable block already runs
+# directly in ai().
+_ai_stamp_recent_dir() {
+    emulate -L zsh
+    # No datetime module -> stamping is a graceful no-op (never an error).
+    zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null || return
+    local dir=${PWD:a}
+    # Skip $HOME: every interactive shell auto-launches `ai` from ~, which would
+    # otherwise permanently pin $HOME to the top of the column.
+    [[ $dir == "$HOME" || $dir == "${HOME:a}" ]] && return
+    local store=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-dirs
+    local -a lines kept
+    local rec
+    [[ -r $store ]] && lines=( ${(f)"$(<$store)"} )
+    # Drop any existing record for this dir (dedup by abs path). Literal-string
+    # compare with a quoted RHS, so a path holding glob-active chars ([ ? * ()
+    # can never be misinterpreted as a pattern.
+    for rec in "${lines[@]}"; do
+        [[ ${rec#*$'\t'} == "$dir" ]] || kept+=( "$rec" )
+    done
+    # Prepend the fresh access (newest-first). No storage cap: dedup already
+    # bounds the store to one line per distinct dir ever visited, so it grows
+    # only with genuinely new directories. The read side caps load/display.
+    kept=( "$EPOCHSECONDS"$'\t'"$dir" "${kept[@]}" )
+    mkdir -p -- ${store:h} 2>/dev/null || return
+    # >| overwrites regardless of noclobber; single builtin redirection, no fork.
+    print -rl -- "${kept[@]}" >| $store 2>/dev/null
 }
 
 # Launch claudex with a named profile and record the session→profile mapping
@@ -116,6 +221,15 @@ ai() {
             return
             ;;
     esac
+
+    # Stamp the current directory into the recency store BEFORE building the menu
+    # (and after the enable/disable subcommands, which return early and must not
+    # stamp). Runs on every real open, including the recursive open after a
+    # folder jump — which is exactly how menu-driven navigation earns its place
+    # at the top of the folder column, with no special-casing at the jump site
+    # (line ~267). Runs outside the _ai_recent_dirs $() failsafe; it is written
+    # to be incapable of unwinding the shell (see _ai_stamp_recent_dir).
+    _ai_stamp_recent_dir
 
     local choice line
     local -a options ssh_hosts words tools folders
