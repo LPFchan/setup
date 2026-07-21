@@ -19,6 +19,12 @@ m._is_macos = lambda: False
 m.subprocess.run = lambda *a, **k: type('R', (), {'returncode': 0, 'stderr': b''})()
 sys.argv = [path, 'enable']
 m.cmd_enable()
+service_path = os.path.join(m.SERVICE_DIR, 'refresh-models.service')
+with open(service_path) as f:
+    service_unit = f.read()
+assert f'ExecStart={os.path.abspath(path)}\n' in service_unit
+assert 'EnvironmentFile' not in service_unit
+assert '.zshenv' not in service_unit
 servers = m.load_json(m.CONFIG_PATH)['servers']
 assert all(provider['enabled'] is False for provider in servers.values())
 PY

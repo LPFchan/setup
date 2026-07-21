@@ -30,7 +30,6 @@ Description=Refresh opencode model list from configured providers
 
 [Service]
 Type=oneshot
-EnvironmentFile=-%%h/.zshenv
 ExecStart=%s
 """
 
