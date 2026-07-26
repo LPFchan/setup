@@ -235,7 +235,7 @@ for sid, cwd, title, ts in conn.execute(
                0
            ) AS INTEGER)
     FROM sessions s
-    WHERE s.source = 'cli'
+    WHERE s.source IN ('cli', 'telegram')
       AND s.parent_session_id IS NULL
       AND COALESCE(s.archived, 0) = 0
       AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)
