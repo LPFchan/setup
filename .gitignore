@@ -2,3 +2,9 @@ __pycache__/
 .DS_Store
 .tmp_commit_msg_*.txt
 .claude/
+
+# media: only the encoded assets index.html serves are tracked.
+# Superseded renders and release candidates are local-only (rc1 is 107MB,
+# over GitHub's 100MB hard limit).
+media/archive/
+media/*-rc*.mp4

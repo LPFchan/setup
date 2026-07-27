@@ -7,7 +7,6 @@
   <meta name="description" content="Install resume, ai-menu, kernel-simmer, backup, monitoring, and more with one command.">
   <meta property="og:title" content="setup">
   <meta property="og:description" content="Install resume, ai-menu, kernel-simmer, backup, monitoring, and more with one command.">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.css">
   <style>
     :root {
       color-scheme: dark;
@@ -26,56 +25,41 @@
     body {
       margin: 0;
       min-height: 100dvh;
-      display: grid;
-      place-items: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 16px;
       padding: 24px;
       color: var(--fg);
       background: var(--bg);
       font-family: var(--sans);
     }
 
+    /* Scrim: keeps the bottom chrome legible over arbitrary video frames. */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      background: linear-gradient(to bottom, rgba(5, 5, 5, 0) 42%, rgba(5, 5, 5, 0.55) 74%, rgba(5, 5, 5, 0.92));
+      pointer-events: none;
+    }
+
+    .motion-background {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      pointer-events: none;
+    }
+
     main {
+      position: relative;
+      z-index: 2;
       width: min(760px, 100%);
-      display: grid;
-      gap: 20px;
-      justify-items: center;
-      text-align: center;
-    }
-
-    h1 {
-      margin: 0;
-      font-size: clamp(42px, 10vw, 92px);
-      line-height: 0.88;
-      letter-spacing: -0.045em;
-      font-weight: 900;
-    }
-
-    p {
-      margin: 0;
-      color: var(--muted);
-      font-family: var(--mono);
-      font-size: 13px;
-      letter-spacing: 0.04em;
-    }
-
-    .demo {
-      width: min(620px, 100%);
-      background: #000;
-      padding: 0;
-      text-align: left;
-      cursor: text;
-    }
-
-    #terminal {
-      height: 250px;
-    }
-
-    .xterm {
-      padding: 0;
-    }
-
-    .xterm .xterm-viewport {
-      background: transparent !important;
     }
 
     .command {
@@ -118,10 +102,8 @@
     #copy-button:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
 
     footer {
-      position: fixed;
-      left: 24px;
-      right: 24px;
-      bottom: 20px;
+      position: relative;
+      z-index: 2;
       text-align: center;
       font-family: var(--mono);
       font-size: 12px;
@@ -139,365 +121,36 @@
     @media (max-width: 560px) {
       .command { grid-template-columns: 1fr; }
       #copy-button { min-height: 56px; border-left: 0; border-top: 1px solid var(--line); }
-      #terminal { height: 236px; }
+      /* Wrap at the spaces rather than truncating; copy still yields one line. */
+      code { white-space: pre-wrap; padding: 18px 16px; line-height: 1.5; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .motion-background { display: none; }
+      body {
+        background: #050505 url('/media/setup-bg-poster.jpg') center / cover fixed no-repeat;
+      }
     }
   </style>
 </head>
 <body>
+  <video class="motion-background" autoplay muted loop playsinline preload="metadata" poster="/media/setup-bg-poster.jpg" aria-hidden="true">
+    <source src="/media/setup-bg-720p.mp4" type="video/mp4" media="(max-width: 900px)">
+    <source src="/media/setup-bg-1080p.mp4" type="video/mp4">
+  </video>
+
   <main>
-    <h1>setup</h1>
-    <section class="demo" aria-label="Interactive ai-menu and resume demo">
-      <div id="terminal"></div>
-    </section>
     <div class="command" role="group" aria-label="Install command">
       <code id="install-command">curl -fsSL https://setup.lost.plus/install.sh | zsh</code>
       <button id="copy-button" type="button" aria-label="Copy install command">copy</button>
     </div>
-    <p>installs resume, ai-menu, kernel-simmer, backup, monitoring, and more</p>
   </main>
 
   <footer><a href="https://github.com/LPFchan/setup">github</a></footer>
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.js"></script>
   <script>
     const button = document.getElementById('copy-button');
     const command = document.getElementById('install-command').textContent;
-    const terminalElement = document.getElementById('terminal');
-    const demoState = {
-      mode: 'ai',
-      selected: { ai: 0, resume: 0 },
-      query: { ai: '', resume: '' },
-      status: '',
-      loaded: false
-    };
-    let demos = {
-      ai: {
-        title: 'loading ai-menu source...',
-        prompt: '▌ ',
-        footer: 'fetching /files/ai-start-menu',
-        rows: [
-          { label: 'loading', detail: 'waiting for deployed script source', action: 'wait' }
-        ]
-      },
-      resume: {
-        title: 'loading resume source...',
-        prompt: 'resume > ',
-        footer: 'fetching /files/resume',
-        rows: [
-          { label: 'loading', detail: 'waiting for deployed script source', action: 'wait' }
-        ]
-      }
-    };
-
-    const sampleHosts = ['grimoire', 'oci-ubuntu', 'bingus'];
-    const sampleSessions = [
-      { ts: '06/04 17:43', tool: 'opencode', cwd: '~/linux-setup', title: 'Use xterm live script demo', action: 'opencode --session ses_demo_7b2f' },
-      { ts: '06/04 17:36', tool: 'opencode', cwd: '~/linux-setup', title: 'Add interactive menu demo', action: 'opencode --session ses_demo_4a19' },
-      { ts: '06/04 17:16', tool: 'claude  ', cwd: '~/linux-setup', title: 'Minimize landing page and auto-install modules', action: 'claude --resume 00000000-0000-4000-8000-000000000001' },
-      { ts: '06/04 16:57', tool: 'codex   ', cwd: '~/vaultwarden-mcp', title: 'Cloudflare DNS record debugging', action: 'codex resume rollout-demo' },
-      { ts: '06/03 22:04', tool: 'forge   ', cwd: '~/grimoire', title: 'cgroup monitor cleanup', action: 'forge --conversation-id conv_demo' }
-    ];
-
-    function meta(source, key) {
-      const match = source.match(new RegExp(`^# setup-${key}:\\s*(.+)$`, 'm'));
-      return match ? match[1].trim() : 'unknown';
-    }
-
-    function caseBody(source, label) {
-      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`${escaped}\\)([\\s\\S]*?)\\n\\s*;;`, 'g');
-      const bodies = Array.from(source.matchAll(pattern)).map((match) => match[1].trim().replace(/\s+/g, ' '));
-      return bodies.find((body) => /\bexec\b/.test(body)) || bodies[0] || '';
-    }
-
-    function compactCommand(text) {
-      return text
-        .replace(/; then/g, '; then')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 120);
-    }
-
-    function parseAiMenu(source) {
-      const rows = [];
-      const optionsMatch = source.match(/options=\(([^)]*)\)/);
-      if (optionsMatch) {
-        optionsMatch[1].trim().split(/\s+/).filter(Boolean).forEach((name) => {
-          rows.push({
-            label: name,
-            detail: compactCommand(caseBody(source, name)) || name,
-            action: name
-          });
-        });
-      }
-      if (/ssh_hosts=/.test(source)) {
-        sampleHosts.forEach((host) => rows.push({ label: host, detail: `ssh ${host}`, action: 'ssh' }));
-      }
-      if (/options\+=\(resume neither\)/.test(source)) {
-        rows.push({ label: 'resume', detail: compactCommand(caseBody(source, 'resume')) || 'resume', action: 'resume' });
-        rows.push({ label: 'neither', detail: compactCommand(caseBody(source, 'neither|""')) || 'return to shell', action: 'neither' });
-      }
-      return rows.length ? rows : [{ label: 'source loaded', detail: 'no menu entries parsed', action: 'none' }];
-    }
-
-    function parseResume(source) {
-      const rows = [];
-      const tools = {
-        cc: { label: 'claude', store: source.match(/CLAUDE_DIR="([^"]+)"/)?.[1] || '~/.claude/projects' },
-        cx: { label: 'codex', store: source.match(/CODEX_DIR="([^"]+)"/)?.[1] || '~/.codex/sessions' },
-        oc: { label: 'opencode', store: source.match(/OC_DB="([^"]+)"/)?.[1] || '~/.local/share/opencode/opencode.db' },
-        fg: { label: 'forge', store: source.match(/FG_DB="([^"]+)"/)?.[1] || '~/.forge/.forge.db' }
-      };
-
-      sampleSessions.forEach((session) => {
-        const key = Object.entries(tools).find(([, value]) => value.label.trim() === session.tool.trim())?.[0];
-        if (!key || source.includes(`${key}) exec `)) rows.push({ ...session, label: session.tool.trim(), detail: session.title, action: session.action });
-      });
-      return rows.length ? rows : [{ label: 'No sessions found.', detail: '', action: 'none' }];
-    }
-
-    async function fetchSource(path) {
-      const response = await fetch(`${path}?t=${Date.now()}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`${path}: ${response.status}`);
-      return response.text();
-    }
-
-    async function loadDemoSources() {
-      try {
-        const [aiSource, resumeSource] = await Promise.all([
-          fetchSource('/files/ai-start-menu'),
-          fetchSource('/files/resume')
-        ]);
-        demos = {
-          ai: {
-            title: `ai-menu ${meta(aiSource, 'version')}`,
-            prompt: '▌ ',
-            footer: `live from ${meta(aiSource, 'source')} · ENTER resume opens picker`,
-            rows: parseAiMenu(aiSource)
-          },
-          resume: {
-            title: `resume ${meta(resumeSource, 'version')}`,
-            prompt: 'resume > ',
-            footer: `live from ${meta(resumeSource, 'source')} · ESC/Ctrl-C back`,
-            rows: parseResume(resumeSource)
-          }
-        };
-        demoState.loaded = true;
-        const fixedResumeIndex = demos.ai.rows.findIndex((row) => row.label === 'resume');
-        demoState.selected.ai = fixedResumeIndex >= 0 ? fixedResumeIndex : 0;
-        demoState.selected.resume = 0;
-        demoState.status = '';
-      } catch (error) {
-        demos.ai.title = 'source fetch failed';
-        demos.ai.footer = String(error.message || error);
-      }
-      renderDemo();
-    }
-
-    const ansi = {
-      reset: '\x1b[0m',
-      dim: '\x1b[90m',
-      fg: '\x1b[37m',
-      hot: '\x1b[92m',
-      cyan: '\x1b[96m',
-      magenta: '\x1b[95m',
-      yellow: '\x1b[93m',
-      selected: '\x1b[30;42m'
-    };
-
-    const term = window.Terminal ? new Terminal({
-      cols: terminalCols(),
-      rows: 13,
-      cursorBlink: true,
-      cursorStyle: 'block',
-      fontFamily: 'SF Mono, JetBrains Mono, IBM Plex Mono, Consolas, monospace',
-      fontSize: 13,
-      lineHeight: 1.18,
-      theme: {
-        background: '#000000',
-        foreground: '#f1f1ee',
-        cursor: '#c8ff3d',
-        selectionBackground: '#c8ff3d',
-        selectionForeground: '#050505',
-        black: '#050505',
-        red: '#ff5f57',
-        green: '#8fd14f',
-        yellow: '#ffd866',
-        blue: '#60d2ff',
-        magenta: '#ff60d2',
-        cyan: '#60d2ff',
-        white: '#f1f1ee',
-        brightBlack: '#777772',
-        green: '#c8ff3d',
-        brightGreen: '#c8ff3d',
-        brightCyan: '#60d2ff',
-        brightMagenta: '#ff60d2',
-        brightYellow: '#ffd866',
-        brightWhite: '#ffffff'
-      },
-      convertEol: true,
-      disableStdin: false,
-      scrollback: 0
-    }) : null;
-
-    function terminalCols() {
-      return Math.max(46, Math.min(78, Math.floor(terminalElement.clientWidth / 8)));
-    }
-
-    function clip(text, width) {
-      if (text.length <= width) return text.padEnd(width, ' ');
-      return text.slice(0, Math.max(0, width - 1)) + '…';
-    }
-
-    function rowText(row) {
-      if (demoState.mode === 'ai') return row.label;
-      const cwd = (row.cwd || '').padEnd(22, ' ').slice(0, 22);
-      return `${row.ts}  ${row.tool}  ${cwd}  ${row.title}`;
-    }
-
-    function colorRow(row) {
-      if (demoState.mode === 'ai') return `${ansi.fg}${row.label}`;
-      const cwd = (row.cwd || '').padEnd(22, ' ').slice(0, 22);
-      return `${ansi.dim}${row.ts}${ansi.reset}  ${ansi.cyan}${row.tool}${ansi.reset}  ${ansi.yellow}${cwd}${ansi.reset}  ${ansi.fg}${row.title}`;
-    }
-
-    function visibleRows() {
-      const data = demos[demoState.mode];
-      const query = demoState.query[demoState.mode].toLowerCase();
-      if (!query) return data.rows.map((row, index) => ({ row, index }));
-      return data.rows
-        .map((row, index) => ({ row, index }))
-        .filter(({ row }) => rowText(row).toLowerCase().includes(query));
-    }
-
-    function selectedVisibleIndex(rows) {
-      const selected = demoState.selected[demoState.mode];
-      const index = rows.findIndex((entry) => entry.index === selected);
-      return index >= 0 ? index : 0;
-    }
-
-    function renderDemo() {
-      const data = demos[demoState.mode];
-      const rows = visibleRows();
-      const visibleSelected = selectedVisibleIndex(rows);
-      if (rows.length && rows[visibleSelected].index !== demoState.selected[demoState.mode]) {
-        demoState.selected[demoState.mode] = rows[visibleSelected].index;
-      }
-      const cols = term ? term.cols : terminalCols();
-      const inner = cols;
-      const prompt = demoState.mode === 'ai'
-        ? `${ansi.hot}▌${ansi.reset} ${ansi.fg}${demoState.query.ai}`
-        : `${ansi.magenta}resume >${ansi.reset} ${ansi.fg}${demoState.query.resume}`;
-      const header = demoState.mode === 'ai'
-        ? 'current machine: grimoire'
-        : 'ENTER: resume   ESC: cancel';
-
-      const lines = [
-        `${ansi.dim}${clip(header, inner)}${ansi.reset}`,
-        prompt
-      ];
-
-      if (demoState.status) lines.push(`${ansi.dim}${clip(demoState.status, inner)}${ansi.reset}`);
-
-      rows.forEach(({ row, index }) => {
-        const isSelected = index === demoState.selected[demoState.mode];
-        const prefix = isSelected ? '▌ ' : '  ';
-        const plainText = clip(prefix + rowText(row), inner);
-        if (isSelected) {
-          lines.push(`${ansi.selected}${plainText}${ansi.reset}`);
-        } else {
-          lines.push(prefix + colorRow(row));
-        }
-      });
-
-      while (lines.length < 13) lines.push('');
-
-      if (!term) {
-        terminalElement.innerHTML = `<pre>${lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '')}</pre>`;
-        return;
-      }
-
-      term.write('\x1b[2J\x1b[H' + lines.slice(0, 13).join('\r\n'));
-    }
-
-    function handleDemoKey(event) {
-      if (event.target === button) return;
-      const rows = visibleRows();
-      if (!rows.length) return;
-      const currentVisible = selectedVisibleIndex(rows);
-      if (event.key === 'ArrowDown' || event.key === 'j') {
-        event.preventDefault();
-        demoState.selected[demoState.mode] = rows[(currentVisible + 1) % rows.length].index;
-        demoState.status = '';
-        renderDemo();
-      }
-      if (event.key === 'ArrowUp' || event.key === 'k') {
-        event.preventDefault();
-        demoState.selected[demoState.mode] = rows[(currentVisible - 1 + rows.length) % rows.length].index;
-        demoState.status = '';
-        renderDemo();
-      }
-      if (event.key === 'Backspace') {
-        event.preventDefault();
-        demoState.query[demoState.mode] = demoState.query[demoState.mode].slice(0, -1);
-        demoState.status = '';
-        renderDemo();
-      }
-      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        event.preventDefault();
-        demoState.query[demoState.mode] += event.key;
-        demoState.status = '';
-        renderDemo();
-      }
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        const selectedRow = demos[demoState.mode].rows[demoState.selected[demoState.mode]];
-        if (demoState.mode === 'ai' && selectedRow?.action === 'resume') {
-          demoState.mode = 'resume';
-          demoState.query.resume = '';
-          demoState.status = '';
-          renderDemo();
-          return;
-        }
-        if (demoState.mode === 'ai') {
-          demoState.status = selectedRow?.action === 'neither'
-            ? 'returning to shell'
-            : selectedRow?.detail || selectedRow?.label;
-          renderDemo();
-          return;
-        }
-        if (demoState.mode === 'resume') {
-          demoState.status = `Resuming ${selectedRow?.label || 'session'} session... ${selectedRow?.action || ''}`;
-          renderDemo();
-        }
-      }
-      if (demoState.mode === 'resume' && (event.key === 'Escape' || (event.ctrlKey && event.key.toLowerCase() === 'c'))) {
-        event.preventDefault();
-        demoState.mode = 'ai';
-        demoState.query.resume = '';
-        demoState.status = '';
-        renderDemo();
-      }
-    }
-
-    if (term) {
-      term.open(terminalElement);
-      terminalElement.addEventListener('click', () => term.focus());
-      window.addEventListener('resize', () => {
-        term.resize(terminalCols(), 13);
-        renderDemo();
-      });
-      renderDemo();
-      setTimeout(() => term.focus(), 50);
-    } else {
-      renderDemo();
-      terminalElement.tabIndex = 0;
-    }
-
-    document.addEventListener('keydown', handleDemoKey);
-
-    loadDemoSources();
-    setInterval(loadDemoSources, 60000);
 
     function fallbackCopy(text) {
       const textarea = document.createElement('textarea');
