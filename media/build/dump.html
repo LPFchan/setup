@@ -1,0 +1,62 @@
+<meta charset="utf-8">
+<link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css">
+<style>html,body{margin:0;background:#050505}</style>
+<div id="host"></div>
+<script src="/node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script>
+// Headless replay used to read a cast back as text, so shots can be aimed at
+// real (column, row) positions instead of guessed pixels.
+let term = null, cast = null, idx = 0, tnow = -1;
+
+async function loadCast(name) {
+  const d = await (await fetch(`/casts/${name}.json`)).json();
+  const dec = new TextDecoder();
+  const ev = d.events.map(([t, b64], i) => {
+    const bin = atob(b64); const u = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k);
+    return [t, dec.decode(u, { stream: i < d.events.length - 1 })];
+  });
+  return { cols: d.cols, rows: d.rows, meta: d.meta || {}, ev };
+}
+
+window.__open = async (name) => {
+  document.getElementById('host').innerHTML = '';
+  cast = await loadCast(name); idx = 0; tnow = -1;
+  term = new Terminal({ cols: cast.cols, rows: cast.rows, fontFamily: 'monospace',
+    fontSize: 14, scrollback: 0, disableStdin: true, allowTransparency: true });
+  term.open(document.getElementById('host'));
+  return { cols: cast.cols, rows: cast.rows, dur: cast.ev[cast.ev.length - 1][0],
+           meta: cast.meta };
+};
+
+window.__seek = async (t) => {
+  if (t < tnow) { term.reset(); idx = 0; }
+  let buf = '';
+  while (idx < cast.ev.length && cast.ev[idx][0] <= t) buf += cast.ev[idx++][1];
+  tnow = t;
+  if (buf) await new Promise(r => term.write(buf, r));
+};
+
+window.__text = () => {
+  const b = term.buffer.active, out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const l = b.getLine(y);
+    out.push(l ? l.translateToString(false) : '');
+  }
+  return out;
+};
+
+// background colour of each row's first cell — finds the machine-colour bands
+window.__rowbg = () => {
+  const b = term.buffer.active, out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const l = b.getLine(y); if (!l) { out.push(null); continue; }
+    const c = l.getCell(0);
+    out.push(c ? (c.isBgRGB() ? '#' + c.getBgColor().toString(16).padStart(6, '0')
+                              : c.getBgColor()) : null);
+  }
+  return out;
+};
+
+window.__ready = true;
+</script>

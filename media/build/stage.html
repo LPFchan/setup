@@ -1,0 +1,179 @@
+<meta charset="utf-8">
+<title>stage</title>
+<link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css">
+<style>
+  html,body{margin:0;padding:0;background:#050505;overflow:hidden;width:1920px;height:1080px}
+  #stage{position:absolute;inset:0;width:1920px;height:1080px;overflow:hidden;background:#050505}
+
+  #cam{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0;z-index:1}
+  /* opaque: the fleet cascade overlaps its terminals into a deck, and they
+     have to occlude each other the way stacked windows do */
+  .scene{position:absolute;left:0;top:0;display:none;background:#050505}
+  .scene.on{display:block}
+
+  /* xterm's DOM renderer, deliberately: no compositor-cached texture, so text
+     re-rasterises crisply at whatever scale the camera happens to be at. */
+  .xterm{padding:0}
+  .xterm .xterm-viewport{background:transparent!important;overflow:hidden!important}
+  .xterm .xterm-screen{background:transparent}
+  .xterm-viewport::-webkit-scrollbar{display:none}
+
+  /* The mouse pointer. A terminal never draws one, so it is reconstructed from
+     the track recorded alongside the cast. It sits inside #cam at 1:1 terminal
+     scale, so the camera magnifies it the way zooming a screen recording would. */
+  #cursor{position:absolute;left:0;top:0;display:none;z-index:9;
+          filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.55))}
+  #cursor.on{display:block}
+  #cursor .ring{fill:none;stroke:#c8ff3d;stroke-width:2.2;opacity:0}
+  #cursor.down .ring{opacity:1}
+  #cursor .arrow{fill:#fff;stroke:#0a0a0a;stroke-width:1.1;stroke-linejoin:round}
+  #cursor.down .arrow{fill:#c8ff3d}
+
+  /* grain: keeps large flat colour fields from banding once the site
+     re-compresses the video. The only full-frame overlay — no vignette, no
+     radial bloom. Every colour in frame is one the tmux bar is really painted. */
+  #grain{position:absolute;inset:0;z-index:3;pointer-events:none;opacity:.035;
+         background-image:var(--grain);background-size:180px 180px}
+</style>
+<div id="stage">
+  <div id="cam">
+    <svg id="cursor" width="46" height="46" viewBox="-15 -15 46 46">
+      <circle class="ring" cx="0" cy="0" r="8.5"/>
+      <path class="arrow" d="M0 0 L0 13.6 L3.6 10.4 L5.8 15 L7.9 14.1 L5.7 9.6 L10.2 9.6 Z"/>
+    </svg>
+  </div>
+  <div id="grain"></div>
+</div>
+<script src="/node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="/timeline.js"></script>
+<script>
+(async () => {
+  const FPS = 60;
+  const stage    = document.getElementById('stage');
+  const cam      = document.getElementById('cam');
+  const cursorEl = document.getElementById('cursor');
+
+  // procedural grain, so no external asset is needed
+  {
+    const c = document.createElement('canvas'); c.width = c.height = 180;
+    const g = c.getContext('2d'), im = g.createImageData(180, 180);
+    let s = 1337;
+    for (let i = 0; i < im.data.length; i += 4) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      const v = s >>> 24;
+      im.data[i] = im.data[i+1] = im.data[i+2] = v; im.data[i+3] = 255;
+    }
+    g.putImageData(im, 0, 0);
+    document.getElementById('grain').style.setProperty('--grain', `url(${c.toDataURL()})`);
+  }
+
+  const THEME = {
+    background:'#050505', foreground:'#f1f1ee', cursor:'#c8ff3d',
+    cursorAccent:'#050505', selectionBackground:'#c8ff3d',
+    black:'#050505', red:'#ff5f57', green:'#c8ff3d', yellow:'#ffd866',
+    blue:'#60d2ff', magenta:'#ff60d2', cyan:'#60d2ff', white:'#f1f1ee',
+    brightBlack:'#777772', brightRed:'#ff7b74', brightGreen:'#d8ff6e',
+    brightYellow:'#ffe28a', brightBlue:'#8adfff', brightMagenta:'#ff8ade',
+    brightCyan:'#8adfff', brightWhite:'#ffffff'
+  };
+  const FONT = '"JetBrainsMono Nerd Font","JetBrains Mono","SF Mono",monospace';
+
+  async function loadCast(name) {
+    const d = await (await fetch(`/casts/${name}.json`)).json();
+    const dec = new TextDecoder();
+    const ev = d.events.map(([t, b64], i) => {
+      const bin = atob(b64);
+      const u = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k);
+      // stream:true so a glyph split across two events still decodes
+      return [t, dec.decode(u, { stream: i < d.events.length - 1 })];
+    });
+    return { cols: d.cols, rows: d.rows, meta: d.meta || {}, ev };
+  }
+
+  class Screen {
+    constructor(cast, fontSize, id) {
+      this.cast = cast; this.i = 0; this.t = -1;
+      this.el = document.createElement('div');
+      this.el.className = 'scene'; this.el.id = id;
+      cam.appendChild(this.el);
+      this.term = new Terminal({
+        cols: cast.cols, rows: cast.rows,
+        fontFamily: FONT, fontSize, lineHeight: 1.15,
+        fontWeight: 400, fontWeightBold: 700, letterSpacing: 0,
+        cursorBlink: false, cursorStyle: 'block', cursorInactiveStyle: 'none',
+        theme: THEME, allowTransparency: true, scrollback: 0,
+        disableStdin: true, convertEol: false,
+        drawBoldTextInBrightColors: false, minimumContrastRatio: 1
+      });
+      this.term.open(this.el);
+    }
+    size() { const r = this.el.getBoundingClientRect(); return { w: r.width, h: r.height }; }
+    cell() {
+      const c = this.el.querySelector('.xterm-rows > div');
+      return { w: this.size().w / this.cast.cols,
+               h: c ? c.getBoundingClientRect().height : this.size().h / this.cast.rows };
+    }
+    async seek(t) {
+      if (t < this.t) { this.term.reset(); this.i = 0; }
+      let buf = '';
+      const ev = this.cast.ev;
+      while (this.i < ev.length && ev[this.i][0] <= t) buf += ev[this.i++][1];
+      this.t = t;
+      if (buf) await new Promise(r => this.term.write(buf, r));
+    }
+  }
+
+  const S = {};
+  for (const [id, spec] of Object.entries(TIMELINE.screens)) {
+    S[id] = new Screen(await loadCast(spec.cast), spec.font, id);
+  }
+  await document.fonts.ready;
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  const geom = {}, meta = {};
+  for (const [id, s] of Object.entries(S)) {
+    s.el.classList.add('on');
+    geom[id] = { cell: s.cell(), size: s.size(), cols: s.cast.cols, rows: s.cast.rows };
+    meta[id] = s.cast.meta;
+    s.el.classList.remove('on');
+  }
+  TIMELINE.init(geom, meta);
+
+  let shown = new Set();
+  window.__frame = async (n) => {
+    const f = TIMELINE.at(n / FPS);
+
+    const want = new Set(f.layers.map(l => l.id));
+    for (const id of want) await S[id].seek(f.castTime[id]);
+    for (const id of Object.keys(S)) {
+      const on = want.has(id);
+      if (on !== shown.has(id)) {
+        S[id].el.classList.toggle('on', on);
+        on ? shown.add(id) : shown.delete(id);
+      }
+    }
+    for (const l of f.layers) {
+      const e = S[l.id].el;
+      e.style.transform = `translate(${l.x}px, ${l.y}px)` + (l.s !== 1 ? ` scale(${l.s})` : '');
+      e.style.transformOrigin = '50% 50%';
+      e.style.opacity = l.o === undefined ? 1 : l.o;
+      e.style.zIndex = l.z === undefined ? 1 : l.z;
+    }
+    cam.style.transform =
+      `translate(960px, 540px) scale(${f.cam.s}) translate(${-f.cam.x}px, ${-f.cam.y}px)`;
+
+    cursorEl.classList.toggle('on', !!f.cursor);
+    if (f.cursor) {
+      cursorEl.classList.toggle('down', !!f.cursor.down);
+      // the SVG's viewBox puts the pointer tip at (15,15) inside the element
+      cursorEl.style.transform = `translate(${f.cursor.x - 15}px, ${f.cursor.y - 15}px)`;
+    }
+    stage.style.background = '#050505';
+    await new Promise(r => requestAnimationFrame(r));
+  };
+
+  window.__total = Math.round(TIMELINE.duration * FPS);
+  window.__ready = true;
+})();
+</script>

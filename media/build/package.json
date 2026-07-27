@@ -1,0 +1,17 @@
+{
+  "name": "setup-bg",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Motion background for setup.lost.plus — real tmux/zsh sessions replayed in xterm.js",
+  "type": "module",
+  "scripts": {
+    "seed": "python3 seed_sandbox.py",
+    "record": "python3 rec.py",
+    "render": "node render.mjs master.mp4",
+    "encode": "./encode.sh"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "puppeteer-core": "^23.11.1"
+  }
+}
