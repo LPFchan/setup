@@ -299,7 +299,7 @@ ai() {
     # Forkless availability filter: ${+commands[...]} is a hash lookup,
     # so missing tools drop out of the menu without any external probe.
     local tool
-    for tool in claude codex claudex opencode hermes grok; do
+    for tool in claude codex claudex opencode agy hermes grok; do
         (( ${+commands[$tool]} )) && tools+=("$tool")
         # claudex-cc is a second claudex profile (Command Code catalog), shown
         # right under claudex — only when claudex exists AND the global
@@ -468,6 +468,7 @@ ai() {
         claudex) _claudex_launch codex --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
         claudex-cc) _claudex_launch commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
+        agy) agy --dangerously-skip-permissions ;;
         hermes) hermes ;;
         grok) grok ;;
         setup) setup ;;

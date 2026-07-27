@@ -87,7 +87,11 @@ cat > "$TEST_TMP/bin/setup" <<'EOF'
 #!/bin/sh
 printf 'setup-dispatched\n' >> "$AI_MENU_TEST_LOG"
 EOF
-chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/setup"
+cat > "$TEST_TMP/bin/agy" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$AI_MENU_AGY_ARGS"
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/setup" "$TEST_TMP/bin/agy"
 rm -f "$TEST_TMP/launches"
 AI_MENU_TEST_LOG="$TEST_TMP/launches" AI_MENU_GRID_INPUT="$TEST_TMP/grid-input" \
 AI_MENU_GRID_ARGS="$TEST_TMP/grid-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
@@ -97,6 +101,22 @@ AI_MENU_GRID_ARGS="$TEST_TMP/grid-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
 grep -q -- '--grid=3' "$TEST_TMP/grid-args" || fail "ai-menu did not request a three-column grid"
 grep -q -- '--grid-span-prefix=@@' "$TEST_TMP/grid-args" || fail "ai-menu omitted span prefix"
 grep -q 'setup-dispatched' "$TEST_TMP/launches" || fail "typed setup metadata was not stripped for dispatch"
+grep -q $'tool\037agy\037agy' "$TEST_TMP/grid-input" || fail "Antigravity CLI was absent from ai-menu"
+
+# Antigravity dispatch uses its explicit autonomous launch flag.
+cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
+#!/bin/sh
+case "$1" in
+    --help) echo '--grid-span-prefix=STR'; exit ;;
+esac
+cat >/dev/null
+printf 'tool\037agy\037agy\n'
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn"
+AI_MENU_AGY_ARGS="$TEST_TMP/agy-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+    "$zsh_bin" -f -c 'source "$1"; ai' zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
+[[ "$(cat "$TEST_TMP/agy-args")" == "--dangerously-skip-permissions" ]] \
+    || fail "ai-menu launched Antigravity without autonomous permissions"
 
 # A pre-capable binary triggers repair on every invocation (no permanent failed
 # marker); if repair does not fix it, ai-menu falls back to plain fzf.

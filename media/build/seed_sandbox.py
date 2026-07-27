@@ -29,7 +29,7 @@ SSH_HOSTS = [                       # mirrors files/ssh-aliases.sh
     ('bingus',     'bingus.lost.plus', 'yeowool', 'xterm-256color'),
 ]
 
-HARNESSES = ['claude', 'codex', 'claudex', 'opencode', 'hermes', 'grok']
+HARNESSES = ['claude', 'codex', 'claudex', 'opencode', 'agy', 'hermes', 'grok']
 
 PROJECTS = ['Documents/setup', 'Documents/fzf-multicolumn', 'Documents/repo-template',
             'Documents/nxgallery', 'Documents/Marble', 'Documents/Photopeace',
@@ -41,6 +41,7 @@ SESSIONS = [
     ( 15, 'claude',   'grimoire',                  'why is the draft model falling out of cache'),
     ( 27, 'codex',    'Documents/fzf-multicolumn', 'span-aware grid: keep the focused cell on redraw'),
     ( 52, 'opencode', 'Documents/setup',           'make ai-menu rank folders by recency'),
+    ( 63, 'agy',      'Documents/Marble',          'trace the stale workspace cache entry'),
     ( 77, 'hermes',   'Eastself',                  'wire the telegram bridge to the new inference host'),
     (100, 'claude',   'Documents/repo-template',   'scaffold the skills directory'),
     (144, 'grok',     'Documents/nxgallery',       'lazy-load the masonry grid below the fold'),
@@ -307,6 +308,28 @@ def build_sessions():
                   (f"ses_c0ffee{i:04d}", None, msg, os.path.join(HOME, cwd),
                    int(when(mins).timestamp() * 1000)))
     c.commit(); c.close()
+
+    # --- Antigravity CLI: public transcript path + workspace cache
+    agy_latest = {}
+    for i, (mins, tool, cwd, msg) in enumerate(SESSIONS):
+        if tool != 'agy':
+            continue
+        full = os.path.join(HOME, cwd)
+        sid = f"a9c0ffee-{i:04d}-7000-8000-a11ce0000{i:03d}"
+        p = os.path.join(HOME, '.gemini', 'antigravity-cli', 'brain', sid,
+                         '.system_generated', 'logs', 'transcript.jsonl')
+        rows = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "status": "DONE", "content": f"<USER_REQUEST>\n{msg}\n</USER_REQUEST>"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "content": "ok"},
+        ]
+        write(p, '\n'.join(json.dumps(r) for r in rows) + '\n')
+        ts = when(mins).timestamp()
+        os.utime(p, (ts, ts))
+        agy_latest[full] = sid
+    write(os.path.join(HOME, '.gemini', 'antigravity-cli', 'cache',
+                       'last_conversations.json'), json.dumps(agy_latest))
 
     # --- ForgeCode: sqlite
     db = os.path.join(HOME, '.forge', '.forge.db')

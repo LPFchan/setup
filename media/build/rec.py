@@ -153,7 +153,7 @@ def tab_layout(names):
 def rec_bartabs(port):
     """The status bar: tabs opening one at a time, then dragged into a new
     order. One continuous take — both halves are the same subject."""
-    WINDOWS = ['claude', 'codex', 'opencode', 'hermes', 'grok']
+    WINDOWS = ['claude', 'codex', 'opencode', 'agy', 'hermes', 'grok']
     r = Rec('yeowoolair', 108, 12, port)
     r.wait(0.5)
     r.tmux('set-option', '-g', 'automatic-rename', 'off')

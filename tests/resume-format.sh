@@ -81,6 +81,45 @@ actual_harness_args=$(cat "$TEST_TMP/harness-args")
 [[ "$actual_harness_args" == "$expected_harness_args" ]] \
     || { echo "FAIL: resume did not dispatch the harness after tmux title failure: $actual_harness_args" >&2; exit 1; }
 
+# Antigravity CLI publishes transcripts below brain/<conversation-id> and a
+# workspace-keyed latest-conversation cache. The picker should show that row,
+# enter its workspace, and resume it with `agy --conversation <id>`.
+agid="bbbbbbbb-1111-4222-8333-cccccccccccc"
+agcwd="$HOME/agy-proj"
+aglog="$HOME/.gemini/antigravity-cli/brain/$agid/.system_generated/logs"
+mkdir -p "$agcwd" "$aglog" "$HOME/.gemini/antigravity-cli/cache"
+cat > "$aglog/transcript.jsonl" <<'EOF'
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nResume Antigravity work\n</USER_REQUEST>\n<ADDITIONAL_METADATA>ignored</ADDITIONAL_METADATA>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"ok"}
+EOF
+printf '{"%s":"%s"}\n' "$agcwd" "$agid" \
+    > "$HOME/.gemini/antigravity-cli/cache/last_conversations.json"
+touch -t 202407031900.00 "$aglog/transcript.jsonl"
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+printf '%s\n' "$selection" | grep 'ag|' | head -1
+EOF
+cat > "$FAKE_BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" "$0" "$@" > "$TEST_TMP/agy-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/agy"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/agy-stderr"
+
+expected_tmux_args=$'rename-window\n--\nagy'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the Antigravity tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_agy_args=$(printf '%s\n%s\n--conversation\n%s' "$agcwd" "$FAKE_BIN/agy" "$agid")
+actual_agy_args=$(cat "$TEST_TMP/agy-args")
+[[ "$actual_agy_args" == "$expected_agy_args" ]] \
+    || { echo "FAIL: resume did not dispatch Antigravity: $actual_agy_args" >&2; exit 1; }
+
 # A claude session launched through claudex lands under ~/.claude/projects like
 # any native claude session, distinguished only by assistant turns recording
 # model "claudex-proxy". resume must tag it clx and relaunch it via

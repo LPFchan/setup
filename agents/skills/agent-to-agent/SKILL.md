@@ -1,8 +1,6 @@
 ---
 name: agent-to-agent
-description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, or Hermes Agent through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
-version: 1.1.0
-argument-hint: <codex|claude-code|opencode|hermes> [task to delegate]
+description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, or Hermes Agent through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
 ---
 
 # Agent to Agent
@@ -41,6 +39,12 @@ If the child may exceed the timeout, launch it in a new tmux window in the
 orchestrator's main session and poll its output file for progress; see the
 target's reference for its event format and progress signals.
 
+### Antigravity CLI
+
+When Antigravity CLI is the orchestrator, launch the external harness as a
+persistent background terminal task and monitor it through the task manager.
+Retain the task identifier until the process exits.
+
 ### Hermes Agent
 
 When Hermes is the orchestrator, call its terminal tool with `background=true`
@@ -60,6 +64,8 @@ the parent must retain and explicitly resume an external child conversation.
   and follow it.
 - For OpenCode, read [references/opencode.md](references/opencode.md) and
   follow it.
+- For Antigravity CLI (`agy`), read
+  [references/antigravity.md](references/antigravity.md) and follow it.
 - For Hermes Agent, read [references/hermes.md](references/hermes.md) and
   follow it.
 

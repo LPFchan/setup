@@ -44,6 +44,10 @@ install >/dev/null
     echo "trusted agents install did not link the fleet skill" >&2
     exit 1
 }
+[[ -L "$HOME/.gemini/GEMINI.md" && -L "$HOME/.gemini/config/skills/fleet" ]] || {
+    echo "trusted agents install did not link Antigravity rules and skills" >&2
+    exit 1
+}
 
 printf '%s\n' "$other_key" > "$HOME/.ssh/id_ed25519.pub"
 install >/dev/null
@@ -53,6 +57,10 @@ install >/dev/null
 }
 [[ ! -e "$HOME/.codex/skills/fleet" && ! -L "$HOME/.codex/skills/fleet" ]] || {
     echo "public agents install left the fleet skill linked" >&2
+    exit 1
+}
+[[ ! -e "$HOME/.gemini/config/skills/fleet" && ! -L "$HOME/.gemini/config/skills/fleet" ]] || {
+    echo "public agents install left the Antigravity fleet skill linked" >&2
     exit 1
 }
 

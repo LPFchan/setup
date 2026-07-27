@@ -19,6 +19,7 @@ SOURCE_PATHS=(agents files/agents.sh)
 AGENTS_LINKS=(
     "$HOME/.claude/CLAUDE.md"
     "$HOME/.codex/AGENTS.md"
+    "$HOME/.gemini/GEMINI.md"
     "$HOME/AGENTS.md"
     "$HOME/.config/opencode/AGENTS.md"
 )
@@ -26,6 +27,7 @@ AGENTS_LINKS=(
 SKILLS_LINK_DIRS=(
     "$HOME/.claude/skills"
     "$HOME/.codex/skills"
+    "$HOME/.gemini/config/skills"
 )
 
 _sync_src() {

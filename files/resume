@@ -10,7 +10,7 @@ usage() {
 Usage: resume [--help]
 
   Interactively pick and resume a Claude Code, Codex, OpenCode,
-  ForgeCode, Hermes, or Grok Build session via fzf.
+  Antigravity CLI, ForgeCode, Hermes, or Grok Build session via fzf.
 
   Without arguments, opens an fzf picker of recent sessions. Selecting
   a session resumes it with the appropriate tool.
@@ -26,6 +26,8 @@ esac
 CLAUDE_DIR="$HOME/.claude/projects"
 CODEX_DIR="$HOME/.codex/sessions"
 OC_DB="$HOME/.local/share/opencode/opencode.db"
+AGY_BRAIN="$HOME/.gemini/antigravity-cli/brain"
+AGY_LAST_CACHE="$HOME/.gemini/antigravity-cli/cache/last_conversations.json"
 FG_DB="$HOME/.forge/.forge.db"
 HERMES_DB="$HOME/.hermes/state.db"
 GROK_DIR="$HOME/.grok/sessions"
@@ -171,6 +173,101 @@ conn.close()
 PYEOF
     fi
 
+    # Antigravity CLI stores one artifact tree per conversation. The public
+    # hook contract guarantees the transcript path below, while the documented
+    # last-conversation cache supplies the workspace for each latest session.
+    # Older sessions without a cache entry remain resumable and fall back to
+    # $HOME for display/launch; --conversation restores their project itself.
+    if [[ -d "$AGY_BRAIN" || -f "$AGY_LAST_CACHE" ]]; then
+        python3 - "$AGY_BRAIN" "$AGY_LAST_CACHE" "$HOME" "$SCAN_LIMIT" << 'PYEOF'
+import json, re, sys
+from pathlib import Path
+
+root, cache_path, home, limit = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+cwd_by_id = {}
+try:
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    if isinstance(cache, dict):
+        cwd_by_id = {str(sid): str(cwd) for cwd, sid in cache.items() if sid}
+except Exception:
+    pass
+
+def text_value(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(filter(None, (text_value(item) for item in value)))
+    if isinstance(value, dict):
+        for key in ("content", "text", "message", "prompt"):
+            if key in value:
+                text = text_value(value[key])
+                if text:
+                    return text
+    return ""
+
+def first_user_text(value):
+    if isinstance(value, dict):
+        record_type = str(value.get("type") or "").upper()
+        source = str(value.get("source") or "").upper()
+        if record_type == "USER_INPUT" or source == "USER_EXPLICIT":
+            text = text_value(value.get("content", ""))
+            request = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", text, re.DOTALL)
+            return request.group(1) if request else text
+        role = str(value.get("role") or value.get("speaker") or "").lower()
+        if role in ("user", "human"):
+            text = text_value(value.get("content", value.get("message", value.get("text", ""))))
+            if text:
+                return text
+        for child in value.values():
+            text = first_user_text(child)
+            if text:
+                return text
+    elif isinstance(value, list):
+        for child in value:
+            text = first_user_text(child)
+            if text:
+                return text
+    return ""
+
+rows, seen = [], set()
+for transcript in (root.glob("*/.system_generated/logs/transcript.jsonl") if root.is_dir() else ()):
+    sid = transcript.parents[2].name
+    if not sid:
+        continue
+    title = ""
+    try:
+        with transcript.open(encoding="utf-8", errors="replace") as stream:
+            for line_no, line in enumerate(stream):
+                if line_no >= 500:
+                    break
+                try:
+                    title = first_user_text(json.loads(line))
+                except Exception:
+                    continue
+                if title:
+                    break
+        ts = int(transcript.stat().st_mtime)
+    except Exception:
+        continue
+    cwd = cwd_by_id.get(sid, home)
+    clean_cwd = cwd.replace("|", "/").replace("\n", " ").replace("\r", " ")
+    clean_title = " ".join(title.replace("|", "/").split())
+    rows.append((ts, sid, clean_cwd, clean_title))
+    seen.add(sid)
+
+# A fresh or compacted conversation can be present in the public cache before
+# its transcript is readable. Keep it selectable with a blank preview.
+cache_ts = int(cache_path.stat().st_mtime) if cache_path.exists() else 0
+for sid, cwd in cwd_by_id.items():
+    if sid not in seen:
+        rows.append((cache_ts, sid, cwd.replace("|", "/"), ""))
+
+rows.sort(key=lambda row: row[0], reverse=True)
+for ts, sid, cwd, title in rows[:limit]:
+    print(f"{ts}|ag|{sid}|{cwd}|{title}")
+PYEOF
+    fi
+
     if [[ -f "$FG_DB" ]]; then
         python3 - "$FG_DB" "$HOME" << 'PYEOF'
 import sqlite3, sys, json, re
@@ -306,6 +403,7 @@ format_for_fzf() {
             clxcc) label="claudex-cc" ;;
             cx) label="codex" ;;
             oc) label="opencode" ;;
+            ag) label="agy" ;;
             fg) label="forge" ;;
             hm) label="hermes" ;;
             gk) label="grok" ;;
@@ -347,6 +445,7 @@ case "$tool" in
     clxcc) harness=claudex; resume_args=(run commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions --resume "$id") ;;
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;
+    ag) harness=agy; resume_args=(--conversation "$id") ;;
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;
     hm) harness=hermes; resume_args=(chat --resume "$id") ;;
     gk) harness=grok; resume_args=(--resume "$id") ;;

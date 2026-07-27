@@ -72,11 +72,14 @@ into OpenCode's `disabled_providers` list and are skipped by manual and
 scheduled refreshes. Initial service setup offers each unkeyed provider once;
 leaving its prompt blank keeps it disabled.
 
-The `resume` picker reads Claude Code, Codex, OpenCode, ForgeCode, Hermes, and
-Grok Build session stores, then forwards the selected harness name to the
-current tmux window title before resuming the session. Hermes entries come from
-top-level interactive CLI sessions in `~/.hermes/state.db`. Grok entries come
-from `~/.grok/sessions/*/summary.json` and resume with `grok --resume <id>`.
+The `resume` picker reads Claude Code, Codex, OpenCode, Antigravity CLI,
+ForgeCode, Hermes, and Grok Build session stores, then forwards the selected
+harness name to the current tmux window title before resuming the session.
+Antigravity entries come from its documented transcript trees under
+`~/.gemini/antigravity-cli/brain/` and resume with `agy --conversation <id>`.
+Hermes entries come from top-level interactive CLI sessions in
+`~/.hermes/state.db`. Grok entries come from
+`~/.grok/sessions/*/summary.json` and resume with `grok --resume <id>`.
 
 ### Script modules
 
@@ -120,8 +123,8 @@ tools.
 Installs the canonical agent payload from `agents/` (this repo) into `~/.agents/`
 and symlinks it into every harness so all machines share one source of truth:
 
-- `agents/AGENTS.md` → `~/.agents/AGENTS.md`, symlinked to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/AGENTS.md`, `~/.config/opencode/AGENTS.md`
-- `agents/skills/*` → `~/.agents/skills/`, symlinked per-skill into `~/.claude/skills/` and `~/.codex/skills/`
+- `agents/AGENTS.md` → `~/.agents/AGENTS.md`, symlinked to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/AGENTS.md`, and `~/.config/opencode/AGENTS.md`
+- `agents/skills/*` → `~/.agents/skills/`, symlinked per-skill into `~/.claude/skills/`, `~/.codex/skills/`, and Antigravity's `~/.gemini/config/skills/`
 
 Skills with `audience: fleet` in their frontmatter are copied and linked only
 on matching machines. An update removes their managed harness links if the

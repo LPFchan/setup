@@ -11,7 +11,7 @@ xterm.js inside headless Chrome, with a camera driven over it.
 1. **`seed_sandbox.py`** builds `sandbox/` — a throwaway `$HOME` holding the
    fleet's ssh config, per-machine tmux configs generated from
    `files/tmux.sh`, stub harness binaries, and populated session stores for
-   Claude Code, Codex, OpenCode, ForgeCode, Hermes and Grok. That is what lets
+   Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes and Grok. That is what lets
    the *real* `bin/setup`, `files/resume` and `files/ai-menu` from this repo
    produce real output with nothing mocked.
 
