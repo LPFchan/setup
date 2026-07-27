@@ -47,11 +47,19 @@ _post_refresh_models_setup
 EOF
 chmod +x "$TMP/driver"
 
-AUTH_LOG="$TMP/auth.log" AUTH_RC=7 script -qec "$TMP/driver" /dev/null >/dev/null 2>&1 || true
+run_driver() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        script -q /dev/null "$TMP/driver"
+    else
+        script -qec "$TMP/driver" /dev/null
+    fi
+}
+
+AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1 || true
 [[ -e "$marker" ]] || { echo "failed provider setup removed retry marker" >&2; exit 1; }
 [[ $(cat "$TMP/auth.log") == auth ]] || { echo "provider setup did not call refresh-models auth" >&2; exit 1; }
 
-AUTH_LOG="$TMP/auth.log" AUTH_RC=0 script -qec "$TMP/driver" /dev/null >/dev/null 2>&1
+AUTH_LOG="$TMP/auth.log" AUTH_RC=0 run_driver >/dev/null 2>&1
 [[ ! -e "$marker" ]] || { echo "successful provider setup kept retry marker" >&2; exit 1; }
 
 echo "refresh-models onboarding tests passed"

@@ -197,7 +197,13 @@ _ensure_tmux() {
     # well-known install locations and eval shellenv for this invocation only.
     if [[ "$(uname -s)" == "Darwin" ]]; then
         local _brew_bin=""
-        for _brew_bin in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        local -a _brew_candidates
+        if [[ -n "${_SETUP_TMUX_BREW_CANDIDATES:-}" ]]; then
+            _brew_candidates=( ${(z)_SETUP_TMUX_BREW_CANDIDATES} )
+        else
+            _brew_candidates=(/opt/homebrew/bin/brew /usr/local/bin/brew)
+        fi
+        for _brew_bin in "${_brew_candidates[@]}"; do
             [[ -x "$_brew_bin" ]] && break
             _brew_bin=""
         done

@@ -18,7 +18,10 @@ exit 1
 EOF
 cat > "$FAKE_BIN/find" <<'EOF'
 #!/usr/bin/env bash
-sleep 0.2
+for _ in {1..100}; do
+    [[ -e "$TEST_TMP/fzf-started" ]] && break
+    sleep 0.02
+done
 [[ -e "$TEST_TMP/fzf-started" ]] || printf 'fzf did not start before scan emitted data\n' > "$TEST_TMP/async-failure"
 exec /usr/bin/find "$@"
 EOF

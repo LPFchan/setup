@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$(uname -s)" != Linux ]]; then
+    echo "backup restic tests skipped (Linux-only module)"
+    exit 0
+fi
+
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT
