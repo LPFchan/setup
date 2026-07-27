@@ -13,11 +13,12 @@
       --bg: #050505;
       --fg: #f1f1ee;
       --muted: #777772;
-      --line: #2b2b28;
-      --panel: #10100f;
       --hot: #c8ff3d;
       --mono: "SF Mono", "JetBrains Mono", "IBM Plex Mono", Consolas, monospace;
       --sans: "Helvetica Neue", Arial, sans-serif;
+      /* Overshoot on the way out, settle on the way back: reads as liquid. */
+      --morph-out: cubic-bezier(0.34, 1.32, 0.64, 1);
+      --morph-in: cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     * { box-sizing: border-box; }
@@ -62,44 +63,226 @@
       width: min(760px, 100%);
     }
 
-    .command {
+    .install {
+      display: flex;
+      justify-content: center;
       width: 100%;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 84px;
-      align-items: stretch;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      background: var(--panel);
     }
 
-    code {
-      display: block;
-      overflow-x: auto;
-      padding: 22px 24px;
-      text-align: left;
+    #install-button {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 17px 28px;
+      min-height: 54px;
+      overflow: hidden;
+      border: 0;
+      border-radius: 999px;
+      color: #050505;
+      background: #ffffff;
+      /* Frost only — the fallback for engines that reject a filter reference. */
+      backdrop-filter: blur(16px) saturate(180%);
+      -webkit-backdrop-filter: blur(16px) saturate(180%);
+      /* Lensing: displace the backdrop first, then frost what came through.
+         Dropped wholesale where url() is unsupported, leaving the rule above. */
+      backdrop-filter: url(#lens-body) blur(2px) saturate(170%) brightness(1.06);
+      -webkit-backdrop-filter: url(#lens-body) blur(2px) saturate(170%) brightness(1.06);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4), inset 0 -1px 0 rgba(0, 0, 0, 0.08);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #install-button.is-ready {
+      width: var(--w-idle);
+      height: var(--h-idle);
+      transition:
+        width 540ms var(--morph-in),
+        height 540ms var(--morph-in),
+        color 260ms linear,
+        background-color 380ms var(--morph-in),
+        box-shadow 380ms var(--morph-in),
+        transform 200ms ease;
+    }
+
+    #install-button.is-ready.is-open {
+      width: var(--w-open);
+      height: var(--h-open);
       color: var(--fg);
+      background: rgba(255, 255, 255, 0.07);
+      box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+      transition:
+        width 620ms var(--morph-out),
+        height 620ms var(--morph-out),
+        color 260ms linear,
+        background-color 340ms var(--morph-in),
+        box-shadow 340ms var(--morph-in),
+        transform 200ms ease;
+    }
+
+    #install-button:hover { transform: translateY(-1px); }
+    #install-button:active { transform: scale(0.985); }
+    #install-button:focus-visible { outline: 2px solid var(--hot); outline-offset: 3px; }
+
+    /* Meniscus: the outer band refracts harder than the body, the way the
+       thick edge of a real lens does, and carries the chromatic fringe. */
+    .glass-rim {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      border-radius: inherit;
+      padding: 11px;
+      backdrop-filter: url(#lens-rim);
+      -webkit-backdrop-filter: url(#lens-rim);
+      background: linear-gradient(115deg, rgba(255, 128, 96, 0.16), rgba(255, 255, 255, 0) 34%, rgba(255, 255, 255, 0) 66%, rgba(96, 168, 255, 0.18));
+      /* Ring = border-box minus content-box, so the band is the padding. */
+      -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+      -webkit-mask-clip: content-box, border-box;
+      -webkit-mask-composite: xor;
+      mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
+      mask-clip: content-box, border-box;
+      mask-composite: exclude;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 380ms var(--morph-in);
+    }
+
+    /* Rim light — the glass edge. Only present once the pill is open. */
+    #install-button::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      border-radius: inherit;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.55),
+        inset 0 -1px 1px rgba(255, 255, 255, 0.22),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+        inset 0 0 22px rgba(255, 255, 255, 0.09);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 380ms var(--morph-in);
+    }
+
+    #install-button.is-open::before,
+    #install-button.is-open .glass-rim { opacity: 1; }
+
+    /* Specular sweep, replayed on every copy as the confirmation beat. */
+    #install-button::after {
+      content: "";
+      position: absolute;
+      inset: -50% -25%;
+      z-index: 5;
+      background: linear-gradient(105deg, transparent 36%, rgba(255, 255, 255, 0.5) 50%, transparent 64%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #install-button.is-flash::after { animation: sheen 820ms var(--morph-in); }
+
+    @keyframes sheen {
+      from { transform: translateX(-130%); opacity: 0; }
+      35% { opacity: 0.9; }
+      to { transform: translateX(130%); opacity: 0; }
+    }
+
+    .face {
+      position: relative;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: opacity 240ms var(--morph-in), filter 240ms var(--morph-in);
+    }
+
+    .face svg {
+      flex: none;
+      width: 19px;
+      height: 19px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .face--idle {
       font-family: var(--mono);
-      font-size: clamp(13px, 2.6vw, 18px);
-      line-height: 1.35;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    /* Both faces leave the flow once measured, so the pill sizes from the vars. */
+    .is-ready .face--idle,
+    .face--command {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: max-content;
+    }
+
+    .face--command {
+      opacity: 0;
+      filter: blur(4px);
+    }
+
+    .is-open .face--idle {
+      opacity: 0;
+      filter: blur(4px);
+    }
+
+    .is-open .face--command {
+      opacity: 1;
+      filter: none;
+      transition-delay: 90ms;
+    }
+
+    #install-command {
+      min-width: 0;
+      font-family: var(--mono);
+      font-size: clamp(12px, 2.3vw, 15px);
+      line-height: 1.4;
+      text-align: left;
+      white-space: nowrap;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    .glyph-fail { display: none; }
+    [data-state="fail"] .glyph-ok { display: none; }
+    [data-state="fail"] .glyph-fail { display: block; }
+
+    .filter-defs {
+      position: absolute;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
       white-space: nowrap;
     }
 
-    #copy-button {
-      border: 0;
-      border-left: 1px solid var(--line);
-      color: var(--bg);
-      background: var(--hot);
+    noscript code {
+      display: block;
+      padding: 18px 22px;
+      border: 1px solid #2b2b28;
+      border-radius: 14px;
+      background: #10100f;
       font-family: var(--mono);
-      font-size: 18px;
-      font-weight: 900;
-      cursor: pointer;
-      transition: filter 150ms ease, opacity 180ms ease;
+      font-size: clamp(12px, 2.3vw, 15px);
+      overflow-x: auto;
     }
-
-    #copy-button.is-fading { opacity: 0; }
-
-    #copy-button:active { filter: brightness(0.8); }
-    #copy-button:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
 
     footer {
       position: relative;
@@ -118,11 +301,10 @@
 
     footer a:hover { color: var(--fg); }
 
+    /* Too narrow for one line: wrap at the spaces, the pill grows taller. */
     @media (max-width: 560px) {
-      .command { grid-template-columns: 1fr; }
-      #copy-button { min-height: 56px; border-left: 0; border-top: 1px solid var(--line); }
-      /* Wrap at the spaces rather than truncating; copy still yields one line. */
-      code { white-space: pre-wrap; padding: 18px 16px; line-height: 1.5; }
+      #install-button { padding: 16px 22px; }
+      #install-command { white-space: pre-wrap; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -130,63 +312,169 @@
       body {
         background: #050505 url('/media/setup-bg-poster.jpg') center / cover fixed no-repeat;
       }
+      #install-button,
+      #install-button.is-ready,
+      #install-button.is-ready.is-open,
+      #install-button::before,
+      .glass-rim,
+      .face { transition: none; }
+      #install-button.is-flash::after { animation: none; }
+      #install-button:hover,
+      #install-button:active { transform: none; }
     }
   </style>
 </head>
 <body>
+  <!-- Refraction maps for the button's glass. feTurbulence supplies the normals;
+       feDisplacementMap bends the sampled backdrop along them. -->
+  <svg class="filter-defs" aria-hidden="true" focusable="false">
+    <filter id="lens-body" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.013" numOctaves="2" seed="17" result="noise"></feTurbulence>
+      <feGaussianBlur in="noise" stdDeviation="3.2" result="normals"></feGaussianBlur>
+      <feDisplacementMap in="SourceGraphic" in2="normals" scale="15" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+    </filter>
+    <filter id="lens-rim" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.018 0.022" numOctaves="1" seed="41" result="noise"></feTurbulence>
+      <feGaussianBlur in="noise" stdDeviation="1.4" result="normals"></feGaussianBlur>
+      <feDisplacementMap in="SourceGraphic" in2="normals" scale="18" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+      <feGaussianBlur stdDeviation="0.5"></feGaussianBlur>
+    </filter>
+  </svg>
+
   <video class="motion-background" autoplay muted loop playsinline preload="metadata" poster="/media/setup-bg-poster.jpg" aria-hidden="true">
     <source src="/media/setup-bg-720p.mp4" type="video/mp4" media="(max-width: 900px)">
     <source src="/media/setup-bg-1080p.mp4" type="video/mp4">
   </video>
 
   <main>
-    <div class="command" role="group" aria-label="Install command">
-      <code id="install-command">curl -fsSL https://setup.lost.plus/install.sh | zsh</code>
-      <button id="copy-button" type="button" aria-label="Copy install command">copy</button>
+    <div class="install">
+      <button id="install-button" type="button" aria-label="Copy the install command">
+        <span class="glass-rim" aria-hidden="true"></span>
+        <span class="face face--idle">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v12"></path>
+            <path d="M7 11l5 5 5-5"></path>
+            <path d="M4 20h16"></path>
+          </svg>
+          <span>install</span>
+        </span>
+        <span class="face face--command">
+          <code id="install-command">curl -fsSL https://setup.lost.plus/install.sh | zsh</code>
+          <svg class="glyph-ok" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="8" y="2" width="8" height="4" rx="1"></rect>
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+            <path d="m9 14 2 2 4-4"></path>
+          </svg>
+          <svg class="glyph-fail" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="8" y="2" width="8" height="4" rx="1"></rect>
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+            <path d="M12 11v3"></path>
+            <path d="M12 17.5h.01"></path>
+          </svg>
+        </span>
+      </button>
     </div>
+    <noscript><code>curl -fsSL https://setup.lost.plus/install.sh | zsh</code></noscript>
+    <p id="install-status" class="sr-only" role="status" aria-live="polite"></p>
   </main>
 
   <footer><a href="https://github.com/LPFchan/setup">github</a></footer>
 
   <script>
-    const button = document.getElementById('copy-button');
-    const command = document.getElementById('install-command').textContent;
+    (() => {
+      const button = document.getElementById('install-button');
+      const idleFace = button.querySelector('.face--idle');
+      const commandFace = button.querySelector('.face--command');
+      const status = document.getElementById('install-status');
+      const command = document.getElementById('install-command').textContent.trim();
+      const MIN_HEIGHT = 54;
+      const HOLD_MS = 3200;
+      let collapseTimer = 0;
 
-    function fallbackCopy(text) {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.setAttribute('readonly', '');
-      textarea.style.position = 'fixed';
-      textarea.style.top = '-1000px';
-      document.body.appendChild(textarea);
-      textarea.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(textarea);
-      return ok;
-    }
+      // The faces are out of flow, so the pill has no intrinsic size — derive
+      // both its states from the faces' natural boxes and hand them to CSS.
+      function measure() {
+        const styles = getComputedStyle(button);
+        const padX = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+        const padY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+        const available = button.parentElement.clientWidth;
 
-    button.addEventListener('click', async () => {
-      let copied = false;
-      try {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(command);
-          copied = true;
-        }
-      } catch (_) {
-        copied = false;
+        commandFace.style.maxWidth = Math.max(0, available - padX) + 'px';
+
+        const idle = idleFace.getBoundingClientRect();
+        const open = commandFace.getBoundingClientRect();
+        const set = (name, value) => button.style.setProperty(name, Math.ceil(value) + 'px');
+
+        set('--w-idle', idle.width + padX);
+        set('--w-open', Math.min(open.width + padX, available));
+        set('--h-idle', Math.max(MIN_HEIGHT, idle.height + padY));
+        set('--h-open', Math.max(MIN_HEIGHT, open.height + padY));
       }
 
-      if (!copied) copied = fallbackCopy(command);
+      function fallbackCopy(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-1000px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return ok;
+      }
 
-      button.textContent = copied ? '✓' : 'copy?';
-      setTimeout(() => {
-        button.classList.add('is-fading');
-        setTimeout(() => {
-          button.textContent = 'copy';
-          button.classList.remove('is-fading');
-        }, 180);
-      }, 900);
-    });
+      async function copy(text) {
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+          }
+        } catch (_) {
+          /* fall through to the textarea path */
+        }
+        return fallbackCopy(text);
+      }
+
+      function collapse() {
+        clearTimeout(collapseTimer);
+        button.classList.remove('is-open', 'is-flash');
+        delete button.dataset.state;
+        status.textContent = '';
+      }
+
+      button.addEventListener('click', async () => {
+        const copied = await copy(command);
+
+        measure();
+        button.dataset.state = copied ? 'copied' : 'fail';
+        button.classList.add('is-open');
+
+        // Restart the sweep so a repeat click still confirms visibly.
+        button.classList.remove('is-flash');
+        void button.offsetWidth;
+        button.classList.add('is-flash');
+
+        status.textContent = copied
+          ? 'Copied to clipboard: ' + command
+          : 'Copy failed. Select the command to copy it manually.';
+
+        clearTimeout(collapseTimer);
+        // Leave a failed copy up long enough to select the command by hand.
+        collapseTimer = setTimeout(collapse, copied ? HOLD_MS : HOLD_MS * 2);
+      });
+
+      button.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && button.classList.contains('is-open')) collapse();
+      });
+
+      button.classList.add('is-ready');
+      measure();
+
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(measure);
+      if (window.ResizeObserver) new ResizeObserver(measure).observe(button.parentElement);
+      else window.addEventListener('resize', measure);
+    })();
   </script>
 </body>
 </html>
