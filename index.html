@@ -66,7 +66,8 @@
       pointer-events: none;
     }
 
-    .motion-background {
+    .motion-background,
+    .motion-canvas {
       position: fixed;
       inset: 0;
       z-index: 0;
@@ -75,6 +76,13 @@
       object-fit: cover;
       pointer-events: none;
     }
+
+    /* The visible backdrop once the lens is running. It sits directly over the
+       video and carries the same frame the lens refracts — the two cannot drift
+       apart because they are one draw. The video underneath keeps decoding and
+       shows through until the first canvas frame lands. */
+    .motion-canvas { display: none; }
+    .lensing .motion-canvas { display: block; }
 
     main {
       position: relative;
@@ -379,7 +387,8 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .motion-background { display: none; }
+      .motion-background,
+      .motion-canvas { display: none; }
       body {
         background: #050505 url('/media/setup-bg-poster.jpg') center / cover fixed no-repeat;
       }
@@ -401,6 +410,7 @@
     <source src="/media/setup-bg-720p.mp4" type="video/mp4" media="(max-width: 900px)">
     <source src="/media/setup-bg-1080p.mp4" type="video/mp4">
   </video>
+  <canvas class="motion-canvas" aria-hidden="true"></canvas>
 
   <main>
     <div class="install">
@@ -577,6 +587,36 @@
       }
 
       const lensCtx = lens.getContext('2d');
+      const bgCanvas = document.querySelector('.motion-canvas');
+      const bgCtx = bgCanvas && bgCanvas.getContext('2d');
+      let bgScale = 0;   // bgCanvas device px per viewport CSS px; 0 until drawn
+
+      // Paint the backdrop ourselves so the lens can crop the very same bitmap.
+      // Sampling the <video> instead leaves the lens a frame behind whatever the
+      // compositor is showing, which reads as the glass dragging on the video.
+      function drawBackground() {
+        if (!bgCtx || reduced.matches) return false;
+        if (!(video && video.readyState >= 2 && video.videoWidth)) return false;
+
+        const VW = window.innerWidth, VH = window.innerHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const W = Math.round(VW * dpr), H = Math.round(VH * dpr);
+        if (bgCanvas.width !== W || bgCanvas.height !== H) {
+          bgCanvas.width = W; bgCanvas.height = H;
+        }
+        // object-fit: cover, by hand.
+        const natW = video.videoWidth, natH = video.videoHeight;
+        const cover = Math.max(VW / natW, VH / natH);
+        const sw = VW / cover, sh = VH / cover;
+        try {
+          bgCtx.drawImage(video, (natW - sw) / 2, (natH - sh) / 2, sw, sh, 0, 0, W, H);
+        } catch (_) {
+          return false;
+        }
+        bgScale = dpr;
+        return true;
+      }
+
       const srcCanvas = document.createElement('canvas');
       const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
       const tinyCanvas = document.createElement('canvas');
@@ -650,11 +690,11 @@
         const box = layoutRect();
         if (!box.w || !box.h) return false;
 
-        // Under reduced motion the page swaps the video for the poster, so the
-        // lens has to sample the poster too or it refracts a frame nobody sees.
-        const liveVideo = !reduced.matches && video &&
-          video.readyState >= 2 && video.videoWidth;
-        const source = liveVideo ? video : (posterReady ? poster : null);
+        // Crop the backdrop canvas when it holds a frame, so the glass and the
+        // background are the same bitmap. Otherwise — reduced motion, or before
+        // the first video frame — fall back to the poster the page is showing.
+        const fromBackdrop = bgScale > 0 && !reduced.matches;
+        const source = fromBackdrop ? bgCanvas : (posterReady ? poster : null);
         if (!source) return false;
 
         const w = box.w + BLEED * 2, h = box.h + BLEED * 2;
@@ -677,10 +717,16 @@
         // The pill has moved under the spring, so sample where it actually is.
         const vx = box.x + tx - BLEED, vy = box.y + ty - BLEED;
         const VW = window.innerWidth, VH = window.innerHeight;
-        const natW = liveVideo ? video.videoWidth : poster.naturalWidth;
-        const natH = liveVideo ? video.videoHeight : poster.naturalHeight;
-        const cover = Math.max(VW / natW, VH / natH);
-        const offX = (VW - natW * cover) / 2, offY = (VH - natH * cover) / 2;
+        // The backdrop canvas is already viewport-aligned; the poster is not.
+        let cropX = vx * bgScale, cropY = vy * bgScale;
+        let cropW = w * bgScale, cropH = h * bgScale;
+        if (!fromBackdrop) {
+          const cover = Math.max(VW / poster.naturalWidth, VH / poster.naturalHeight);
+          const offX = (VW - poster.naturalWidth * cover) / 2;
+          const offY = (VH - poster.naturalHeight * cover) / 2;
+          cropX = (vx - offX) / cover; cropY = (vy - offY) / cover;
+          cropW = w / cover; cropH = h / cover;
+        }
 
         // Downscale then back up: a box blur the GPU does for free, and it
         // keeps the frost out of the per-pixel loop.
@@ -690,9 +736,7 @@
           tinyCanvas.width = tw; tinyCanvas.height = th2;
         }
         try {
-          tinyCtx.drawImage(source,
-            (vx - offX) / cover, (vy - offY) / cover, w / cover, h / cover,
-            0, 0, tw, th2);
+          tinyCtx.drawImage(source, cropX, cropY, cropW, cropH, 0, 0, tw, th2);
         } catch (_) {
           return false;
         }
@@ -770,7 +814,13 @@
         applyTransform();
 
         const moving = dragging || !settled || press > 0.001;
-        if (moving || videoSeq !== drawnSeq) {
+        // Without a frame callback there is nothing to tell us a frame landed,
+        // so fall back to repainting every tick.
+        const newFrame = !hasFrameCallback || videoSeq !== drawnSeq;
+        // Backdrop first: the lens crops what this just painted, in the same
+        // tick, so both reach the compositor carrying the same video frame.
+        if (newFrame && drawBackground()) document.body.classList.add('lensing');
+        if (moving || newFrame) {
           drawLens(spring.x, spring.y);
           drawnSeq = videoSeq;
         }
@@ -845,6 +895,7 @@
 
       function enableLens() {
         if (!lensCtx || button.classList.contains('has-lens')) return;
+        if (drawBackground()) document.body.classList.add('lensing');
         if (!drawLens(spring.x, spring.y)) return;   // no frame yet, or tainted
         lens.style.setProperty('--bleed', BLEED + 'px');
         button.classList.add('has-lens');
