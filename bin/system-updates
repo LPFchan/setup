@@ -1,0 +1,583 @@
+#!/usr/bin/env bash
+# setup-module: system-updates
+# setup-source: bin/system-updates
+#
+# Cross-distro, unattended full package updates with a separate safe reboot check.
+
+set -euo pipefail
+
+NAME=system-updates
+ROOT="${SYSTEM_UPDATES_ROOT:-}"
+SYSTEMD_DIR="${SYSTEM_UPDATES_SYSTEMD_DIR:-${ROOT}/etc/systemd/system}"
+APT_CONF_DIR="${SYSTEM_UPDATES_APT_CONF_DIR:-${ROOT}/etc/apt/apt.conf.d}"
+STATE_DIR="${SYSTEM_UPDATES_STATE_DIR:-${ROOT}/var/lib/system-updates}"
+LOCK_FILE="${SYSTEM_UPDATES_LOCK_FILE:-${ROOT}/run/lock/system-updates/lock}"
+ROOT_COPY="${SYSTEM_UPDATES_ROOT_COPY:-${ROOT}/usr/local/libexec/system-updates}"
+OS_RELEASE="${SYSTEM_UPDATES_OS_RELEASE:-${ROOT}/etc/os-release}"
+APT_REBOOT_REQUIRED="${SYSTEM_UPDATES_APT_REBOOT_REQUIRED:-${ROOT}/var/run/reboot-required}"
+APT_CONFIG="$APT_CONF_DIR/99-system-updates"
+APT_LEGACY="$APT_CONF_DIR/52unattended-upgrades-reboot"
+BACKEND_FILE="$STATE_DIR/backend"
+TIMER_STATE_FILE="$STATE_DIR/native-timers.tsv"
+LAST_RUN_FILE="$STATE_DIR/last-run.tsv"
+TEST_MODE="${SYSTEM_UPDATES_TEST_MODE:-0}"
+SELF_PATH="${SYSTEM_UPDATES_SELF_PATH:-$0}"
+
+UPDATE_SERVICE="$SYSTEMD_DIR/system-updates.service"
+UPDATE_TIMER="$SYSTEMD_DIR/system-updates.timer"
+REBOOT_SERVICE="$SYSTEMD_DIR/system-updates-reboot.service"
+REBOOT_TIMER="$SYSTEMD_DIR/system-updates-reboot.timer"
+APT_NATIVE_TIMERS=(apt-daily-upgrade.timer)
+DNF_NATIVE_TIMERS=(dnf-automatic-install.timer dnf-automatic.timer dnf5-automatic.timer)
+
+APT_CONFIG_CONTENT='// Managed by setup system-updates. Module-owned reboot checking is authoritative.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";'
+
+# The only legacy payload this module owns and may remove. Any byte difference is
+# treated as administrator-owned content and preserved.
+APT_LEGACY_CONTENT='Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";'
+
+info() { printf '%s\n' "$*"; }
+warn() { printf 'warn: %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+log_msg() {
+    if command -v logger >/dev/null 2>&1; then logger -t "$NAME" -- "$*" 2>/dev/null || true; fi
+    printf '%s\n' "$*"
+}
+require_root() {
+    [[ $EUID -eq 0 || "$TEST_MODE" == 1 ]] || die "this command requires root — try sudo $NAME $*"
+}
+root_owner() {
+    if [[ $TEST_MODE == 1 ]]; then printf '%s:%s\n' "$(id -u)" "$(id -g)"; else printf 'root:root\n'; fi
+}
+sha256_file() { sha256sum "$1" | cut -d' ' -f1; }
+sanitize_field() { printf '%s' "$1" | tr '\t\r\n' '   '; }
+
+load_os_release() {
+    DISTRO_ID=unknown
+    DISTRO_LIKE=""
+    [[ -r "$OS_RELEASE" ]] || return 0
+    local id="" like=""
+    while IFS='=' read -r key value; do
+        value=${value#\"}; value=${value%\"}
+        case "$key" in ID) id=$value ;; ID_LIKE) like=$value ;; esac
+    done < "$OS_RELEASE"
+    DISTRO_ID=${id,,}
+    DISTRO_LIKE=${like,,}
+}
+family_backend() {
+    load_os_release
+    case " $DISTRO_ID $DISTRO_LIKE " in
+        *" debian "*|*" ubuntu "*) printf 'apt\n' ;;
+        *" fedora "*|*" rhel "*|*" centos "*) printf 'dnf\n' ;;
+        *) printf 'unsupported\n' ;;
+    esac
+}
+backend_from_state_or_detect() {
+    if [[ -r "$BACKEND_FILE" ]]; then read -r BACKEND < "$BACKEND_FILE"; else BACKEND=$(family_backend); fi
+    printf '%s\n' "$BACKEND"
+}
+
+apt_base_capable() {
+    command -v apt-get >/dev/null 2>&1 && command -v apt-config >/dev/null 2>&1
+}
+dnf_base_capable() { command -v dnf >/dev/null 2>&1; }
+dnf_reboot_capable() {
+    dnf -q needs-restarting --help 2>/dev/null | grep -Eq -- '(^|[[:space:],])-r([,[:space:]]|$)|--reboothint'
+}
+backend_capable() {
+    local backend="$1"
+    case "$backend" in
+        apt) apt_base_capable ;;
+        dnf) dnf_base_capable && dnf_reboot_capable ;;
+        *) return 1 ;;
+    esac
+}
+validate_host_capabilities() {
+    local command_name
+    for command_name in bash chown flock grep install loginctl mktemp readlink sha256sum stat systemctl; do
+        command -v "$command_name" >/dev/null 2>&1 || die "required command is unavailable: $command_name"
+    done
+}
+
+stage_payloads() {
+    local stage="$1"
+    mkdir -p "$stage"
+    [[ -f "$SELF_PATH" ]] || die "cannot read module source: $SELF_PATH"
+    install -m 0755 "$SELF_PATH" "$stage/root-copy"
+    bash -n "$stage/root-copy"
+    printf '%s\n' "$APT_CONFIG_CONTENT" > "$stage/apt-config"
+    cat > "$stage/system-updates.service" <<EOF
+[Unit]
+Description=Install all stable package updates from enabled repositories
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/system-updates run
+EOF
+    cat > "$stage/system-updates.timer" <<'EOF'
+[Unit]
+Description=Daily system package updates
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=30m
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+    cat > "$stage/system-updates-reboot.service" <<EOF
+[Unit]
+Description=Reboot after package updates only when required and unattended
+After=system-updates.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/system-updates reboot-check
+EOF
+    cat > "$stage/system-updates-reboot.timer" <<'EOF'
+[Unit]
+Description=Daily unattended reboot-required check at 07:00 local time
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+    grep -Fqx 'ExecStart=/usr/local/libexec/system-updates run' "$stage/system-updates.service"
+    grep -Fqx 'ExecStart=/usr/local/libexec/system-updates reboot-check' "$stage/system-updates-reboot.service"
+    grep -Fqx 'Persistent=false' "$stage/system-updates-reboot.timer"
+}
+
+ensure_backend_prereqs() {
+    local backend="$1"
+    case "$backend" in
+        apt)
+            apt_base_capable || die "Apt adapter requires apt-get and apt-config"
+            ;;
+        dnf)
+            dnf_base_capable || die "DNF adapter requires dnf"
+            if ! dnf_reboot_capable; then
+                dnf -y install dnf-utils || dnf -y install dnf-plugins-core || true
+            fi
+            dnf_reboot_capable || die "DNF needs-restarting -r reboot probe is unavailable"
+            ;;
+        *) return 0 ;;
+    esac
+}
+
+atomic_install() {
+    local source="$1" destination="$2" mode="$3" owner tmp
+    owner=$(root_owner)
+    mkdir -p "$(dirname "$destination")"
+    [[ ! -L "$destination" ]] || die "refusing to replace symlink: $destination"
+    tmp=$(mktemp "$(dirname "$destination")/.${NAME}.XXXXXXXX")
+    install -m "$mode" "$source" "$tmp"
+    chown "$owner" "$tmp"
+    mv -f "$tmp" "$destination"
+}
+verify_root_copy_parent() {
+    local parent resolved owner mode permissions
+    parent=$(dirname "$ROOT_COPY")
+    mkdir -p "$parent"
+    [[ "$TEST_MODE" == 1 ]] && return 0
+    [[ -d "$parent" && ! -L "$parent" ]] || die "unsafe root-copy directory: $parent"
+    resolved=$(readlink -f "$parent")
+    [[ "$resolved" == "$parent" ]] || die "root-copy directory traverses a symlink: $parent"
+    owner=$(stat -c '%u' "$parent"); mode=$(stat -c '%a' "$parent")
+    permissions=$((8#$mode))
+    [[ "$owner" == 0 ]] && (( (permissions & 8#022) == 0 )) \
+        || die "root-copy directory must be root-owned and not group/world writable: $parent"
+}
+ensure_lock_directory() {
+    local directory resolved owner mode permissions
+    directory=$(dirname "$LOCK_FILE")
+    if [[ "$TEST_MODE" == 1 ]]; then
+        mkdir -p "$directory"
+        [[ ! -L "$LOCK_FILE" ]] || die "unsafe lock file: $LOCK_FILE"
+        return 0
+    fi
+    [[ ! -L "$directory" ]] || die "unsafe lock directory symlink: $directory"
+    install -d -o root -g root -m 0755 "$directory"
+    resolved=$(readlink -f "$directory")
+    [[ "$resolved" == "$directory" ]] || die "lock directory traverses a symlink: $directory"
+    owner=$(stat -c '%u' "$directory"); mode=$(stat -c '%a' "$directory")
+    permissions=$((8#$mode))
+    [[ "$owner" == 0 ]] && (( (permissions & 8#022) == 0 )) \
+        || die "lock directory must be root-owned and not group/world writable: $directory"
+    [[ ! -L "$LOCK_FILE" && ( ! -e "$LOCK_FILE" || -f "$LOCK_FILE" ) ]] \
+        || die "unsafe lock file: $LOCK_FILE"
+    [[ ! -e "$LOCK_FILE" || "$(stat -c '%u' "$LOCK_FILE")" == 0 ]] \
+        || die "lock file is not root-owned: $LOCK_FILE"
+}
+atomic_write_text() {
+    local destination="$1" mode="$2" content="$3" tmp owner
+    owner=$(root_owner)
+    mkdir -p "$(dirname "$destination")"
+    [[ ! -L "$destination" ]] || die "refusing to replace symlink: $destination"
+    tmp=$(mktemp "$(dirname "$destination")/.${NAME}.XXXXXXXX")
+    printf '%s\n' "$content" > "$tmp"
+    chmod "$mode" "$tmp"; chown "$owner" "$tmp"
+    mv -f "$tmp" "$destination"
+}
+
+unit_exists() { systemctl cat "$1" >/dev/null 2>&1; }
+record_native_timer_states() {
+    local backend="$1" output="$2" timer enabled active
+    : > "$output"
+    local -a timers=()
+    case "$backend" in apt) timers=("${APT_NATIVE_TIMERS[@]}") ;; dnf) timers=("${DNF_NATIVE_TIMERS[@]}") ;; esac
+    for timer in "${timers[@]}"; do
+        if unit_exists "$timer"; then
+            enabled=$(systemctl is-enabled "$timer" 2>/dev/null || true)
+            active=$(systemctl is-active "$timer" 2>/dev/null || true)
+        else
+            enabled=absent; active=absent
+        fi
+        printf '%s\t%s\t%s\n' "$timer" "${enabled:-unknown}" "${active:-unknown}" >> "$output"
+    done
+}
+record_module_timer_states() {
+    local output="$1" timer enabled active
+    : > "$output"
+    for timer in system-updates.timer system-updates-reboot.timer; do
+        unit_exists "$timer" || continue
+        enabled=$(systemctl is-enabled "$timer" 2>/dev/null || true)
+        active=$(systemctl is-active "$timer" 2>/dev/null || true)
+        printf '%s\t%s\t%s\n' "$timer" "${enabled:-unknown}" "${active:-unknown}" >> "$output"
+    done
+}
+disable_backend_native_timers() {
+    local backend="$1" timer enabled active
+    local -a timers=()
+    case "$backend" in apt) timers=("${APT_NATIVE_TIMERS[@]}") ;; dnf) timers=("${DNF_NATIVE_TIMERS[@]}") ;; esac
+    for timer in "${timers[@]}"; do
+        unit_exists "$timer" || continue
+        enabled=$(systemctl is-enabled "$timer" 2>/dev/null || true)
+        active=$(systemctl is-active "$timer" 2>/dev/null || true)
+        case "$active" in active|activating|reloading) systemctl stop "$timer" ;; esac
+        case "$enabled" in enabled) systemctl disable "$timer" ;; enabled-runtime) systemctl disable --runtime "$timer" ;; esac
+    done
+}
+restore_native_timer_states() {
+    local file="$1" timer enabled active
+    [[ -r "$file" ]] || return 0
+    while IFS=$'\t' read -r timer enabled active; do
+        [[ -n "$timer" ]] || continue
+        case "$enabled" in
+            enabled) systemctl enable "$timer" ;;
+            enabled-runtime) systemctl enable --runtime "$timer" ;;
+            disabled) systemctl disable "$timer" >/dev/null 2>&1 || true ;;
+            absent)
+                systemctl stop "$timer" >/dev/null 2>&1 || true
+                systemctl disable "$timer" >/dev/null 2>&1 || true
+                ;;
+        esac
+        case "$active" in
+            active|activating|reloading) systemctl start "$timer" ;;
+        esac
+    done < "$file"
+}
+
+legacy_matches_exact() {
+    [[ -f "$APT_LEGACY" && ! -L "$APT_LEGACY" ]] || return 1
+    [[ "$(sha256_file "$APT_LEGACY")" == "$(printf '%s\n' "$APT_LEGACY_CONTENT" | sha256sum | cut -d' ' -f1)" ]]
+}
+apt_effective_reboot_false() {
+    local value
+    value=$(apt-config shell value 'Unattended-Upgrade::Automatic-Reboot' 2>/dev/null || true)
+    [[ "$value" == *"'false'"* || "$value" == *'"false"'* ]]
+}
+
+snapshot_artifacts() {
+    local snapshot="$1" path key
+    mkdir -p "$snapshot/files"
+    : > "$snapshot/index"
+    for path in "$ROOT_COPY" "$APT_CONFIG" "$APT_LEGACY" "$UPDATE_SERVICE" "$UPDATE_TIMER" "$REBOOT_SERVICE" "$REBOOT_TIMER" "$BACKEND_FILE" "$TIMER_STATE_FILE"; do
+        key=$(printf '%s' "$path" | sha256sum | cut -c1-16)
+        if [[ -e "$path" || -L "$path" ]]; then
+            cp -a -- "$path" "$snapshot/files/$key"
+            printf '%s\t%s\tpresent\n' "$key" "$path" >> "$snapshot/index"
+        else
+            printf '%s\t%s\tabsent\n' "$key" "$path" >> "$snapshot/index"
+        fi
+    done
+}
+restore_artifacts() {
+    local snapshot="$1" key path state
+    [[ -r "$snapshot/index" ]] || return 0
+    while IFS=$'\t' read -r key path state; do
+        rm -rf -- "$path"
+        if [[ "$state" == present ]]; then mkdir -p "$(dirname "$path")"; cp -a -- "$snapshot/files/$key" "$path"; fi
+    done < "$snapshot/index"
+}
+
+cmd_enable() {
+    require_root enable
+    local backend stage transaction snapshot native_state displaced_state module_state installed_backend
+    load_os_release
+    backend=$(family_backend)
+    if [[ "$backend" == unsupported ]]; then
+        info "system-updates: unsupported distribution (${DISTRO_ID}); no changes made"
+        return 1
+    fi
+    stage=$(mktemp -d "${TMPDIR:-/tmp}/system-updates-stage.XXXXXXXX")
+    transaction=$(mktemp -d "${TMPDIR:-/tmp}/system-updates-transaction.XXXXXXXX")
+    snapshot="$transaction/snapshot"; native_state="$transaction/native-timers-current.tsv"
+    displaced_state="$transaction/native-timers-displaced.tsv"
+    module_state="$transaction/module-timers.tsv"
+    local stage_q transaction_q snapshot_q native_state_q module_state_q
+    printf -v stage_q '%q' "$stage"; printf -v transaction_q '%q' "$transaction"
+    printf -v snapshot_q '%q' "$snapshot"; printf -v native_state_q '%q' "$native_state"
+    printf -v module_state_q '%q' "$module_state"
+    trap "rc=\$?
+      systemctl disable --now system-updates.timer system-updates-reboot.timer >/dev/null 2>&1 || true
+      restore_artifacts $snapshot_q || true
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      restore_native_timer_states $module_state_q >/dev/null 2>&1 || true
+      restore_native_timer_states $native_state_q >/dev/null 2>&1 || true
+      rm -rf $stage_q $transaction_q
+      exit \$rc" EXIT
+
+    validate_host_capabilities
+    stage_payloads "$stage"
+    record_native_timer_states "$backend" "$native_state"
+    installed_backend=""
+    [[ -r "$BACKEND_FILE" ]] && read -r installed_backend < "$BACKEND_FILE"
+    if [[ "$installed_backend" == "$backend" && -r "$TIMER_STATE_FILE" ]]; then
+        cp "$TIMER_STATE_FILE" "$displaced_state"
+    else
+        cp "$native_state" "$displaced_state"
+    fi
+    record_module_timer_states "$module_state"
+    ensure_backend_prereqs "$backend"
+    backend_capable "$backend" || die "$backend capability validation failed"
+    snapshot_artifacts "$snapshot"
+
+    verify_root_copy_parent
+    atomic_install "$stage/root-copy" "$ROOT_COPY" 0755
+    [[ -f "$ROOT_COPY" && ! -L "$ROOT_COPY" ]] || die "root executable copy is not a regular non-symlink"
+    [[ "$(stat -c '%u:%g:%a' "$ROOT_COPY")" == "$(root_owner):755" ]] \
+        || die "root executable copy ownership or mode verification failed"
+    atomic_install "$stage/system-updates.service" "$UPDATE_SERVICE" 0644
+    atomic_install "$stage/system-updates.timer" "$UPDATE_TIMER" 0644
+    atomic_install "$stage/system-updates-reboot.service" "$REBOOT_SERVICE" 0644
+    atomic_install "$stage/system-updates-reboot.timer" "$REBOOT_TIMER" 0644
+    mkdir -p "$STATE_DIR"; chmod 0755 "$STATE_DIR"
+    atomic_write_text "$BACKEND_FILE" 0644 "$backend"
+    atomic_install "$displaced_state" "$TIMER_STATE_FILE" 0644
+
+    if [[ "$backend" == apt ]]; then
+        mkdir -p "$APT_CONF_DIR"
+        if legacy_matches_exact; then rm -f "$APT_LEGACY"; info "removed recognized legacy Apt reboot configuration"
+        elif [[ -e "$APT_LEGACY" ]]; then warn "preserving divergent $APT_LEGACY; its reboot settings are overridden while enabled"
+        fi
+        atomic_install "$stage/apt-config" "$APT_CONFIG" 0644
+        apt_effective_reboot_false || die "effective Apt Automatic-Reboot is not false"
+    fi
+
+    disable_backend_native_timers "$backend" || return 1
+    systemctl daemon-reload || return 1
+    systemctl enable --now system-updates.timer system-updates-reboot.timer || return 1
+    trap - EXIT
+    rm -rf "$stage" "$transaction"
+    info "system-updates enabled ($backend): updates 03:00–03:30; unattended reboot check 07:00"
+}
+
+cmd_disable() {
+    require_root disable
+    local saved_state backend
+    saved_state=$(mktemp "${TMPDIR:-/tmp}/system-updates-native.XXXXXXXX")
+    if [[ -r "$TIMER_STATE_FILE" ]]; then cp "$TIMER_STATE_FILE" "$saved_state"; else : > "$saved_state"; fi
+    backend=$(backend_from_state_or_detect)
+    systemctl disable --now system-updates.timer system-updates-reboot.timer >/dev/null 2>&1 || true
+    systemctl stop system-updates.service system-updates-reboot.service >/dev/null 2>&1 || true
+    rm -f "$UPDATE_SERVICE" "$UPDATE_TIMER" "$REBOOT_SERVICE" "$REBOOT_TIMER"
+    [[ "$backend" != apt ]] || rm -f "$APT_CONFIG"
+    rm -f "$ROOT_COPY" "$BACKEND_FILE" "$TIMER_STATE_FILE"
+    rm -f "$LOCK_FILE"
+    rmdir "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+    systemctl daemon-reload
+    restore_native_timer_states "$saved_state"
+    rm -f "$saved_state"
+    if [[ -d "$STATE_DIR" ]]; then
+        rm -f "$STATE_DIR/last-run.tsv"
+        rmdir "$STATE_DIR" 2>/dev/null || true
+    fi
+    info "system-updates disabled; native timer state restored"
+}
+
+write_last_run() {
+    local result="$1" exit_code="$2" detail="$3" backend="$4" tmp owner
+    owner=$(root_owner)
+    mkdir -p "$STATE_DIR"
+    tmp=$(mktemp "$STATE_DIR/.last-run.XXXXXXXX")
+    {
+        printf 'schema\t1\n'
+        printf 'timestamp\t%s\n' "$(date --iso-8601=seconds)"
+        printf 'backend\t%s\n' "$backend"
+        printf 'result\t%s\n' "$result"
+        printf 'exit_code\t%s\n' "$exit_code"
+        printf 'detail\t%s\n' "$(sanitize_field "$detail")"
+    } > "$tmp"
+    chmod 0644 "$tmp"; chown "$owner" "$tmp"; mv -f "$tmp" "$LAST_RUN_FILE"
+}
+run_apt_update() {
+    DEBIAN_FRONTEND=noninteractive apt-get update &&
+    DEBIAN_FRONTEND=noninteractive apt-get -y \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        full-upgrade
+}
+run_dnf_update() { dnf -y --refresh upgrade; }
+cmd_run() {
+    require_root run
+    local backend rc=0 result=success detail="all enabled-repository updates installed"
+    backend=$(backend_from_state_or_detect)
+    [[ "$backend" == unsupported ]] && { info "unsupported distribution; no changes made"; return 0; }
+    backend_capable "$backend" || die "$backend adapter capability unavailable"
+    ensure_lock_directory
+    mkdir -p "$STATE_DIR"
+    exec 9> "$LOCK_FILE"
+    if ! flock -n 9; then
+        write_last_run contention 75 "another system-updates run is active" "$backend"
+        die "another system-updates run is active"
+    fi
+    set +e
+    case "$backend" in apt) run_apt_update ;; dnf) run_dnf_update ;; *) false ;; esac
+    rc=$?
+    set -e
+    if ((rc != 0)); then result=failed; detail="package manager exited nonzero (contention or update failure)"; fi
+    write_last_run "$result" "$rc" "$detail" "$backend"
+    ((rc == 0)) || return "$rc"
+}
+
+reboot_required() {
+    local backend="$1" rc
+    case "$backend" in
+        apt) [[ -e "$APT_REBOOT_REQUIRED" ]] ;;
+        dnf)
+            set +e; dnf -q needs-restarting -r >/dev/null 2>&1; rc=$?; set -e
+            case "$rc" in 0) return 1 ;; 1) return 0 ;; *) return 2 ;; esac
+            ;;
+        *) return 2 ;;
+    esac
+}
+active_user_sessions() {
+    command -v loginctl >/dev/null 2>&1 || return 2
+    local session sessions class state
+    sessions=$(loginctl list-sessions --no-legend 2>/dev/null) || return 2
+    while read -r session _; do
+        [[ -n "$session" ]] || continue
+        class=$(loginctl show-session "$session" -p Class --value 2>/dev/null) || return 2
+        state=$(loginctl show-session "$session" -p State --value 2>/dev/null) || return 2
+        case "$class:$state" in user:active|user:online|user-early:active|user-early:online) return 0 ;; esac
+    done <<< "$sessions"
+    return 1
+}
+cmd_reboot_check() {
+    require_root reboot-check
+    local backend rc
+    backend=$(backend_from_state_or_detect)
+    ensure_lock_directory
+    exec 9> "$LOCK_FILE"
+    if ! flock -n 9; then log_msg "reboot skipped: update is active"; return 0; fi
+    set +e; reboot_required "$backend"; rc=$?; set -e
+    case "$rc" in 1) log_msg "reboot skipped: backend reports no reboot required"; return 0 ;;
+        2) log_msg "reboot skipped: reboot-required state is unknown"; return 0 ;; esac
+    set +e; active_user_sessions; rc=$?; set -e
+    case "$rc" in 0) log_msg "reboot deferred: active non-system login session exists"; return 0 ;;
+        2) log_msg "reboot deferred: active login sessions could not be determined"; return 0 ;; esac
+    log_msg "rebooting: backend reports reboot required and no active non-system login sessions exist"
+    systemctl reboot
+}
+
+unit_field() {
+    local unit="$1" field="$2"
+    case "$field" in
+        enabled) systemctl is-enabled "$unit" 2>/dev/null || true ;;
+        active) systemctl is-active "$unit" 2>/dev/null || true ;;
+        next) systemctl show "$unit" -p NextElapseUSecRealtime --value 2>/dev/null || true ;;
+    esac
+}
+root_copy_state() {
+    if [[ ! -e "$ROOT_COPY" ]]; then printf 'missing\n'; return; fi
+    [[ -f "$ROOT_COPY" && ! -L "$ROOT_COPY" ]] || { printf 'unsafe (not a regular non-symlink)\n'; return; }
+    local owner mode drift=unknown expected_owner
+    owner=$(stat -c '%u:%g' "$ROOT_COPY" 2>/dev/null || true); mode=$(stat -c '%a' "$ROOT_COPY" 2>/dev/null || true)
+    if cmp -s "$ROOT_COPY" "$SELF_PATH"; then drift=current; else drift=drifted; fi
+    if [[ "$TEST_MODE" == 1 ]]; then expected_owner=$(root_owner); else expected_owner=0:0; fi
+    [[ "$owner" == "$expected_owner" && "$mode" == 755 ]] || drift="$drift, unsafe permissions owner=$owner mode=$mode"
+    printf '%s\n' "$drift"
+}
+cmd_status() {
+    local backend supported=no reboot=unknown sessions=unknown could=no rc unit reboot_enabled reboot_active
+    backend=$(backend_from_state_or_detect)
+    backend_capable "$backend" && supported=yes || true
+    reboot_enabled=$(unit_field system-updates-reboot.timer enabled)
+    reboot_active=$(unit_field system-updates-reboot.timer active)
+    set +e; reboot_required "$backend"; rc=$?; set -e
+    case "$rc" in 0) reboot=yes ;; 1) reboot=no ;; esac
+    set +e; active_user_sessions; rc=$?; set -e
+    case "$rc" in 0) sessions=yes ;; 1) sessions=no ;; esac
+    [[ "$reboot" == yes && "$sessions" == no && "$reboot_enabled" == enabled \
+        && "$reboot_active" == active ]] && could=yes
+    printf 'system-updates status\n'
+    printf '  backend: %s (capable: %s)\n' "$backend" "$supported"
+    printf '  policy: all stable package updates from currently enabled repositories (including enabled third-party repositories); native holds/excludes remain honored\n'
+    printf '  root copy: %s\n' "$(root_copy_state)"
+    for unit in system-updates.timer system-updates-reboot.timer; do
+        printf '  %s: enabled=%s active=%s next=%s\n' "$unit" \
+            "$(unit_field "$unit" enabled)" "$(unit_field "$unit" active)" "$(unit_field "$unit" next)"
+    done
+    if [[ "$backend" == apt ]]; then
+        if apt_effective_reboot_false; then printf '  Apt automatic reboot: false (effective)\n'; else printf '  Apt automatic reboot: not verified false\n'; fi
+        if [[ -e "$APT_LEGACY" ]] && ! legacy_matches_exact; then printf '  Apt legacy config: divergent file preserved and overridden while enabled\n'; fi
+    fi
+    printf '  reboot required: %s\n' "$reboot"
+    printf '  active user suppression: %s\n' "$sessions"
+    printf '  next 07:00 check could reboot if state is unchanged: %s\n' "$could"
+    if [[ -r "$LAST_RUN_FILE" ]]; then printf '  last run:\n'; sed 's/^/    /' "$LAST_RUN_FILE"; else printf '  last run: none\n'; fi
+}
+
+cmd_help() {
+    cat <<'EOF'
+Usage: system-updates <command>
+
+Commands:
+  enable       Install and enable the module-owned update and reboot timers (root)
+  disable      Remove module artifacts and restore displaced native timers (root)
+  status       Report backend, timers, last result, reboot need, and user suppression
+  run          Install all available stable updates from enabled repositories (root)
+  help         Show this help
+
+Policy:
+  Apt and DNF install all non-interactive stable package updates offered by the
+  distribution's currently enabled repositories. Enabled third-party repositories
+  are included; repositories and trust configuration are never changed. Native
+  package holds/excludes are honored. Apt uses apt-get full-upgrade; DNF uses
+  dnf --refresh upgrade. Reboots are checked only by the module timer at 07:00.
+EOF
+}
+
+if [[ "${SYSTEM_UPDATES_SOURCE_ONLY:-0}" != 1 ]]; then
+    command_name="${1:-help}"; [[ $# -eq 0 ]] || shift
+    case "$command_name" in
+        enable) cmd_enable "$@" ;;
+        disable) cmd_disable "$@" ;;
+        status) cmd_status "$@" ;;
+        run) cmd_run "$@" ;;
+        reboot-check) cmd_reboot_check "$@" ;;
+        help|-h|--help) cmd_help ;;
+        *) die "unknown command '$command_name'. Try '$NAME help'." ;;
+    esac
+fi

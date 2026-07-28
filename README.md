@@ -47,7 +47,7 @@ the interactive picker:
 2. **Platform** — compares `uname -s` (lowercased) with the optional manifest
    `platform` column. Empty platform means every OS; `linux` / `darwin` restrict
    the row to that kernel. Linux-only modules: `kernel-simmer`, `service-ctl`,
-   `gpu-fancontrol`, `monitoring`, and `backup`.
+   `gpu-fancontrol`, `monitoring`, `backup`, and `system-updates`.
 
 ### File modules
 
@@ -61,6 +61,20 @@ the interactive picker:
 | `monitoring` | `~/.local/bin/monitoring` | `files/monitoring` |
 | `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
+| `system-updates` | `~/.local/bin/system-updates` | `bin/system-updates` |
+
+`system-updates` is a public Linux-only service module. On capability-checked
+Apt and DNF systems it installs every non-interactive stable package update
+offered by currently enabled distribution and third-party repositories, without
+adding repositories or changing trust. Native package holds and excludes remain
+in force. Apt uses `apt-get full-upgrade`; DNF uses `dnf --refresh upgrade`.
+Updates run daily between 03:00 and 03:30 local time. A separate non-persistent
+timer checks at exactly 07:00 and reboots only when the backend still reports a
+reboot is required and no active non-system login session exists. A missed check
+does not catch up after 07:00. Enabling installs a root-owned executable copy at
+`/usr/local/libexec/system-updates`; systemd never executes the user-managed
+copy. The module disables only competing native automatic-install timers and
+restores their prior enabled/active states on disable.
 
 `refresh-models` keeps an explicit `enabled` status for each managed provider
 in `~/.config/opencode/refresh-models.json`. Existing providers are enabled on
@@ -161,6 +175,7 @@ setup status              # show installed state (local/remote hashes)
 setup install resume      # install + enable module
 setup uninstall resume    # disable + remove module
 setup enable kernel-simmer # enable service module
+setup enable system-updates # enable safe daily package updates
 setup disable backup      # disable service module
 setup update              # update installed modules, report new ones
 setup diff resume         # show diff against remote

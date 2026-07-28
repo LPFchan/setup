@@ -48,7 +48,7 @@ trusted_darwin=$(list_for Darwin)
 }
 [[ "$trusted_darwin" != *kernel-simmer* && "$trusted_darwin" != *backup* \
     && "$trusted_darwin" != *monitoring* && "$trusted_darwin" != *service-ctl* \
-    && "$trusted_darwin" != *gpu-fancontrol* ]] || {
+    && "$trusted_darwin" != *gpu-fancontrol* && "$trusted_darwin" != *system-updates* ]] || {
     echo "trusted Darwin catalog exposed linux-only entries" >&2
     exit 1
 }
@@ -67,5 +67,28 @@ for public in "$public_linux" "$public_darwin"; do
         exit 1
     }
 done
+
+[[ "$public_linux" == *system-updates* ]] || {
+    echo "public Linux catalog omitted system-updates" >&2
+    exit 1
+}
+[[ "$public_darwin" != *system-updates* ]] || {
+    echo "public Darwin catalog exposed system-updates" >&2
+    exit 1
+}
+[[ "$(module_enable_cmd system-updates)" == "$HOME/.local/bin/system-updates enable" \
+    || "$(module_enable_cmd system-updates)" == "system-updates enable" ]] || {
+    echo "setup enable routing omitted system-updates" >&2
+    exit 1
+}
+[[ "$(module_disable_cmd system-updates)" == "$HOME/.local/bin/system-updates disable" \
+    || "$(module_disable_cmd system-updates)" == "system-updates disable" ]] || {
+    echo "setup disable routing omitted system-updates" >&2
+    exit 1
+}
+[[ "$(module_service_unit system-updates)" == system-updates.timer ]] || {
+    echo "setup status routing omitted system-updates timer" >&2
+    exit 1
+}
 
 echo "catalog audience tests passed"

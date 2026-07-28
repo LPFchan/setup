@@ -14,7 +14,7 @@ HASH_FILE="$STATE_DIR/installed.tsv"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring refresh-models backup"
+SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring refresh-models backup system-updates"
 USER_SERVICE_MODULES="refresh-models"
 BATCH=0
 
@@ -82,6 +82,7 @@ module_enable_cmd() {
                         bin=$(_resolve_bin service-ctl); echo "$bin enable $1" ;;
         refresh-models) bin=$(_resolve_bin refresh-models); echo "$bin enable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
+        system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
     esac
 }
 
@@ -94,6 +95,7 @@ module_disable_cmd() {
                         bin=$(_resolve_bin service-ctl); echo "$bin disable $1" ;;
         refresh-models) bin=$(_resolve_bin refresh-models); echo "$bin disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
+        system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
     esac
 }
 
@@ -105,6 +107,7 @@ module_service_unit() {
         monitoring)     echo "monitoring.service" ;;
         refresh-models) echo "refresh-models.timer" ;;
         backup)         echo "backup.timer" ;;
+        system-updates) echo "system-updates.timer" ;;
     esac
 }
 
