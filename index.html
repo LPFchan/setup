@@ -637,8 +637,19 @@
         document.body.classList.remove('lensing');
       }
 
+      // Painting the backdrop ourselves is what keeps the glass from drifting,
+      // but it is only affordable where video-to-canvas is a GPU blit. It costs
+      // ~0.03ms in Blink and WebKit and ~4.5ms in Gecko, which at 60fps is most
+      // of the frame, so the cost is measured and the whole idea abandoned if it
+      // does not pay: the <video> goes back to compositing itself at full rate
+      // and the lens samples it directly, a frame of drift being far cheaper
+      // than a backdrop running at 20fps.
+      let bgLive = false, bgDpr = 1;
+      let bgCost = 0, bgSamples = 0, bgGiveUp = false;
+      const BG_BUDGET_MS = 2.2;
+
       function drawBackground() {
-        if (!bgCtx || reduced.matches || lensOff) return false;
+        if (!bgCtx || reduced.matches || lensOff || bgGiveUp) return false;
         if (!(video && video.readyState >= 2 && video.videoWidth)) return false;
 
         const VW = window.innerWidth, VH = window.innerHeight;
@@ -649,19 +660,39 @@
         // covering a Retina viewport was being drawn into 7.5M pixels it had no
         // detail for; CSS scales the smaller buffer up exactly as the <video>
         // element did, at a quarter of the per-frame cost.
-        const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.max(1, 1 / cover));
-        const W = Math.round(VW * dpr), H = Math.round(VH * dpr);
+        bgDpr = Math.min(window.devicePixelRatio || 1, 2, Math.max(1, 1 / cover));
+        const W = Math.round(VW * bgDpr), H = Math.round(VH * bgDpr);
         if (bgCanvas.width !== W || bgCanvas.height !== H) {
           bgCanvas.width = W; bgCanvas.height = H;
+          bgCost = 0; bgSamples = 0;          // re-judge at the new size
         }
         const sw = VW / cover, sh = VH / cover;
+        const t0 = performance.now();
         try {
           bgCtx.drawImage(video, (natW - sw) / 2, (natH - sh) / 2, sw, sh, 0, 0, W, H);
         } catch (_) {
+          bgLive = false;
           return false;
         }
+        // Skip the first few: the first blits pay for allocation and warm-up.
+        if (++bgSamples > 8) {
+          bgCost += (performance.now() - t0 - bgCost) * 0.15;
+          if (bgSamples > 30 && bgCost > BG_BUDGET_MS) {
+            bgGiveUp = true;
+            bgLive = false;
+            document.body.classList.remove('lensing');   // native <video> returns
+            return false;
+          }
+        }
+        bgLive = true;
         return true;
       }
+
+      // The lens covers a few hundred pixels, so only those reach the GPU.
+      // Uploading the whole 1080p frame cost 3.15ms a frame in Gecko and
+      // 8.75ms in WebKit; the crop is a fraction of that on both.
+      const cropCanvas = document.createElement('canvas');
+      const cropCtx = cropCanvas.getContext('2d');
 
       const poster = new Image();
       let posterReady = false;
@@ -679,7 +710,7 @@
       const FRAG_CROP = `#version 300 es
         precision highp float;
         uniform sampler2D uSrc;
-        uniform vec2 uCanvas, uOrigin, uUVScale, uUVOffset;
+        uniform vec2 uCanvas, uOrigin;
         uniform float uDpr, uVH;
         out vec4 o;
         // The same three stops body::before paints.
@@ -690,9 +721,8 @@
         }
         void main() {
           vec2 p = vec2(gl_FragCoord.x, uCanvas.y - gl_FragCoord.y);
-          vec2 vp = uOrigin + p / uDpr;
-          vec3 c = texture(uSrc, vp * uUVScale + uUVOffset).rgb;
-          o = vec4(mix(c, vec3(0.0196), clamp(scrim(vp.y / uVH), 0.0, 1.0)), 1.0);
+          o = vec4(mix(texture(uSrc, p / uCanvas).rgb, vec3(0.0196),
+                       clamp(scrim((uOrigin.y + p.y / uDpr) / uVH), 0.0, 1.0)), 1.0);
         }`;
 
       const FRAG_LENS = `#version 300 es
@@ -798,8 +828,7 @@
         });
         if (!gl) return false;
 
-        cropProg = program(FRAG_CROP,
-          ['uSrc', 'uCanvas', 'uOrigin', 'uUVScale', 'uUVOffset', 'uDpr', 'uVH']);
+        cropProg = program(FRAG_CROP, ['uSrc', 'uCanvas', 'uOrigin', 'uDpr', 'uVH']);
         lensProg = program(FRAG_LENS,
           ['uTex', 'uCanvas', 'uHalf', 'uLight', 'uRadius', 'uThick', 'uDisp',
            'uIOR', 'uPeak', 'uLod', 'uSpec', 'uFres']);
@@ -878,29 +907,40 @@
         const VW = window.innerWidth, VH = window.innerHeight;
         const natW = live ? video.videoWidth : poster.naturalWidth;
         const natH = live ? video.videoHeight : poster.naturalHeight;
+        // The pill has moved under the spring, so sample where it actually is.
+        const vx = box.x + tx - BLEED, vy = box.y + ty - BLEED;
 
         if (refresh || !texReady) {
-          gl.bindTexture(gl.TEXTURE_2D, srcTex);
+          if (cropCanvas.width !== W || cropCanvas.height !== H) {
+            cropCanvas.width = W; cropCanvas.height = H;
+          }
           try {
-            // Allocate once, then overwrite. texImage2D every frame re-specifies
-            // the whole texture store, which is the expensive way to move video.
-            if (texW !== natW || texH !== natH) {
-              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, natW, natH, 0,
-                            gl.RGBA, gl.UNSIGNED_BYTE, null);
-              texW = natW; texH = natH;
+            // Prefer the backdrop canvas: cropping it is literally the same
+            // pixels the page is showing, so the glass cannot drift from it.
+            if (bgLive) {
+              cropCtx.drawImage(bgCanvas, vx * bgDpr, vy * bgDpr, w * bgDpr, h * bgDpr,
+                                0, 0, W, H);
+            } else {
+              const cover = Math.max(VW / natW, VH / natH);
+              const offX = (VW - natW * cover) / 2, offY = (VH - natH * cover) / 2;
+              cropCtx.drawImage(source, (vx - offX) / cover, (vy - offY) / cover,
+                                w / cover, h / cover, 0, 0, W, H);
             }
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
+            gl.bindTexture(gl.TEXTURE_2D, srcTex);
+            // Allocate once, then overwrite. texImage2D every frame re-specifies
+            // the whole texture store, which is the expensive way to move pixels.
+            if (texW !== W || texH !== H) {
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0,
+                            gl.RGBA, gl.UNSIGNED_BYTE, null);
+              texW = W; texH = H;
+            }
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, cropCanvas);
           } catch (_) {
             texW = texH = 0;
             return false;                     // cross-origin frame; keep the frost
           }
           texReady = true;
         }
-        const cover = Math.max(VW / natW, VH / natH);
-        const dispW = natW * cover, dispH = natH * cover;
-        const offX = (VW - dispW) / 2, offY = (VH - dispH) / 2;
-        // The pill has moved under the spring, so sample where it actually is.
-        const vx = box.x + tx - BLEED, vy = box.y + ty - BLEED;
 
         // Pass 1: crop + scrim into the mipmapped buffer.
         gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -911,8 +951,6 @@
         gl.bindTexture(gl.TEXTURE_2D, srcTex);
         gl.uniform2f(cropU.uCanvas, W, H);
         gl.uniform2f(cropU.uOrigin, vx, vy);
-        gl.uniform2f(cropU.uUVScale, 1 / dispW, 1 / dispH);
-        gl.uniform2f(cropU.uUVOffset, -offX / dispW, -offY / dispH);
         gl.uniform1f(cropU.uDpr, dpr);
         gl.uniform1f(cropU.uVH, VH);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -981,12 +1019,16 @@
         button.style.setProperty('--sy', ((H + ey) / H).toFixed(4));
       }
 
-      // The backdrop is 60fps, so a throttled lens would visibly stutter against
-      // the video around it. Instead the redraw is driven by presented video
-      // frames: exactly in step with what is on screen, and no work on a 120Hz
-      // display for frames the video never produced.
-      const hasFrameCallback = !!(video && video.requestVideoFrameCallback);
-      let videoSeq = 0, drawnSeq = -1;
+      // requestVideoFrameCallback looked like the right clock for this, but it
+      // only fires around 24 times a second in Gecko against a 60fps source, so
+      // driving the backdrop from it played the video at 24fps. currentTime is
+      // dull but honest everywhere: if it has moved, there is a new frame.
+      let lastVideoTime = -1;
+
+      function videoPlaying() {
+        return !!(video && !reduced.matches && !video.paused && !video.ended &&
+                  video.readyState >= 2 && video.videoWidth);
+      }
 
       let rafId = 0, settled = true, dirty = false;
       function tick(now) {
@@ -1005,9 +1047,9 @@
         applyTransform();
 
         const moving = dragging || !settled || press > 0.001;
-        // Without a frame callback there is nothing to tell us a frame landed,
-        // so fall back to repainting every tick.
-        const newFrame = !hasFrameCallback || videoSeq !== drawnSeq;
+        const playing = videoPlaying();
+        const newFrame = playing && video.currentTime !== lastVideoTime;
+        if (newFrame) lastVideoTime = video.currentTime;
         // Backdrop first: the lens crops what this just painted, in the same
         // tick, so both reach the compositor carrying the same video frame.
         if (newFrame && drawBackground()) document.body.classList.add('lensing');
@@ -1016,13 +1058,12 @@
         // exactly the reduced-motion path on a poster backdrop.
         if (moving || newFrame || dirty) {
           drawLens(spring.x, spring.y, newFrame);
-          drawnSeq = videoSeq;
           dirty = false;
         }
         watchFrameRate(now);
-        // The spring owns the loop while it is running; otherwise the video's
-        // own frame callback wakes us, so an idle page schedules nothing.
-        if (!lensOff && (moving || (!hasFrameCallback && !reduced.matches))) schedule();
+        // Keep the loop alive while the video is running; a still page with a
+        // settled spring and no playback schedules nothing.
+        if (!lensOff && (moving || playing)) schedule();
       }
 
       // Software GL renders this at roughly 16fps. Sample the cadence once the
@@ -1123,13 +1164,9 @@
         if (!drawLens(spring.x, spring.y, true)) return;   // no frame yet, or tainted
         lens.style.setProperty('--bleed', BLEED + 'px');
         button.classList.add('has-lens');
-        if (hasFrameCallback) {
-          const onVideoFrame = () => {
-            videoSeq++;
-            schedule();
-            video.requestVideoFrameCallback(onVideoFrame);
-          };
-          video.requestVideoFrameCallback(onVideoFrame);
+        if (video) {
+          video.addEventListener('play', schedule);
+          video.addEventListener('seeked', invalidate);
         }
         schedule();
       }
