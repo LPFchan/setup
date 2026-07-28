@@ -76,10 +76,11 @@
       pointer-events: none;
     }
 
-    /* The visible backdrop once the lens is running. It sits directly over the
-       video and carries the same frame the lens refracts — the two cannot drift
-       apart because they are one draw. The video underneath keeps decoding and
-       shows through until the first canvas frame lands. */
+    /* The backdrop and the glass are one canvas and one draw, so they cannot
+       drift apart: the video frame is uploaded once and both passes read it.
+       The <video> underneath stays displayed — covered, never hidden — because
+       Gecko stops delivering frames to a video it believes nobody can see, and
+       it also shows through until the first canvas frame lands. */
     .motion-canvas { display: none; }
     .lensing .motion-canvas { display: block; }
 
@@ -130,22 +131,10 @@
         scale(var(--sx), var(--sy));
     }
 
-    /* The refracted backdrop. Overhangs the pill by --bleed so the rim has
-       real pixels to bend inward from; the button's overflow clips it back. */
-    .glass-lens {
-      position: absolute;
-      z-index: 0;
-      inset: calc(-1 * var(--bleed, 26px));
-      width: calc(100% + 2 * var(--bleed, 26px));
-      height: calc(100% + 2 * var(--bleed, 26px));
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 240ms linear;
-    }
-
-    #install-button.has-lens .glass-lens { opacity: 1; }
-
-    /* The tint that makes the glass read as glass, over the refracted backdrop. */
+    /* The tint that makes the glass read as glass, over the refracted backdrop.
+       The refraction itself is no longer a layer inside the button: it is
+       painted into the backdrop canvas at the pill's own rect, underneath
+       everything here. */
     .glass-tint {
       position: absolute;
       inset: 0;
@@ -387,8 +376,9 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .motion-background,
-      .motion-canvas { display: none; }
+      /* The canvas stays: it draws the poster and the lens still refracts it.
+         The body background below is what shows if there is no WebGL2. */
+      .motion-background { display: none; }
       body {
         background: #050505 url('/media/setup-bg-poster.jpg') center / cover fixed no-repeat;
       }
@@ -396,7 +386,6 @@
       #install-button.is-ready,
       #install-button.is-ready.is-open,
       #install-button::before,
-      .glass-lens,
       .glass-rim,
       .face { transition: none; }
       #install-button.is-flash::after { animation: none; }
@@ -415,7 +404,6 @@
   <main>
     <div class="install">
       <button id="install-button" type="button" aria-label="Copy the install command">
-        <canvas class="glass-lens" aria-hidden="true"></canvas>
         <span class="glass-tint" aria-hidden="true"></span>
         <span class="glass-rim" aria-hidden="true"></span>
         <span class="face face--idle">
@@ -596,7 +584,7 @@
       // backdrop, which also puts dispersion, Fresnel and the specular within
       // reach and costs no readback.
       // ---------------------------------------------------------------------
-      const lens = button.querySelector('.glass-lens');
+      const stage = document.querySelector('.motion-canvas');
       const video = document.querySelector('.motion-background');
       const BLEED = 26;      // px of backdrop kept outside the pill to bend inward
       const THICK = 17;      // width of the refracting rim band
@@ -620,12 +608,6 @@
       let peakBend = 0;
       for (let i = 0; i <= 256; i++) peakBend = Math.max(peakBend, bend(i / 256));
 
-      const bgCanvas = document.querySelector('.motion-canvas');
-      const bgCtx = bgCanvas && bgCanvas.getContext('2d');
-
-      // Paint the backdrop ourselves so the lens can crop the very same bitmap.
-      // Sampling the <video> instead leaves the lens a frame behind whatever the
-      // compositor is showing, which reads as the glass dragging on the video.
       // Set once the lens has proved it cannot hold a frame rate, which in
       // practice means software GL — a blocklisted GPU, a VM, or acceleration
       // switched off. Everything reverts to the plain video and the CSS frost.
@@ -637,69 +619,56 @@
         document.body.classList.remove('lensing');
       }
 
-      // Painting the backdrop ourselves is what keeps the glass from drifting.
-      // It is not free anywhere outside Blink, but the cost is a fixed toll per
-      // video frame touched rather than something worth switching off: dropping
-      // it saved under 2% of a core while leaving the lens itself starved.
-      // watchFrameRate is the guard that matters, and it gives up the whole
-      // effect rather than keeping glass that lags what it sits on.
-      let bgLive = false, bgDpr = 1;
-
-      function drawBackground() {
-        if (!bgCtx || reduced.matches || lensOff) return false;
-        if (!(video && video.readyState >= 2 && video.videoWidth)) return false;
-
-        const VW = window.innerWidth, VH = window.innerHeight;
-        // object-fit: cover, by hand.
-        const natW = video.videoWidth, natH = video.videoHeight;
-        const cover = Math.max(VW / natW, VH / natH);
-        // Never allocate more pixels than the source can fill. A 1080p video
-        // covering a Retina viewport was being drawn into 7.5M pixels it had no
-        // detail for; CSS scales the smaller buffer up exactly as the <video>
-        // element did, at a quarter of the per-frame cost.
-        bgDpr = Math.min(window.devicePixelRatio || 1, 2, Math.max(1, 1 / cover));
-        const W = Math.round(VW * bgDpr), H = Math.round(VH * bgDpr);
-        if (bgCanvas.width !== W || bgCanvas.height !== H) {
-          bgCanvas.width = W; bgCanvas.height = H;
-        }
-        const sw = VW / cover, sh = VH / cover;
-        try {
-          bgCtx.drawImage(video, (natW - sw) / 2, (natH - sh) / 2, sw, sh, 0, 0, W, H);
-        } catch (_) {
-          bgLive = false;
-          return false;
-        }
-        bgLive = true;
-        return true;
-      }
-
-      // The lens crops before uploading so the GPU only receives the few hundred
-      // pixels it covers. Note this is a win in Blink and Gecko but a loss in
-      // WebKit, where texSubImage2D of a canvas costs ~7.8ms against ~1.3ms for
-      // texImage2D of the video itself — the upload path is the dominant cost
-      // there and wants restructuring, not tuning.
-      const cropCanvas = document.createElement('canvas');
-      const cropCtx = cropCanvas.getContext('2d');
-
       const poster = new Image();
       let posterReady = false;
       poster.onload = () => { posterReady = true; };
       poster.src = '/media/setup-bg-poster.jpg';
 
       // --- GL -------------------------------------------------------------
-      // Pass 1 crops the backdrop into a small buffer and bakes the page's own
-      // scrim into it, so the glass matches its surroundings. Mipmapping that
-      // buffer gives the frost for free at any radius. Pass 2 does the optics.
+      // One canvas, one context, one upload. The video frame lands in a texture
+      // once per frame and three passes read it: the backdrop over the whole
+      // viewport, a crop of the pill's rect into a mipmapped buffer (the frost
+      // ladder, one generateMipmap), and the optics back over the pill.
+      //
+      // The shape of this is forced by the upload. Getting video pixels onto
+      // the GPU is the dominant cost and only the direct path is fast in every
+      // engine: texImage2D of the <video> costs ~1.3ms in WebKit against ~7.8ms
+      // for texSubImage2D of a 2D canvas holding the same pixels. Cropping on
+      // the CPU first therefore cost WebKit over half a core. Anything that
+      // touches the frame twice — a 2D backdrop canvas plus a lens upload, or
+      // two GL contexts, which cannot share a texture — pays that toll twice.
       const VERT = `#version 300 es
         in vec2 a;
         void main() { gl_Position = vec4(a, 0.0, 1.0); }`;
 
+      // object-fit: cover, as a uv window onto the frame.
+      const COVER = `
+        uniform vec2 uUvScale, uUvOff;
+        vec2 cover(vec2 uv) { return uv * uUvScale + uUvOff; }`;
+
+      // Pass 1. Straight from the video texture, no scrim: body::before still
+      // paints that over the canvas exactly as it did over the <video>.
+      const FRAG_BG = `#version 300 es
+        precision highp float;
+        uniform sampler2D uSrc;
+        uniform vec2 uCanvas;
+        out vec4 o;
+        ${COVER}
+        void main() {
+          vec2 p = vec2(gl_FragCoord.x, uCanvas.y - gl_FragCoord.y);
+          o = vec4(texture(uSrc, cover(p / uCanvas)).rgb, 1.0);
+        }`;
+
+      // Pass 2. The lens samples the frame before the scrim reaches it, so the
+      // scrim has to be baked in here or the glass would read brighter than
+      // everything around it.
       const FRAG_CROP = `#version 300 es
         precision highp float;
         uniform sampler2D uSrc;
         uniform vec2 uCanvas, uOrigin;
         uniform float uDpr, uVH;
         out vec4 o;
+        ${COVER}
         // The same three stops body::before paints.
         float scrim(float v) {
           if (v <= 0.42) return 0.0;
@@ -708,15 +677,15 @@
         }
         void main() {
           vec2 p = vec2(gl_FragCoord.x, uCanvas.y - gl_FragCoord.y);
-          o = vec4(mix(texture(uSrc, p / uCanvas).rgb, vec3(0.0196),
+          o = vec4(mix(texture(uSrc, cover(p / uCanvas)).rgb, vec3(0.0196),
                        clamp(scrim((uOrigin.y + p.y / uDpr) / uVH), 0.0, 1.0)), 1.0);
         }`;
 
       const FRAG_LENS = `#version 300 es
         precision highp float;
         uniform sampler2D uTex;
-        uniform vec2 uCanvas, uHalf, uLight;
-        uniform float uRadius, uThick, uDisp, uIOR, uPeak, uLod, uSpec, uFres;
+        uniform vec2 uCanvas, uHalf, uLight, uOffset, uScale;
+        uniform float uRadius, uThick, uDisp, uIOR, uPeak, uLod, uSpec, uFres, uFade;
         out vec4 o;
 
         float sdPill(vec2 p, vec2 b, float r) {
@@ -730,13 +699,17 @@
         }
 
         void main() {
-          vec2 p = gl_FragCoord.xy;               // matches the buffer's own axes
-          vec2 c = p - uCanvas * 0.5;
+          vec2 p = gl_FragCoord.xy - uOffset;     // the lens rect's own axes
+          // Undo the mochi stretch: the optics are solved on the pill's
+          // undeformed shape and pushed back out through uScale, which is what
+          // scaling the whole lens layer in CSS used to do for free. Solving in
+          // the deformed frame instead would thin the rim on the pulled axis.
+          vec2 c = (p - uCanvas * 0.5) / uScale;
           float sd = sdPill(c, uHalf, uRadius);
-          if (sd >= 0.0) {                        // outside the pill; CSS clips it
-            o = vec4(textureLod(uTex, p / uCanvas, uLod).rgb, 1.0);
-            return;
-          }
+          // Pass 1 already put the backdrop here, so outside the pill there is
+          // nothing to add; the last pixel of it feathers the edge, since with
+          // no CSS layer left to clip there is no border-radius doing it.
+          if (sd > 1.0) discard;
 
           float t = clamp(-sd / uThick, 0.0, 1.0);
           float e = 1e-3;
@@ -750,7 +723,7 @@
             sdPill(c + vec2(1.0, 0.0), uHalf, uRadius) - sdPill(c - vec2(1.0, 0.0), uHalf, uRadius),
             sdPill(c + vec2(0.0, 1.0), uHalf, uRadius) - sdPill(c - vec2(0.0, 1.0), uHalf, uRadius)
           ) + 1e-6);
-          vec2 off = n * m * uDisp;
+          vec2 off = n * m * uDisp * uScale;      // local displacement, back out
 
           // Red bends furthest, blue least: dispersion fringes the rim.
           vec3 col;
@@ -768,12 +741,16 @@
           vec3 H = normalize(vec3(uLight, 1.0) + vec3(0.0, 0.0, 1.0));
           col += uSpec * pow(max(dot(N, H), 0.0), 40.0);
 
-          o = vec4(col, 1.0);
+          o = vec4(col, uFade * clamp(0.5 - sd, 0.0, 1.0));
         }`;
 
-      let gl = null, cropProg = null, lensProg = null, cropU = null, lensU = null;
-      let srcTex = null, fboTex = null, fbo = null, fboW = 0, fboH = 0, texReady = false;
-      let texW = 0, texH = 0;
+      let gl = null, bgProg = null, cropProg = null, lensProg = null;
+      let bgU = null, cropU = null, lensU = null;
+      let srcTex = null, fboTex = null, fbo = null, fboW = 0, fboH = 0;
+      let stageW = 0, stageH = 0;
+      // 'video' or 'poster' — which one is in srcTex, and whether it is worth
+      // re-uploading. The poster never changes, so it goes up once.
+      let srcKind = null, srcW = 0, srcH = 0;
 
       function shader(type, src) {
         const s = gl.createShader(type);
@@ -809,18 +786,21 @@
       }
 
       function initGL() {
-        gl = lens.getContext('webgl2', {
-          alpha: true, antialias: false, depth: false, stencil: false,
-          premultipliedAlpha: true, powerPreference: 'low-power',
+        // alpha:false — this canvas is the backdrop now, not an overlay.
+        gl = stage.getContext('webgl2', {
+          alpha: false, antialias: false, depth: false, stencil: false,
+          premultipliedAlpha: true, powerPreference: 'high-performance',
         });
         if (!gl) return false;
 
-        cropProg = program(FRAG_CROP, ['uSrc', 'uCanvas', 'uOrigin', 'uDpr', 'uVH']);
+        bgProg = program(FRAG_BG, ['uSrc', 'uCanvas', 'uUvScale', 'uUvOff']);
+        cropProg = program(FRAG_CROP,
+          ['uSrc', 'uCanvas', 'uUvScale', 'uUvOff', 'uOrigin', 'uDpr', 'uVH']);
         lensProg = program(FRAG_LENS,
-          ['uTex', 'uCanvas', 'uHalf', 'uLight', 'uRadius', 'uThick', 'uDisp',
-           'uIOR', 'uPeak', 'uLod', 'uSpec', 'uFres']);
-        if (!cropProg || !lensProg) { gl = null; return false; }
-        cropU = cropProg.u; lensU = lensProg.u;
+          ['uTex', 'uCanvas', 'uHalf', 'uLight', 'uOffset', 'uScale', 'uRadius',
+           'uThick', 'uDisp', 'uIOR', 'uPeak', 'uLod', 'uSpec', 'uFres', 'uFade']);
+        if (!bgProg || !cropProg || !lensProg) { gl = null; return false; }
+        bgU = bgProg.u; cropU = cropProg.u; lensU = lensProg.u;
 
         const buf = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -829,21 +809,27 @@
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-        // Left unflipped on purpose: the shaders address the backdrop in
-        // top-down viewport coordinates, so v=0 has to be the image's top row.
-        // Flipping here samples the pill's mirror image instead.
+        // Left unflipped on purpose: the shaders address the frame in top-down
+        // viewport coordinates, so v=0 has to be the image's top row. Flipping
+        // here samples the pill's mirror image instead.
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        // The lens feathers its own edge against the backdrop underneath.
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         srcTex = makeTexture(false);
-        texReady = false; texW = texH = 0;
+        srcKind = null;
         fboTex = makeTexture(true);
         fbo = gl.createFramebuffer();
+        stageW = stageH = 0; fboW = fboH = 0;
 
-        lens.addEventListener('webglcontextlost', (e) => {
+        stage.addEventListener('webglcontextlost', (e) => {
           e.preventDefault();
           gl = null;
-          button.classList.remove('has-lens');   // back to the CSS frost
+          // The canvas is the backdrop, so it has to get out of the way and let
+          // the <video> underneath show again — not just drop the glass.
+          button.classList.remove('has-lens');
+          document.body.classList.remove('lensing');
         });
-        lens.addEventListener('webglcontextrestored', () => {
+        stage.addEventListener('webglcontextrestored', () => {
           if (initGL()) enableLens();
         });
         return true;
@@ -859,84 +845,88 @@
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       }
 
-      // Where the pill sits before the drag transform: read from the untransformed
-      // parent, because getBoundingClientRect() would fold the spring back in.
-      function layoutRect() {
-        const host = button.parentElement.getBoundingClientRect();
-        const w = button.offsetWidth, h = button.offsetHeight;
-        return { w, h, x: host.left + (host.width - w) / 2, y: host.top + (host.height - h) / 2 };
-      }
-
-      // `refresh` must track drawBackground exactly. The lens redraws whenever
-      // the pill moves, which is more often than the video produces frames on a
-      // 120Hz display or mid-drag — pulling a newer frame into the texture on
-      // those in-between draws would put the glass ahead of the backdrop and
-      // reopen the very drift this is built to avoid.
-      function drawLens(tx, ty, refresh) {
-        if (!gl) return false;
-        const box = layoutRect();
-        if (!box.w || !box.h) return false;
-
-        // Uploading the video is the cheap path, and the backdrop canvas was
-        // drawn from this same frame earlier in the tick, so the two still
-        // agree. Before the first frame — and under reduced motion — the page
-        // is showing the poster, so the lens must sample that instead.
+      // The one place a video frame is touched. Everything downstream reads the
+      // texture, so the backdrop and the glass are the same frame by
+      // construction rather than by keeping two clocks in step.
+      function upload() {
         const live = !reduced.matches && video && video.readyState >= 2 && video.videoWidth;
         const source = live ? video : (posterReady ? poster : null);
         if (!source) return false;
+        const kind = live ? 'video' : 'poster';
+        // The poster is a still: once it is up, leave it there.
+        if (kind === 'poster' && srcKind === 'poster') return true;
+        try {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, srcTex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+        } catch (_) {
+          return srcKind !== null;            // cross-origin frame; keep the last
+        }
+        srcKind = kind;
+        srcW = live ? video.videoWidth : poster.naturalWidth;
+        srcH = live ? video.videoHeight : poster.naturalHeight;
+        return true;
+      }
 
-        const w = box.w + BLEED * 2, h = box.h + BLEED * 2;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const W = Math.round(w * dpr), H = Math.round(h * dpr);
-        if (lens.width !== W || lens.height !== H) { lens.width = W; lens.height = H; }
-        sizeFBO(W, H);
+      // Fade the glass in rather than popping it, which is what the lens
+      // layer's CSS opacity transition used to do.
+      let fade = 0, fadeAt = 0;
+      const FADE_MS = 240;
+
+      // Backdrop, crop, optics — in that order, over the whole canvas every
+      // time. Redrawing the backdrop is what erases the pill's previous
+      // footprint, and a single textured quad is far cheaper on the GPU than
+      // tracking damage rects on the CPU.
+      function drawStage(tx, ty, now) {
+        if (!gl || !srcKind || !srcW) return false;
 
         const VW = window.innerWidth, VH = window.innerHeight;
-        const natW = live ? video.videoWidth : poster.naturalWidth;
-        const natH = live ? video.videoHeight : poster.naturalHeight;
-        // The pill has moved under the spring, so sample where it actually is.
-        const vx = box.x + tx - BLEED, vy = box.y + ty - BLEED;
-
-        if (refresh || !texReady) {
-          if (cropCanvas.width !== W || cropCanvas.height !== H) {
-            cropCanvas.width = W; cropCanvas.height = H;
-          }
-          try {
-            // Prefer the backdrop canvas: cropping it is literally the same
-            // pixels the page is showing, so the glass cannot drift from it.
-            if (bgLive) {
-              cropCtx.drawImage(bgCanvas, vx * bgDpr, vy * bgDpr, w * bgDpr, h * bgDpr,
-                                0, 0, W, H);
-            } else {
-              const cover = Math.max(VW / natW, VH / natH);
-              const offX = (VW - natW * cover) / 2, offY = (VH - natH * cover) / 2;
-              cropCtx.drawImage(source, (vx - offX) / cover, (vy - offY) / cover,
-                                w / cover, h / cover, 0, 0, W, H);
-            }
-            gl.bindTexture(gl.TEXTURE_2D, srcTex);
-            // Allocate once, then overwrite. texImage2D every frame re-specifies
-            // the whole texture store, which is the expensive way to move pixels.
-            if (texW !== W || texH !== H) {
-              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0,
-                            gl.RGBA, gl.UNSIGNED_BYTE, null);
-              texW = W; texH = H;
-            }
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, cropCanvas);
-          } catch (_) {
-            texW = texH = 0;
-            return false;                     // cross-origin frame; keep the frost
-          }
-          texReady = true;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const CW = Math.round(VW * dpr), CH = Math.round(VH * dpr);
+        if (stageW !== CW || stageH !== CH) {
+          stage.width = CW; stage.height = CH;
+          stageW = CW; stageH = CH;
         }
 
-        // Pass 1: crop + scrim into the mipmapped buffer.
+        // object-fit: cover as a uv window, shared by both sampling passes.
+        const cover = Math.max(VW / srcW, VH / srcH);
+        const cw = (VW / cover) / srcW, ch = (VH / cover) / srcH;
+
+        // Pass 1: the backdrop, over the whole viewport.
+        gl.disable(gl.BLEND);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, CW, CH);
+        gl.useProgram(bgProg.p);
+        gl.uniform1i(bgU.uSrc, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, srcTex);
+        gl.uniform2f(bgU.uCanvas, CW, CH);
+        gl.uniform2f(bgU.uUvScale, cw, ch);
+        gl.uniform2f(bgU.uUvOff, (1 - cw) / 2, (1 - ch) / 2);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        // Where the pill actually is, transform and all — the spring, the hover
+        // lift and the morph are already folded into the rendered box.
+        const r = button.getBoundingClientRect();
+        if (!r.width || !r.height) return true;   // backdrop stands on its own
+        // Undeformed extents, which is what the optics are solved on.
+        const lw = r.width / scaleX, lh = r.height / scaleY;
+        const bx = BLEED * scaleX, by = BLEED * scaleY;
+        const vx = r.left - bx, vy = r.top - by;
+        const w = r.width + bx * 2, h = r.height + by * 2;
+        const W = Math.round(w * dpr), H = Math.round(h * dpr);
+        sizeFBO(W, H);
+
+        // Pass 2: the same rect of the frame, scrimmed, into the mip pyramid.
         gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
         gl.viewport(0, 0, W, H);
         gl.useProgram(cropProg.p);
         gl.uniform1i(cropU.uSrc, 0);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, srcTex);
         gl.uniform2f(cropU.uCanvas, W, H);
+        gl.uniform2f(cropU.uUvScale, (w / VW) * cw, (h / VH) * ch);
+        gl.uniform2f(cropU.uUvOff,
+          (1 - cw) / 2 + (vx / VW) * cw, (1 - ch) / 2 + (vy / VH) * ch);
         gl.uniform2f(cropU.uOrigin, vx, vy);
         gl.uniform1f(cropU.uDpr, dpr);
         gl.uniform1f(cropU.uVH, VH);
@@ -947,18 +937,28 @@
 
         // Openness drives the frost: thick while the pill is a solid button,
         // nearly clear once it is showing the command through glass.
-        const idle = parseFloat(button.style.getPropertyValue('--w-idle')) || box.w;
-        const open = parseFloat(button.style.getPropertyValue('--w-open')) || box.w;
-        const openness = open > idle ? Math.min(Math.max((box.w - idle) / (open - idle), 0), 1) : 0;
+        const idle = parseFloat(button.style.getPropertyValue('--w-idle')) || lw;
+        const open = parseFloat(button.style.getPropertyValue('--w-open')) || lw;
+        const openness = open > idle ? Math.min(Math.max((lw - idle) / (open - idle), 0), 1) : 0;
 
-        // Pass 2: the optics, straight to the canvas.
+        if (fadeAt) fade = Math.min((now - fadeAt) / FADE_MS, 1);
+
+        // Pass 3: the optics, into the pill's rect of the same canvas. Scissor
+        // as well as viewport, because the shader samples outside the pill and
+        // the viewport alone would not stop it writing there.
+        const px = Math.round(vx * dpr), py = Math.round(CH - (vy + h) * dpr);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.viewport(0, 0, W, H);
+        gl.viewport(px, py, W, H);
+        gl.enable(gl.SCISSOR_TEST);
+        gl.scissor(px, py, W, H);
+        gl.enable(gl.BLEND);
         gl.useProgram(lensProg.p);
         gl.uniform1i(lensU.uTex, 0);
+        gl.uniform2f(lensU.uOffset, px, py);
         gl.uniform2f(lensU.uCanvas, W, H);
-        gl.uniform2f(lensU.uHalf, (box.w / 2) * dpr, (box.h / 2) * dpr);
-        gl.uniform1f(lensU.uRadius, Math.min(box.w, box.h) / 2 * dpr);
+        gl.uniform2f(lensU.uScale, scaleX, scaleY);
+        gl.uniform2f(lensU.uHalf, (lw / 2) * dpr, (lh / 2) * dpr);
+        gl.uniform1f(lensU.uRadius, Math.min(lw, lh) / 2 * dpr);
         gl.uniform1f(lensU.uThick, THICK * dpr);
         gl.uniform1f(lensU.uDisp, DISP * dpr);
         gl.uniform1f(lensU.uIOR, IOR);
@@ -969,7 +969,10 @@
         gl.uniform2f(lensU.uLight, -0.35 - tx / 90, 0.75 + ty / 90);
         gl.uniform1f(lensU.uSpec, 0.22);
         gl.uniform1f(lensU.uFres, 0.09);
+        gl.uniform1f(lensU.uFade, fade);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.disable(gl.BLEND);
         return true;
       }
 
@@ -992,6 +995,10 @@
       // wildly unequal on a shape this wide, so a circular drag pulsed instead
       // of running smoothly. Pixels are the same everywhere, and resolving the
       // pull onto the pill's own axes means no shear at any angle.
+      // Kept for the lens, which now measures the pill after the transform and
+      // has to divide the stretch back out to solve the optics undeformed.
+      let scaleX = 1, scaleY = 1;
+
       function applyTransform() {
         const { x, y } = spring;
         const W = button.offsetWidth || 1, H = button.offsetHeight || 1;
@@ -1000,10 +1007,12 @@
         const held = press * PRESS;
         const ex = STRETCH * ax - SQUASH * ay - held;
         const ey = STRETCH * ay - SQUASH * ax - held;
+        scaleX = (W + ex) / W;
+        scaleY = (H + ey) / H;
         button.style.setProperty('--tx', x.toFixed(2) + 'px');
         button.style.setProperty('--ty', y.toFixed(2) + 'px');
-        button.style.setProperty('--sx', ((W + ex) / W).toFixed(4));
-        button.style.setProperty('--sy', ((H + ey) / H).toFixed(4));
+        button.style.setProperty('--sx', scaleX.toFixed(4));
+        button.style.setProperty('--sy', scaleY.toFixed(4));
       }
 
       // Neither of the obvious clocks survives Gecko: requestVideoFrameCallback
@@ -1040,20 +1049,26 @@
         const playing = videoPlaying();
         const newFrame = playing && (now - lastBlit) >= FRAME_MS;
         if (newFrame) lastBlit = now;
-        // Backdrop first: the lens crops what this just painted, in the same
-        // tick, so both reach the compositor carrying the same video frame.
-        if (newFrame && drawBackground()) document.body.classList.add('lensing');
         // `dirty` covers the redraws nothing else asks for: the pill changed
         // size but is not moving and the video is not feeding frames, which is
         // exactly the reduced-motion path on a poster backdrop.
-        if (moving || newFrame || dirty) {
-          drawLens(spring.x, spring.y, newFrame);
+        if (gl && (moving || newFrame || dirty || fade < 1)) {
+          // `dirty` means something changed that the clock cannot see — a seek,
+          // a resize — so the frame in the texture is no longer trustworthy.
+          // Re-uploading off the beat is safe now that one texture feeds both
+          // passes: there is no second copy left for it to drift against.
+          if (newFrame || dirty || !srcKind) upload();
+          // The canvas only takes over from the <video> once it has something
+          // to show, so a failed or not-yet-ready source leaves both alone.
+          if (drawStage(spring.x, spring.y, now)) {
+            document.body.classList.add('lensing');
+          }
           dirty = false;
         }
         watchFrameRate(now);
         // Keep the loop alive while the video is running; a still page with a
         // settled spring and no playback schedules nothing.
-        if (!lensOff && (moving || playing)) schedule();
+        if (!lensOff && (moving || playing || fade < 1)) schedule();
       }
 
       // Software GL renders this at roughly 16fps. Sample the cadence once the
@@ -1150,10 +1165,11 @@
       function enableLens() {
         if (lensOff || button.classList.contains('has-lens')) return;
         if (!gl && !initGL()) return;   // no WebGL2 — the CSS frost stands in
-        if (drawBackground()) document.body.classList.add('lensing');
-        if (!drawLens(spring.x, spring.y, true)) return;   // no frame yet, or tainted
-        lens.style.setProperty('--bleed', BLEED + 'px');
+        if (!upload()) return;          // no frame yet, or a tainted one
+        if (!drawStage(spring.x, spring.y, performance.now())) return;
+        document.body.classList.add('lensing');
         button.classList.add('has-lens');
+        fade = 0; fadeAt = performance.now();
         if (video) {
           video.addEventListener('play', schedule);
           video.addEventListener('seeked', invalidate);
@@ -1161,12 +1177,19 @@
         schedule();
       }
 
-      enableLens();
+      // Both, always. The canvas can come up on the poster before the video has
+      // a frame, and it covers the video once it does — so if the loop were
+      // allowed to idle there, a video that only became ready afterwards would
+      // never get drawn and the page would sit on a frozen still. enableLens
+      // returns early once the lens is on, so it cannot restart the loop itself.
+      const wake = () => { enableLens(); invalidate(); };
       if (video) {
-        video.addEventListener('loadeddata', enableLens);
-        video.addEventListener('playing', enableLens);
+        video.addEventListener('loadeddata', wake);
+        video.addEventListener('canplay', wake);
+        video.addEventListener('playing', wake);
       }
-      poster.addEventListener('load', enableLens);
+      poster.addEventListener('load', wake);
+      enableLens();
       window.addEventListener('resize', () => { enableLens(); invalidate(); });
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) schedule();
