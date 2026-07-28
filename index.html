@@ -637,19 +637,16 @@
         document.body.classList.remove('lensing');
       }
 
-      // Painting the backdrop ourselves is what keeps the glass from drifting,
-      // but it is only affordable where video-to-canvas is a GPU blit. It costs
-      // ~0.03ms in Blink and WebKit and ~4.5ms in Gecko, which at 60fps is most
-      // of the frame, so the cost is measured and the whole idea abandoned if it
-      // does not pay: the <video> goes back to compositing itself at full rate
-      // and the lens samples it directly, a frame of drift being far cheaper
-      // than a backdrop running at 20fps.
+      // Painting the backdrop ourselves is what keeps the glass from drifting.
+      // It is not free anywhere outside Blink, but the cost is a fixed toll per
+      // video frame touched rather than something worth switching off: dropping
+      // it saved under 2% of a core while leaving the lens itself starved.
+      // watchFrameRate is the guard that matters, and it gives up the whole
+      // effect rather than keeping glass that lags what it sits on.
       let bgLive = false, bgDpr = 1;
-      let bgCost = 0, bgSamples = 0, bgGiveUp = false;
-      const BG_BUDGET_MS = 2.2;
 
       function drawBackground() {
-        if (!bgCtx || reduced.matches || lensOff || bgGiveUp) return false;
+        if (!bgCtx || reduced.matches || lensOff) return false;
         if (!(video && video.readyState >= 2 && video.videoWidth)) return false;
 
         const VW = window.innerWidth, VH = window.innerHeight;
@@ -664,33 +661,23 @@
         const W = Math.round(VW * bgDpr), H = Math.round(VH * bgDpr);
         if (bgCanvas.width !== W || bgCanvas.height !== H) {
           bgCanvas.width = W; bgCanvas.height = H;
-          bgCost = 0; bgSamples = 0;          // re-judge at the new size
         }
         const sw = VW / cover, sh = VH / cover;
-        const t0 = performance.now();
         try {
           bgCtx.drawImage(video, (natW - sw) / 2, (natH - sh) / 2, sw, sh, 0, 0, W, H);
         } catch (_) {
           bgLive = false;
           return false;
         }
-        // Skip the first few: the first blits pay for allocation and warm-up.
-        if (++bgSamples > 8) {
-          bgCost += (performance.now() - t0 - bgCost) * 0.15;
-          if (bgSamples > 30 && bgCost > BG_BUDGET_MS) {
-            bgGiveUp = true;
-            bgLive = false;
-            document.body.classList.remove('lensing');   // native <video> returns
-            return false;
-          }
-        }
         bgLive = true;
         return true;
       }
 
-      // The lens covers a few hundred pixels, so only those reach the GPU.
-      // Uploading the whole 1080p frame cost 3.15ms a frame in Gecko and
-      // 8.75ms in WebKit; the crop is a fraction of that on both.
+      // The lens crops before uploading so the GPU only receives the few hundred
+      // pixels it covers. Note this is a win in Blink and Gecko but a loss in
+      // WebKit, where texSubImage2D of a canvas costs ~7.8ms against ~1.3ms for
+      // texImage2D of the video itself — the upload path is the dominant cost
+      // there and wants restructuring, not tuning.
       const cropCanvas = document.createElement('canvas');
       const cropCtx = cropCanvas.getContext('2d');
 
@@ -1019,11 +1006,14 @@
         button.style.setProperty('--sy', ((H + ey) / H).toFixed(4));
       }
 
-      // requestVideoFrameCallback looked like the right clock for this, but it
-      // only fires around 24 times a second in Gecko against a 60fps source, so
-      // driving the backdrop from it played the video at 24fps. currentTime is
-      // dull but honest everywhere: if it has moved, there is a new frame.
-      let lastVideoTime = -1;
+      // Neither of the obvious clocks survives Gecko: requestVideoFrameCallback
+      // fires ~24 times a second against a 60fps source and currentTime only
+      // admits to ~24 of the ~55 frames drawImage will actually hand over. Both
+      // throttle the signal, not the frames, so gating on either played the
+      // backdrop at 24fps. The wall clock does not lie; the source rate is the
+      // only thing worth pacing against.
+      const FRAME_MS = 1000 / 61;   // just under 60fps, so a 60Hz source never slips a beat
+      let lastBlit = -1e9;
 
       function videoPlaying() {
         return !!(video && !reduced.matches && !video.paused && !video.ended &&
@@ -1048,8 +1038,8 @@
 
         const moving = dragging || !settled || press > 0.001;
         const playing = videoPlaying();
-        const newFrame = playing && video.currentTime !== lastVideoTime;
-        if (newFrame) lastVideoTime = video.currentTime;
+        const newFrame = playing && (now - lastBlit) >= FRAME_MS;
+        if (newFrame) lastBlit = now;
         // Backdrop first: the lens crops what this just painted, in the same
         // tick, so both reach the compositor carrying the same video frame.
         if (newFrame && drawBackground()) document.body.classList.add('lensing');
