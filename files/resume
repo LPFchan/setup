@@ -100,9 +100,8 @@ _cc_cwd() {
     grep -m1 '"cwd":' "$1" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null | head -1
 }
 
-# Look up which claudex profile launched a session. The mapping is written by
-# _claudex_launch in ai-menu. Defaults to "codex" for sessions predating the
-# mapping or when the file is absent.
+# Look up which managed profile launched a Claudex session. The launcher owns
+# this sidecar. Sessions predating it use the codex profile.
 _claudex_profile_for() {
     local sid="$1"
     local mapping="$HOME/.config/claudex/sessions.tsv"
@@ -128,15 +127,11 @@ collect_sessions() {
             # except that assistant turns record model "claudex-proxy". Tag
             # those so resume relaunches them on the correct claudex backend,
             # not bare claude (which would resume on the Anthropic subscription).
-            # The sidecar mapping (~/.config/claudex/sessions.tsv) tells us
-            # whether this was a codex or commandcode session; unmapped sessions
-            # (predating the mapping) default to codex.
+            # The sidecar mapping (~/.config/claudex/sessions.tsv) carries the
+            # arbitrary managed profile; unmapped sessions default to codex.
             tag=cc
             if grep -m1 -q '"model":"claudex-proxy"' "$f" 2>/dev/null; then
-                local clx_profile
-                clx_profile=$(_claudex_profile_for "$id")
                 tag=clx
-                [[ "$clx_profile" == "commandcode" ]] && tag=clxcc
             fi
             msg=$(_cc_first_msg "$f")
             echo "$mtime|$tag|$id|$cwd|${msg:-}"
@@ -399,7 +394,11 @@ format_for_fzf() {
         date_str=$(format_epoch "$ts" 2>/dev/null || echo "??/?? ??:??")
         case "$tool" in
             cc) label="claude" ;;
-            clx) label="claudex" ;;
+            clx)
+                clx_profile=$(_claudex_profile_for "$id")
+                label="claudex"
+                [[ "$clx_profile" != "codex" ]] && label="claudex:$clx_profile"
+                ;;
             clxcc) label="claudex-cc" ;;
             cx) label="codex" ;;
             oc) label="opencode" ;;
@@ -441,7 +440,7 @@ echo "Resuming $tool session $id..."
 
 case "$tool" in
     cc) harness=claude; resume_args=(--dangerously-skip-permissions --resume "$id") ;;
-    clx) harness=claudex; resume_args=(run codex --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions --resume "$id") ;;
+    clx) harness=claudex; resume_args=(run "$(_claudex_profile_for "$id")" --resume "$id") ;;
     clxcc) harness=claudex; resume_args=(run commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions --resume "$id") ;;
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;

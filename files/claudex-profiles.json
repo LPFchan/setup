@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "name": "codex",
+      "provider_type": "OpenAIResponses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "auth": {
+        "type": "oauth",
+        "provider": "chatgpt"
+      },
+      "default_model": "gpt-5.6-sol",
+      "priority": 100,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "gpt-5.6-luna",
+        "sonnet": "gpt-5.6-terra",
+        "opus": "gpt-5.6-sol"
+      }
+    },
+    {
+      "name": "commandcode",
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.commandcode.ai/provider/v1",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "commandcode"
+      },
+      "default_model": "xiaomi/mimo-v2.5-pro",
+      "priority": 90,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "MiniMaxAI/MiniMax-M3",
+        "sonnet": "xiaomi/mimo-v2.5-pro",
+        "opus": "moonshotai/Kimi-K3"
+      }
+    }
+  ]
+}

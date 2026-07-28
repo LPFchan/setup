@@ -126,7 +126,7 @@ actual_agy_args=$(cat "$TEST_TMP/agy-args")
 # A claude session launched through claudex lands under ~/.claude/projects like
 # any native claude session, distinguished only by assistant turns recording
 # model "claudex-proxy". resume must tag it clx and relaunch it via
-# `claudex run codex --config <cfg> --resume <id>` (codex backend), not bare
+# `claudex run codex --resume <id>` (the launcher supplies core arguments), not bare
 # claude (which would resume it on the Anthropic subscription).
 cxid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 cxcwd="$HOME/claudex-proj"
@@ -160,16 +160,13 @@ actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
 [[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
     || { echo "FAIL: resume did not set the claudex tmux title: $actual_tmux_args" >&2; exit 1; }
 
-expected_claudex_args=$(printf '%s\nrun\ncodex\n--config\n%s/.config/claudex/config.toml\n--dangerously-skip-permissions\n--resume\n%s' \
-    "$FAKE_BIN/claudex" "$HOME" "$cxid")
+expected_claudex_args=$(printf '%s\nrun\ncodex\n--resume\n%s' "$FAKE_BIN/claudex" "$cxid")
 actual_claudex_args=$(cat "$TEST_TMP/claudex-args")
 [[ "$actual_claudex_args" == "$expected_claudex_args" ]] \
     || { echo "FAIL: resume did not dispatch claudex for a claudex-proxy session: $actual_claudex_args" >&2; exit 1; }
 
-# A claudex-proxy session mapped to the "commandcode" profile (via
-# ~/.config/claudex/sessions.tsv) must resume via `claudex run commandcode`,
-# not `claudex run codex`. The mapping is written by _claudex_launch in
-# ai-menu and read by _claudex_profile_for in resume.
+# A claudex-proxy session mapped to an arbitrary profile must resume via that
+# profile. The launcher writes the mapping and resume reads it.
 ccid="aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
 cccwd="$HOME/cc-proj"
 mkdir -p "$cccwd" "$HOME/.claude/projects/-home-cc-proj"
@@ -180,26 +177,39 @@ ccsession="$HOME/.claude/projects/-home-cc-proj/$ccid.jsonl"
 } > "$ccsession"
 touch -t 202407051200.00 "$ccsession"
 
-# Write the sidecar mapping so resume knows this is a commandcode session
+# Write the sidecar mapping so resume knows the selected arbitrary profile.
 mkdir -p "$HOME/.config/claudex"
-printf '%s\t%s\n' "$ccid" "commandcode" > "$HOME/.config/claudex/sessions.tsv"
+printf '%s\t%s\n' "$ccid" "arbitrary-provider" > "$HOME/.config/claudex/sessions.tsv"
 
-# fzf stub that selects exactly the claudex-cc row (its hidden ref carries "clxcc|")
+# Every new Claudex session uses the single clx tag.
 cat > "$FAKE_BIN/fzf" <<'EOF'
 #!/usr/bin/env bash
 selection=$(cat)
-printf '%s\n' "$selection" | grep 'clxcc|' | head -1
+printf '%s\n' "$selection" | grep 'clx|' | grep 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff' | head -1
 EOF
 chmod +x "$FAKE_BIN/fzf"
 rm -f "$TEST_TMP/tmux-args" "$TEST_TMP/claudex-args"
 
-TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/claudex-cc-stderr"
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/claudex-profile-stderr"
 
-expected_cc_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claudex/config.toml\n--dangerously-skip-permissions\n--resume\n%s' \
-    "$FAKE_BIN/claudex" "$HOME" "$ccid")
+expected_cc_args=$(printf '%s\nrun\narbitrary-provider\n--resume\n%s' "$FAKE_BIN/claudex" "$ccid")
 actual_cc_args=$(cat "$TEST_TMP/claudex-args")
 [[ "$actual_cc_args" == "$expected_cc_args" ]] \
-    || { echo "FAIL: resume did not dispatch claudex with commandcode profile: $actual_cc_args" >&2; exit 1; }
+    || { echo "FAIL: resume did not dispatch claudex with the mapped profile: $actual_cc_args" >&2; exit 1; }
+
+# Old picker records using the clxcc tag remain resumable during migration.
+cat > "$FAKE_BIN/fzf" <<EOF
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'legacy\tclxcc|$ccid|$cccwd\n'
+EOF
+chmod +x "$FAKE_BIN/fzf"
+rm -f "$TEST_TMP/claudex-args"
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/claudex-legacy-stderr"
+expected_legacy_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claudex/config.toml\n--dangerously-skip-permissions\n--resume\n%s' \
+    "$FAKE_BIN/claudex" "$HOME" "$ccid")
+[[ $(cat "$TEST_TMP/claudex-args") == "$expected_legacy_args" ]] \
+    || { echo "FAIL: resume dropped legacy clxcc compatibility" >&2; exit 1; }
 
 # Hermes persists sessions in ~/.hermes/state.db. Only top-level interactive
 # CLI sessions belong in the human resume picker; tool and child sessions must

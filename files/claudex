@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""Profile-selecting launcher and registry helper for Claudex."""
+
+from __future__ import annotations
+
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+HOME = Path.home()
+CORE = Path(os.environ.get("CLAUDEX_CORE", HOME / ".local/libexec/claudex-core"))
+CONFIG = Path(os.environ.get("CLAUDEX_CONFIG", HOME / ".config/claudex/config.toml"))
+REGISTRY = Path(
+    os.environ.get(
+        "CLAUDEX_REGISTRY", HOME / ".config/claudex/managed-profiles.json"
+    )
+)
+AUTH_JSON = Path(
+    os.environ.get("CLAUDEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json")
+)
+SESSIONS = Path(
+    os.environ.get("CLAUDEX_SESSIONS", HOME / ".config/claudex/sessions.tsv")
+)
+SETUP_REPO = os.environ.get("CLAUDEX_SETUP_REPO", "git@github.com:LPFchan/setup.git")
+SETUP_BIN = os.environ.get("CLAUDEX_SETUP_BIN", "setup")
+RAW_REPO = os.environ.get(
+    "CLAUDEX_RAW_REPO", "https://raw.githubusercontent.com/LPFchan/setup"
+)
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+PROVIDER_TYPES = {"OpenAICompatible", "OpenAIResponses"}
+STRIP_PARAMS = {"Auto", "None", "All"}
+
+
+class UserError(RuntimeError):
+    pass
+
+
+def valid_base_url(value: str) -> bool:
+    parsed = urllib.parse.urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and not any(character.isspace() for character in value)
+    )
+
+
+def _string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
+        raise UserError(f"invalid {field}")
+    return value
+
+
+def validate_registry(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise UserError("registry version must be 1")
+    profiles = data.get("profiles")
+    if not isinstance(profiles, list) or not profiles:
+        raise UserError("registry profiles must be a non-empty list")
+    seen: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise UserError("each profile must be an object")
+        name = _string(profile.get("name"), "profile name")
+        if not NAME_RE.fullmatch(name) or name in seen:
+            raise UserError(f"invalid or duplicate profile name: {name}")
+        seen.add(name)
+        if profile.get("provider_type") not in PROVIDER_TYPES:
+            raise UserError(f"invalid provider_type for {name}")
+        base_url = _string(profile.get("base_url"), f"base_url for {name}")
+        if not valid_base_url(base_url):
+            raise UserError(f"invalid base_url for {name}")
+        _string(profile.get("default_model"), f"default_model for {name}")
+        if not isinstance(profile.get("priority"), int):
+            raise UserError(f"priority for {name} must be an integer")
+        if not isinstance(profile.get("enabled"), bool):
+            raise UserError(f"enabled for {name} must be a boolean")
+        if profile.get("strip_params") not in STRIP_PARAMS:
+            raise UserError(f"invalid strip_params for {name}")
+        models = profile.get("models")
+        if not isinstance(models, dict) or set(models) != {"haiku", "sonnet", "opus"}:
+            raise UserError(f"models for {name} must map haiku, sonnet, and opus")
+        for alias in ("haiku", "sonnet", "opus"):
+            _string(models[alias], f"{alias} model for {name}")
+        auth = profile.get("auth")
+        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key"}:
+            raise UserError(f"invalid auth descriptor for {name}")
+        if auth["type"] == "oauth":
+            _string(auth.get("provider"), f"oauth provider for {name}")
+        else:
+            if auth.get("store") != "opencode":
+                raise UserError(f"unsupported auth store for {name}")
+            key = _string(auth.get("key"), f"auth key for {name}")
+            if not NAME_RE.fullmatch(key):
+                raise UserError(f"invalid auth key for {name}")
+    return data
+
+
+def load_registry(path: Path = REGISTRY) -> dict[str, Any]:
+    try:
+        return validate_registry(json.loads(path.read_text()))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read profile registry {path}: {exc}") from exc
+
+
+def load_auth() -> dict[str, Any]:
+    if not AUTH_JSON.exists():
+        return {}
+    try:
+        data = json.loads(AUTH_JSON.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_auth_strict() -> dict[str, Any]:
+    if not AUTH_JSON.exists():
+        return {}
+    try:
+        data = json.loads(AUTH_JSON.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read local auth store {AUTH_JSON}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise UserError(f"local auth store {AUTH_JSON} must contain a JSON object")
+    return data
+
+
+def api_key(profile: dict[str, Any], auth_data: dict[str, Any]) -> str:
+    auth = profile["auth"]
+    if auth["type"] != "api-key":
+        return ""
+    entry = auth_data.get(auth["key"], {})
+    return entry.get("key", "") if isinstance(entry, dict) else ""
+
+
+def q(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def render_profile(profile: dict[str, Any], auth_data: dict[str, Any]) -> str:
+    auth = profile["auth"]
+    lines = [
+        "[[profiles]]",
+        f"name = {q(profile['name'])}",
+        f"provider_type = {q(profile['provider_type'])}",
+        f"base_url = {q(profile['base_url'])}",
+        f"api_key = {q(api_key(profile, auth_data))}",
+        f"default_model = {q(profile['default_model'])}",
+        "backup_providers = []",
+        f"priority = {profile['priority']}",
+        f"enabled = {str(profile['enabled']).lower()}",
+        f"auth_type = {q(auth['type'])}",
+    ]
+    if auth["type"] == "oauth":
+        lines.append(f"oauth_provider = {q(auth['provider'])}")
+    lines.extend(
+        [
+            f"strip_params = {q(profile['strip_params'])}",
+            "",
+            "[profiles.custom_headers]",
+            "",
+            "[profiles.extra_env]",
+            "",
+            "[profiles.models]",
+            f"haiku = {q(profile['models']['haiku'])}",
+            f"sonnet = {q(profile['models']['sonnet'])}",
+            f"opus = {q(profile['models']['opus'])}",
+            "",
+            "[profiles.query_params]",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def profile_spans(text: str) -> list[tuple[int, int, str | None]]:
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    starts = [i for i, line in enumerate(lines) if line.strip() == "[[profiles]]"]
+    spans: list[tuple[int, int, str | None]] = []
+    for pos, start in enumerate(starts):
+        end = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
+        for idx in range(start + 1, end):
+            stripped = lines[idx].strip()
+            if stripped.startswith("[") and not stripped.startswith("[profiles."):
+                end = idx
+                break
+        name = None
+        for line in lines[start + 1 : end]:
+            match = re.fullmatch(r'\s*name\s*=\s*"([^"\\]+)"\s*', line.rstrip("\r\n"))
+            if match:
+                name = match.group(1)
+                break
+        spans.append((offsets[start], offsets[end], name))
+    return spans
+
+
+def strip_profiles(text: str, names: set[str]) -> str:
+    spans = [(start, end) for start, end, name in profile_spans(text) if name in names]
+    for start, end in reversed(spans):
+        text = text[:start] + text[end:]
+    text = re.sub(r"(?m)^profiles\s*=\s*\[\]\s*\n?", "", text)
+    return text.rstrip()
+
+
+def baseline_config() -> str:
+    return """proxy_port = 13456
+proxy_host = "127.0.0.1"
+log_level = "info"
+
+[model_aliases]
+
+[router]
+enabled = false"""
+
+
+def apply_registry(registry_path: Path, config_path: Path) -> None:
+    registry = load_registry(registry_path)
+    original = config_path.read_text() if config_path.exists() else baseline_config()
+    names = {profile["name"] for profile in registry["profiles"]}
+    base = strip_profiles(original, names)
+    auth_data = load_auth()
+    blocks = [render_profile(profile, auth_data) for profile in registry["profiles"]]
+    result = base + "\n\n" + "\n\n".join(blocks) + "\n"
+    if result == original:
+        return
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".config.", dir=config_path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(result)
+        os.replace(tmp_name, config_path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def remove_managed(registry_path: Path, config_path: Path) -> None:
+    if not config_path.exists() or not registry_path.exists():
+        return
+    registry = load_registry(registry_path)
+    names = {profile["name"] for profile in registry["profiles"]}
+    original = config_path.read_text()
+    result = strip_profiles(original, names)
+    if result:
+        result += "\n"
+    if result != original:
+        config_path.write_text(result)
+
+
+def config_status(registry_path: Path, config_path: Path) -> bool:
+    if not config_path.exists():
+        return False
+    registry = load_registry(registry_path)
+    text = config_path.read_text()
+    parsed = profile_spans(text)
+    spans = {name: (start, end) for start, end, name in parsed}
+    for profile in registry["profiles"]:
+        if sum(name == profile["name"] for _, _, name in parsed) != 1:
+            return False
+        span = spans.get(profile["name"])
+        if span is None:
+            return False
+        actual = text[span[0] : span[1]]
+        expected = render_profile(profile, load_auth())
+        scrub = lambda value: re.sub(r'(?m)^api_key = .*$', 'api_key = ""', value).strip()
+        if scrub(actual) != scrub(expected):
+            return False
+    return True
+
+
+def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | None:
+    if shutil.which("fzf") and sys.stdin.isatty():
+        proc = subprocess.run(
+            ["fzf", "--prompt", f"{prompt} > ", "--height=50%", "--reverse"],
+            input="\n".join(options) + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        return proc.stdout.rstrip("\n") if proc.returncode == 0 else None
+    if not sys.stdin.isatty():
+        raise UserError("interactive profile selection requires a TTY")
+    print(prompt)
+    for index, option in enumerate(options, 1):
+        print(f"  {index}. {option}")
+    if allow_cancel:
+        print("  0. Cancel")
+    while True:
+        raw = input("Select: ").strip()
+        if allow_cancel and raw == "0":
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1]
+        print("Enter a listed number.", file=sys.stderr)
+
+
+def discover_models(base_url: str, token: str) -> list[str]:
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/models",
+        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise UserError(f"model discovery failed: {exc}") from exc
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    models = sorted(
+        {row.get("id") for row in rows or [] if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]}
+    )
+    if not models:
+        raise UserError("the endpoint returned no model IDs")
+    return models
+
+
+def run_git(args: list[str], cwd: Path | None = None, capture: bool = False) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode:
+        detail = proc.stderr.strip() if proc.stderr else "git command failed"
+        raise UserError(detail)
+    return proc.stdout.rstrip("\r\n") if capture and proc.stdout else ""
+
+
+def store_token(name: str, token: str) -> None:
+    data = load_auth_strict()
+    if name in data:
+        raise UserError(f"the local auth store already contains an entry named {name}")
+    data[name] = {"type": "api", "key": token}
+    AUTH_JSON.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".auth.", dir=AUTH_JSON.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_name, AUTH_JSON)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def provision_profile(profile: dict[str, Any], token: str) -> None:
+    auth_data = load_auth_strict()
+    if profile["name"] in auth_data:
+        raise UserError(
+            f"the local auth store already contains an entry named {profile['name']}"
+        )
+    with tempfile.TemporaryDirectory(prefix="claudex-profile-") as temp:
+        clone = Path(temp) / "setup"
+        run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
+        registry_path = clone / "files/claudex-profiles.json"
+        data = load_registry(registry_path)
+        if any(item["name"] == profile["name"] for item in data["profiles"]):
+            raise UserError(f"profile {profile['name']} already exists in the setup repository")
+        data["profiles"].append(profile)
+        validate_registry(data)
+        registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        changed = run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
+        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
+            raise UserError("temporary clone contains changes outside the profile registry")
+        run_git(["diff", "--check"], cwd=clone)
+        run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
+        run_git(
+            [
+                "-c", "user.name=claudex launcher",
+                "-c", "user.email=claudex@localhost",
+                "commit", "--quiet", "-m", f"Add claudex profile {profile['name']}",
+            ],
+            cwd=clone,
+        )
+        run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
+        commit = run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
+    store_token(profile["name"], token)
+    env = os.environ.copy()
+    env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
+    proc = subprocess.run([SETUP_BIN, "update", "claudex"], env=env)
+    if proc.returncode:
+        raise UserError(
+            "the profile was pushed and its token was stored, but setup provisioning failed; run setup update claudex"
+        )
+
+
+def add_profile(registry: dict[str, Any]) -> None:
+    existing = {profile["name"] for profile in registry["profiles"]}
+    name = input("Profile name: ").strip()
+    if not NAME_RE.fullmatch(name) or name in existing:
+        raise UserError("profile names must be unique lowercase letters, digits, or hyphens")
+    if name in load_auth_strict():
+        raise UserError("the local auth store already uses that name; choose another profile name")
+    base_url = input("OpenAI-compatible API base URL: ").strip().rstrip("/")
+    if not valid_base_url(base_url):
+        raise UserError("the API base URL must be an HTTP(S) URL")
+    token = getpass.getpass("API token: ")
+    if not token:
+        raise UserError("the API token cannot be empty")
+    models = discover_models(base_url, token)
+    mappings: dict[str, str] = {}
+    for alias in ("opus", "sonnet", "haiku"):
+        selected = choose(f"Map {alias}", models)
+        if selected is None:
+            return
+        mappings[alias] = selected
+    profile = {
+        "name": name,
+        "provider_type": "OpenAICompatible",
+        "base_url": base_url,
+        "auth": {"type": "api-key", "store": "opencode", "key": name},
+        "default_model": mappings["opus"],
+        "priority": max(0, 80 - len(existing)),
+        "enabled": True,
+        "strip_params": "Auto",
+        "models": {"haiku": mappings["haiku"], "sonnet": mappings["sonnet"], "opus": mappings["opus"]},
+    }
+    validate_registry({"version": 1, "profiles": [profile]})
+    print("\nProfile to publish:")
+    print(f"  name: {name}")
+    print(f"  endpoint: {base_url}")
+    for alias in ("opus", "sonnet", "haiku"):
+        print(f"  {alias}: {mappings[alias]}")
+    print("  token: [stored locally]")
+    if input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
+        return
+    provision_profile(profile, token)
+    print(f"claudex: profile {name} added and provisioned")
+
+
+def session_files() -> dict[Path, int]:
+    root = HOME / ".claude/projects"
+    if not root.exists():
+        return {}
+    result: dict[Path, int] = {}
+    for path in root.glob("*/*.jsonl"):
+        try:
+            result[path] = path.stat().st_mtime_ns
+        except OSError:
+            pass
+    return result
+
+
+def record_session(profile: str, before: dict[Path, int]) -> None:
+    candidates: list[tuple[int, Path]] = []
+    for path, mtime in session_files().items():
+        if before.get(path) == mtime:
+            continue
+        try:
+            if '"model":"claudex-proxy"' in path.read_text(errors="ignore"):
+                candidates.append((mtime, path))
+        except OSError:
+            pass
+    if not candidates:
+        return
+    sid = max(candidates)[1].stem
+    SESSIONS.parent.mkdir(parents=True, exist_ok=True)
+    entries: list[str] = []
+    if SESSIONS.exists():
+        entries = [line for line in SESSIONS.read_text().splitlines() if not line.startswith(sid + "\t")]
+    entries.append(f"{sid}\t{profile}")
+    SESSIONS.write_text("\n".join(entries) + "\n")
+
+
+def launch(profile: str, args: list[str]) -> int:
+    command = [str(CORE), "run", profile]
+    if not any(argument == "--config" or argument.startswith("--config=") for argument in args):
+        command.extend(["--config", str(CONFIG)])
+    if "--dangerously-skip-permissions" not in args:
+        command.append("--dangerously-skip-permissions")
+    command.extend(args)
+    before = session_files()
+    result = subprocess.run(command)
+    record_session(profile, before)
+    return result.returncode
+
+
+def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1].startswith("__"):
+        command = sys.argv[1]
+        if command == "__validate":
+            load_registry(Path(sys.argv[2]))
+        elif command == "__apply":
+            apply_registry(Path(sys.argv[2]), Path(sys.argv[3]))
+        elif command == "__remove":
+            remove_managed(Path(sys.argv[2]), Path(sys.argv[3]))
+        elif command == "__status":
+            return 0 if config_status(Path(sys.argv[2]), Path(sys.argv[3])) else 1
+        elif command == "__names":
+            print("\n".join(item["name"] for item in load_registry(Path(sys.argv[2]))["profiles"]))
+        else:
+            raise UserError("unknown internal command")
+        return 0
+    registry = load_registry()
+    if len(sys.argv) >= 2 and sys.argv[1] == "run":
+        if len(sys.argv) < 3:
+            raise UserError("usage: claudex run <profile> [arguments]")
+        return launch(sys.argv[2], sys.argv[3:])
+    if len(sys.argv) > 1:
+        return subprocess.run([str(CORE), *sys.argv[1:]]).returncode
+    options = [item["name"] for item in registry["profiles"]] + ["Add profile…"]
+    selected = choose("claudex profile", options)
+    if selected is None:
+        return 0
+    if selected == "Add profile…":
+        add_profile(registry)
+        return 0
+    return launch(selected, [])
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (UserError, KeyboardInterrupt) as exc:
+        if str(exc):
+            print(f"claudex: {exc}", file=sys.stderr)
+        raise SystemExit(1)

@@ -1,7 +1,4 @@
 #!/usr/bin/env zsh
-# claudex commandcode profile: apply preserves foreign profiles, inlines the
-# refresh-models-managed API key, is idempotent, and degrades gracefully when
-# auth.json is absent. The drift hash must NOT cover the key (rotation noise).
 set -euo pipefail
 
 ROOT=${0:A:h:h}
@@ -10,19 +7,20 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 export HOME="$TEST_TMP/home"
 export XDG_STATE_HOME="$TEST_TMP/state"
-mkdir -p "$HOME/.local/share/opencode" "$XDG_STATE_HOME"
+export CLAUDEX_BIN="$ROOT/files/claudex"
+export CLAUDEX_CORE="$TEST_TMP/claudex-core"
+export CLAUDEX_CONFIG="$HOME/.config/claudex/config.toml"
+export CLAUDEX_REGISTRY="$ROOT/files/claudex-profiles.json"
+export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
+export CLAUDEX_LAUNCHER_SOURCE="$ROOT/files/claudex"
+export CLAUDEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
+mkdir -p "$HOME/.config/claudex" "$HOME/.local/share/opencode" "$XDG_STATE_HOME"
 
-fail() {
-    echo "FAIL: $*" >&2
-    exit 1
-}
+fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# shellcheck disable=SC1091
 source "$ROOT/lib/script-helpers.sh"
 
-# --- fixture: a config with a hand-made (foreign) profile --------------------
-mkdir -p "$HOME/.config/claudex"
-cat > "$HOME/.config/claudex/config.toml" <<'EOF'
+cat > "$CLAUDEX_CONFIG" <<'EOF'
 proxy_port = 13456
 proxy_host = "127.0.0.1"
 log_level = "info"
@@ -45,74 +43,49 @@ priority = 50
 haiku = "foreign-haiku"
 EOF
 
-# --- fixture: refresh-models auth store --------------------------------------
-cat > "$HOME/.local/share/opencode/auth.json" <<'EOF'
+cat > "$CLAUDEX_AUTH_JSON" <<'EOF'
 {"commandcode": {"type": "api", "key": "user_testkey123"}}
 EOF
 
-# Load the module functions without running install/update (curl, keyring).
-# shellcheck disable=SC1091
 source "$ROOT/files/claudex.sh"
-
-# --- apply: commandcode block appears with key inlined, foreign untouched ----
 _apply_all_profiles
 
-rtk grep -q '^name = "commandcode"$' "$HOME/.config/claudex/config.toml" \
-    || fail "commandcode profile was not appended"
-rtk grep -q '^api_key = "user_testkey123"$' "$HOME/.config/claudex/config.toml" \
-    || fail "commandcode api_key was not inlined from auth.json"
-rtk grep -q '^name = "codex"$' "$HOME/.config/claudex/config.toml" \
-    || fail "codex profile was not appended"
-rtk grep -q '^name = "foreign"$' "$HOME/.config/claudex/config.toml" \
-    || fail "foreign profile was dropped"
-rtk grep -q '^api_key = "foreign-key"$' "$HOME/.config/claudex/config.toml" \
-    || fail "foreign profile content was modified"
+grep -q '^name = "commandcode"$' "$CLAUDEX_CONFIG" || fail "commandcode profile missing"
+grep -q '^api_key = "user_testkey123"$' "$CLAUDEX_CONFIG" || fail "local API key was not resolved"
+grep -q '^name = "codex"$' "$CLAUDEX_CONFIG" || fail "codex profile missing"
+grep -q '^name = "foreign"$' "$CLAUDEX_CONFIG" || fail "foreign profile was dropped"
+grep -q '^api_key = "foreign-key"$' "$CLAUDEX_CONFIG" || fail "foreign profile changed"
 
-# exactly one of each managed profile (rtk grep -c is a report, not a count)
-_count() { awk -v pat="$1" '$0 ~ pat {n++} END {print n+0}' "$2"; }
-[[ $(_count '^name = "commandcode"$' "$HOME/.config/claudex/config.toml") == 1 ]] \
-    || fail "commandcode profile appended more than once"
-[[ $(_count '^name = "codex"$' "$HOME/.config/claudex/config.toml") == 1 ]] \
-    || fail "codex profile appended more than once"
-
-# --- idempotent: second apply changes nothing --------------------------------
-cp "$HOME/.config/claudex/config.toml" "$TEST_TMP/config.after-first"
+cp "$CLAUDEX_CONFIG" "$TEST_TMP/config.first"
 _apply_all_profiles
-cmp -s "$HOME/.config/claudex/config.toml" "$TEST_TMP/config.after-first" \
-    || fail "second _apply_all_profiles was not idempotent"
+cmp -s "$CLAUDEX_CONFIG" "$TEST_TMP/config.first" || fail "registry rendering was not idempotent"
 
-# --- key rotation rewrites the key but does not move the drift hash ----------
 hash_before=$(_desired_hash)
-cat > "$HOME/.local/share/opencode/auth.json" <<'EOF'
+cat > "$CLAUDEX_AUTH_JSON" <<'EOF'
 {"commandcode": {"type": "api", "key": "user_rotated456"}}
 EOF
 hash_after=$(_desired_hash)
-[[ "$hash_before" == "$hash_after" ]] \
-    || fail "drift hash covers the api_key — key rotation would flag every machine outdated"
+[[ "$hash_before" == "$hash_after" ]] || fail "credentials participate in desired-state hash"
 _apply_all_profiles
-rtk grep -q '^api_key = "user_rotated456"$' "$HOME/.config/claudex/config.toml" \
-    || fail "rotated key was not applied"
+grep -q '^api_key = "user_rotated456"$' "$CLAUDEX_CONFIG" || fail "rotated key was not applied"
+_profiles_current || fail "rendered profiles reported drift"
 
-# --- auth_type is claudex's hyphenated "api-key" variant ---------------------
-# claudex rejects `api_key` for auth_type (unknown variant) and then refuses
-# to parse the WHOLE config — the profile exists on disk but claudex errors.
-rtk grep -q '^auth_type = "api-key"$' "$HOME/.config/claudex/config.toml" \
-    || fail 'commandcode auth_type must be "api-key" (hyphenated claudex variant)'
-
-# --- missing auth.json: profile still seeds with an empty key ----------------
-rm -f "$HOME/.local/share/opencode/auth.json"
-[[ -z "$(_commandcode_api_key)" ]] \
-    || fail "_commandcode_api_key should be empty when auth.json is missing"
+rm -f "$CLAUDEX_AUTH_JSON"
 _apply_all_profiles
-rtk grep -q '^name = "commandcode"$' "$HOME/.config/claudex/config.toml" \
-    || fail "commandcode profile missing after apply without auth.json"
-rtk grep -q '^api_key = ""$' "$HOME/.config/claudex/config.toml" \
-    || fail "commandcode api_key should be empty without auth.json"
+grep -q '^api_key = ""$' "$CLAUDEX_CONFIG" || fail "missing local key did not render empty"
+grep -q '^auth_type = "api-key"$' "$CLAUDEX_CONFIG" || fail "API auth type is invalid"
 
-# --- profile index: finds the right blocks, ignores comments -----------------
-[[ "$(_profile_index codex)" == "1" ]] \
-    || fail "_profile_index codex should be 1 (foreign is 0), got '$(_profile_index codex)'"
-[[ -z "$(_profile_index nosuch)" ]] \
-    || fail "_profile_index should be empty for an absent profile"
+# The former layout placed the third-party binary at the launcher path. A
+# matching pinned binary migrates to libexec without a download.
+BIN="$TEST_TMP/old-claudex"
+CORE="$TEST_TMP/libexec/claudex-core"
+cat > "$BIN" <<'EOF'
+#!/bin/sh
+echo 'claudex 0.2.4-fork.2'
+EOF
+chmod +x "$BIN"
+_ensure_core
+[[ -x "$CORE" ]] || fail "old binary was not migrated to libexec"
+[[ "$(_installed_version)" == "0.2.4-fork.2" ]] || fail "migrated core version is wrong"
 
-echo "claudex commandcode profile tests passed"
+echo "claudex registry rendering tests passed"

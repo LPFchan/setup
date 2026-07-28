@@ -221,46 +221,6 @@ _ai_stamp_recent_dir() {
     return 0
 }
 
-# Launch claudex with a named profile and record the session→profile mapping
-# so `resume` can relaunch with the correct profile. The mapping is a TSV at
-# ~/.config/claudex/sessions.tsv (<session-id>\t<profile>).
-#
-# The JSONL always records model "claudex-proxy" regardless of profile (the
-# string is hardcoded in claudex's stream translator), so without this mapping
-# `resume` cannot tell codex and commandcode sessions apart.
-_claudex_launch() {
-    local profile="$1"
-    shift
-    local marker
-    marker=$(mktemp)
-    touch "$marker"
-    claudex run "$profile" "$@"
-    local rc=$?
-    # Find the session JSONL created during this launch (modified after the
-    # marker). Narrow to files containing the claudex-proxy model marker so a
-    # concurrent native claude session doesn't pollute the mapping.
-    local newest
-    newest=$(find "$HOME/.claude/projects" -maxdepth 2 -name '*.jsonl' -newer "$marker" -type f 2>/dev/null \
-        | while IFS= read -r f; do
-            grep -q '"model":"claudex-proxy"' "$f" 2>/dev/null && printf '%s\n' "$f"
-        done \
-        | head -1)
-    rm -f "$marker"
-    if [[ -n "$newest" ]]; then
-        local sid
-        sid=$(basename "$newest" .jsonl)
-        local mapping="$HOME/.config/claudex/sessions.tsv"
-        mkdir -p "$(dirname "$mapping")"
-        # Deduplicate: remove any prior entry for this session before appending
-        if [[ -f "$mapping" ]]; then
-            grep -v "^${sid}	" "$mapping" > "$mapping.tmp" 2>/dev/null || true
-            mv "$mapping.tmp" "$mapping"
-        fi
-        printf '%s\t%s\n' "$sid" "$profile" >> "$mapping"
-    fi
-    return $rc
-}
-
 ai() {
     local autolaunch_state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/setup
     local autolaunch_disabled=$autolaunch_state_dir/ai-menu-autolaunch-disabled
@@ -301,16 +261,6 @@ ai() {
     local tool
     for tool in claude codex claudex opencode agy hermes grok; do
         (( ${+commands[$tool]} )) && tools+=("$tool")
-        # claudex-cc is a second claudex profile (Command Code catalog), shown
-        # right under claudex — only when claudex exists AND the global
-        # config carries the profile. $(<file) + literal match, no external
-        # probe; with the profile absent (module not yet applied here), the
-        # entry stays out of the menu.
-        if [[ $tool == claudex ]] && (( ${+commands[claudex]} )) \
-            && [[ -f $HOME/.config/claudex/config.toml ]] \
-            && [[ "$(<$HOME/.config/claudex/config.toml)" == *'name = "commandcode"'* ]]; then
-            tools+=(claudex-cc)
-        fi
     done
     tools+=(setup resume neither)
 
@@ -465,8 +415,7 @@ ai() {
                 codex
             fi
             ;;
-        claudex) _claudex_launch codex --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
-        claudex-cc) _claudex_launch commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions ;;
+        claudex) claudex ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
         agy) agy --dangerously-skip-permissions ;;
         hermes) hermes ;;

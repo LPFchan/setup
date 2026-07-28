@@ -118,6 +118,31 @@ AI_MENU_AGY_ARGS="$TEST_TMP/agy-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
 [[ "$(cat "$TEST_TMP/agy-args")" == "--dangerously-skip-permissions" ]] \
     || fail "ai-menu launched Antigravity without autonomous permissions"
 
+# Claudex is one launcher entry; profile selection belongs to the launcher.
+cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
+#!/bin/sh
+case "$1" in
+    --help) echo '--grid-span-prefix=STR'; exit ;;
+esac
+input=$(cat)
+printf '%s\n' "$input" > "$AI_MENU_GRID_INPUT"
+printf 'tool\037claudex\037claudex\n'
+EOF
+cat > "$TEST_TMP/bin/claudex" <<'EOF'
+#!/bin/sh
+printf 'claudex-dispatched:%s\n' "$#" >> "$AI_MENU_TEST_LOG"
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/claudex"
+rm -f "$TEST_TMP/launches"
+AI_MENU_TEST_LOG="$TEST_TMP/launches" AI_MENU_GRID_INPUT="$TEST_TMP/claudex-grid" \
+PATH="$TEST_TMP/bin:/usr/bin:/bin" "$zsh_bin" -f -c 'source "$1"; ai' \
+    zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
+[[ $(grep -c $'tool\037claudex\037claudex' "$TEST_TMP/claudex-grid") -eq 1 ]] \
+    || fail "ai-menu did not expose exactly one claudex entry"
+! grep -q 'claudex-cc' "$TEST_TMP/claudex-grid" || fail "ai-menu still exposed claudex-cc"
+grep -q '^claudex-dispatched:0$' "$TEST_TMP/launches" \
+    || fail "ai-menu did not dispatch the claudex launcher without profile arguments"
+
 # A pre-capable binary triggers repair on every invocation (no permanent failed
 # marker); if repair does not fix it, ai-menu falls back to plain fzf.
 cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
