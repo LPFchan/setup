@@ -53,6 +53,9 @@ require_root() {
 root_owner() {
     if [[ $TEST_MODE == 1 ]]; then printf '%s:%s\n' "$(id -u)" "$(id -g)"; else printf 'root:root\n'; fi
 }
+root_owner_ids() {
+    if [[ $TEST_MODE == 1 ]]; then printf '%s:%s\n' "$(id -u)" "$(id -g)"; else printf '0:0\n'; fi
+}
 sha256_file() { sha256sum "$1" | cut -d' ' -f1; }
 sanitize_field() { printf '%s' "$1" | tr '\t\r\n' '   '; }
 
@@ -367,7 +370,7 @@ cmd_enable() {
     verify_root_copy_parent
     atomic_install "$stage/root-copy" "$ROOT_COPY" 0755
     [[ -f "$ROOT_COPY" && ! -L "$ROOT_COPY" ]] || die "root executable copy is not a regular non-symlink"
-    [[ "$(stat -c '%u:%g:%a' "$ROOT_COPY")" == "$(root_owner):755" ]] \
+    [[ "$(stat -c '%u:%g:%a' "$ROOT_COPY")" == "$(root_owner_ids):755" ]] \
         || die "root executable copy ownership or mode verification failed"
     atomic_install "$stage/system-updates.service" "$UPDATE_SERVICE" 0644
     atomic_install "$stage/system-updates.timer" "$UPDATE_TIMER" 0644
@@ -515,7 +518,7 @@ root_copy_state() {
     local owner mode drift=unknown expected_owner
     owner=$(stat -c '%u:%g' "$ROOT_COPY" 2>/dev/null || true); mode=$(stat -c '%a' "$ROOT_COPY" 2>/dev/null || true)
     if cmp -s "$ROOT_COPY" "$SELF_PATH"; then drift=current; else drift=drifted; fi
-    if [[ "$TEST_MODE" == 1 ]]; then expected_owner=$(root_owner); else expected_owner=0:0; fi
+    expected_owner=$(root_owner_ids)
     [[ "$owner" == "$expected_owner" && "$mode" == 755 ]] || drift="$drift, unsafe permissions owner=$owner mode=$mode"
     printf '%s\n' "$drift"
 }

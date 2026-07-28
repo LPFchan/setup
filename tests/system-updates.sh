@@ -96,6 +96,8 @@ export SYSTEM_UPDATES_SELF_PATH="$REPO_ROOT/bin/system-updates" STUB_APT_CONF="$
 # shellcheck disable=SC1090
 source "$REPO_ROOT/bin/system-updates"
 
+[[ $(root_owner_ids) == "$(id -u):$(id -g)" ]] || fail 'test-mode numeric ownership expectation is wrong'
+
 # Distro selection and capability success/failure do not depend on host tools.
 printf 'ID=ubuntu\nID_LIKE=debian\n' > "$FIXTURE/etc/os-release"
 [[ $(family_backend) == apt ]] || fail 'Ubuntu did not select Apt'
