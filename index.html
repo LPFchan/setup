@@ -642,14 +642,18 @@
         if (!(video && video.readyState >= 2 && video.videoWidth)) return false;
 
         const VW = window.innerWidth, VH = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        // object-fit: cover, by hand.
+        const natW = video.videoWidth, natH = video.videoHeight;
+        const cover = Math.max(VW / natW, VH / natH);
+        // Never allocate more pixels than the source can fill. A 1080p video
+        // covering a Retina viewport was being drawn into 7.5M pixels it had no
+        // detail for; CSS scales the smaller buffer up exactly as the <video>
+        // element did, at a quarter of the per-frame cost.
+        const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.max(1, 1 / cover));
         const W = Math.round(VW * dpr), H = Math.round(VH * dpr);
         if (bgCanvas.width !== W || bgCanvas.height !== H) {
           bgCanvas.width = W; bgCanvas.height = H;
         }
-        // object-fit: cover, by hand.
-        const natW = video.videoWidth, natH = video.videoHeight;
-        const cover = Math.max(VW / natW, VH / natH);
         const sw = VW / cover, sh = VH / cover;
         try {
           bgCtx.drawImage(video, (natW - sw) / 2, (natH - sh) / 2, sw, sh, 0, 0, W, H);
@@ -752,6 +756,7 @@
 
       let gl = null, cropProg = null, lensProg = null, cropU = null, lensU = null;
       let srcTex = null, fboTex = null, fbo = null, fboW = 0, fboH = 0, texReady = false;
+      let texW = 0, texH = 0;
 
       function shader(type, src) {
         const s = gl.createShader(type);
@@ -808,9 +813,12 @@
         gl.enableVertexAttribArray(0);
         gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        // Left unflipped on purpose: the shaders address the backdrop in
+        // top-down viewport coordinates, so v=0 has to be the image's top row.
+        // Flipping here samples the pill's mirror image instead.
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         srcTex = makeTexture(false);
-        texReady = false;
+        texReady = false; texW = texH = 0;
         fboTex = makeTexture(true);
         fbo = gl.createFramebuffer();
 
@@ -867,20 +875,27 @@
         if (lens.width !== W || lens.height !== H) { lens.width = W; lens.height = H; }
         sizeFBO(W, H);
 
+        const VW = window.innerWidth, VH = window.innerHeight;
+        const natW = live ? video.videoWidth : poster.naturalWidth;
+        const natH = live ? video.videoHeight : poster.naturalHeight;
+
         if (refresh || !texReady) {
           gl.bindTexture(gl.TEXTURE_2D, srcTex);
           try {
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+            // Allocate once, then overwrite. texImage2D every frame re-specifies
+            // the whole texture store, which is the expensive way to move video.
+            if (texW !== natW || texH !== natH) {
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, natW, natH, 0,
+                            gl.RGBA, gl.UNSIGNED_BYTE, null);
+              texW = natW; texH = natH;
+            }
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
           } catch (_) {
+            texW = texH = 0;
             return false;                     // cross-origin frame; keep the frost
           }
           texReady = true;
         }
-        if (!texReady) return false;
-
-        const VW = window.innerWidth, VH = window.innerHeight;
-        const natW = live ? video.videoWidth : poster.naturalWidth;
-        const natH = live ? video.videoHeight : poster.naturalHeight;
         const cover = Math.max(VW / natW, VH / natH);
         const dispW = natW * cover, dispH = natH * cover;
         const offX = (VW - dispW) / 2, offY = (VH - dispH) / 2;
@@ -927,7 +942,7 @@
         // Light drifts with the pull, so the highlight slides as the pill moves.
         // Screen y is down and GL y is up, hence the flip.
         gl.uniform2f(lensU.uLight, -0.35 - tx / 90, 0.75 + ty / 90);
-        gl.uniform1f(lensU.uSpec, 0.5);
+        gl.uniform1f(lensU.uSpec, 0.22);
         gl.uniform1f(lensU.uFres, 0.09);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         return true;
