@@ -21,11 +21,20 @@
       --morph-in: cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    /* Registered so the frost interpolates through the morph instead of snapping. */
-    @property --frost {
-      syntax: "<length>";
-      inherits: false;
-      initial-value: 8px;
+    /* Written every frame by the drag spring. Registered so the compositor gets
+       typed values instead of re-parsing a transform string per tick. */
+    @property --tx { syntax: "<length>"; inherits: false; initial-value: 0px; }
+    @property --ty { syntax: "<length>"; inherits: false; initial-value: 0px; }
+    @property --sx { syntax: "<number>"; inherits: true; initial-value: 1; }
+    @property --sy { syntax: "<number>"; inherits: true; initial-value: 1; }
+    @property --ang { syntax: "<angle>"; inherits: true; initial-value: 0deg; }
+    @property --lift { syntax: "<length>"; inherits: false; initial-value: 0px; }
+    /* Inherited so the tint layer above the lens can read it, registered so it
+       still interpolates across the morph now that it is not background-color. */
+    @property --fill {
+      syntax: "<color>";
+      inherits: true;
+      initial-value: rgba(255, 255, 255, 0.78);
     }
 
     * { box-sizing: border-box; }
@@ -44,13 +53,16 @@
       font-family: var(--sans);
     }
 
-    /* Scrim: keeps the bottom chrome legible over arbitrary video frames. */
+    /* Scrim: keeps the bottom chrome legible over arbitrary video frames.
+       Deliberately lighter than a pure legibility scrim would be — at 0.92 the
+       backdrop behind the pill was crushed to ~8% luminance and the lens had
+       nothing left to bend. The footer buys its contrast back with a shadow. */
     body::before {
       content: "";
       position: fixed;
       inset: 0;
       z-index: 1;
-      background: linear-gradient(to bottom, rgba(5, 5, 5, 0) 42%, rgba(5, 5, 5, 0.55) 74%, rgba(5, 5, 5, 0.92));
+      background: linear-gradient(to bottom, rgba(5, 5, 5, 0) 42%, rgba(5, 5, 5, 0.38) 74%, rgba(5, 5, 5, 0.6));
       pointer-events: none;
     }
 
@@ -88,19 +100,59 @@
       border-radius: 999px;
       color: #050505;
       /* Translucent enough to lens, opaque enough to hold black text: 0.78
-         white composites to rgb(200) on the bare background — 12.2:1. */
-      --frost: 8px;
-      background: rgba(255, 255, 255, 0.78);
-      /* Frost only — the fallback for engines that reject a filter reference. */
+         white composites to rgb(200) on the bare background — 12.2:1. The
+         colour is painted by .glass-tint, which stacks above the lens canvas;
+         the button's own background would sit behind it and never be seen. */
+      --fill: rgba(255, 255, 255, 0.78);
+      background: transparent;
+      /* Frost for engines with no canvas 2D: the lens layer stays blank and
+         this is the whole glass. Where the lens runs it draws its own frost
+         and sits on top of this, so the two never compound. */
       backdrop-filter: blur(16px) saturate(180%);
       -webkit-backdrop-filter: blur(16px) saturate(180%);
-      /* Lensing: displace the backdrop first, then frost what came through.
-         Dropped wholesale where url() is unsupported, leaving the rule above. */
-      backdrop-filter: url(#lens-body) blur(var(--frost)) saturate(170%) brightness(1.06);
-      -webkit-backdrop-filter: url(#lens-body) blur(var(--frost)) saturate(170%) brightness(1.06);
       box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4), inset 0 -1px 0 rgba(0, 0, 0, 0.08);
       cursor: pointer;
+      touch-action: none;
       -webkit-tap-highlight-color: transparent;
+      /* One declaration owns the transform so the spring, the hover lift and
+         the press never clobber each other. The rotate/scale/rotate sandwich
+         stretches along the drag axis rather than along x. */
+      transform:
+        translate(var(--tx), calc(var(--ty) + var(--lift)))
+        rotate(var(--ang)) scale(var(--sx), var(--sy)) rotate(calc(-1 * var(--ang)));
+    }
+
+    /* The refracted backdrop. Overhangs the pill by --bleed so the rim has
+       real pixels to bend inward from; the button's overflow clips it back. */
+    .glass-lens {
+      position: absolute;
+      z-index: 0;
+      inset: calc(-1 * var(--bleed, 26px));
+      width: calc(100% + 2 * var(--bleed, 26px));
+      height: calc(100% + 2 * var(--bleed, 26px));
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 240ms linear;
+    }
+
+    #install-button.has-lens .glass-lens { opacity: 1; }
+
+    /* The tint that makes the glass read as glass, over the refracted backdrop. */
+    .glass-tint {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      border-radius: inherit;
+      background: var(--fill);
+      pointer-events: none;
+    }
+
+    /* With the lens painting its own frosted backdrop, the CSS frost would only
+       double up, and the white fill needs to carry the label and nothing else. */
+    #install-button.has-lens {
+      --fill: rgba(255, 255, 255, 0.72);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
 
     #install-button.is-ready {
@@ -110,45 +162,51 @@
         width 540ms var(--morph-in),
         height 540ms var(--morph-in),
         color 260ms linear,
-        background-color 380ms var(--morph-in),
+        --fill 380ms var(--morph-in),
         box-shadow 380ms var(--morph-in),
-        --frost 380ms var(--morph-in),
-        transform 200ms ease;
+        --lift 200ms ease;
     }
 
     #install-button.is-ready.is-open {
       width: var(--w-open);
       height: var(--h-open);
-      /* Clearer than idle, so the refraction is the dominant read. */
-      --frost: 2.5px;
       color: var(--fg);
-      background: rgba(255, 255, 255, 0.07);
+      /* Nearly clear once open, so the refraction is the dominant read. */
+      --fill: rgba(255, 255, 255, 0.07);
       box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), inset 0 -1px 0 rgba(255, 255, 255, 0.07);
       transition:
         width 620ms var(--morph-out),
         height 620ms var(--morph-out),
         color 260ms linear,
-        background-color 340ms var(--morph-in),
+        --fill 340ms var(--morph-in),
         box-shadow 340ms var(--morph-in),
-        --frost 340ms var(--morph-in),
-        transform 200ms ease;
+        --lift 200ms ease;
     }
 
-    #install-button:hover { transform: translateY(-1px); }
-    #install-button:active { transform: scale(0.985); }
+    #install-button.has-lens.is-ready.is-open { --fill: rgba(255, 255, 255, 0.04); }
+
+    #install-button:hover { --lift: -1px; }
     #install-button:focus-visible { outline: 2px solid var(--hot); outline-offset: 3px; }
 
-    /* Meniscus: the outer band refracts harder than the body, the way the
-       thick edge of a real lens does, and carries the chromatic fringe. */
+    /* Dragging across the command would otherwise select it mid-fling. */
+    #install-button.is-dragging,
+    #install-button.is-dragging #install-command {
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: grabbing;
+    }
+
+    /* Meniscus: a chromatic fringe over the band where the lens bends hardest,
+       so the tint and the refraction land on the same ring. The bending itself
+       lives in the displacement map — no backdrop-filter can reach out here,
+       because the button's own backdrop-filter would make it a backdrop root. */
     .glass-rim {
       position: absolute;
       inset: 0;
-      z-index: 1;
+      z-index: 2;
       border-radius: inherit;
-      padding: 11px;
-      backdrop-filter: url(#lens-rim);
-      -webkit-backdrop-filter: url(#lens-rim);
-      background: linear-gradient(115deg, rgba(255, 128, 96, 0.16), rgba(255, 255, 255, 0) 34%, rgba(255, 255, 255, 0) 66%, rgba(96, 168, 255, 0.18));
+      padding: var(--rim, 13px);
+      background: linear-gradient(115deg, rgba(255, 128, 96, 0.22), rgba(255, 255, 255, 0) 34%, rgba(255, 255, 255, 0) 66%, rgba(96, 168, 255, 0.26));
       /* Ring = border-box minus content-box, so the band is the padding. */
       -webkit-mask-image: linear-gradient(#000 0 0), linear-gradient(#000 0 0);
       -webkit-mask-clip: content-box, border-box;
@@ -167,7 +225,7 @@
       content: "";
       position: absolute;
       inset: 0;
-      z-index: 2;
+      z-index: 3;
       border-radius: inherit;
       box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.55),
@@ -208,6 +266,9 @@
       align-items: center;
       justify-content: center;
       gap: 10px;
+      /* The glass stretches, the label does not: undo the pill's deformation
+         so the text stays upright and unsqueezed while the body pulls. */
+      transform: rotate(var(--ang)) scale(calc(1 / var(--sx)), calc(1 / var(--sy))) rotate(calc(-1 * var(--ang)));
       transition: opacity 240ms var(--morph-in), filter 240ms var(--morph-in);
     }
 
@@ -235,7 +296,7 @@
       position: absolute;
       top: 50%;
       left: 50%;
-      transform: translate(-50%, -50%);
+      transform: translate(-50%, -50%) rotate(var(--ang)) scale(calc(1 / var(--sx)), calc(1 / var(--sy))) rotate(calc(-1 * var(--ang)));
       width: max-content;
     }
 
@@ -269,13 +330,6 @@
     .glyph-fail { display: none; }
     [data-state="fail"] .glyph-ok { display: none; }
     [data-state="fail"] .glyph-fail { display: block; }
-
-    .filter-defs {
-      position: absolute;
-      width: 0;
-      height: 0;
-      overflow: hidden;
-    }
 
     .sr-only {
       position: absolute;
@@ -316,9 +370,11 @@
 
     footer a:hover { color: var(--fg); }
 
+    footer { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85); }
+
     /* Too narrow for one line: wrap at the spaces, the pill grows taller. */
     @media (max-width: 560px) {
-      #install-button { padding: 16px 22px; }
+      #install-button { padding: 16px 22px; --rim: 10px; }
       #install-command { white-space: pre-wrap; }
     }
 
@@ -331,31 +387,16 @@
       #install-button.is-ready,
       #install-button.is-ready.is-open,
       #install-button::before,
+      .glass-lens,
       .glass-rim,
       .face { transition: none; }
       #install-button.is-flash::after { animation: none; }
-      #install-button:hover,
-      #install-button:active { transform: none; }
+      /* The lens still refracts; it just stops chasing the pointer. */
+      #install-button:hover { --lift: 0px; }
     }
   </style>
 </head>
 <body>
-  <!-- Refraction maps for the button's glass. feTurbulence supplies the normals;
-       feDisplacementMap bends the sampled backdrop along them. -->
-  <svg class="filter-defs" aria-hidden="true" focusable="false">
-    <filter id="lens-body" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
-      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.013" numOctaves="2" seed="17" result="noise"></feTurbulence>
-      <feGaussianBlur in="noise" stdDeviation="3.2" result="normals"></feGaussianBlur>
-      <feDisplacementMap in="SourceGraphic" in2="normals" scale="15" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
-    </filter>
-    <filter id="lens-rim" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
-      <feTurbulence type="fractalNoise" baseFrequency="0.018 0.022" numOctaves="1" seed="41" result="noise"></feTurbulence>
-      <feGaussianBlur in="noise" stdDeviation="1.4" result="normals"></feGaussianBlur>
-      <feDisplacementMap in="SourceGraphic" in2="normals" scale="18" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
-      <feGaussianBlur stdDeviation="0.5"></feGaussianBlur>
-    </filter>
-  </svg>
-
   <video class="motion-background" autoplay muted loop playsinline preload="metadata" poster="/media/setup-bg-poster.jpg" aria-hidden="true">
     <source src="/media/setup-bg-720p.mp4" type="video/mp4" media="(max-width: 900px)">
     <source src="/media/setup-bg-1080p.mp4" type="video/mp4">
@@ -364,6 +405,8 @@
   <main>
     <div class="install">
       <button id="install-button" type="button" aria-label="Copy the install command">
+        <canvas class="glass-lens" aria-hidden="true"></canvas>
+        <span class="glass-tint" aria-hidden="true"></span>
         <span class="glass-rim" aria-hidden="true"></span>
         <span class="face face--idle">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -459,6 +502,11 @@
       }
 
       button.addEventListener('click', async () => {
+        // A fling is not a click. Capture-phase listeners are not reliably
+        // ordered ahead of this one on the same element, so the drag gate
+        // lives here rather than in a separate suppressor.
+        if (wasDragged()) return;
+
         const copied = await copy(command);
 
         measure();
@@ -489,6 +537,338 @@
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(measure);
       if (window.ResizeObserver) new ResizeObserver(measure).observe(button.parentElement);
       else window.addEventListener('resize', measure);
+
+      // ---------------------------------------------------------------------
+      // Lens. The refraction is done here rather than with an SVG filter
+      // because no single filter graph survives both engines: Chromium ignores
+      // feImage's x/y/width/height and stretches the map over the whole filter
+      // region, WebKit honours them but drops backdrop-filter: url() entirely.
+      // Sampling the backdrop into a canvas and displacing it ourselves is the
+      // one path that renders identically in both.
+      // ---------------------------------------------------------------------
+      const lens = button.querySelector('.glass-lens');
+      const video = document.querySelector('.motion-background');
+      const BLEED = 26;      // px of backdrop kept outside the pill to bend inward
+      const THICK = 17;      // width of the refracting rim band
+      const DISP = 21;       // peak displacement
+      const IOR = 1.5;
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+      // Convex squircle y = (1-(1-x)^4)^(1/4) — Apple's profile rather than a
+      // circle: the shoulder is softer, so the rim doesn't band.
+      const surface = (x) => Math.pow(1 - Math.pow(1 - Math.min(Math.max(x, 0), 1), 4), 0.25);
+
+      // Snell keeps the bend finite where the slope runs away at the very edge.
+      function bend(t) {
+        const e = 1e-4;
+        const slope = (surface(t + e) - surface(t - e)) / (2 * e);
+        const incidence = Math.atan(slope);
+        const exit = Math.asin(Math.min(Math.sin(incidence) / IOR, 1));
+        return Math.tan(incidence - exit);
+      }
+
+      let peakBend = 0;
+      for (let i = 0; i <= 256; i++) peakBend = Math.max(peakBend, bend(i / 256));
+
+      function sdPill(px, py, hw, hh, r) {
+        const qx = Math.abs(px) - (hw - r);
+        const qy = Math.abs(py) - (hh - r);
+        return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+      }
+
+      const lensCtx = lens.getContext('2d');
+      const srcCanvas = document.createElement('canvas');
+      const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+      const tinyCanvas = document.createElement('canvas');
+      const tinyCtx = tinyCanvas.getContext('2d');
+      const poster = new Image();
+      let posterReady = false;
+      poster.onload = () => { posterReady = true; };
+      poster.src = '/media/setup-bg-poster.jpg';
+
+      // Destination -> source byte offsets, one table per channel. Rebuilding
+      // per frame would cost more than the draw, so it is keyed on the shape.
+      let lut = null, lutKey = '', frame = null;
+
+      function buildLut(w, h, dpr) {
+        const W = Math.round(w * dpr), H = Math.round(h * dpr);
+        const key = W + 'x' + H;
+        if (lutKey === key) return;
+        lutKey = key;
+
+        const n = W * H;
+        const R = new Int32Array(n), G = new Int32Array(n), B = new Int32Array(n);
+        // Red bends furthest, blue least: the dispersion that fringes the rim.
+        const channels = [[R, 1], [G, 0.94], [B, 0.88]];
+        const hw = (w / 2 - BLEED) * dpr, hh = (h / 2 - BLEED) * dpr;
+        const r = Math.min(hw, hh), th = THICK * dpr, amp = DISP * dpr;
+        const halfW = Math.ceil(W / 2), halfH = Math.ceil(H / 2);
+
+        // The pill is symmetric about both axes, so a quarter of the work
+        // fills the whole table — mirrored source coords flip with it.
+        for (let y = 0; y < halfH; y++) {
+          for (let x = 0; x < halfW; x++) {
+            const px = x + 0.5 - W / 2, py = y + 0.5 - H / 2;
+            const sd = sdPill(px, py, hw, hh, r);
+            let dx = 0, dy = 0;
+            if (sd < 0) {
+              const m = bend(Math.min(-sd / th, 1)) / peakBend;
+              const gx = sdPill(px + 1, py, hw, hh, r) - sdPill(px - 1, py, hw, hh, r);
+              const gy = sdPill(px, py + 1, hw, hh, r) - sdPill(px, py - 1, hw, hh, r);
+              const len = Math.hypot(gx, gy) || 1;
+              dx = (gx / len) * m * amp;
+              dy = (gy / len) * m * amp;
+            }
+            const xm = W - 1 - x, ym = H - 1 - y;
+            for (const [chan, disp] of channels) {
+              let sx = Math.round(x + dx * disp), sy = Math.round(y + dy * disp);
+              sx = sx < 0 ? 0 : sx > W - 1 ? W - 1 : sx;
+              sy = sy < 0 ? 0 : sy > H - 1 ? H - 1 : sy;
+              const sxm = W - 1 - sx, sym = H - 1 - sy;
+              chan[y * W + x] = (sy * W + sx) << 2;
+              chan[y * W + xm] = (sy * W + sxm) << 2;
+              chan[ym * W + x] = (sym * W + sx) << 2;
+              chan[ym * W + xm] = (sym * W + sxm) << 2;
+            }
+          }
+        }
+        lut = { R, G, B };
+        frame = lensCtx.createImageData(W, H);
+        const data = frame.data;
+        for (let p = 3; p < data.length; p += 4) data[p] = 255;
+      }
+
+      // Where the pill sits before the drag transform: read from the untransformed
+      // parent, because getBoundingClientRect() would fold the spring back in.
+      function layoutRect() {
+        const host = button.parentElement.getBoundingClientRect();
+        const w = button.offsetWidth, h = button.offsetHeight;
+        return { w, h, x: host.left + (host.width - w) / 2, y: host.top + (host.height - h) / 2 };
+      }
+
+      function drawLens(tx, ty) {
+        const box = layoutRect();
+        if (!box.w || !box.h) return false;
+
+        // Under reduced motion the page swaps the video for the poster, so the
+        // lens has to sample the poster too or it refracts a frame nobody sees.
+        const liveVideo = !reduced.matches && video &&
+          video.readyState >= 2 && video.videoWidth;
+        const source = liveVideo ? video : (posterReady ? poster : null);
+        if (!source) return false;
+
+        const w = box.w + BLEED * 2, h = box.h + BLEED * 2;
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+        const W = Math.round(w * dpr), H = Math.round(h * dpr);
+
+        // Openness drives the frost: thick while the pill is a solid button,
+        // nearly clear once it is showing the command through glass.
+        const idle = parseFloat(button.style.getPropertyValue('--w-idle')) || box.w;
+        const open = parseFloat(button.style.getPropertyValue('--w-open')) || box.w;
+        const openness = open > idle ? Math.min(Math.max((box.w - idle) / (open - idle), 0), 1) : 0;
+
+        buildLut(w, h, dpr);
+
+        if (lens.width !== W || lens.height !== H) {
+          lens.width = W; lens.height = H;
+          srcCanvas.width = W; srcCanvas.height = H;
+        }
+
+        // The pill has moved under the spring, so sample where it actually is.
+        const vx = box.x + tx - BLEED, vy = box.y + ty - BLEED;
+        const VW = window.innerWidth, VH = window.innerHeight;
+        const natW = liveVideo ? video.videoWidth : poster.naturalWidth;
+        const natH = liveVideo ? video.videoHeight : poster.naturalHeight;
+        const cover = Math.max(VW / natW, VH / natH);
+        const offX = (VW - natW * cover) / 2, offY = (VH - natH * cover) / 2;
+
+        // Downscale then back up: a box blur the GPU does for free, and it
+        // keeps the frost out of the per-pixel loop.
+        const shrink = 6.5 - 4.6 * openness;
+        const tw = Math.max(2, Math.round(W / shrink)), th2 = Math.max(2, Math.round(H / shrink));
+        if (tinyCanvas.width !== tw || tinyCanvas.height !== th2) {
+          tinyCanvas.width = tw; tinyCanvas.height = th2;
+        }
+        try {
+          tinyCtx.drawImage(source,
+            (vx - offX) / cover, (vy - offY) / cover, w / cover, h / cover,
+            0, 0, tw, th2);
+        } catch (_) {
+          return false;
+        }
+        srcCtx.imageSmoothingEnabled = true;
+        srcCtx.drawImage(tinyCanvas, 0, 0, tw, th2, 0, 0, W, H);
+
+        // Same scrim the page paints, so the lens matches its surroundings.
+        const g = srcCtx.createLinearGradient(0, (0 - vy) * dpr, 0, (VH - vy) * dpr);
+        g.addColorStop(0, 'rgba(5,5,5,0)');
+        g.addColorStop(0.42, 'rgba(5,5,5,0)');
+        g.addColorStop(0.74, 'rgba(5,5,5,0.38)');
+        g.addColorStop(1, 'rgba(5,5,5,0.6)');
+        srcCtx.fillStyle = g;
+        srcCtx.fillRect(0, 0, W, H);
+
+        let src;
+        try {
+          src = srcCtx.getImageData(0, 0, W, H).data;
+        } catch (_) {
+          return false;   // tainted canvas — fall back to the CSS frost
+        }
+
+        const out = frame.data, R = lut.R, G2 = lut.G, B = lut.B;
+        for (let p = 0, k = 0, n = W * H; p < n; p++, k += 4) {
+          out[k] = src[R[p]];
+          out[k + 1] = src[G2[p] + 1];
+          out[k + 2] = src[B[p] + 2];
+        }
+        lensCtx.putImageData(frame, 0, 0);
+        return true;
+      }
+
+      // --- mochi: pull the pill, it stretches toward you and springs home ----
+      const spring = { x: 0, y: 0, vx: 0, vy: 0 };
+      let dragging = false, pointerId = null, grabX = 0, grabY = 0, travel = 0, pressedAt = 0;
+      let press = 0;          // 0 released, 1 held — eased so a tap still reads
+      const PULL = 46;        // px at which the rubber band is fully stretched
+      const STIFF = 0.16, DAMP = 0.74;
+
+      function applyTransform() {
+        const { x, y } = spring;
+        const mag = Math.hypot(x, y);
+        const ang = mag > 0.01 ? Math.atan2(y, x) : 0;
+        // Volume-preserving-ish: what stretches along the pull thins across it.
+        const s = Math.min(mag / PULL, 1) * 0.13;
+        const squeeze = 1 - press * 0.015;
+        button.style.setProperty('--tx', x.toFixed(2) + 'px');
+        button.style.setProperty('--ty', y.toFixed(2) + 'px');
+        button.style.setProperty('--ang', (ang * 180 / Math.PI).toFixed(2) + 'deg');
+        button.style.setProperty('--sx', ((1 + s) * squeeze).toFixed(4));
+        button.style.setProperty('--sy', ((1 - s * 0.62) * squeeze).toFixed(4));
+      }
+
+      // The backdrop is 60fps, so a throttled lens would visibly stutter against
+      // the video around it. Instead the redraw is driven by presented video
+      // frames: exactly in step with what is on screen, and no work on a 120Hz
+      // display for frames the video never produced.
+      const hasFrameCallback = !!(video && video.requestVideoFrameCallback);
+      let videoSeq = 0, drawnSeq = -1;
+
+      let rafId = 0, settled = true;
+      function tick(now) {
+        rafId = 0;
+        if (!dragging) {
+          spring.vx = (spring.vx - spring.x * STIFF) * DAMP;
+          spring.vy = (spring.vy - spring.y * STIFF) * DAMP;
+          spring.x += spring.vx;
+          spring.y += spring.vy;
+          if (Math.hypot(spring.x, spring.y) < 0.05 && Math.hypot(spring.vx, spring.vy) < 0.05) {
+            spring.x = spring.y = spring.vx = spring.vy = 0;
+            settled = true;
+          }
+        }
+        press += ((dragging ? 1 : 0) - press) * 0.25;
+        applyTransform();
+
+        const moving = dragging || !settled || press > 0.001;
+        if (moving || videoSeq !== drawnSeq) {
+          drawLens(spring.x, spring.y);
+          drawnSeq = videoSeq;
+        }
+        // The spring owns the loop while it is running; otherwise the video's
+        // own frame callback wakes us, so an idle page schedules nothing.
+        if (moving || (!hasFrameCallback && !reduced.matches)) schedule();
+      }
+
+      function schedule() {
+        if (!rafId) rafId = requestAnimationFrame(tick);
+      }
+
+      // Rubber band: linear near the origin, asymptotic past PULL.
+      const band = (d) => PULL * Math.tanh(d / PULL);
+
+      button.addEventListener('pointerdown', (event) => {
+        if (event.button !== undefined && event.button !== 0) return;
+        grabX = event.clientX; grabY = event.clientY;
+        travel = 0; pressedAt = performance.now();
+        // Reduced motion still tracks the press, so a drag never copies —
+        // it just doesn't animate the pill.
+        if (reduced.matches) return;
+        dragging = true; settled = false;
+        pointerId = event.pointerId;
+        if (button.setPointerCapture) button.setPointerCapture(pointerId);
+        schedule();
+      });
+
+      button.addEventListener('pointermove', (event) => {
+        if (!pressedAt) return;
+        const dx = event.clientX - grabX, dy = event.clientY - grabY;
+        const d = Math.hypot(dx, dy);
+        travel = Math.max(travel, d);
+        if (!dragging || event.pointerId !== pointerId) return;
+        if (d > 0) {
+          const pulled = band(d);
+          spring.x = (dx / d) * pulled;
+          spring.y = (dy / d) * pulled;
+        }
+        if (travel > 6) button.classList.add('is-dragging');
+        schedule();
+      });
+
+      function release(event) {
+        if (!dragging || (event && event.pointerId !== pointerId)) return;
+        dragging = false;
+        button.classList.remove('is-dragging');
+        // Let go mid-pull and it snaps back past centre before settling.
+        spring.vx = -spring.x * 0.16;
+        spring.vy = -spring.y * 0.16;
+        if (button.releasePointerCapture && button.hasPointerCapture &&
+            button.hasPointerCapture(pointerId)) {
+          button.releasePointerCapture(pointerId);
+        }
+        schedule();
+      }
+
+      button.addEventListener('pointerup', release);
+      button.addEventListener('pointercancel', release);
+
+      // Consumed by the copy handler: anything past a few px, or a long hold,
+      // was a drag, so the clipboard stays out of it. pressedAt of 0 means no
+      // pointer sequence led here — a keyboard Enter or Space — which always
+      // counts as a plain activation.
+      function wasDragged() {
+        const dragged = pressedAt !== 0 &&
+          (travel > 6 || performance.now() - pressedAt > 700);
+        travel = 0;
+        pressedAt = 0;
+        return dragged;
+      }
+
+      function enableLens() {
+        if (!lensCtx || button.classList.contains('has-lens')) return;
+        if (!drawLens(spring.x, spring.y)) return;   // no frame yet, or tainted
+        lens.style.setProperty('--bleed', BLEED + 'px');
+        button.classList.add('has-lens');
+        if (hasFrameCallback) {
+          const onVideoFrame = () => {
+            videoSeq++;
+            schedule();
+            video.requestVideoFrameCallback(onVideoFrame);
+          };
+          video.requestVideoFrameCallback(onVideoFrame);
+        }
+        schedule();
+      }
+
+      enableLens();
+      if (video) {
+        video.addEventListener('loadeddata', enableLens);
+        video.addEventListener('playing', enableLens);
+      }
+      poster.addEventListener('load', enableLens);
+      window.addEventListener('resize', () => { lutKey = ''; enableLens(); schedule(); });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) schedule();
+      });
     })();
   </script>
 </body>
