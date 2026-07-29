@@ -5,7 +5,12 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/custom-state"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/bin"
-printf '{"servers":{"demo":{"baseURL":"http://demo","auth":{"type":"auth_json","provider":"demo"}}}}\n' > "$HOME/.config/opencode/refresh-models.json"
+export CLAUDEX_REGISTRY="$TMP/registry.json"
+cat > "$CLAUDEX_REGISTRY" <<'EOF'
+{"version":1,"profiles":[
+  {"name":"demo","provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}}
+]}
+EOF
 
 python3 - <<PY
 import importlib.machinery, importlib.util, os, sys
@@ -25,8 +30,8 @@ with open(service_path) as f:
 assert f'ExecStart={os.path.abspath(path)}\n' in service_unit
 assert 'EnvironmentFile' not in service_unit
 assert '.zshenv' not in service_unit
-servers = m.load_json(m.CONFIG_PATH)['servers']
-assert all(provider['enabled'] is False for provider in servers.values())
+assert m._load_servers()['demo']['baseURL'] == 'http://demo'
+assert m._load_provider_state() == {'providers': {}}
 PY
 
 marker="$XDG_STATE_HOME/setup/refresh-models.needs-provider-setup"

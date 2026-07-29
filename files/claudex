@@ -71,6 +71,34 @@ def validate_registry(data: Any) -> dict[str, Any]:
     profiles = data.get("profiles")
     if not isinstance(profiles, list) or not profiles:
         raise UserError("registry profiles must be a non-empty list")
+    providers = data.get("providers", {})
+    if providers and not isinstance(providers, dict):
+        raise UserError("registry providers must be an object")
+    for provider_name, provider in providers.items():
+        if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
+            raise UserError(f"invalid provider: {provider_name}")
+        if provider.get("provider_type") not in PROVIDER_TYPES:
+            raise UserError(f"invalid provider_type for {provider_name}")
+        base_url = _string(provider.get("base_url"), f"base_url for {provider_name}")
+        if not valid_base_url(base_url):
+            raise UserError(f"invalid base_url for {provider_name}")
+        auth = provider.get("auth")
+        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key"}:
+            raise UserError(f"invalid auth descriptor for {provider_name}")
+        if provider["provider_type"] == "OpenAICompatible":
+            if auth.get("type") != "api-key" or auth.get("store") != "opencode":
+                raise UserError(f"invalid API-key auth descriptor for {provider_name}")
+            if not NAME_RE.fullmatch(_string(auth.get("key"), f"auth key for {provider_name}")):
+                raise UserError(f"invalid auth key for {provider_name}")
+            if not isinstance(provider.get("enabled"), bool):
+                raise UserError(f"enabled for {provider_name} must be a boolean")
+            if provider.get("api_format") not in {"grimoire", "crofai", "openai"}:
+                raise UserError(f"invalid api_format for {provider_name}")
+            _string(provider.get("npm"), f"npm package for {provider_name}")
+        elif auth.get("type") != "oauth":
+            raise UserError(f"invalid OAuth descriptor for {provider_name}")
+        else:
+            _string(auth.get("provider"), f"oauth provider for {provider_name}")
     seen: set[str] = set()
     for profile in profiles:
         if not isinstance(profile, dict):
@@ -79,6 +107,14 @@ def validate_registry(data: Any) -> dict[str, Any]:
         if not NAME_RE.fullmatch(name) or name in seen:
             raise UserError(f"invalid or duplicate profile name: {name}")
         seen.add(name)
+        provider_name = profile.get("provider")
+        if provider_name is not None and providers and provider_name not in providers:
+            raise UserError(f"unknown provider for {name}: {provider_name}")
+        if provider_name in providers:
+            provider = providers[provider_name]
+            for field in ("provider_type", "base_url", "auth"):
+                if profile.get(field) != provider.get(field):
+                    raise UserError(f"{field} for {name} disagrees with provider {provider_name}")
         if profile.get("provider_type") not in PROVIDER_TYPES:
             raise UserError(f"invalid provider_type for {name}")
         base_url = _string(profile.get("base_url"), f"base_url for {name}")
@@ -377,6 +413,16 @@ def provision_profile(profile: dict[str, Any], token: str) -> None:
         data = load_registry(registry_path)
         if any(item["name"] == profile["name"] for item in data["profiles"]):
             raise UserError(f"profile {profile['name']} already exists in the setup repository")
+        if profile["name"] in data.get("providers", {}):
+            raise UserError(f"provider {profile['name']} already exists in the setup repository")
+        data.setdefault("providers", {})[profile["name"]] = {
+            "provider_type": profile["provider_type"],
+            "base_url": profile["base_url"],
+            "api_format": "openai",
+            "npm": "@ai-sdk/openai-compatible",
+            "auth": profile["auth"],
+            "enabled": True,
+        }
         data["profiles"].append(profile)
         validate_registry(data)
         registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
@@ -407,6 +453,7 @@ def provision_profile(profile: dict[str, Any], token: str) -> None:
 
 def add_profile(registry: dict[str, Any]) -> None:
     existing = {profile["name"] for profile in registry["profiles"]}
+    existing.update(registry.get("providers", {}))
     name = input("Profile name: ").strip()
     if not NAME_RE.fullmatch(name) or name in existing:
         raise UserError("profile names must be unique lowercase letters, digits, or hyphens")
@@ -427,6 +474,7 @@ def add_profile(registry: dict[str, Any]) -> None:
         mappings[alias] = selected
     profile = {
         "name": name,
+        "provider": name,
         "provider_type": "OpenAICompatible",
         "base_url": base_url,
         "auth": {"type": "api-key", "store": "opencode", "key": name},

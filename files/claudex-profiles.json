@@ -1,8 +1,55 @@
 {
   "version": 1,
+  "providers": {
+    "codex": {
+      "provider_type": "OpenAIResponses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "auth": {
+        "type": "oauth",
+        "provider": "chatgpt"
+      }
+    },
+    "grimoire": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://chat.lost.plus/v1",
+      "api_format": "grimoire",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "grimoire"
+      },
+      "enabled": true
+    },
+    "crofai": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://crof.ai/v1",
+      "api_format": "crofai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "crofai"
+      },
+      "enabled": true
+    },
+    "commandcode": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.commandcode.ai/provider/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "commandcode"
+      },
+      "enabled": true
+    }
+  },
   "profiles": [
     {
       "name": "codex",
+      "provider": "codex",
       "provider_type": "OpenAIResponses",
       "base_url": "https://chatgpt.com/backend-api/codex",
       "auth": {
@@ -21,6 +68,7 @@
     },
     {
       "name": "commandcode",
+      "provider": "commandcode",
       "provider_type": "OpenAICompatible",
       "base_url": "https://api.commandcode.ai/provider/v1",
       "auth": {

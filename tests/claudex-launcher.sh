@@ -46,6 +46,24 @@ expected=$(printf 'run\ncommandcode\n--dangerously-skip-permissions\n--config=%s
 [[ $(cat "$TEST_TMP/core-args") == "$expected" ]] \
     || fail "--config=PATH caused a duplicate global config"
 
+python3 - "$ROOT/files/claudex" "$ROOT/files/claudex-profiles.json" <<'PY'
+import copy, importlib.machinery, importlib.util, json, sys
+launcher, registry_path = sys.argv[1:]
+loader = importlib.machinery.SourceFileLoader("claudex_provider_validation", launcher)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+with open(registry_path) as handle:
+    malformed = copy.deepcopy(json.load(handle))
+del malformed["providers"]["grimoire"]["auth"]["key"]
+try:
+    module.validate_registry(malformed)
+except module.UserError:
+    pass
+else:
+    raise SystemExit("malformed shared provider descriptor passed validation")
+PY
+
 # Provision through local bare repositories. The fake setup captures the exact
 # commit-pinned source URL; the token must occur only in the local auth store.
 git init --bare -q --initial-branch=main "$TEST_TMP/remote.git"

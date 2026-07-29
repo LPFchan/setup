@@ -59,7 +59,6 @@ the interactive picker:
 | `service-ctl` | `~/.local/bin/service-ctl` | `bin/service-ctl` |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | `files/gpu-fancontrol` |
 | `monitoring` | `~/.local/bin/monitoring` | `files/monitoring` |
-| `refresh-models` | `~/.local/bin/refresh-models` | `files/refresh-models` |
 | `backup` | `~/.local/bin/backup` | `bin/backup` |
 | `system-updates` | `~/.local/bin/system-updates` | `bin/system-updates` |
 
@@ -76,15 +75,19 @@ does not catch up after 07:00. Enabling installs a root-owned executable copy at
 copy. The module disables only competing native automatic-install timers and
 restores their prior enabled/active states on disable.
 
-`refresh-models` keeps an explicit `enabled` status for each managed provider
-in `~/.config/opencode/refresh-models.json`. Existing providers are enabled on
-migration only when they already have a stored API key, and entering a key with
-`refresh-models auth` enables that provider. `refresh-models provider enable
-<provider>` and `refresh-models provider disable <provider>` toggle one provider
-without adding or deleting its key; disabled managed providers are mirrored
-into OpenCode's `disabled_providers` list and are skipped by manual and
-scheduled refreshes. Initial service setup offers each unkeyed provider once;
-leaving its prompt blank keeps it disabled.
+`refresh-models` reads OpenAI-compatible providers from the shared
+`~/.config/claudex/managed-profiles.json` registry. Both `claudex` and
+`refresh-models` independently install and refresh that snapshot, so either
+module works alone and the registry remains while either consumer is installed.
+Machine-local enable/disable overrides stay in
+`~/.config/opencode/refresh-models.json`. Entering a key with
+`refresh-models auth` enables that provider; `refresh-models provider enable
+<provider>` and `refresh-models provider disable <provider>` toggle it without
+adding or deleting its key. `refresh-models provider add` provides the same
+endpoint discovery, model mapping, redacted publish, and provisioning flow as
+Claudex's **Add profile…** action. Disabled providers are mirrored into
+OpenCode's `disabled_providers` list and skipped by manual and scheduled
+refreshes.
 
 The `resume` picker reads Claude Code, Codex, OpenCode, Antigravity CLI,
 ForgeCode, Hermes, and Grok Build session stores, then forwards the selected
@@ -107,6 +110,7 @@ Hermes entries come from top-level interactive CLI sessions in
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (three-column span-aware picker; setup/resume/neither are full-width rows; repairs and reprobes the managed picker, with stock `fzf` fallback only here) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
 | `claudex` | `~/.local/bin/claudex` profile launcher + `~/.local/libexec/claudex-core` (StringKe/claudex, pinned to the LPFchan fork) + managed profiles in `~/.config/claudex/config.toml` | — | `files/claudex.sh` |
+| `refresh-models` | `~/.local/bin/refresh-models` + the shared provider registry in `~/.config/claudex/managed-profiles.json` | — | `files/refresh-models.sh` |
 | `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/mouse copying that exits at the live bottom and remains in scrolled history/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and home-started new tabs/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive TTY autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
 
 Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer. Payloads run in a subshell (they inherit `bin/setup`'s and `lib/script-helpers.sh`'s functions, but nothing they define or set persists in the setup process — a leaked `install()` would shadow coreutils `install` for later file-module writes), so all durable module state must go through files such as `script-state.tsv`.

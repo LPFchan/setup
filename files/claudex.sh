@@ -16,6 +16,7 @@ CORE="${CLAUDEX_CORE:-$HOME/.local/libexec/claudex-core}"
 GLOBAL_CONFIG="${CLAUDEX_CONFIG:-$HOME/.config/claudex/config.toml}"
 REGISTRY="${CLAUDEX_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
 AUTH_JSON="${CLAUDEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
+REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
 FORK_REPO="LPFchan/claudex"
 FORK_TAG="v0.2.4-fork.2"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
@@ -205,7 +206,7 @@ status() {
         (( drift == 1 )) || _profiles_current || drift=1
     fi
     rm -rf "$staged"
-    if (( drift == 1 )) || [[ "$recorded" != "$desired" ]]; then
+    if (( drift == 1 )); then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' \
             "$MODULE" "outdated" "${recorded:0:7}" "${desired:0:7}" "$BIN"
         record_script_state "$MODULE" "profile" "${recorded:-none}" "$desired"
@@ -221,7 +222,10 @@ uninstall() {
         python3 "$BIN" __remove "$REGISTRY" "$GLOBAL_CONFIG" \
             || echo "claudex: could not remove managed profiles from $GLOBAL_CONFIG" >&2
     fi
-    rm -f "$BIN" "$CORE" "$REGISTRY"
+    rm -f "$BIN" "$CORE"
+    if [[ ! -x "$REFRESH_MODELS_BIN" ]]; then
+        rm -f "$REGISTRY"
+    fi
     remove_script_state "$MODULE"
-    echo "claudex: uninstalled managed launcher, core, registry, and profiles"
+    echo "claudex: uninstalled managed launcher, core, and profiles"
 }
