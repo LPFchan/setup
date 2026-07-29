@@ -256,6 +256,40 @@ expected_legacy_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claude
 [[ $(cat "$TEST_TMP/claudex-args") == "$expected_legacy_args" ]] \
     || { echo "FAIL: resume dropped legacy clxcc compatibility" >&2; exit 1; }
 
+# OpenCodex-routed Claude sessions have no Claudex model marker. Its launcher
+# records the selected profile in a separate sidecar so resume can route the
+# transcript back through OpenCodex without changing Claudex compatibility.
+ocxid="aaaaaaaa-bbbb-cccc-dddd-111111111111"
+ocxcwd="$HOME/opencodex-proj"
+mkdir -p "$ocxcwd" "$HOME/.claude/projects/-home-opencodex-proj" "$HOME/.config/opencodex"
+ocxsession="$HOME/.claude/projects/-home-opencodex-proj/$ocxid.jsonl"
+{
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"OpenCodex session"}}\n' "$ocxcwd"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"routed-model","content":[{"type":"text","text":"ok"}]}}\n'
+} > "$ocxsession"
+printf '%s\t%s\n' "$ocxid" "commandcode" > "$HOME/.config/opencodex/sessions.tsv"
+touch -t 202407061200.00 "$ocxsession"
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+printf '%s\n' "$selection" | grep 'ocx|' | head -1
+EOF
+cat > "$FAKE_BIN/opencodex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/opencodex-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/opencodex"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencodex-stderr"
+
+expected_opencodex_args=$(printf '%s\nrun\ncommandcode\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxid")
+[[ $(cat "$TEST_TMP/opencodex-args") == "$expected_opencodex_args" ]] \
+    || { echo "FAIL: resume did not dispatch the mapped OpenCodex session" >&2; exit 1; }
+[[ $(cat "$TEST_TMP/tmux-args") == $'rename-window\n--\nopencodex' ]] \
+    || { echo "FAIL: resume did not set the OpenCodex tmux title" >&2; exit 1; }
+
 # Hermes persists sessions in ~/.hermes/state.db. Only top-level interactive
 # CLI sessions belong in the human resume picker; tool and child sessions must
 # stay out of it.

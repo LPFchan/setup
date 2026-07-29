@@ -1,0 +1,722 @@
+#!/usr/bin/env python3
+"""Profile-selecting launcher and registry helper for OpenCodex."""
+
+from __future__ import annotations
+
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+
+HOME = Path.home()
+OCX = Path(os.environ.get("OPENCODEX_BIN", HOME / ".local/bin/ocx"))
+OPENCODEX_CONFIG = Path(
+    os.environ.get("OPENCODEX_CONFIG", HOME / ".opencodex/config.json")
+)
+OPENCODEX_MANAGED = Path(
+    os.environ.get(
+        "OPENCODEX_MANAGED", HOME / ".opencodex/setup-managed-providers.json"
+    )
+)
+REGISTRY = Path(
+    os.environ.get(
+        "OPENCODEX_REGISTRY", HOME / ".config/opencodex/managed-profiles.json"
+    )
+)
+AUTH_JSON = Path(
+    os.environ.get(
+        "OPENCODEX_AUTH_JSON",
+        os.environ.get("CLAUDEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json"),
+    )
+)
+SESSIONS = Path(
+    os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
+)
+SETUP_REPO = os.environ.get("OPENCODEX_SETUP_REPO", "git@github.com:LPFchan/setup.git")
+SETUP_BIN = os.environ.get("OPENCODEX_SETUP_BIN", "setup")
+RAW_REPO = os.environ.get(
+    "OPENCODEX_RAW_REPO", "https://raw.githubusercontent.com/LPFchan/setup"
+)
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+PROVIDER_TYPES = {"OpenAICompatible", "OpenAIResponses"}
+STRIP_PARAMS = {"Auto", "None", "All"}
+PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "refresh-models")
+
+
+class UserError(RuntimeError):
+    pass
+
+
+def valid_base_url(value: str) -> bool:
+    parsed = urllib.parse.urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and not any(character.isspace() for character in value)
+    )
+
+
+def _string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
+        raise UserError(f"invalid {field}")
+    return value
+
+
+def validate_registry(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise UserError("registry version must be 1")
+    profiles = data.get("profiles")
+    if not isinstance(profiles, list) or not profiles:
+        raise UserError("registry profiles must be a non-empty list")
+    providers = data.get("providers", {})
+    if providers and not isinstance(providers, dict):
+        raise UserError("registry providers must be an object")
+    for provider_name, provider in providers.items():
+        if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
+            raise UserError(f"invalid provider: {provider_name}")
+        if provider.get("provider_type") not in PROVIDER_TYPES:
+            raise UserError(f"invalid provider_type for {provider_name}")
+        base_url = _string(provider.get("base_url"), f"base_url for {provider_name}")
+        if not valid_base_url(base_url):
+            raise UserError(f"invalid base_url for {provider_name}")
+        auth = provider.get("auth")
+        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key"}:
+            raise UserError(f"invalid auth descriptor for {provider_name}")
+        if provider["provider_type"] == "OpenAICompatible":
+            if auth.get("type") != "api-key" or auth.get("store") != "opencode":
+                raise UserError(f"invalid API-key auth descriptor for {provider_name}")
+            if not NAME_RE.fullmatch(_string(auth.get("key"), f"auth key for {provider_name}")):
+                raise UserError(f"invalid auth key for {provider_name}")
+            if not isinstance(provider.get("enabled"), bool):
+                raise UserError(f"enabled for {provider_name} must be a boolean")
+            if provider.get("api_format") not in {"grimoire", "crofai", "openai"}:
+                raise UserError(f"invalid api_format for {provider_name}")
+            _string(provider.get("npm"), f"npm package for {provider_name}")
+        elif auth.get("type") != "oauth":
+            raise UserError(f"invalid OAuth descriptor for {provider_name}")
+        else:
+            _string(auth.get("provider"), f"oauth provider for {provider_name}")
+    seen: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise UserError("each profile must be an object")
+        name = _string(profile.get("name"), "profile name")
+        if not NAME_RE.fullmatch(name) or name in seen:
+            raise UserError(f"invalid or duplicate profile name: {name}")
+        seen.add(name)
+        provider_name = profile.get("provider")
+        if provider_name is not None and providers and provider_name not in providers:
+            raise UserError(f"unknown provider for {name}: {provider_name}")
+        if provider_name in providers:
+            provider = providers[provider_name]
+            for field in ("provider_type", "base_url", "auth"):
+                if profile.get(field) != provider.get(field):
+                    raise UserError(f"{field} for {name} disagrees with provider {provider_name}")
+        if profile.get("provider_type") not in PROVIDER_TYPES:
+            raise UserError(f"invalid provider_type for {name}")
+        base_url = _string(profile.get("base_url"), f"base_url for {name}")
+        if not valid_base_url(base_url):
+            raise UserError(f"invalid base_url for {name}")
+        _string(profile.get("default_model"), f"default_model for {name}")
+        if not isinstance(profile.get("priority"), int):
+            raise UserError(f"priority for {name} must be an integer")
+        if not isinstance(profile.get("enabled"), bool):
+            raise UserError(f"enabled for {name} must be a boolean")
+        if profile.get("strip_params") not in STRIP_PARAMS:
+            raise UserError(f"invalid strip_params for {name}")
+        models = profile.get("models")
+        if not isinstance(models, dict) or set(models) != {"haiku", "sonnet", "opus"}:
+            raise UserError(f"models for {name} must map haiku, sonnet, and opus")
+        for alias in ("haiku", "sonnet", "opus"):
+            _string(models[alias], f"{alias} model for {name}")
+        auth = profile.get("auth")
+        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key"}:
+            raise UserError(f"invalid auth descriptor for {name}")
+        if auth["type"] == "oauth":
+            _string(auth.get("provider"), f"oauth provider for {name}")
+        else:
+            if auth.get("store") != "opencode":
+                raise UserError(f"unsupported auth store for {name}")
+            key = _string(auth.get("key"), f"auth key for {name}")
+            if not NAME_RE.fullmatch(key):
+                raise UserError(f"invalid auth key for {name}")
+    return data
+
+
+def load_registry(path: Path = REGISTRY) -> dict[str, Any]:
+    try:
+        return validate_registry(json.loads(path.read_text()))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read profile registry {path}: {exc}") from exc
+
+
+def load_auth() -> dict[str, Any]:
+    if not AUTH_JSON.exists():
+        return {}
+    try:
+        data = json.loads(AUTH_JSON.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_auth_strict() -> dict[str, Any]:
+    if not AUTH_JSON.exists():
+        return {}
+    try:
+        data = json.loads(AUTH_JSON.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read local auth store {AUTH_JSON}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise UserError(f"local auth store {AUTH_JSON} must contain a JSON object")
+    return data
+
+
+def write_json_atomic(path: Path, data: dict[str, Any], mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def load_json_object(path: Path, label: str) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read {label} {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise UserError(f"{label} {path} must contain a JSON object")
+    return data
+
+
+def managed_provider_names() -> set[str]:
+    if not OPENCODEX_MANAGED.exists():
+        return set()
+    data = load_json_object(OPENCODEX_MANAGED, "managed provider record")
+    names = data.get("providers", [])
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise UserError(f"invalid managed provider record {OPENCODEX_MANAGED}")
+    return set(names)
+
+
+def opencodex_seed() -> dict[str, Any]:
+    return {
+        "port": 10100,
+        "openaiProviderTierVersion": 2,
+        "providers": {
+            "openai": {
+                "adapter": "openai-responses",
+                "baseUrl": "https://chatgpt.com/backend-api/codex",
+                "authMode": "forward",
+                "codexAccountMode": "pool",
+            }
+        },
+        "defaultProvider": "openai",
+        "websockets": False,
+        "codexAutoStart": True,
+        "codexShimAutoRestore": True,
+    }
+
+
+def provider_profiles(registry: dict[str, Any], provider_name: str) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            profile
+            for profile in registry["profiles"]
+            if profile.get("provider") == provider_name
+        ],
+        key=lambda profile: profile["priority"],
+        reverse=True,
+    )
+
+
+def desired_opencodex_config(
+    registry: dict[str, Any], original: dict[str, Any], auth_data: dict[str, Any]
+) -> tuple[dict[str, Any], set[str]]:
+    config = json.loads(json.dumps(original or opencodex_seed()))
+    providers = config.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise UserError("OpenCodex providers must be an object")
+    providers.setdefault("openai", opencodex_seed()["providers"]["openai"])
+    config.setdefault("defaultProvider", "openai")
+
+    managed = {
+        name
+        for name, provider in registry.get("providers", {}).items()
+        if provider.get("provider_type") == "OpenAICompatible"
+    }
+    for stale in managed_provider_names() - managed:
+        providers.pop(stale, None)
+
+    for name in sorted(managed):
+        descriptor = registry["providers"][name]
+        profiles = provider_profiles(registry, name)
+        models = sorted(
+            {
+                model
+                for profile in profiles
+                for model in [profile["default_model"], *profile["models"].values()]
+            }
+        )
+        auth_name = descriptor["auth"]["key"]
+        entry = auth_data.get(auth_name, {})
+        key = entry.get("key", "") if isinstance(entry, dict) else ""
+        current = providers.get(name, {})
+        provider = dict(current) if isinstance(current, dict) else {}
+        provider.update(
+            {
+                "adapter": "openai-chat",
+                "baseUrl": descriptor["base_url"],
+                "authMode": "key",
+                "apiKey": key,
+                "disabled": descriptor.get("enabled") is not True or not bool(key),
+                "liveModels": True,
+            }
+        )
+        if profiles:
+            provider["defaultModel"] = profiles[0]["default_model"]
+            provider["models"] = models
+            provider["selectedModels"] = models
+        else:
+            provider.pop("defaultModel", None)
+            provider.pop("models", None)
+            provider.pop("selectedModels", None)
+        providers[name] = provider
+
+    config["syncResumeHistory"] = sys.platform == "darwin"
+    return config, managed
+
+
+def apply_opencodex_registry(registry_path: Path) -> None:
+    registry = load_registry(registry_path)
+    original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
+    desired, managed = desired_opencodex_config(registry, original, load_auth())
+    if desired != original:
+        write_json_atomic(OPENCODEX_CONFIG, desired)
+    record = {"version": 1, "providers": sorted(managed)}
+    if not OPENCODEX_MANAGED.exists() or load_json_object(
+        OPENCODEX_MANAGED, "managed provider record"
+    ) != record:
+        write_json_atomic(OPENCODEX_MANAGED, record, 0o600)
+
+
+def opencodex_config_status(registry_path: Path) -> bool:
+    if not OPENCODEX_CONFIG.exists() or not OPENCODEX_MANAGED.exists():
+        return False
+    registry = load_registry(registry_path)
+    original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
+    desired, managed = desired_opencodex_config(registry, original, load_auth())
+    for config in (original, desired):
+        providers = config.get("providers", {})
+        for name in managed:
+            if isinstance(providers.get(name), dict):
+                providers[name]["apiKey"] = ""
+    record = load_json_object(OPENCODEX_MANAGED, "managed provider record")
+    return original == desired and record == {"version": 1, "providers": sorted(managed)}
+
+
+def remove_opencodex_managed() -> None:
+    if not OPENCODEX_CONFIG.exists():
+        return
+    config = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
+    providers = config.get("providers", {})
+    if isinstance(providers, dict):
+        for name in managed_provider_names():
+            providers.pop(name, None)
+    config.pop("syncResumeHistory", None)
+    write_json_atomic(OPENCODEX_CONFIG, config)
+    try:
+        OPENCODEX_MANAGED.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | None:
+    if shutil.which("fzf") and sys.stdin.isatty():
+        proc = subprocess.run(
+            ["fzf", "--prompt", f"{prompt} > ", "--height=50%", "--reverse"],
+            input="\n".join(options) + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        return proc.stdout.rstrip("\n") if proc.returncode == 0 else None
+    if not sys.stdin.isatty():
+        raise UserError("interactive profile selection requires a TTY")
+    print(prompt)
+    for index, option in enumerate(options, 1):
+        print(f"  {index}. {option}")
+    if allow_cancel:
+        print("  0. Cancel")
+    while True:
+        raw = input("Select: ").strip()
+        if allow_cancel and raw == "0":
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1]
+        print("Enter a listed number.", file=sys.stderr)
+
+
+def discover_models(base_url: str, token: str) -> list[str]:
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/models",
+        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise UserError(f"model discovery failed: {exc}") from exc
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    models = sorted(
+        {row.get("id") for row in rows or [] if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]}
+    )
+    if not models:
+        raise UserError("the endpoint returned no model IDs")
+    return models
+
+
+def run_git(args: list[str], cwd: Path | None = None, capture: bool = False) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode:
+        detail = proc.stderr.strip() if proc.stderr else "git command failed"
+        raise UserError(detail)
+    return proc.stdout.rstrip("\r\n") if capture and proc.stdout else ""
+
+
+def store_token(name: str, token: str) -> None:
+    data = load_auth_strict()
+    if name in data:
+        raise UserError(f"the local auth store already contains an entry named {name}")
+    data[name] = {"type": "api", "key": token}
+    AUTH_JSON.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".auth.", dir=AUTH_JSON.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_name, AUTH_JSON)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def provision_profile(profile: dict[str, Any], token: str) -> None:
+    auth_data = load_auth_strict()
+    if profile["name"] in auth_data:
+        raise UserError(
+            f"the local auth store already contains an entry named {profile['name']}"
+        )
+    with tempfile.TemporaryDirectory(prefix="opencodex-profile-") as temp:
+        clone = Path(temp) / "setup"
+        run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
+        registry_path = clone / "files/claudex-profiles.json"
+        data = load_registry(registry_path)
+        if any(item["name"] == profile["name"] for item in data["profiles"]):
+            raise UserError(f"profile {profile['name']} already exists in the setup repository")
+        if profile["name"] in data.get("providers", {}):
+            raise UserError(f"provider {profile['name']} already exists in the setup repository")
+        data.setdefault("providers", {})[profile["name"]] = {
+            "provider_type": profile["provider_type"],
+            "base_url": profile["base_url"],
+            "api_format": "openai",
+            "npm": "@ai-sdk/openai-compatible",
+            "auth": profile["auth"],
+            "enabled": True,
+        }
+        data["profiles"].append(profile)
+        validate_registry(data)
+        registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        changed = run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
+        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
+            raise UserError("temporary clone contains changes outside the profile registry")
+        run_git(["diff", "--check"], cwd=clone)
+        run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
+        run_git(
+            [
+                "-c", "user.name=opencodex launcher",
+                "-c", "user.email=opencodex@localhost",
+                "commit", "--quiet", "-m", f"Add opencodex profile {profile['name']}",
+            ],
+            cwd=clone,
+        )
+        run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
+        commit = run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
+    store_token(profile["name"], token)
+    env = os.environ.copy()
+    env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
+    proc = subprocess.run([SETUP_BIN, "update", *PROVIDER_CONSUMER_MODULES], env=env)
+    if proc.returncode:
+        raise UserError(
+            "the profile was pushed and its token was stored, but setup provisioning failed; run setup update claudex opencodex refresh-models"
+        )
+
+
+def add_profile(registry: dict[str, Any]) -> None:
+    existing = {profile["name"] for profile in registry["profiles"]}
+    existing.update(registry.get("providers", {}))
+    name = input("Profile name: ").strip()
+    if not NAME_RE.fullmatch(name) or name in existing:
+        raise UserError("profile names must be unique lowercase letters, digits, or hyphens")
+    if name in load_auth_strict():
+        raise UserError("the local auth store already uses that name; choose another profile name")
+    base_url = input("OpenAI-compatible API base URL: ").strip().rstrip("/")
+    if not valid_base_url(base_url):
+        raise UserError("the API base URL must be an HTTP(S) URL")
+    token = getpass.getpass("API token: ")
+    if not token:
+        raise UserError("the API token cannot be empty")
+    models = discover_models(base_url, token)
+    mappings: dict[str, str] = {}
+    for alias in ("opus", "sonnet", "haiku"):
+        selected = choose(f"Map {alias}", models)
+        if selected is None:
+            return
+        mappings[alias] = selected
+    profile = {
+        "name": name,
+        "provider": name,
+        "provider_type": "OpenAICompatible",
+        "base_url": base_url,
+        "auth": {"type": "api-key", "store": "opencode", "key": name},
+        "default_model": mappings["opus"],
+        "priority": max(0, 80 - len(existing)),
+        "enabled": True,
+        "strip_params": "Auto",
+        "models": {"haiku": mappings["haiku"], "sonnet": mappings["sonnet"], "opus": mappings["opus"]},
+    }
+    validate_registry({"version": 1, "profiles": [profile]})
+    print("\nProfile to publish:")
+    print(f"  name: {name}")
+    print(f"  endpoint: {base_url}")
+    for alias in ("opus", "sonnet", "haiku"):
+        print(f"  {alias}: {mappings[alias]}")
+    print("  token: [stored locally]")
+    if input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
+        return
+    provision_profile(profile, token)
+    print(f"opencodex: profile {name} added and provisioned")
+
+
+def record_session_id(profile: str, sid: str) -> None:
+    SESSIONS.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(SESSIONS, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, f"{sid}\t{profile}\n".encode())
+    finally:
+        os.close(fd)
+
+
+def session_id_from_args(args: list[str]) -> str | None:
+    for index, argument in enumerate(args):
+        candidate = ""
+        if argument in {"-r", "--resume", "--session-id"}:
+            if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                candidate = args[index + 1]
+        for prefix in ("--resume=", "--session-id="):
+            if argument.startswith(prefix) and argument.removeprefix(prefix):
+                candidate = argument.removeprefix(prefix)
+        if candidate:
+            try:
+                uuid.UUID(candidate)
+            except ValueError:
+                continue
+            return candidate
+    return None
+
+
+def profile_by_name(registry: dict[str, Any], name: str) -> dict[str, Any]:
+    for profile in registry["profiles"]:
+        if profile["name"] == name:
+            return profile
+    raise UserError(f"unknown managed profile: {name}")
+
+
+def routed_model(profile: dict[str, Any], model: str) -> str:
+    auth = profile["auth"]
+    if profile["provider_type"] == "OpenAIResponses" and auth.get("provider") == "chatgpt":
+        return model
+    return f"{profile['provider']}/{model}"
+
+
+def ensure_opencodex() -> None:
+    if not OCX.is_file() or not os.access(OCX, os.X_OK):
+        raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
+    proc = subprocess.run([str(OCX), "ensure"])
+    if proc.returncode:
+        raise UserError("OpenCodex could not be started")
+
+
+def launch(profile: dict[str, Any], harness: str, args: list[str]) -> int:
+    ensure_opencodex()
+    model = routed_model(profile, profile["default_model"])
+    if harness == "codex":
+        return subprocess.run(["codex", "-m", model, *args]).returncode
+    if harness != "claude":
+        raise UserError(f"unknown harness: {harness}")
+    env = os.environ.copy()
+    env["ANTHROPIC_MODEL"] = model
+    for alias, env_name in {
+        "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    }.items():
+        env[env_name] = routed_model(profile, profile["models"][alias])
+    command = [str(OCX), "claude"]
+    if "--dangerously-skip-permissions" not in args:
+        command.append("--dangerously-skip-permissions")
+    sid = session_id_from_args(args)
+    has_implicit_selector = any(
+        argument in {"--continue", "-c", "--resume", "-r"}
+        or argument.startswith("--resume=")
+        for argument in args
+    )
+    if sid is None and not has_implicit_selector:
+        sid = str(uuid.uuid4())
+        command.extend(["--session-id", sid])
+    command.extend(args)
+    result = subprocess.run(command, env=env)
+    if sid is not None:
+        record_session_id(profile["name"], sid)
+    return result.returncode
+
+
+def choose_launch(registry: dict[str, Any]) -> tuple[str, str] | None:
+    profiles = [profile["name"] for profile in registry["profiles"] if profile["enabled"]]
+    profiles.append("Add profile…")
+    harnesses = ["claude", "codex"]
+    picker = HOME / ".local/bin/fzf-multicolumn"
+    if not picker.is_file() or not os.access(picker, os.X_OK):
+        profile = choose("opencodex profile", profiles)
+        if profile is None:
+            return None
+        if profile == "Add profile…":
+            return profile, "claude"
+        harness = choose("harness", harnesses)
+        return None if harness is None else (profile, harness)
+
+    delimiter = "\x1f"
+    rows = max(len(profiles), len(harnesses))
+    options: list[str] = []
+    for index in range(rows):
+        if index < len(profiles):
+            options.append(f"provider{delimiter}{profiles[index]}{delimiter}{profiles[index]}")
+        else:
+            options.append(f"blank{delimiter} {delimiter} ")
+        if index < len(harnesses):
+            options.append(f"harness{delimiter}{harnesses[index]}{delimiter}{harnesses[index]}")
+        else:
+            options.append(f"blank{delimiter} {delimiter} ")
+    proc = subprocess.run(
+        [
+            str(picker),
+            "--grid=2",
+            "--grid-gap=6",
+            f"--delimiter={delimiter}",
+            "--with-nth=3",
+            "--multi=2",
+            "--height=50%",
+            "--reverse",
+            "--border",
+            "--header=TAB: select one provider and one harness · ENTER: launch",
+            "--prompt=opencodex > ",
+        ],
+        input="\n".join(options) + "\n",
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        return None
+    selections = [line.split(delimiter, 2) for line in proc.stdout.splitlines()]
+    selected_profiles = [row[1] for row in selections if len(row) == 3 and row[0] == "provider"]
+    selected_harnesses = [row[1] for row in selections if len(row) == 3 and row[0] == "harness"]
+    if len(selected_profiles) > 1 or len(selected_harnesses) > 1:
+        raise UserError("select one provider and one harness")
+    profile = selected_profiles[0] if selected_profiles else choose("opencodex profile", profiles)
+    if profile == "Add profile…":
+        return profile, "claude"
+    harness = selected_harnesses[0] if selected_harnesses else choose("harness", harnesses)
+    return None if profile is None or harness is None else (profile, harness)
+
+
+def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1].startswith("__"):
+        command = sys.argv[1]
+        if command == "__validate":
+            load_registry(Path(sys.argv[2]))
+        elif command == "__apply":
+            apply_opencodex_registry(Path(sys.argv[2]))
+        elif command == "__remove":
+            remove_opencodex_managed()
+        elif command == "__status":
+            return 0 if opencodex_config_status(Path(sys.argv[2])) else 1
+        elif command == "__names":
+            print("\n".join(item["name"] for item in load_registry(Path(sys.argv[2]))["profiles"]))
+        else:
+            raise UserError("unknown internal command")
+        return 0
+    registry = load_registry()
+    if len(sys.argv) >= 2 and sys.argv[1] == "run":
+        if len(sys.argv) < 3:
+            raise UserError("usage: opencodex run <profile> [claude|codex] [arguments]")
+        profile = profile_by_name(registry, sys.argv[2])
+        harness = "claude"
+        args = sys.argv[3:]
+        if args and args[0] in {"claude", "codex"}:
+            harness, args = args[0], args[1:]
+        return launch(profile, harness, args)
+    if len(sys.argv) > 1:
+        if not OCX.is_file() or not os.access(OCX, os.X_OK):
+            raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
+        return subprocess.run([str(OCX), *sys.argv[1:]]).returncode
+    selection = choose_launch(registry)
+    if selection is None:
+        return 0
+    selected, harness = selection
+    if selected == "Add profile…":
+        add_profile(registry)
+        return 0
+    return launch(profile_by_name(registry, selected), harness, [])
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (UserError, KeyboardInterrupt) as exc:
+        if str(exc):
+            print(f"opencodex: {exc}", file=sys.stderr)
+        raise SystemExit(1)

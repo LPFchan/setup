@@ -111,6 +111,13 @@ _claudex_profile_for() {
     echo "${profile:-codex}"
 }
 
+_opencodex_profile_for() {
+    local sid="$1"
+    local mapping="$HOME/.config/opencodex/sessions.tsv"
+    [[ -f "$mapping" ]] || return
+    grep "^${sid}	" "$mapping" 2>/dev/null | tail -1 | cut -f2
+}
+
 collect_sessions() {
     if [[ -d "$CLAUDE_DIR" ]]; then
         find "$CLAUDE_DIR" -maxdepth 2 -type f -name '*.jsonl' "${STAT_EXEC[@]}" 2>/dev/null \
@@ -132,6 +139,8 @@ collect_sessions() {
             tag=cc
             if grep -m1 -q '"model":"claudex-proxy"' "$f" 2>/dev/null; then
                 tag=clx
+            elif [[ -n "$(_opencodex_profile_for "$id")" ]]; then
+                tag=ocx
             fi
             msg=$(_cc_first_msg "$f")
             echo "$mtime|$tag|$id|$cwd|${msg:-}"
@@ -399,6 +408,7 @@ format_for_fzf() {
                 label="claudex"
                 [[ "$clx_profile" != "codex" ]] && label="claudex:$clx_profile"
                 ;;
+            ocx) label="opencodex:$(_opencodex_profile_for "$id")" ;;
             clxcc) label="claudex-cc" ;;
             cx) label="codex" ;;
             oc) label="opencode" ;;
@@ -459,6 +469,7 @@ case "$tool" in
     cc) harness=claude; resume_args=(--dangerously-skip-permissions --resume "$id") ;;
     clx) harness=claudex; resume_args=(run "$(_claudex_profile_for "$id")" --resume "$id") ;;
     clxcc) harness=claudex; resume_args=(run commandcode --config "$HOME/.config/claudex/config.toml" --dangerously-skip-permissions --resume "$id") ;;
+    ocx) harness=opencodex; resume_args=(run "$(_opencodex_profile_for "$id")" claude --resume "$id") ;;
     cx) harness=codex; resume_args=(resume "$id") ;;
     oc) harness=opencode; resume_args=(--session "$id") ;;
     ag) harness=agy; resume_args=(--conversation "$id") ;;

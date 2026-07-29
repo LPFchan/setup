@@ -25,6 +25,9 @@ REGISTRY_PATH = os.environ.get(
     os.path.expanduser("~/.config/claudex/managed-profiles.json"),
 )
 CLAUDEX_BIN = os.environ.get("CLAUDEX_BIN", os.path.expanduser("~/.local/bin/claudex"))
+OPENCODEX_BIN = os.environ.get(
+    "OPENCODEX_LAUNCHER", os.path.expanduser("~/.local/bin/opencodex")
+)
 SETUP_REPO = os.environ.get("PROVIDER_SETUP_REPO", "git@github.com:LPFchan/setup.git")
 SETUP_BIN = os.environ.get("PROVIDER_SETUP_BIN", "setup")
 RAW_REPO = os.environ.get(
@@ -950,6 +953,15 @@ def _store_token(name, token):
             pass
 
 
+def _provider_consumer_modules():
+    modules = ["refresh-models"]
+    if os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK):
+        modules.insert(0, "opencodex")
+    if os.path.isfile(CLAUDEX_BIN) and os.access(CLAUDEX_BIN, os.X_OK):
+        modules.insert(0, "claudex")
+    return modules
+
+
 def _provision_provider(profile, token):
     auth_data = _load_auth_strict()
     if profile["name"] in auth_data:
@@ -994,9 +1006,7 @@ def _provision_provider(profile, token):
     _store_token(profile["name"], token)
     env = os.environ.copy()
     env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
-    modules = ["refresh-models"]
-    if os.path.isfile(CLAUDEX_BIN) and os.access(CLAUDEX_BIN, os.X_OK):
-        modules.insert(0, "claudex")
+    modules = _provider_consumer_modules()
     proc = subprocess.run([SETUP_BIN, "update", *modules], env=env)
     if proc.returncode:
         raise ValueError(

@@ -259,7 +259,7 @@ ai() {
     # Forkless availability filter: ${+commands[...]} is a hash lookup,
     # so missing tools drop out of the menu without any external probe.
     local tool
-    for tool in claude codex claudex opencode agy hermes grok; do
+    for tool in claude codex claudex opencodex opencode agy hermes grok; do
         (( ${+commands[$tool]} )) && tools+=("$tool")
     done
     tools+=(setup resume neither)
@@ -416,6 +416,7 @@ ai() {
             fi
             ;;
         claudex) claudex ;;
+        opencodex) opencodex ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
         agy) agy --dangerously-skip-permissions ;;
         hermes) hermes ;;

@@ -143,6 +143,30 @@ PATH="$TEST_TMP/bin:/usr/bin:/bin" "$zsh_bin" -f -c 'source "$1"; ai' \
 grep -q '^claudex-dispatched:0$' "$TEST_TMP/launches" \
     || fail "ai-menu did not dispatch the claudex launcher without profile arguments"
 
+# OpenCodex is an independent launcher entry alongside Claudex.
+cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
+#!/bin/sh
+case "$1" in
+    --help) echo '--grid-span-prefix=STR'; exit ;;
+esac
+input=$(cat)
+printf '%s\n' "$input" > "$AI_MENU_GRID_INPUT"
+printf 'tool\037opencodex\037opencodex\n'
+EOF
+cat > "$TEST_TMP/bin/opencodex" <<'EOF'
+#!/bin/sh
+printf 'opencodex-dispatched:%s\n' "$#" >> "$AI_MENU_TEST_LOG"
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/opencodex"
+rm -f "$TEST_TMP/launches"
+AI_MENU_TEST_LOG="$TEST_TMP/launches" AI_MENU_GRID_INPUT="$TEST_TMP/opencodex-grid" \
+PATH="$TEST_TMP/bin:/usr/bin:/bin" "$zsh_bin" -f -c 'source "$1"; ai' \
+    zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
+[[ $(grep -c $'tool\037opencodex\037opencodex' "$TEST_TMP/opencodex-grid") -eq 1 ]] \
+    || fail "ai-menu did not expose exactly one opencodex entry"
+grep -q '^opencodex-dispatched:0$' "$TEST_TMP/launches" \
+    || fail "ai-menu did not dispatch the opencodex launcher without profile arguments"
+
 # A pre-capable binary triggers repair on every invocation (no permanent failed
 # marker); if repair does not fix it, ai-menu falls back to plain fzf.
 cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
