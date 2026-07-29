@@ -27,8 +27,30 @@ source "$ROOT/files/opencodex.sh"
 OPENCODEX_RELEASE_VERSION=""
 npm() { print '9.8.7'; }
 [[ "$(_resolve_release_version)" == "9.8.7" ]] || fail "npm latest version was not resolved"
+npm() { print 'undefined'; }
+if _resolve_release_version >/dev/null 2>&1; then
+    fail "empty npm latest metadata was accepted"
+fi
 unfunction npm
 OPENCODEX_RELEASE_VERSION="2.7.42"
+
+npm_args=""
+npm() {
+    npm_args="$*"
+    local prefix=""
+    while (( $# )); do
+        if [[ "$1" == --prefix ]]; then prefix="$2"; shift 2; else shift; fi
+    done
+    mkdir -p "$prefix/node_modules/.bin"
+    print '#!/bin/sh\necho opencodex 9.8.7' > "$prefix/node_modules/.bin/ocx"
+    chmod +x "$prefix/node_modules/.bin/ocx"
+}
+_ensure_runtime "9.8.7"
+[[ "$npm_args" == *"@bitkyc08/opencodex@9.8.7"* ]] || fail "resolved OpenCodex package was not installed"
+[[ "$(_installed_version)" == "9.8.7" ]] || fail "resolved OpenCodex runtime version is wrong"
+unfunction npm
+rm -f "$OPENCODEX_BIN"
+rm -rf "$OPENCODEX_ROOT"
 
 install_surfaces() {
     cp "$ROOT/files/opencodex" "$BIN"
@@ -59,6 +81,19 @@ _stage_assets "$staged"
 rm -rf "$staged"
 record_script_state "$MODULE" "profile" "$hash" "$hash"
 expect_status 0 current
+IFS=$'\t' read -r ref_type _ < <(script_state_for "$MODULE")
+[[ "$ref_type" == "release:2.7.42" ]] || fail "readable OpenCodex release was not recorded"
+
+OPENCODEX_RELEASE_VERSION="2.7.43"
+expect_status 1 outdated
+OPENCODEX_RELEASE_VERSION="2.7.42"
+expect_status 0 current
+
+OPENCODEX_RELEASE_VERSION=""
+npm() { return 1; }
+expect_status 0 unknown
+unfunction npm
+OPENCODEX_RELEASE_VERSION="2.7.42"
 
 touch "$HOME/.opencodex/service-stopped"
 expect_status 1 outdated

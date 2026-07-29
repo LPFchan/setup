@@ -26,8 +26,41 @@ source "$ROOT/files/claudex.sh"
 CLAUDEX_RELEASE_TAG=""
 curl() { print '{"tag_name":"v9.8.7-fork.6"}'; }
 [[ "$(_resolve_release_tag)" == "v9.8.7-fork.6" ]] || fail "latest GitHub tag was not resolved"
+curl() { print '{"assets":[]}'; }
+if _resolve_release_tag >/dev/null 2>&1; then
+    fail "malformed GitHub release metadata was accepted"
+fi
 unfunction curl
 CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
+
+TEST_RELEASE_DIR="$TEST_TMP/release"
+TEST_RELEASE_ARCHIVE="$TEST_TMP/claudex.tar.gz"
+mkdir -p "$TEST_RELEASE_DIR"
+print '#!/bin/sh\necho claudex 0.2.4-fork.5' > "$TEST_RELEASE_DIR/claudex"
+chmod +x "$TEST_RELEASE_DIR/claudex"
+tar czf "$TEST_RELEASE_ARCHIVE" -C "$TEST_RELEASE_DIR" claudex
+TEST_RELEASE_DIGEST=$(setup_sha256_string < "$TEST_RELEASE_ARCHIVE")
+TEST_RELEASE_ASSET="claudex-$CLAUDEX_RELEASE_TAG-$(_detect_target).tar.gz"
+curl() {
+    local destination=""
+    while (( $# )); do
+        if [[ "$1" == -o ]]; then destination="$2"; shift 2; else shift; fi
+    done
+    if [[ -n "$destination" ]]; then
+        cp "$TEST_RELEASE_ARCHIVE" "$destination"
+    else
+        print "{\"assets\":[{\"name\":\"$TEST_RELEASE_ASSET\",\"digest\":\"sha256:$TEST_RELEASE_DIGEST\"}]}"
+    fi
+}
+_install_fork_core "$CLAUDEX_RELEASE_TAG"
+[[ "$(_installed_version)" == "0.2.4-fork.5" ]] || fail "digest-verified release was not installed"
+core_digest=$(setup_sha256_string < "$CORE")
+TEST_RELEASE_DIGEST="$(printf '0%.0s' {1..64})"
+if _install_fork_core "$CLAUDEX_RELEASE_TAG" >/dev/null 2>&1; then
+    fail "release archive with a mismatched digest was installed"
+fi
+[[ "$(setup_sha256_string < "$CORE")" == "$core_digest" ]] || fail "digest failure replaced the installed core"
+unfunction curl
 
 install_surfaces() {
     cp "$ROOT/files/claudex" "$BIN"
@@ -57,6 +90,19 @@ _stage_assets "$staged"
 rm -rf "$staged"
 record_script_state "$MODULE" "profile" "$hash" "$hash"
 expect_status 0 current
+IFS=$'\t' read -r ref_type _ < <(script_state_for "$MODULE")
+[[ "$ref_type" == "release:v0.2.4-fork.5" ]] || fail "readable Claudex release was not recorded"
+
+CLAUDEX_RELEASE_TAG="v0.2.4-fork.6"
+expect_status 1 outdated
+CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
+expect_status 0 current
+
+CLAUDEX_RELEASE_TAG=""
+curl() { return 22; }
+expect_status 0 unknown
+unfunction curl
+CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
 
 print '# drift' >> "$BIN"
 expect_status 1 outdated

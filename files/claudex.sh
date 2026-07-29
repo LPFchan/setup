@@ -68,6 +68,33 @@ _resolve_release_tag() {
     printf '%s\n' "$tag"
 }
 
+_resolve_asset_digest() {
+    local tag="$1" asset_name="$2" encoded_tag response digest
+    encoded_tag=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$tag") \
+        || return 1
+    response=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+        "https://api.github.com/repos/$FORK_REPO/releases/tags/$encoded_tag") || {
+        echo "claudex: could not resolve release metadata for $tag" >&2
+        return 1
+    }
+    digest=$(CLAUDEX_ASSET_NAME="$asset_name" python3 -c '
+import json
+import os
+import sys
+
+release = json.load(sys.stdin)
+asset = next((item for item in release.get("assets", []) if item.get("name") == os.environ["CLAUDEX_ASSET_NAME"]), None)
+digest = asset.get("digest", "") if asset else ""
+if not digest.startswith("sha256:"):
+    raise SystemExit(1)
+print(digest.removeprefix("sha256:"))
+' <<< "$response") || {
+        echo "claudex: release $tag has no SHA-256 digest for $asset_name" >&2
+        return 1
+    }
+    printf '%s\n' "$digest"
+}
+
 _fetch_file() {
     local source="$1" destination="$2"
     if [[ -f "$source" ]]; then
@@ -94,12 +121,20 @@ _stage_assets() {
 }
 
 _install_fork_core() {
-    local tag="$1" target url tmp
+    local tag="$1" target asset_name expected_digest actual_digest url tmp
     target=$(_detect_target) || return 1
-    url="https://github.com/$FORK_REPO/releases/download/$tag/claudex-$tag-$target.tar.gz"
+    asset_name="claudex-$tag-$target.tar.gz"
+    expected_digest=$(_resolve_asset_digest "$tag" "$asset_name") || return 1
+    url="https://github.com/$FORK_REPO/releases/download/$tag/$asset_name"
     tmp=$(mktemp -d)
     if ! curl -fsSL "$url" -o "$tmp/claudex.tar.gz"; then
         echo "claudex: fork release asset not available: $url" >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+    actual_digest=$(setup_sha256_string < "$tmp/claudex.tar.gz")
+    if [[ "$actual_digest" != "$expected_digest" ]]; then
+        echo "claudex: SHA-256 mismatch for $asset_name" >&2
         rm -rf "$tmp"
         return 1
     fi
@@ -180,6 +215,10 @@ _recorded_hash() {
     IFS=$'\t' read -r rt lr rr < <(script_state_for "$MODULE" 2>/dev/null) && printf '%s' "$lr"
 }
 
+_release_ref() {
+    printf 'release:%s' "$1"
+}
+
 _auth_login() {
     local -a login=("$CORE" auth login --config "$GLOBAL_CONFIG" chatgpt --profile codex)
     if [[ "$(uname -s)" == "Linux" ]] && command -v keyctl >/dev/null 2>&1; then
@@ -202,7 +241,7 @@ _apply() {
     if ! _auth_login; then
         echo "claudex: OAuth login did not complete; run claudex auth login --config '$GLOBAL_CONFIG' chatgpt --profile codex" >&2
     fi
-    record_script_state "$MODULE" "profile" "$hash" "$hash"
+    record_script_state "$MODULE" "$(_release_ref "$tag")" "$hash" "$hash"
     echo "claudex: $action -> $BIN"
 }
 
@@ -219,28 +258,33 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local staged tag desired recorded drift=0
-    tag=$(_resolve_release_tag) || return 1
+    local staged tag installed desired recorded drift=0
+    installed=$(_installed_version)
+    if ! tag=$(_resolve_release_tag); then
+        printf '%-25s %-12s local=%s remote=- target=%s\n' \
+            "$MODULE" "unknown" "${installed:-unknown}" "$BIN"
+        return 0
+    fi
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
     desired=$(_desired_hash_from "$staged" "$tag")
     recorded=$(_recorded_hash)
     [[ -x "$BIN" && -x "$CORE" && -f "$REGISTRY" ]] || drift=1
     if (( drift == 0 )); then
-        [[ "$(_installed_version)" == "${tag#v}" ]] || drift=1
+        [[ "$installed" == "${tag#v}" ]] || drift=1
         _assets_current_from "$staged" || drift=1
         (( drift == 1 )) || _profiles_current || drift=1
     fi
     rm -rf "$staged"
     if (( drift == 1 )); then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' \
-            "$MODULE" "outdated" "${recorded:0:7}" "${desired:0:7}" "$BIN"
-        record_script_state "$MODULE" "profile" "${recorded:-none}" "$desired"
+            "$MODULE" "outdated" "${installed:-unknown}" "${tag#v}" "$BIN"
+        record_script_state "$MODULE" "$(_release_ref "${installed:-unknown}")" "${recorded:-none}" "$desired"
         return 1
     fi
     printf '%-25s %-12s local=%s remote=%s target=%s\n' \
-        "$MODULE" "current" "${recorded:0:7}" "${desired:0:7}" "$BIN"
-    record_script_state "$MODULE" "profile" "$desired" "$desired"
+        "$MODULE" "current" "$installed" "${tag#v}" "$BIN"
+    record_script_state "$MODULE" "$(_release_ref "$tag")" "$desired" "$desired"
 }
 
 uninstall() {

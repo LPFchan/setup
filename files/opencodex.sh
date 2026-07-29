@@ -179,6 +179,10 @@ _recorded_hash() {
     IFS=$'\t' read -r rt lr rr < <(script_state_for "$MODULE" 2>/dev/null) && printf '%s' "$lr"
 }
 
+_release_ref() {
+    printf 'release:%s' "$1"
+}
+
 _activate_runtime() {
     "$OPENCODEX_BIN" service install
 }
@@ -198,7 +202,7 @@ _apply() {
     rm -rf "$staged"
     _apply_all_profiles || return 1
     _activate_runtime || return 1
-    record_script_state "$MODULE" "profile" "$hash" "$hash"
+    record_script_state "$MODULE" "$(_release_ref "$version")" "$hash" "$hash"
     echo "opencodex: $action -> $BIN"
 }
 
@@ -215,15 +219,20 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local staged version desired recorded drift=0
-    version=$(_resolve_release_version) || return 1
+    local staged version installed desired recorded drift=0
+    installed=$(_installed_version)
+    if ! version=$(_resolve_release_version); then
+        printf '%-25s %-12s local=%s remote=- target=%s\n' \
+            "$MODULE" "unknown" "${installed:-unknown}" "$BIN"
+        return 0
+    fi
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
     desired=$(_desired_hash_from "$staged" "$version")
     recorded=$(_recorded_hash)
     [[ -x "$BIN" && -x "$OPENCODEX_BIN" && -f "$REGISTRY" ]] || drift=1
     if (( drift == 0 )); then
-        [[ "$(_installed_version)" == "$version" ]] || drift=1
+        [[ "$installed" == "$version" ]] || drift=1
         _assets_current_from "$staged" || drift=1
         (( drift == 1 )) || _profiles_current || drift=1
         (( drift == 1 )) || _runtime_active || drift=1
@@ -231,13 +240,13 @@ status() {
     rm -rf "$staged"
     if (( drift == 1 )); then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' \
-            "$MODULE" "outdated" "${recorded:0:7}" "${desired:0:7}" "$BIN"
-        record_script_state "$MODULE" "profile" "${recorded:-none}" "$desired"
+            "$MODULE" "outdated" "${installed:-unknown}" "$version" "$BIN"
+        record_script_state "$MODULE" "$(_release_ref "${installed:-unknown}")" "${recorded:-none}" "$desired"
         return 1
     fi
     printf '%-25s %-12s local=%s remote=%s target=%s\n' \
-        "$MODULE" "current" "${recorded:0:7}" "${desired:0:7}" "$BIN"
-    record_script_state "$MODULE" "profile" "$desired" "$desired"
+        "$MODULE" "current" "$installed" "$version" "$BIN"
+    record_script_state "$MODULE" "$(_release_ref "$version")" "$desired" "$desired"
 }
 
 uninstall() {
