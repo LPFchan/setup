@@ -2,8 +2,8 @@
 # setup-module: claudex
 # setup-type: script
 #
-# Installs a profile-selecting launcher at ~/.local/bin/claudex, the pinned
-# third-party executable at ~/.local/libexec/claudex-core, and a setup-managed
+# Installs a profile-selecting launcher at ~/.local/bin/claudex, the latest
+# fork release at ~/.local/libexec/claudex-core, and a setup-managed
 # profile registry snapshot. Profile metadata is fleet state; API credentials
 # are resolved from the machine-local opencode auth store when profiles are
 # rendered into the canonical Claudex config.
@@ -18,7 +18,7 @@ REGISTRY="${CLAUDEX_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
 AUTH_JSON="${CLAUDEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
 REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
 FORK_REPO="LPFchan/claudex"
-FORK_TAG="v0.2.4-fork.4"
+CLAUDEX_RELEASE_TAG="${CLAUDEX_RELEASE_TAG:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${CLAUDEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/claudex}"
 REGISTRY_SOURCE="${CLAUDEX_REGISTRY_SOURCE:-$SOURCE_BASE/files/claudex-profiles.json}"
@@ -47,6 +47,27 @@ _installed_version() {
     "$CORE" --version 2>/dev/null | awk '{print $2; exit}'
 }
 
+_resolve_release_tag() {
+    if [[ -n "$CLAUDEX_RELEASE_TAG" ]]; then
+        printf '%s\n' "$CLAUDEX_RELEASE_TAG"
+        return 0
+    fi
+
+    local response tag
+    response=$(curl -fsSL --connect-timeout 5 --max-time 15 \
+        "https://api.github.com/repos/$FORK_REPO/releases/latest") || {
+        echo "claudex: could not resolve the latest $FORK_REPO release" >&2
+        return 1
+    }
+    tag=$(printf '%s\n' "$response" \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [[ -n "$tag" ]] || {
+        echo "claudex: latest $FORK_REPO release has no tag" >&2
+        return 1
+    }
+    printf '%s\n' "$tag"
+}
+
 _fetch_file() {
     local source="$1" destination="$2"
     if [[ -f "$source" ]]; then
@@ -73,9 +94,9 @@ _stage_assets() {
 }
 
 _install_fork_core() {
-    local target url tmp
+    local tag="$1" target url tmp
     target=$(_detect_target) || return 1
-    url="https://github.com/$FORK_REPO/releases/download/$FORK_TAG/claudex-$FORK_TAG-$target.tar.gz"
+    url="https://github.com/$FORK_REPO/releases/download/$tag/claudex-$tag-$target.tar.gz"
     tmp=$(mktemp -d)
     if ! curl -fsSL "$url" -o "$tmp/claudex.tar.gz"; then
         echo "claudex: fork release asset not available: $url" >&2
@@ -90,16 +111,18 @@ _install_fork_core() {
 }
 
 _ensure_core() {
-    [[ "$(_installed_version)" == "${FORK_TAG#v}" ]] && return 0
+    local tag="$1"
+    [[ "$(_installed_version)" == "${tag#v}" ]] && return 0
     # Migrate the former single-binary install without a network fetch when it
-    # already matches the pin. The launcher is installed only after this copy.
-    if [[ -x "$BIN" ]] && [[ "$("$BIN" --version 2>/dev/null | awk '{print $2; exit}')" == "${FORK_TAG#v}" ]]; then
+    # already matches the resolved release. The launcher is installed only
+    # after this copy.
+    if [[ -x "$BIN" ]] && [[ "$("$BIN" --version 2>/dev/null | awk '{print $2; exit}')" == "${tag#v}" ]]; then
         mkdir -p "$(dirname "$CORE")"
         cp "$BIN" "$CORE"
         chmod +x "$CORE"
         return 0
     fi
-    _install_fork_core
+    _install_fork_core "$tag"
 }
 
 _install_assets() {
@@ -127,19 +150,20 @@ _profiles_current() {
 }
 
 _desired_hash_from() {
-    local staged="$1"
+    local staged="$1" tag="$2"
     {
-        printf '%s\n' "$FORK_TAG"
+        printf '%s\n' "$tag"
         cat "$staged/claudex"
         cat "$staged/claudex-profiles.json"
     } | setup_sha256_string
 }
 
 _desired_hash() {
-    local staged hash
+    local staged tag hash
+    tag=$(_resolve_release_tag) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    hash=$(_desired_hash_from "$staged")
+    hash=$(_desired_hash_from "$staged" "$tag")
     rm -rf "$staged"
     printf '%s' "$hash"
 }
@@ -166,11 +190,12 @@ _auth_login() {
 }
 
 _apply() {
-    local action="$1" staged hash
+    local action="$1" staged tag hash
+    tag=$(_resolve_release_tag) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    _ensure_core || { rm -rf "$staged"; return 1; }
-    hash=$(_desired_hash_from "$staged")
+    _ensure_core "$tag" || { rm -rf "$staged"; return 1; }
+    hash=$(_desired_hash_from "$staged" "$tag")
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
     _apply_all_profiles || return 1
@@ -194,14 +219,15 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local staged desired recorded drift=0
+    local staged tag desired recorded drift=0
+    tag=$(_resolve_release_tag) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    desired=$(_desired_hash_from "$staged")
+    desired=$(_desired_hash_from "$staged" "$tag")
     recorded=$(_recorded_hash)
     [[ -x "$BIN" && -x "$CORE" && -f "$REGISTRY" ]] || drift=1
     if (( drift == 0 )); then
-        [[ "$(_installed_version)" == "${FORK_TAG#v}" ]] || drift=1
+        [[ "$(_installed_version)" == "${tag#v}" ]] || drift=1
         _assets_current_from "$staged" || drift=1
         (( drift == 1 )) || _profiles_current || drift=1
     fi

@@ -16,12 +16,19 @@ export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_LAUNCHER_SOURCE="$ROOT/files/opencodex"
 export OPENCODEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
+export OPENCODEX_RELEASE_VERSION="2.7.42"
 mkdir -p "${OPENCODEX_LAUNCHER:h}" "${OPENCODEX_REGISTRY:h}" "$XDG_STATE_HOME"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 source "$ROOT/lib/script-helpers.sh"
 source "$ROOT/files/opencodex.sh"
+
+OPENCODEX_RELEASE_VERSION=""
+npm() { print '9.8.7'; }
+[[ "$(_resolve_release_version)" == "9.8.7" ]] || fail "npm latest version was not resolved"
+unfunction npm
+OPENCODEX_RELEASE_VERSION="2.7.42"
 
 install_surfaces() {
     cp "$ROOT/files/opencodex" "$BIN"
@@ -45,6 +52,11 @@ expect_status() {
 
 install_surfaces
 hash=$(_desired_hash)
+staged=$(mktemp -d)
+_stage_assets "$staged"
+[[ "$(_desired_hash_from "$staged" "2.7.42")" != "$(_desired_hash_from "$staged" "2.7.43")" ]] \
+    || fail "resolved OpenCodex version does not participate in desired state"
+rm -rf "$staged"
 record_script_state "$MODULE" "profile" "$hash" "$hash"
 expect_status 0 current
 

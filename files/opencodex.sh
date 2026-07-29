@@ -3,7 +3,7 @@
 # setup-type: script
 #
 # Installs a two-column provider/harness launcher at ~/.local/bin/opencodex, a
-# pinned OpenCodex runtime, and a setup-managed provider registry snapshot.
+# latest OpenCodex runtime, and a setup-managed provider registry snapshot.
 # Profile metadata is fleet state; credentials remain machine-local.
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
@@ -16,14 +16,38 @@ OPENCODEX_ROOT="${OPENCODEX_ROOT:-$HOME/.local/libexec/opencodex}"
 OPENCODEX_BIN="${OPENCODEX_BIN:-$HOME/.local/bin/ocx}"
 OPENCODEX_CONFIG="${OPENCODEX_CONFIG:-$HOME/.opencodex/config.json}"
 OPENCODEX_MANAGED="${OPENCODEX_MANAGED:-$HOME/.opencodex/setup-managed-providers.json}"
-OPENCODEX_VERSION="2.7.42"
-OPENCODEX_PACKAGE="@bitkyc08/opencodex@$OPENCODEX_VERSION"
+OPENCODEX_PACKAGE_NAME="@bitkyc08/opencodex"
+OPENCODEX_RELEASE_VERSION="${OPENCODEX_RELEASE_VERSION:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${OPENCODEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/opencodex}"
 REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${CLAUDEX_REGISTRY_SOURCE:-$SOURCE_BASE/files/claudex-profiles.json}}"
 
 _installed_version() {
     "$OPENCODEX_BIN" --version 2>/dev/null | awk '{print $NF; exit}'
+}
+
+_resolve_release_version() {
+    if [[ -n "$OPENCODEX_RELEASE_VERSION" ]]; then
+        printf '%s\n' "$OPENCODEX_RELEASE_VERSION"
+        return 0
+    fi
+
+    command -v npm >/dev/null 2>&1 || {
+        echo "opencodex: npm is required to resolve the latest release" >&2
+        return 1
+    }
+    local response version
+    response=$(npm view "$OPENCODEX_PACKAGE_NAME" dist-tags.latest \
+        --fetch-retries=0 --fetch-timeout=10000 2>/dev/null) || {
+        echo "opencodex: could not resolve the latest $OPENCODEX_PACKAGE_NAME release" >&2
+        return 1
+    }
+    version=$(printf '%s\n' "$response" | awk 'NF { print $1; exit }')
+    [[ -n "$version" && "$version" != undefined ]] || {
+        echo "opencodex: latest $OPENCODEX_PACKAGE_NAME release has no version" >&2
+        return 1
+    }
+    printf '%s\n' "$version"
 }
 
 _runtime_root_is_safe() {
@@ -62,16 +86,17 @@ _stage_assets() {
 }
 
 _ensure_runtime() {
-    [[ "$(_installed_version)" == "$OPENCODEX_VERSION" ]] && return 0
+    local version="$1"
+    [[ "$(_installed_version)" == "$version" ]] && return 0
     _require_safe_runtime_root || return 1
     command -v npm >/dev/null 2>&1 || {
         echo "opencodex: npm is required to install OpenCodex" >&2
         return 1
     }
-    local staged old
+    local staged old package="$OPENCODEX_PACKAGE_NAME@$version"
     staged=$(mktemp -d)
     if ! npm install --prefix "$staged/root" --no-audit --no-fund --no-package-lock \
-        --allow-scripts=bun "$OPENCODEX_PACKAGE"; then
+        --allow-scripts=bun "$package"; then
         rm -rf "$staged"
         return 1
     fi
@@ -124,19 +149,20 @@ _profiles_current() {
 }
 
 _desired_hash_from() {
-    local staged="$1"
+    local staged="$1" version="$2"
     {
-        printf '%s\n' "$OPENCODEX_VERSION"
+        printf '%s\n' "$version"
         cat "$staged/opencodex"
         cat "$staged/claudex-profiles.json"
     } | setup_sha256_string
 }
 
 _desired_hash() {
-    local staged hash
+    local staged version hash
+    version=$(_resolve_release_version) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    hash=$(_desired_hash_from "$staged")
+    hash=$(_desired_hash_from "$staged" "$version")
     rm -rf "$staged"
     printf '%s' "$hash"
 }
@@ -162,11 +188,12 @@ _runtime_active() {
 }
 
 _apply() {
-    local action="$1" staged hash
+    local action="$1" staged version hash
+    version=$(_resolve_release_version) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    _ensure_runtime || { rm -rf "$staged"; return 1; }
-    hash=$(_desired_hash_from "$staged")
+    _ensure_runtime "$version" || { rm -rf "$staged"; return 1; }
+    hash=$(_desired_hash_from "$staged" "$version")
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
     _apply_all_profiles || return 1
@@ -188,14 +215,15 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local staged desired recorded drift=0
+    local staged version desired recorded drift=0
+    version=$(_resolve_release_version) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    desired=$(_desired_hash_from "$staged")
+    desired=$(_desired_hash_from "$staged" "$version")
     recorded=$(_recorded_hash)
     [[ -x "$BIN" && -x "$OPENCODEX_BIN" && -f "$REGISTRY" ]] || drift=1
     if (( drift == 0 )); then
-        [[ "$(_installed_version)" == "$OPENCODEX_VERSION" ]] || drift=1
+        [[ "$(_installed_version)" == "$version" ]] || drift=1
         _assets_current_from "$staged" || drift=1
         (( drift == 1 )) || _profiles_current || drift=1
         (( drift == 1 )) || _runtime_active || drift=1

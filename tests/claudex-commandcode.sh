@@ -14,6 +14,7 @@ export CLAUDEX_REGISTRY="$ROOT/files/claudex-profiles.json"
 export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export CLAUDEX_LAUNCHER_SOURCE="$ROOT/files/claudex"
 export CLAUDEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
+export CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
 mkdir -p "$HOME/.config/claudex" "$HOME/.local/share/opencode" "$XDG_STATE_HOME"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -76,16 +77,16 @@ grep -q '^api_key = ""$' "$CLAUDEX_CONFIG" || fail "missing local key did not re
 grep -q '^auth_type = "api-key"$' "$CLAUDEX_CONFIG" || fail "API auth type is invalid"
 
 # The former layout placed the third-party binary at the launcher path. A
-# matching pinned binary migrates to libexec without a download.
+# binary matching the resolved release migrates to libexec without a download.
 BIN="$TEST_TMP/old-claudex"
 CORE="$TEST_TMP/libexec/claudex-core"
 cat > "$BIN" <<'EOF'
 #!/bin/sh
-echo 'claudex 0.2.4-fork.4'
+echo 'claudex 0.2.4-fork.5'
 EOF
 chmod +x "$BIN"
-_ensure_core
+_ensure_core "$CLAUDEX_RELEASE_TAG"
 [[ -x "$CORE" ]] || fail "old binary was not migrated to libexec"
-[[ "$(_installed_version)" == "0.2.4-fork.4" ]] || fail "migrated core version is wrong"
+[[ "$(_installed_version)" == "0.2.4-fork.5" ]] || fail "migrated core version is wrong"
 
 echo "claudex registry rendering tests passed"

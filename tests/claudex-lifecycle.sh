@@ -15,6 +15,7 @@ export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export REFRESH_MODELS_BIN="$HOME/.local/bin/refresh-models"
 export CLAUDEX_LAUNCHER_SOURCE="$ROOT/files/claudex"
 export CLAUDEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
+export CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
 mkdir -p "${CLAUDEX_BIN:h}" "${CLAUDEX_CORE:h}" "${CLAUDEX_REGISTRY:h}" "$XDG_STATE_HOME"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -22,13 +23,19 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$ROOT/lib/script-helpers.sh"
 source "$ROOT/files/claudex.sh"
 
+CLAUDEX_RELEASE_TAG=""
+curl() { print '{"tag_name":"v9.8.7-fork.6"}'; }
+[[ "$(_resolve_release_tag)" == "v9.8.7-fork.6" ]] || fail "latest GitHub tag was not resolved"
+unfunction curl
+CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
+
 install_surfaces() {
     cp "$ROOT/files/claudex" "$BIN"
     chmod +x "$BIN"
     cp "$ROOT/files/claudex-profiles.json" "$REGISTRY"
     cat > "$CORE" <<'EOF'
 #!/bin/sh
-echo 'claudex 0.2.4-fork.4'
+echo 'claudex 0.2.4-fork.5'
 EOF
     chmod +x "$CORE"
     _apply_all_profiles
@@ -43,6 +50,11 @@ expect_status() {
 
 install_surfaces
 hash=$(_desired_hash)
+staged=$(mktemp -d)
+_stage_assets "$staged"
+[[ "$(_desired_hash_from "$staged" "v0.2.4-fork.5")" != "$(_desired_hash_from "$staged" "v0.2.4-fork.6")" ]] \
+    || fail "resolved Claudex tag does not participate in desired state"
+rm -rf "$staged"
 record_script_state "$MODULE" "profile" "$hash" "$hash"
 expect_status 0 current
 
