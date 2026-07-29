@@ -20,6 +20,8 @@ The split keeps lifecycle/chat in one state owner while proxy workers scale enco
 | `POST /switch/{model}` | Load model | admin |
 | `POST /stop/{model}` | Stop model | admin |
 | `POST /models/load`, `/models/unload` | Webui lifecycle aliases | admin |
+| `POST /models/{name}/clone`, `/declone` | Temporarily shard one process across GPUs, or clear that sharding | admin |
+| `POST /models/{name}/pin`, `/unpin` | Temporarily set or suppress eviction protection | admin |
 | `GET /registry/model/{name}` | Effective config | API |
 | `PUT /registry/model/{name}` | Merge/upsert config | API today; treat as admin |
 | `GET /presets[/name]` | Inspect presets | API |
@@ -82,6 +84,13 @@ masks, and manual-control drift.
 
 A locked preset allows requests to running targets but rejects cold loads and
 manual stops. Activate another preset before deleting the active one.
+
+Runtime clone/pin overrides live only in manager memory, never edit registry or
+preset state, and clear on restart. `clone` means one sharded llama-server
+process, not a replica. `/status` reports `gpu`/`gpus` as actual residency and
+requested placement plus placement/pin sources separately. Locked preset
+activation clears all overrides and reloads affected target models; manual-control
+presets retain overrides while enforcing their GPU mask.
 
 The active preset and pre-preset fixed map survive restart. Failed restore falls
 back to the initial model plus entries with `always-on: true` and boolean
