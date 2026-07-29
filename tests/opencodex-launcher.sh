@@ -12,6 +12,7 @@ export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_CONFIG="$HOME/.opencodex/config.json"
 export OPENCODEX_MANAGED="$HOME/.opencodex/setup-managed-providers.json"
 export OPENCODEX_BIN="$HOME/.local/bin/ocx"
+export CODEX_HOME="$TEST_TMP/codex \"home"
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")"
 cp "$ROOT/files/claudex-profiles.json" "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
@@ -51,8 +52,23 @@ grep -q $'provider\037commandcode\037commandcode' "$TEST_TMP/picker-input" \
 grep -q $'harness\037claude\037claude' "$TEST_TMP/picker-input" \
     || fail "picker omitted harness entries"
 expected_model="commandcode/$(jq -r '.profiles[] | select(.name == "commandcode") | .default_model' "$OPENCODEX_REGISTRY")"
-[[ $(cat "$TEST_TMP/codex-args") == $(printf '%s\n%s' -m "$expected_model") ]] \
-    || fail "Codex did not receive the routed model"
+expected_catalog_override=$(python3 - "$CODEX_HOME/opencodex-catalog.json" <<'PY'
+import json
+import sys
+print("model_catalog_json=" + json.dumps(sys.argv[1], ensure_ascii=False))
+PY
+)
+"$ROOT/files/opencodex" run commandcode codex --sandbox read-only
+[[ $(cat "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+    -c "$expected_catalog_override" -m "$expected_model" --sandbox read-only)" ]] \
+    || fail "Codex did not receive the configured catalog, routed model, and forwarded arguments"
+python3 - "$expected_catalog_override" "$CODEX_HOME/opencodex-catalog.json" <<'PY'
+import sys
+import tomllib
+
+key, value = sys.argv[1].split("=", 1)
+assert tomllib.loads(f"{key} = {value}\n")[key] == sys.argv[2]
+PY
 
 resume_id="11111111-2222-4333-8444-555555555555"
 "$ROOT/files/opencodex" run commandcode claude --resume "$resume_id"

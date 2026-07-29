@@ -20,6 +20,8 @@ import uuid
 
 
 HOME = Path.home()
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex")).expanduser().resolve()
+CODEX_CATALOG = CODEX_HOME / "opencodex-catalog.json"
 OCX = Path(os.environ.get("OPENCODEX_BIN", HOME / ".local/bin/ocx"))
 OPENCODEX_CONFIG = Path(
     os.environ.get("OPENCODEX_CONFIG", HOME / ".opencodex/config.json")
@@ -585,7 +587,12 @@ def launch(profile: dict[str, Any], harness: str, args: list[str]) -> int:
     ensure_opencodex()
     model = routed_model(profile, profile["default_model"])
     if harness == "codex":
-        return subprocess.run(["codex", "-m", model, *args]).returncode
+        catalog_override = (
+            f"model_catalog_json={json.dumps(str(CODEX_CATALOG), ensure_ascii=False)}"
+        )
+        return subprocess.run(
+            ["codex", "-c", catalog_override, "-m", model, *args]
+        ).returncode
     if harness != "claude":
         raise UserError(f"unknown harness: {harness}")
     env = os.environ.copy()
