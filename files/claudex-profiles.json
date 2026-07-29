@@ -44,6 +44,18 @@
         "key": "commandcode"
       },
       "enabled": true
+    },
+    "kimicode": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "kimicode"
+      },
+      "enabled": true
     }
   },
   "profiles": [
@@ -84,6 +96,26 @@
         "haiku": "MiniMaxAI/MiniMax-M3",
         "sonnet": "xiaomi/mimo-v2.5-pro",
         "opus": "moonshotai/Kimi-K3"
+      }
+    },
+    {
+      "name": "kimicode",
+      "provider": "kimicode",
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "kimicode"
+      },
+      "default_model": "k3",
+      "priority": 76,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "kimi-for-coding",
+        "sonnet": "k3-256k",
+        "opus": "k3"
       }
     }
   ]
