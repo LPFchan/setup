@@ -81,11 +81,11 @@ BIN="$TEST_TMP/old-claudex"
 CORE="$TEST_TMP/libexec/claudex-core"
 cat > "$BIN" <<'EOF'
 #!/bin/sh
-echo 'claudex 0.2.4-fork.2'
+echo 'claudex 0.2.4-fork.4'
 EOF
 chmod +x "$BIN"
 _ensure_core
 [[ -x "$CORE" ]] || fail "old binary was not migrated to libexec"
-[[ "$(_installed_version)" == "0.2.4-fork.2" ]] || fail "migrated core version is wrong"
+[[ "$(_installed_version)" == "0.2.4-fork.4" ]] || fail "migrated core version is wrong"
 
 echo "claudex registry rendering tests passed"

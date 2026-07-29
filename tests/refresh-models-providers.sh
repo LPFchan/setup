@@ -33,12 +33,15 @@ assert set(servers) == {'demo', 'unused'}
 assert servers['demo']['baseURL'] == 'http://demo'
 state = m._load_provider_state()
 assert state == {'providers': {'demo': {'enabled': True}, 'unused': {'enabled': False}}}
+assert os.path.exists(m.STATE_PATH)
+assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 
 legacy = {'servers': {'private-only': {'baseURL': 'https://private.invalid/v1', 'enabled': False}}}
-m.save_json(m.CONFIG_PATH, legacy)
-assert m._load_provider_state() is None
-assert m.load_json(m.CONFIG_PATH) == legacy
-m.save_json_atomic(m.CONFIG_PATH, state)
+os.remove(m.STATE_PATH)
+m.save_json(m.LEGACY_CONFIG_PATH, legacy)
+assert m._load_provider_state() == {'providers': {}}
+assert not os.path.exists(m.LEGACY_CONFIG_PATH)
+m.save_json_atomic(m.STATE_PATH, state)
 
 malformed_registry = copy.deepcopy(m.load_json('$ROOT/files/claudex-profiles.json'))
 del malformed_registry['providers']['grimoire']['auth']['key']
@@ -61,18 +64,18 @@ m.main()
 assert seen == ['demo'], seen
 
 assert m._set_provider_enabled('demo', False)
-assert m.load_json(m.CONFIG_PATH)['providers']['demo']['enabled'] is False
+assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is False
 assert set(m.load_json(m.OPENCODE_PATH)['disabled_providers']) == {
     'foreign-disabled', 'demo', 'unused'
 }
 
 assert not m._set_provider_enabled('unused', True)
 assert m._set_provider_enabled('demo', True)
-assert m.load_json(m.CONFIG_PATH)['providers']['demo']['enabled'] is True
+assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is True
 
 sys.argv = [path, 'auth', 'unused', 'unused-key']
 m.cmd_auth()
-assert m.load_json(m.CONFIG_PATH)['providers']['unused']['enabled'] is True
+assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
 assert m.load_json(m.OPENCODE_PATH)['disabled_providers'] == ['foreign-disabled']
 
 sys.argv = [path, 'unused']
@@ -104,7 +107,7 @@ assert captured['profile']['name'] == 'added'
 assert captured['profile']['models'] == {'haiku': 'small', 'sonnet': 'large', 'opus': 'large'}
 assert captured['token'] == 'secret-token'
 
-with open(m.CONFIG_PATH, 'w') as handle:
+with open(m.STATE_PATH, 'w') as handle:
     handle.write('{truncated')
 assert not m._provider_enabled('demo', servers['demo'])
 PY

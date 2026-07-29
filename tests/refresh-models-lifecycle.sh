@@ -33,9 +33,18 @@ cp "$ROOT/files/refresh-models" "$BIN"
 chmod +x "$BIN"
 expect_status 1 outdated
 
+mkdir -p "$HOME/.config/opencode"
+print '{"servers":{"commandcode":{"enabled":false}}}' \
+    > "$HOME/.config/opencode/refresh-models.json"
 install
 [[ -x "$BIN" ]] || fail "standalone install omitted the launcher"
 [[ -f "$REGISTRY" ]] || fail "standalone install omitted the shared registry"
+[[ -f "$HOME/.config/opencode/refresh-models-state.json" ]] \
+    || fail "install did not migrate provider enablement state"
+[[ ! -e "$HOME/.config/opencode/refresh-models.json" ]] \
+    || fail "install kept the obsolete provider registry"
+grep -q '"enabled": false' "$HOME/.config/opencode/refresh-models-state.json" \
+    || fail "install lost the legacy provider enablement state"
 expect_status 0 current
 
 print '# drift' >> "$BIN"

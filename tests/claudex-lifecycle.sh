@@ -28,7 +28,7 @@ install_surfaces() {
     cp "$ROOT/files/claudex-profiles.json" "$REGISTRY"
     cat > "$CORE" <<'EOF'
 #!/bin/sh
-echo 'claudex 0.2.4-fork.2'
+echo 'claudex 0.2.4-fork.4'
 EOF
     chmod +x "$CORE"
     _apply_all_profiles

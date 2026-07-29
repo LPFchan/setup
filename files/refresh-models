@@ -18,7 +18,8 @@ Commands:
 import getpass, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 
-CONFIG_PATH = os.path.expanduser("~/.config/opencode/refresh-models.json")
+STATE_PATH = os.path.expanduser("~/.config/opencode/refresh-models-state.json")
+LEGACY_CONFIG_PATH = os.path.expanduser("~/.config/opencode/refresh-models.json")
 REGISTRY_PATH = os.environ.get(
     "CLAUDEX_REGISTRY",
     os.path.expanduser("~/.config/claudex/managed-profiles.json"),
@@ -511,24 +512,42 @@ def _load_servers():
 
 
 def _load_provider_state():
-    if not os.path.exists(CONFIG_PATH):
-        return {"providers": {}}
+    if not os.path.exists(STATE_PATH):
+        return _migrate_legacy_provider_state()
     try:
-        data = load_json(CONFIG_PATH)
+        data = load_json(STATE_PATH)
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"Cannot read provider state {CONFIG_PATH}; all providers are disabled: {exc}", file=sys.stderr)
+        print(f"Cannot read provider state {STATE_PATH}; all providers are disabled: {exc}", file=sys.stderr)
         return None
     if not isinstance(data, dict):
-        print(f"Invalid provider state {CONFIG_PATH}; all providers are disabled", file=sys.stderr)
+        print(f"Invalid provider state {STATE_PATH}; all providers are disabled", file=sys.stderr)
         return None
     if isinstance(data.get("providers"), dict):
+        if os.path.exists(LEGACY_CONFIG_PATH):
+            os.remove(LEGACY_CONFIG_PATH)
+            print(f"Removed obsolete provider registry {LEGACY_CONFIG_PATH}")
         return data
+    print(f"Invalid provider state {STATE_PATH}; all providers are disabled", file=sys.stderr)
+    return None
 
-    # One-time migration from the former duplicate provider registry. Only the
-    # machine-local enabled state survives; provider metadata now has one owner.
-    legacy_servers = data.get("servers", {})
+
+def _migrate_legacy_provider_state():
+    if not os.path.exists(LEGACY_CONFIG_PATH):
+        return {"providers": {}}
+    try:
+        data = load_json(LEGACY_CONFIG_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"Cannot migrate obsolete provider registry {LEGACY_CONFIG_PATH}; all providers are disabled: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    legacy_servers = data.get("servers", {}) if isinstance(data, dict) else None
     if not isinstance(legacy_servers, dict):
-        print(f"Invalid legacy provider state {CONFIG_PATH}; all providers are disabled", file=sys.stderr)
+        print(
+            f"Cannot migrate obsolete provider registry {LEGACY_CONFIG_PATH}; all providers are disabled",
+            file=sys.stderr,
+        )
         return None
     shared_servers = _load_servers()
     if shared_servers is None:
@@ -536,17 +555,17 @@ def _load_provider_state():
     local_only = sorted(set(legacy_servers) - set(shared_servers))
     if local_only:
         print(
-            f"Legacy providers must be published to the shared registry before migration: {', '.join(local_only)}. "
-            "Run: refresh-models provider add",
+            f"Dropping obsolete local-only provider definitions: {', '.join(local_only)}",
             file=sys.stderr,
         )
-        return None
     providers = {}
     for name, cfg in legacy_servers.items():
-        if isinstance(cfg, dict) and isinstance(cfg.get("enabled"), bool):
+        if name in shared_servers and isinstance(cfg, dict) and isinstance(cfg.get("enabled"), bool):
             providers[name] = {"enabled": cfg["enabled"]}
     migrated = {"providers": providers}
-    save_json_atomic(CONFIG_PATH, migrated)
+    save_json_atomic(STATE_PATH, migrated)
+    os.remove(LEGACY_CONFIG_PATH)
+    print(f"Migrated provider state to {STATE_PATH} and removed {LEGACY_CONFIG_PATH}")
     return migrated
 
 
@@ -604,7 +623,7 @@ def _set_provider_enabled(provider, enabled):
     if state is None:
         return False
     state.setdefault("providers", {}).setdefault(provider, {})["enabled"] = enabled
-    save_json_atomic(CONFIG_PATH, state)
+    save_json_atomic(STATE_PATH, state)
     _sync_opencode_provider_statuses(servers)
     print(f"{provider}: {'enabled' if enabled else 'disabled'}")
     return True
@@ -687,7 +706,7 @@ def cmd_auth():
             return
         for name in enabled:
             state.setdefault("providers", {}).setdefault(name, {})["enabled"] = True
-        save_json_atomic(CONFIG_PATH, state)
+        save_json_atomic(STATE_PATH, state)
         _sync_opencode_provider_statuses(servers)
         print(f"\nSaved to {ZSENV_PATH}")
     else:
@@ -698,7 +717,7 @@ def cmd_enable():
     _export_auth_to_zsenv()
 
     script_path = os.path.abspath(sys.argv[0])
-    cfg_dir = os.path.dirname(CONFIG_PATH)
+    cfg_dir = os.path.dirname(STATE_PATH)
     pathlib.Path(cfg_dir).mkdir(parents=True, exist_ok=True)
 
     if _is_macos():
@@ -1127,6 +1146,11 @@ def main():
             _validate_registry(load_json(args[1]))
         except (IndexError, OSError, json.JSONDecodeError, ValueError) as exc:
             print(f"refresh-models: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args and args[0] == "__migrate-state":
+        if _load_provider_state() is None:
             sys.exit(1)
         return
 

@@ -61,6 +61,12 @@ _apply() {
         rm -rf "$staged"
         return 1
     }
+    CLAUDEX_REGISTRY="$staged/claudex-profiles.json" \
+        python3 "$staged/refresh-models" __migrate-state || {
+            rm -f "$bin_tmp" "$registry_tmp"
+            rm -rf "$staged"
+            return 1
+        }
     if [[ -x "$CLAUDEX_BIN" ]]; then
         CLAUDEX_AUTH_JSON="$CLAUDEX_AUTH_JSON" \
             python3 "$CLAUDEX_BIN" __apply "$staged/claudex-profiles.json" "$CLAUDEX_CONFIG" || {

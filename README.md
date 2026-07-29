@@ -80,7 +80,10 @@ restores their prior enabled/active states on disable.
 `refresh-models` independently install and refresh that snapshot, so either
 module works alone and the registry remains while either consumer is installed.
 Machine-local enable/disable overrides stay in
-`~/.config/opencode/refresh-models.json`. Entering a key with
+`~/.config/opencode/refresh-models-state.json`. Install and update migrate the
+enablement flags from the obsolete `refresh-models.json` provider registry and
+delete that file, leaving provider definitions in one canonical location.
+Entering a key with
 `refresh-models auth` enables that provider; `refresh-models provider enable
 <provider>` and `refresh-models provider disable <provider>` toggle it without
 adding or deleting its key. `refresh-models provider add` provides the same
