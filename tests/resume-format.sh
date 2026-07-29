@@ -16,6 +16,10 @@ touch "$TEST_TMP/fzf-started"
 cat > "$TEST_TMP/fzf-input"
 exit 1
 EOF
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+touch "$TEST_TMP/unexpected-dispatch"
+EOF
 cat > "$FAKE_BIN/find" <<'EOF'
 #!/usr/bin/env bash
 for _ in {1..100}; do
@@ -25,7 +29,7 @@ done
 [[ -e "$TEST_TMP/fzf-started" ]] || printf 'fzf did not start before scan emitted data\n' > "$TEST_TMP/async-failure"
 exec /usr/bin/find "$@"
 EOF
-chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/find"
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/codex" "$FAKE_BIN/find"
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
@@ -37,9 +41,14 @@ EOF
 touch -t 202407031846.40 "$session"
 
 if "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/stderr"; then
-    echo "FAIL: fake fzf should cancel resume" >&2
+    echo "FAIL: picker failure should fail resume" >&2
     exit 1
 fi
+
+grep -Fq 'resume: picker failed with status 1' "$TEST_TMP/stderr" \
+    || { echo "FAIL: picker failure was not diagnosed" >&2; exit 1; }
+[[ ! -e "$TEST_TMP/unexpected-dispatch" ]] \
+    || { echo "FAIL: picker failure dispatched a harness" >&2; exit 1; }
 
 [[ -s "$TEST_TMP/fzf-input" ]] \
     || { echo "FAIL: resume did not send rows to fzf" >&2; exit 1; }
@@ -55,6 +64,42 @@ row=$(cat "$TEST_TMP/fzf-input")
     || { echo "FAIL: resume used fallback timestamp: $row" >&2; exit 1; }
 [[ "$row" == *"codex"* && "$row" == *"Fix timestamp display"* ]] \
     || { echo "FAIL: resume row did not include expected session metadata: $row" >&2; exit 1; }
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 130
+EOF
+chmod +x "$FAKE_BIN/fzf"
+rm -f "$TEST_TMP/stderr" "$TEST_TMP/unexpected-dispatch"
+
+if ! "$ROOT/files/resume" >"$TEST_TMP/stdout" 2>"$TEST_TMP/stderr"; then
+    echo "FAIL: picker cancellation should exit successfully" >&2
+    exit 1
+fi
+[[ ! -s "$TEST_TMP/stdout" ]] \
+    || { echo "FAIL: picker cancellation wrote to stdout" >&2; exit 1; }
+[[ ! -s "$TEST_TMP/stderr" ]] \
+    || { echo "FAIL: picker cancellation wrote to stderr" >&2; exit 1; }
+[[ ! -e "$TEST_TMP/unexpected-dispatch" ]] \
+    || { echo "FAIL: picker cancellation dispatched a harness" >&2; exit 1; }
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+EOF
+chmod +x "$FAKE_BIN/fzf"
+rm -f "$TEST_TMP/stderr" "$TEST_TMP/unexpected-dispatch"
+
+if "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/stderr"; then
+    echo "FAIL: empty picker selection should fail resume" >&2
+    exit 1
+fi
+grep -Fq 'resume: picker returned no selection' "$TEST_TMP/stderr" \
+    || { echo "FAIL: empty picker selection was not diagnosed" >&2; exit 1; }
+[[ ! -e "$TEST_TMP/unexpected-dispatch" ]] \
+    || { echo "FAIL: empty picker selection dispatched a harness" >&2; exit 1; }
 
 cat > "$FAKE_BIN/fzf" <<'EOF'
 #!/usr/bin/env bash

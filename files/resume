@@ -413,17 +413,34 @@ format_for_fzf() {
     done
 }
 
-selected=$(collect_sessions | sort -rn | head -n "$MAX_SESSIONS" | format_for_fzf | \
-    fzf --no-sort \
+picker_status=0
+if selected=$(fzf --no-sort \
         --reverse \
         --height=50% \
         --min-height=8 \
         --with-nth=1 \
         --delimiter=$'\t' \
         --prompt="resume > " \
-        --header="ENTER: resume   ESC: cancel")
+        --header="ENTER: resume   ESC: cancel" \
+        < <(collect_sessions | sort -rn | head -n "$MAX_SESSIONS" | format_for_fzf)); then
+    picker_status=0
+else
+    picker_status=$?
+fi
 
-[[ -z "$selected" ]] && exit 0
+case "$picker_status" in
+    0) ;;
+    130) exit 0 ;;
+    *)
+        echo "resume: picker failed with status $picker_status" >&2
+        exit "$picker_status"
+        ;;
+esac
+
+if [[ -z "$selected" ]]; then
+    echo "resume: picker returned no selection" >&2
+    exit 1
+fi
 
 ref=$(printf '%s' "$selected" | cut -f2)
 tool=$(echo "$ref" | cut -d'|' -f1)
