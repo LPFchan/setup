@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grimoire"
+  short_description: "Operate the fleet's Grimoire safely"
+  default_prompt: "Use $grimoire to inspect or operate the fleet's Grimoire safely."

@@ -34,7 +34,7 @@ terminal, such as entering an admin password manually.
 ## grimoire — headless Ubuntu dual-RTX 3090 inference server
 - grimoire.lost.plus (10.0.0.51) · user yeowool
 - OpenAI-compatible API at https://chat.lost.plus/v1
-- custom llama.cpp fork (repo ~/grimoire); more in Obsidian `inference/`
+- custom llama.cpp fork (repo ~/grimoire); load the `grimoire` skill for inference and ComfyUI
 - hosts ComfyUI image-gen server (:8188)
 - hosts eastself (@eastself_bot on Telegram, repo ~/Eastself/)
 - hosts hermes agent (@neoyeowoolbot on Telegram)

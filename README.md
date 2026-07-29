@@ -144,8 +144,8 @@ and symlinks it into every harness so all machines share one source of truth:
 
 Skills with `audience: fleet` in their frontmatter are copied and linked only
 on matching machines. An update removes their managed harness links if the
-machine is no longer in the GitHub key list. The fleet-only skills are `fleet`
-and `proactive-docs`.
+machine is no longer in the GitHub key list. The fleet-only skills are `fleet`,
+`grimoire`, and `proactive-docs`.
 
 Existing real files/dirs at any target are backed up to `*.pre-agents.bak` before
 symlinking; `uninstall` removes the symlinks and restores the backups. The module
