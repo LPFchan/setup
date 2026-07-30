@@ -31,7 +31,7 @@ assert f'ExecStart={os.path.abspath(path)}\n' in service_unit
 assert 'EnvironmentFile' not in service_unit
 assert '.zshenv' not in service_unit
 assert m._load_servers()['demo']['baseURL'] == 'http://demo'
-assert m._load_provider_state() == {'providers': {}}
+assert m._load_provider_state() == {'version': m.PROVIDER_STATE_VERSION, 'providers': {}}
 PY
 
 marker="$XDG_STATE_HOME/setup/refresh-models.needs-provider-setup"

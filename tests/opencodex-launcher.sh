@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-TEST_TMP=$(mktemp -d)
+# Physical path: the launcher resolves CODEX_HOME, so on macOS a /var/folders
+# temp dir comes back as /private/var/... and every path assertion below would
+# compare a symlinked prefix against a resolved one.
+TEST_TMP=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$TEST_TMP"' EXIT
 
 export HOME="$TEST_TMP/home"
@@ -285,14 +288,18 @@ grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
 # not have added rows — only the five claude launches (the picker launch,
 # the --effort default launch, the two resumes, and the new session above)
 # belong, all under provider commandcode.
-[[ $(wc -l < "$HOME/.config/opencodex/sessions.tsv") == 5 ]] \
+# Arithmetic, not string, comparison: BSD wc pads its count with spaces.
+(( $(wc -l < "$HOME/.config/opencodex/sessions.tsv") == 5 )) \
     || fail "sidecar holds unexpected rows beyond the five claude sessions"
 ! grep -Evq $'\tcommandcode$' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "a session recorded under something other than its provider"
 
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
-jq -e '.syncResumeHistory == false' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "Linux enabled Codex Desktop history synchronization"
+# Codex Desktop resume-history sync is a macOS behaviour, so the rendered flag
+# tracks the host platform rather than a fixed value.
+if [[ $(uname -s) == Darwin ]]; then expected_sync=true; else expected_sync=false; fi
+jq -e --argjson want "$expected_sync" '.syncResumeHistory == $want' "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "Codex Desktop history synchronization did not follow the platform"
 jq -e '.providers.anthropic.adapter == "anthropic"
     and .providers.anthropic.authMode == "oauth"
     and .providers.anthropic.baseUrl == "https://api.anthropic.com"
