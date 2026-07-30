@@ -62,7 +62,7 @@ if [ "${1:-}" = --version ]; then echo 'opencodex 2.7.42'; fi
 if [ "${1:-}" = service ] && [ "${2:-}" = status ] && [ -e "$HOME/.opencodex/service-stopped" ]; then exit 1; fi
 EOF
     chmod +x "$OPENCODEX_BIN"
-    _apply_all_profiles
+    _apply_all_providers
 }
 
 expect_status() {

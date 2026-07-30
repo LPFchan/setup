@@ -62,6 +62,19 @@ grep -q 'name = "codex"' "$CLAUDEX_CONFIG" \
     || fail "shared registry lost the Codex OAuth profile"
 grep -q 'oauth_provider = "chatgpt"' "$CLAUDEX_CONFIG" \
     || fail "shared registry lost Codex OAuth importability"
+grep -q 'name = "anthropic"' "$CLAUDEX_CONFIG" \
+    || fail "shared registry lost the Anthropic OAuth profile"
+python3 - "$CLAUDEX_CONFIG" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1]).read()
+match = re.search(r'\[\[profiles\]\]\nname = "anthropic"\n(?P<body>.*?)(?=\n\[\[profiles\]\]|\Z)', text, re.S)
+assert match
+body = match.group("body")
+assert 'provider_type = "DirectAnthropic"' in body
+assert 'oauth_provider = "claude"' in body
+PY
 uninstall
 [[ -f "$REGISTRY" ]] || fail "refresh-models removed a registry still used by Claudex"
 

@@ -60,6 +60,17 @@ cat > "$OPENCODEX_BIN" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
     ensure) printf 'ensure\n' >> "$TEST_TMP/ocx-calls" ;;
+    account)
+        if [[ -e "$TEST_TMP/anthropic-login" ]]; then
+            printf '{"accounts":[{"type":"oauth","needsReauth":false}]}\n'
+        else
+            printf '{"accounts":[]}\n'
+        fi
+        ;;
+    login)
+        printf 'login %s\n' "${2:-}" >> "$TEST_TMP/ocx-calls"
+        touch "$TEST_TMP/anthropic-login"
+        ;;
     claude)
         printf '%s\n' "$@" > "$TEST_TMP/claude-args"
         env | grep -E '^(ANTHROPIC_|MAX_THINKING_TOKENS=)' | sort > "$TEST_TMP/claude-env"
@@ -190,6 +201,16 @@ grep -q 'unknown provider: bogus' "$TEST_TMP/provider-error" \
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "grok harness did not receive the routed override model via -m"
 
+anthropic_default=$(jq -r '.providers.anthropic.default_model' "$OPENCODEX_REGISTRY")
+"$ROOT/files/opencodex" run anthropic codex
+[[ $(tail -2 "$TEST_TMP/codex-args") == "$(printf '%s\n%s' -m "anthropic/$anthropic_default")" ]] \
+    || fail "Anthropic OAuth profile did not route its default model"
+[[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
+    || fail "first Anthropic launch did not authenticate exactly once"
+"$ROOT/files/opencodex" run anthropic codex
+[[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
+    || fail "authenticated Anthropic launch repeated OAuth login"
+
 "$ROOT/files/opencodex" run commandcode --effort default claude
 ! grep -q '^MAX_THINKING_TOKENS=' "$TEST_TMP/claude-env" \
     || fail "'default' effort should not set MAX_THINKING_TOKENS"
@@ -244,6 +265,12 @@ grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
 jq -e '.syncResumeHistory == false' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "Linux enabled Codex Desktop history synchronization"
+jq -e '.providers.anthropic.adapter == "anthropic"
+    and .providers.anthropic.authMode == "oauth"
+    and .providers.anthropic.baseUrl == "https://api.anthropic.com"
+    and .providers.anthropic.defaultModel == "claude-sonnet-5"
+    and (.providers.anthropic | has("apiKey") | not)' "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "Anthropic subscription OAuth provider was not rendered"
 jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "OpenCodex provider credentials were not rendered"
 
@@ -259,10 +286,21 @@ registry = namespace["load_registry"](Path(sys.argv[2]))
 original = namespace["sys"].platform
 namespace["sys"].platform = "darwin"
 try:
-    config, _ = namespace["desired_opencodex_config"](registry, {}, {})
+    config, managed = namespace["desired_opencodex_config"](
+        registry,
+        {"providers": {"anthropic": {"authMode": "key", "apiKey": "old-key"}}},
+        {},
+    )
 finally:
     namespace["sys"].platform = original
 assert config["syncResumeHistory"] is True
+assert "anthropic" in managed
+assert config["providers"]["anthropic"] == {
+    "adapter": "anthropic",
+    "authMode": "oauth",
+    "baseUrl": "https://api.anthropic.com",
+    "defaultModel": "claude-sonnet-5",
+}
 assert config["providers"]["commandcode"]["defaultModel"] == "xiaomi/mimo-v2.5-pro"
 assert config["providers"]["kimicode"]["defaultModel"] == "k3"
 
@@ -300,6 +338,7 @@ else:
 
 index = {
     "gpt-5.6-sol": {"id": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "default_effort": "low"},
+    "anthropic/claude-opus-5": {"id": "anthropic/claude-opus-5", "efforts": ["low", "medium", "high"], "default_effort": "high"},
     "commandcode/moonshotai/Kimi-K3": {"id": "commandcode/moonshotai/Kimi-K3", "efforts": ["low", "medium"], "default_effort": "low"},
     "commandcode/xiaomi/mimo-v2.5-pro": {"id": "commandcode/xiaomi/mimo-v2.5-pro", "efforts": ["low", "medium", "high"], "default_effort": "medium"},
     "kimicode/kimi-for-coding": {"id": "kimicode/kimi-for-coding", "efforts": ["low", "medium"], "default_effort": "low"},
@@ -307,7 +346,7 @@ index = {
 }
 
 providers = namespace["enabled_providers"](registry)
-assert "codex" in providers and "commandcode" in providers and "kimicode" in providers
+assert "anthropic" in providers and "codex" in providers and "commandcode" in providers and "kimicode" in providers
 
 options = namespace["provider_model_options"]("commandcode", registry, index)
 # Labels drop the routing prefix (the provider reel already names it)...
@@ -319,6 +358,8 @@ assert [model for _, model, _ in options] == [
 ]
 oauth_options = namespace["provider_model_options"]("codex", registry, index)
 assert [model for _, model, _ in oauth_options] == ["gpt-5.6-sol"]  # bare ids
+anthropic_options = namespace["provider_model_options"]("anthropic", registry, index)
+assert [model for _, model, _ in anthropic_options] == ["anthropic/claude-opus-5"]
 other = namespace["provider_model_options"]("other", registry, index)
 assert [model for _, model, _ in other] == ["unknown/mystery"]  # bare ids belong to codex
 
@@ -329,6 +370,7 @@ def provider_walk(current, target):
     current.focus = 0  # provider-walk loops spin forever on any other reel
     while current.selected_provider() != target:
         namespace["handle_key"](current, "down")
+provider_walk(state, "codex")
 sel_provider, harness, model, effort = state.selection()
 assert sel_provider == "codex" and harness == "claude"
 assert model == "gpt-5.6-sol" and effort == "high"  # full tier: top real level

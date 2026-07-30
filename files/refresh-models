@@ -831,7 +831,7 @@ def _validate_registry(data):
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise ValueError(f"invalid provider: {provider_name}")
-        if provider.get("provider_type") not in {"OpenAICompatible", "OpenAIResponses"}:
+        if provider.get("provider_type") not in {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}:
             raise ValueError(f"invalid provider_type for {provider_name}")
         if not isinstance(provider.get("base_url"), str) or not _valid_base_url(provider["base_url"]):
             raise ValueError(f"invalid base_url for {provider_name}")
@@ -867,7 +867,7 @@ def _validate_registry(data):
             for field in ("provider_type", "base_url", "auth"):
                 if profile.get(field) != provider.get(field):
                     raise ValueError(f"{field} for {name} disagrees with provider {provider_name}")
-        if profile.get("provider_type") not in {"OpenAICompatible", "OpenAIResponses"}:
+        if profile.get("provider_type") not in {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}:
             raise ValueError(f"invalid provider_type for {name}")
         if not isinstance(profile.get("base_url"), str) or not _valid_base_url(profile["base_url"]):
             raise ValueError(f"invalid base_url for {name}")

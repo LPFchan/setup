@@ -45,7 +45,7 @@ SESSIONS = Path(
     os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
 )
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-PROVIDER_TYPES = {"OpenAICompatible", "OpenAIResponses"}
+PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
 # Modules consuming the shared claudex-profiles.json registry.
 PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "refresh-models")
 
@@ -245,7 +245,7 @@ def desired_opencodex_config(
     managed = {
         name
         for name, provider in registry.get("providers", {}).items()
-        if provider.get("provider_type") == "OpenAICompatible"
+        if provider.get("provider_type") in {"DirectAnthropic", "OpenAICompatible"}
     }
     for stale in managed_provider_names() - managed:
         providers.pop(stale, None)
@@ -253,27 +253,38 @@ def desired_opencodex_config(
     for name in sorted(managed):
         descriptor = registry["providers"][name]
         default_model = provider_default_model(registry, name)
-        auth_name = descriptor["auth"]["key"]
-        entry = auth_data.get(auth_name, {})
-        key = entry.get("key", "") if isinstance(entry, dict) else ""
         current = providers.get(name, {})
         provider = dict(current) if isinstance(current, dict) else {}
-        provider.update(
-            {
-                "adapter": "openai-chat",
-                "baseUrl": descriptor["base_url"],
-                "authMode": "key",
-                "apiKey": key,
-                "disabled": descriptor.get("enabled") is not True or not bool(key),
-                "liveModels": True,
-            }
-        )
+        if descriptor["provider_type"] == "DirectAnthropic":
+            provider.update(
+                {
+                    "adapter": "anthropic",
+                    "baseUrl": descriptor["base_url"],
+                    "authMode": "oauth",
+                }
+            )
+            for field in ("apiKey", "apiKeyPool", "disabled"):
+                provider.pop(field, None)
+        else:
+            auth_name = descriptor["auth"]["key"]
+            entry = auth_data.get(auth_name, {})
+            key = entry.get("key", "") if isinstance(entry, dict) else ""
+            provider.update(
+                {
+                    "adapter": "openai-chat",
+                    "baseUrl": descriptor["base_url"],
+                    "authMode": "key",
+                    "apiKey": key,
+                    "disabled": descriptor.get("enabled") is not True or not bool(key),
+                    "liveModels": True,
+                }
+            )
         if default_model:
             provider["defaultModel"] = default_model
         else:
             provider.pop("defaultModel", None)
         # Never pin models/selectedModels: with liveModels the proxy serves
-        # each provider's full rotating fleet, not a mapped subset.
+        # each provider's full rotating fleet, not a profile-mapped subset.
         provider.pop("models", None)
         provider.pop("selectedModels", None)
         providers[name] = provider
@@ -485,7 +496,12 @@ def enabled_providers(registry: dict[str, Any]) -> list[str]:
 
 def provider_uses_bare_ids(registry: dict[str, Any], provider: str) -> bool:
     descriptor = registry.get("providers", {}).get(provider, {})
-    return descriptor.get("provider_type") == "OpenAIResponses"
+    auth = descriptor.get("auth", {})
+    return (
+        descriptor.get("provider_type") == "OpenAIResponses"
+        and auth.get("type") == "oauth"
+        and auth.get("provider") == "chatgpt"
+    )
 
 
 def provider_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -677,6 +693,31 @@ def ensure_opencodex() -> None:
         raise UserError("OpenCodex could not be started")
 
 
+def ensure_provider_auth(provider: str | None) -> None:
+    if provider != "anthropic":
+        return
+    proc = subprocess.run(
+        [str(OCX), "account", "list", provider, "--json", "--all"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        payload = json.loads(proc.stdout) if proc.returncode == 0 else {}
+    except json.JSONDecodeError:
+        payload = {}
+    accounts = payload.get("accounts") if isinstance(payload, dict) else None
+    if isinstance(accounts, list) and any(
+        isinstance(account, dict)
+        and account.get("type") == "oauth"
+        and account.get("needsReauth") is not True
+        for account in accounts
+    ):
+        return
+    if subprocess.run([str(OCX), "login", provider]).returncode:
+        raise UserError("Anthropic OAuth login failed; run ocx login anthropic")
+
+
 def launch(
     provider: str | None,
     harness: str,
@@ -685,6 +726,7 @@ def launch(
     effort: str | None = None,
 ) -> int:
     ensure_opencodex()
+    ensure_provider_auth(provider)
     if model is None:
         raise UserError("a model is required to launch")
     if effort is not None and effort not in EFFORT_ORDER + (EFFORT_NONE, EFFORT_DEFAULT):
@@ -794,8 +836,8 @@ def provider_model_options(
 ) -> list[tuple[str, str, str | None]]:
     """(label, model id, default effort) triples for the model reel.
 
-    OAuth providers (codex) serve bare ids; OpenAICompatible providers serve
-    '{provider}/'-prefixed ids; 'other' claims whatever remains. The prefix
+    Codex OAuth serves bare ids; routed providers, including Anthropic OAuth,
+    serve '{provider}/'-prefixed ids; 'other' claims whatever remains. The prefix
     is routing metadata — the provider reel already names it — so labels
     drop it for readability while ids keep it.
     """

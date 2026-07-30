@@ -10,6 +10,16 @@
       },
       "default_model": "gpt-5.6-sol"
     },
+    "anthropic": {
+      "provider_type": "DirectAnthropic",
+      "base_url": "https://api.anthropic.com",
+      "auth": {
+        "type": "oauth",
+        "provider": "anthropic",
+        "claudex_provider": "claude"
+      },
+      "default_model": "claude-sonnet-5"
+    },
     "grimoire": {
       "provider_type": "OpenAICompatible",
       "base_url": "https://chat.lost.plus/v1",
@@ -79,6 +89,26 @@
         "haiku": "gpt-5.6-luna",
         "sonnet": "gpt-5.6-terra",
         "opus": "gpt-5.6-sol"
+      }
+    },
+    {
+      "name": "anthropic",
+      "provider": "anthropic",
+      "provider_type": "DirectAnthropic",
+      "base_url": "https://api.anthropic.com",
+      "auth": {
+        "type": "oauth",
+        "provider": "anthropic",
+        "claudex_provider": "claude"
+      },
+      "default_model": "claude-sonnet-5",
+      "priority": 99,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "claude-haiku-4-5",
+        "sonnet": "claude-sonnet-5",
+        "opus": "claude-opus-5"
       }
     },
     {

@@ -38,7 +38,7 @@ RAW_REPO = os.environ.get(
     "CLAUDEX_RAW_REPO", "https://raw.githubusercontent.com/LPFchan/setup"
 )
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-PROVIDER_TYPES = {"OpenAICompatible", "OpenAIResponses"}
+PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
 STRIP_PARAMS = {"Auto", "None", "All"}
 
 
@@ -202,7 +202,7 @@ def render_profile(profile: dict[str, Any], auth_data: dict[str, Any]) -> str:
         f"auth_type = {q(auth['type'])}",
     ]
     if auth["type"] == "oauth":
-        lines.append(f"oauth_provider = {q(auth['provider'])}")
+        lines.append(f"oauth_provider = {q(auth.get('claudex_provider', auth['provider']))}")
     lines.extend(
         [
             f"strip_params = {q(profile['strip_params'])}",
