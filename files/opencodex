@@ -983,6 +983,20 @@ class ReelState:
         self.models: list[tuple[str, str, str | None]] = []
         self._refresh_provider(initial=True)
 
+    def swap_index(self, index: dict[str, dict[str, Any]]) -> None:
+        """Replace the model index after a background fetch and rebuild the
+        'other' row; the provider cursor stays put so the user's place is
+        kept, and the remembered model is re-applied to the new list."""
+        self.index = index
+        has_other = OTHER_PROVIDER in self.provider_names
+        if provider_model_options(OTHER_PROVIDER, self.registry, index):
+            if not has_other:
+                self.provider_names.insert(-1, OTHER_PROVIDER)  # before Add profile
+        elif has_other:
+            self.provider_names.remove(OTHER_PROVIDER)
+            self.cursors[0] = min(self.cursors[0], len(self.provider_names) - 1)
+        self._refresh_provider()
+
     def _refresh_provider(self, initial: bool = False) -> None:
         provider = self.selected_provider()
         if provider == ADD_PROFILE:
@@ -1200,14 +1214,32 @@ def handle_mouse(
     return None
 
 
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⦠⦯⦿"
+
+
 def run_reel_picker(
-    providers: list[str], registry: dict[str, Any], index: dict[str, dict[str, Any]]
+    providers: list[str], registry: dict[str, Any]
 ) -> tuple[str, str, str | None, str | None] | str | None:
     """Four-reel provider/model/effort/harness picker. Returns a selection
-    4-tuple, 'add' for the Add-profile flow, or None when cancelled."""
-    import curses
+    4-tuple, 'add' for the Add-profile flow, or None when cancelled.
 
-    state = ReelState(providers, registry, index, load_picker_state())
+    The UI opens immediately with an empty model index; a background thread
+    runs merged_model_index() and the model reel spins until it lands."""
+    import curses
+    import threading
+
+    state = ReelState(providers, registry, {}, load_picker_state())
+    fetched: dict[str, Any] = {}
+
+    def fetch() -> None:
+        try:
+            fetched["index"] = merged_model_index(registry)
+        except Exception:
+            fetched["index"] = {}  # a failed fetch still ends the spinner
+        finally:
+            fetched["ready"] = True
+
+    threading.Thread(target=fetch, daemon=True).start()
 
     def translate(key: int) -> str | None:
         if key in (curses.KEY_LEFT, ord("h")):
@@ -1238,6 +1270,10 @@ def run_reel_picker(
         cursor = state.cursors[reel]
         header = f"▸ {REEL_TITLES[reel]} ◂" if focused else f"  {REEL_TITLES[reel]}"
         draw(stdscr, header_y, x, width, header, attrs["header"] if focused else attrs["dim"])
+        if reel == 1 and not fetched.get("ready"):
+            frame = SPINNER_FRAMES[fetched.get("ticks", 0) % len(SPINNER_FRAMES)]
+            draw(stdscr, center_y, x, width, f"{frame} fetching models…", attrs["dim"])
+            return
         # The selected row is pinned to the reel's vertical center; the list
         # scrolls underneath it as the cursor moves.
         offset = cursor - body // 2
@@ -1258,6 +1294,9 @@ def run_reel_picker(
 
     def render(stdscr: Any, attrs: dict[str, int]) -> None:
         stdscr.erase()
+        if fetched.get("ready") and not fetched.get("applied"):
+            fetched["applied"] = True
+            state.swap_index(fetched["index"])
         rows, cols = stdscr.getmaxyx()
         if cols < MIN_PICKER_COLS or rows < MIN_PICKER_ROWS:
             message = f"terminal too small (need {MIN_PICKER_COLS}x{MIN_PICKER_ROWS})"
@@ -1314,9 +1353,16 @@ def run_reel_picker(
                 "dim": curses.A_DIM,
                 "normal": curses.A_NORMAL,
             }
+        # Wake periodically so the spinner animates and the fetched index is
+        # picked up even when the user isn't typing.
+        stdscr.timeout(120)
         while True:
             render(stdscr, attrs)
             key = stdscr.getch()
+            if key == -1:  # timeout, no input
+                if not fetched.get("ready"):
+                    fetched["ticks"] = fetched.get("ticks", 0) + 1
+                continue
             if key == curses.KEY_MOUSE:
                 try:
                     _, x, y, _, button = curses.getmouse()
@@ -1371,15 +1417,16 @@ def choose_launch(
     registry: dict[str, Any],
 ) -> tuple[str, str, str | None, str | None] | str | None:
     providers = enabled_providers(registry)
-    index = merged_model_index(registry)
-    if not providers and not index:
+    if not providers and not catalog_model_index():
         raise UserError("no enabled providers in the registry")
     if picker_available():
         try:
-            return run_reel_picker(providers, registry, index)
+            # The picker fetches the model index in the background so the UI
+            # opens immediately.
+            return run_reel_picker(providers, registry)
         except Exception as exc:
             print(f"opencodex: picker unavailable ({exc}); using prompts", file=sys.stderr)
-    return _choose_launch_fallback(providers, registry, index)
+    return _choose_launch_fallback(providers, registry, merged_model_index(registry))
 
 
 def main() -> int:

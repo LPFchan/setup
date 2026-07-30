@@ -324,6 +324,20 @@ stale = namespace["ReelState"](providers, registry, index, {"commandcode": "comm
 provider_walk(stale, "commandcode")
 assert stale.selected_model() == "commandcode/moonshotai/Kimi-K3"  # silent fallback
 
+# A late-arriving index (background fetch) swaps in without losing the
+# provider cursor, and a remembered model is re-applied to the new list.
+loading = namespace["ReelState"](providers, registry, {}, {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"})
+assert loading.models == []  # spinner state: no models before the fetch lands
+assert "other" not in loading.provider_names
+provider_walk(loading, "commandcode")
+loading.swap_index(index)
+assert loading.selected_provider() == "commandcode"  # provider cursor kept
+assert loading.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"  # remembered re-applied
+assert "other" in loading.provider_names  # late 'other' row appears
+late = namespace["ReelState"](providers, registry, {}, {})
+late.swap_index({"unknown/mystery": {"id": "unknown/mystery", "efforts": []}})
+assert late.provider_names[-2:] == ["other", "Add profile…"]  # inserted before Add profile
+
 # Effort choices follow the server's reasoning-support tier.
 model_efforts = namespace["model_efforts"]
 assert model_efforts({"efforts": ["low", "medium"]}) == ["low", "medium"]  # full: real levels
