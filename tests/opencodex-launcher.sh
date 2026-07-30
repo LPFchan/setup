@@ -706,6 +706,30 @@ assert state.selected_provider() == "commandcode"
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
 assert state.selected_effort() == "medium"
 assert state.selection()[1] == "codex"
+
+# Unlaunched choices are draft picker state: each model keeps its current
+# effort and each provider keeps its current model while the reels are browsed.
+state.focus = 1
+namespace["handle_key"](state, "up")
+assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"
+state.focus = 2
+namespace["handle_key"](state, "up")
+assert state.selected_effort() == "low"
+state.focus = 1
+namespace["handle_key"](state, "down")
+assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
+assert state.selected_effort() == "medium"
+namespace["handle_key"](state, "up")
+assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"
+assert state.selected_effort() == "low"
+state.focus = 0
+namespace["handle_key"](state, "up")
+provider_walk(state, "commandcode")
+assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"
+assert state.selected_effort() == "low"
+assert remembered["models"]["commandcode"] == "commandcode/xiaomi/mimo-v2.5-pro"
+assert remembered["efforts"] == {"commandcode/xiaomi/mimo-v2.5-pro": "medium"}
+
 stale = namespace["ReelState"](
     providers,
     registry,

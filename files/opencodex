@@ -1034,6 +1034,8 @@ class ReelState:
         self.registry = registry
         self.index = index
         self.remembered = remembered or empty_picker_state()
+        self.draft_models = dict(self.remembered.get("models", {}))
+        self.draft_efforts = dict(self.remembered.get("efforts", {}))
         self.harnesses = list(harnesses)
         self.provider_names = list(providers)
         if provider_model_options(OTHER_PROVIDER, registry, index):
@@ -1067,10 +1069,10 @@ class ReelState:
         provider = self.selected_provider()
         self.models = provider_model_options(provider, self.registry, self.index)
         cursor = 0
-        remembered = self.remembered.get("models", {}).get(provider)
-        if remembered is not None:
+        draft = self.draft_models.get(provider)
+        if draft is not None:
             for position, (_, model, _) in enumerate(self.models):
-                if model == remembered:
+                if model == draft:
                     cursor = position
                     break
         self.cursors[1] = cursor
@@ -1079,9 +1081,9 @@ class ReelState:
     def _refresh_efforts(self) -> None:
         efforts = self.efforts()
         model = self.selected_model()
-        remembered = self.remembered.get("efforts", {}).get(model)
-        if remembered in efforts:
-            self.cursors[2] = efforts.index(remembered)
+        draft = self.draft_efforts.get(model)
+        if draft in efforts:
+            self.cursors[2] = efforts.index(draft)
             return
         # Prefer the server's neutral default, else the last entry (the
         # default tier's single choice, or the highest real level).
@@ -1111,15 +1113,32 @@ class ReelState:
     def move_focus(self, delta: int) -> None:
         self.focus = (self.focus + delta) % len(REEL_TITLES)
 
+    def remember_selection(self) -> None:
+        """Keep unlaunched picker choices while navigating between reels."""
+        model = self.selected_model()
+        if model is None:
+            return
+        self.draft_models[self.selected_provider()] = model
+        effort = self.selected_effort()
+        if effort is not None:
+            self.draft_efforts[model] = effort
+
+    def select_cursor(self, reel: int, index: int) -> None:
+        self.remember_selection()
+        self.cursors[reel] = index
+        if reel == 0:
+            self._refresh_provider()
+        elif reel == 1:
+            self._refresh_efforts()
+        self.remember_selection()
+
     def move_cursor(self, delta: int) -> None:
         length = len(self.reel_entries(self.focus))
         if not length:
             return
-        self.cursors[self.focus] = (self.cursors[self.focus] + delta) % length
-        if self.focus == 0:
-            self._refresh_provider()
-        elif self.focus == 1:
-            self._refresh_efforts()
+        self.select_cursor(
+            self.focus, (self.cursors[self.focus] + delta) % length
+        )
 
     def selected_model(self) -> str | None:
         return self.models[self.cursors[1]][1] if self.models else None
@@ -1242,11 +1261,7 @@ def select_row(state: "ReelState", reel: int, y: int, rows: int, cols: int) -> N
     index = reel_row_at(state, reel, y, rows, cols)
     if index is None:
         return
-    state.cursors[reel] = index
-    if reel == 0:
-        state._refresh_provider()
-    elif reel == 1:
-        state._refresh_efforts()
+    state.select_cursor(reel, index)
 
 
 def handle_mouse(
