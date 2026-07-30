@@ -5,6 +5,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
 export CLAUDEX_REGISTRY="$TMP/registry.json"
+export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"provider":{"foreign":{}},"disabled_providers":["foreign-disabled"]}\n' > "$HOME/.config/opencode/opencode.json"
 printf '{"demo":{"type":"api","key":"demo-key"}}\n' > "$HOME/.local/share/opencode/auth.json"
@@ -16,6 +17,7 @@ cat > "$CLAUDEX_REGISTRY" <<'EOF'
 ]}
 EOF
 printf '{"servers":{"demo":{"baseURL":"http://old-demo","enabled":true},"unused":{"baseURL":"http://old-unused","enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models.json"
+printf '{"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models-state.json"
 
 python3 - <<PY
 import copy, importlib.machinery, importlib.util, json, os, sys
@@ -39,14 +41,35 @@ servers = m._load_servers()
 assert set(servers) == {'demo', 'unused'}
 assert servers['demo']['baseURL'] == 'http://demo'
 state = m._load_provider_state()
-assert state == {'providers': {'demo': {'enabled': True}, 'unused': {'enabled': False}}}
+assert state == {'version': 1, 'providers': {'demo': {'enabled': True}, 'unused': {'enabled': False}}}
 assert os.path.exists(m.STATE_PATH)
+assert not os.path.exists(m.LEGACY_STATE_PATH)
+assert not os.path.exists(m.LEGACY_CONFIG_PATH)
+
+# Once neutral state exists, neither legacy input can overwrite it and both
+# obsolete copies are removed after the neutral file validates.
+m.save_json(m.LEGACY_STATE_PATH, {'providers': {'demo': {'enabled': False}}})
+m.save_json(m.LEGACY_CONFIG_PATH, {'servers': {'demo': {'enabled': False}}})
+assert m._load_provider_state() == state
+assert m.load_json(m.STATE_PATH) == state
+assert not os.path.exists(m.LEGACY_STATE_PATH)
+assert not os.path.exists(m.LEGACY_CONFIG_PATH)
+
+# The oldest combined config still migrates directly into the neutral schema.
+os.remove(m.STATE_PATH)
+m.save_json(m.LEGACY_CONFIG_PATH, {
+    'servers': {
+        'demo': {'baseURL': 'http://old-demo', 'enabled': True},
+        'unused': {'baseURL': 'http://old-unused', 'enabled': False},
+    },
+})
+assert m._load_provider_state() == state
 assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 
 legacy = {'servers': {'private-only': {'baseURL': 'https://private.invalid/v1', 'enabled': False}}}
 os.remove(m.STATE_PATH)
 m.save_json(m.LEGACY_CONFIG_PATH, legacy)
-assert m._load_provider_state() == {'providers': {}}
+assert m._load_provider_state() == {'version': 1, 'providers': {}}
 assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 m.save_json_atomic(m.STATE_PATH, state)
 
@@ -117,6 +140,13 @@ assert captured['token'] == 'secret-token'
 with open(m.STATE_PATH, 'w') as handle:
     handle.write('{truncated')
 assert not m._provider_enabled('demo', servers['demo'])
+
+# An unreadable migration source is never deleted.
+os.remove(m.STATE_PATH)
+with open(m.LEGACY_STATE_PATH, 'w') as handle:
+    handle.write('{truncated')
+assert m._load_provider_state() is None
+assert os.path.exists(m.LEGACY_STATE_PATH)
 PY
 
 echo "refresh-models provider tests passed"

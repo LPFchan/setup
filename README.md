@@ -79,18 +79,20 @@ restores their prior enabled/active states on disable.
 `~/.config/claudex/managed-profiles.json` registry. Both `claudex` and
 `refresh-models` independently install and refresh that snapshot, so either
 module works alone and the registry remains while either consumer is installed.
-Machine-local enable/disable overrides stay in
-`~/.config/opencode/refresh-models-state.json`. Install and update migrate the
-enablement flags from the obsolete `refresh-models.json` provider registry and
-delete that file, leaving provider definitions in one canonical location.
+Machine-local enable/disable overrides are provider-owned state at
+`~/.config/providers/state.json`; both `refresh-models` and the OpenCodex
+launcher consume it. Install and update migrate enablement from the former
+`refresh-models-state.json` file and the obsolete `refresh-models.json` provider
+registry, leaving provider definitions and local preferences in their canonical
+locations.
 Entering a key with
 `refresh-models auth` enables that provider; `refresh-models provider enable
 <provider>` and `refresh-models provider disable <provider>` toggle it without
 adding or deleting its key. `refresh-models provider add` provides the same
 endpoint discovery, model mapping, redacted publish, and provisioning flow as
 Claudex's **Add profile…** action. Disabled providers are mirrored into
-OpenCode's `disabled_providers` list and skipped by manual and scheduled
-refreshes.
+OpenCode's `disabled_providers` list, skipped by manual and scheduled refreshes,
+and hidden from OpenCodex launcher selection.
 
 The `resume` picker reads Claude Code, Codex, OpenCode, Antigravity CLI,
 ForgeCode, Hermes, and Grok Build session stores, then forwards the selected

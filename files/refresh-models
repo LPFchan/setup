@@ -18,7 +18,13 @@ Commands:
 import getpass, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 
-STATE_PATH = os.path.expanduser("~/.config/opencode/refresh-models-state.json")
+PROVIDER_STATE_VERSION = 1
+STATE_PATH = os.path.expanduser(
+    os.environ.get("PROVIDER_STATE_PATH", "~/.config/providers/state.json")
+)
+LEGACY_STATE_PATH = os.path.expanduser(
+    "~/.config/opencode/refresh-models-state.json"
+)
 LEGACY_CONFIG_PATH = os.path.expanduser("~/.config/opencode/refresh-models.json")
 REGISTRY_PATH = os.environ.get(
     "CLAUDEX_REGISTRY",
@@ -516,27 +522,94 @@ def _load_servers():
 
 def _load_provider_state():
     if not os.path.exists(STATE_PATH):
+        migrated = _migrate_refresh_models_provider_state()
+        if migrated is not None:
+            _cleanup_legacy_provider_state()
+            return migrated
+        if os.path.exists(LEGACY_STATE_PATH):
+            return migrated
         return _migrate_legacy_provider_state()
     try:
         data = load_json(STATE_PATH)
     except (OSError, json.JSONDecodeError) as exc:
         print(f"Cannot read provider state {STATE_PATH}; all providers are disabled: {exc}", file=sys.stderr)
         return None
-    if not isinstance(data, dict):
+    if not _valid_provider_state(data):
         print(f"Invalid provider state {STATE_PATH}; all providers are disabled", file=sys.stderr)
         return None
-    if isinstance(data.get("providers"), dict):
-        if os.path.exists(LEGACY_CONFIG_PATH):
-            os.remove(LEGACY_CONFIG_PATH)
-            print(f"Removed obsolete provider registry {LEGACY_CONFIG_PATH}")
-        return data
-    print(f"Invalid provider state {STATE_PATH}; all providers are disabled", file=sys.stderr)
-    return None
+    _cleanup_legacy_provider_state()
+    return data
+
+
+def _valid_provider_state(data):
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != PROVIDER_STATE_VERSION
+        or not isinstance(data.get("providers"), dict)
+    ):
+        return False
+    return all(
+        isinstance(name, str)
+        and NAME_RE.fullmatch(name)
+        and isinstance(entry, dict)
+        and set(entry) == {"enabled"}
+        and isinstance(entry["enabled"], bool)
+        for name, entry in data["providers"].items()
+    )
+
+
+def _cleanup_legacy_provider_state():
+    for path in (LEGACY_STATE_PATH, LEGACY_CONFIG_PATH):
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"Removed obsolete provider state {path}")
+
+
+def _migrate_refresh_models_provider_state():
+    """Move refresh-models' old state into the neutral provider namespace."""
+    if not os.path.exists(LEGACY_STATE_PATH):
+        return None
+    try:
+        data = load_json(LEGACY_STATE_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"Cannot migrate provider state {LEGACY_STATE_PATH}; all providers are disabled: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    providers = data.get("providers") if isinstance(data, dict) else None
+    if not isinstance(providers, dict):
+        print(
+            f"Cannot migrate provider state {LEGACY_STATE_PATH}; all providers are disabled",
+            file=sys.stderr,
+        )
+        return None
+    migrated = {
+        "version": PROVIDER_STATE_VERSION,
+        "providers": {
+            name: {"enabled": entry["enabled"]}
+            for name, entry in providers.items()
+            if isinstance(name, str)
+            and NAME_RE.fullmatch(name)
+            and isinstance(entry, dict)
+            and isinstance(entry.get("enabled"), bool)
+        },
+    }
+    if len(migrated["providers"]) != len(providers):
+        print(
+            f"Cannot migrate invalid provider state {LEGACY_STATE_PATH}; all providers are disabled",
+            file=sys.stderr,
+        )
+        return None
+    save_json_atomic(STATE_PATH, migrated)
+    os.remove(LEGACY_STATE_PATH)
+    print(f"Migrated provider state to {STATE_PATH} and removed {LEGACY_STATE_PATH}")
+    return migrated
 
 
 def _migrate_legacy_provider_state():
     if not os.path.exists(LEGACY_CONFIG_PATH):
-        return {"providers": {}}
+        return {"version": PROVIDER_STATE_VERSION, "providers": {}}
     try:
         data = load_json(LEGACY_CONFIG_PATH)
     except (OSError, json.JSONDecodeError) as exc:
@@ -565,7 +638,7 @@ def _migrate_legacy_provider_state():
     for name, cfg in legacy_servers.items():
         if name in shared_servers and isinstance(cfg, dict) and isinstance(cfg.get("enabled"), bool):
             providers[name] = {"enabled": cfg["enabled"]}
-    migrated = {"providers": providers}
+    migrated = {"version": PROVIDER_STATE_VERSION, "providers": providers}
     save_json_atomic(STATE_PATH, migrated)
     os.remove(LEGACY_CONFIG_PATH)
     print(f"Migrated provider state to {STATE_PATH} and removed {LEGACY_CONFIG_PATH}")

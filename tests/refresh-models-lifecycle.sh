@@ -39,11 +39,13 @@ print '{"servers":{"commandcode":{"enabled":false}}}' \
 install
 [[ -x "$BIN" ]] || fail "standalone install omitted the launcher"
 [[ -f "$REGISTRY" ]] || fail "standalone install omitted the shared registry"
-[[ -f "$HOME/.config/opencode/refresh-models-state.json" ]] \
+[[ -f "$HOME/.config/providers/state.json" ]] \
     || fail "install did not migrate provider enablement state"
 [[ ! -e "$HOME/.config/opencode/refresh-models.json" ]] \
     || fail "install kept the obsolete provider registry"
-grep -q '"enabled": false' "$HOME/.config/opencode/refresh-models-state.json" \
+grep -q '"version": 1' "$HOME/.config/providers/state.json" \
+    || fail "migrated provider state omitted its schema version"
+grep -q '"enabled": false' "$HOME/.config/providers/state.json" \
     || fail "install lost the legacy provider enablement state"
 expect_status 0 current
 

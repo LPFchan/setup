@@ -16,6 +16,7 @@ export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_CONFIG="$HOME/.opencodex/config.json"
 export OPENCODEX_MANAGED="$HOME/.opencodex/setup-managed-providers.json"
+export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
 export OPENCODEX_BIN="$HOME/.local/bin/ocx"
 export CODEX_HOME="$TEST_TMP/codex \"home"
 export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
@@ -209,6 +210,14 @@ grep -q 'unknown reasoning effort: bogus' "$TEST_TMP/effort-error" \
 grep -q 'unknown provider: bogus' "$TEST_TMP/provider-error" \
     || fail "an unknown provider did not produce a clear error"
 
+mkdir -p "$(dirname "$PROVIDER_STATE_PATH")"
+printf '{"version":1,"providers":{"commandcode":{"enabled":false}}}\n' > "$PROVIDER_STATE_PATH"
+! "$ROOT/files/opencodex" run commandcode codex 2>"$TEST_TMP/disabled-provider-error" \
+    || fail "run accepted a locally disabled provider"
+grep -q 'provider is disabled: commandcode' "$TEST_TMP/disabled-provider-error" \
+    || fail "a disabled provider did not produce a clear error"
+rm "$PROVIDER_STATE_PATH"
+
 "$ROOT/files/opencodex" run commandcode grok
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
     || fail "grok harness did not receive the routed default model via -m"
@@ -292,6 +301,92 @@ jq -e '.providers.anthropic.adapter == "anthropic"
     || fail "Anthropic subscription OAuth provider was not rendered"
 jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "OpenCodex provider credentials were not rendered"
+"$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
+    || fail "freshly applied OpenCodex config was not current"
+
+# OpenCodex persists OAuth preset metadata while reconciling providers at
+# service startup. Those runtime-owned fields must not create setup drift.
+cp "$OPENCODEX_CONFIG" "$TEST_TMP/opencodex-config-clean.json"
+python3 - "$OPENCODEX_CONFIG" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as stream:
+    config = json.load(stream)
+provider = config["providers"]["anthropic"]
+provider.update(
+    {
+        "models": ["claude-sonnet-5"],
+        "contextWindow": 200000,
+        "modelContextWindows": {"claude-sonnet-5": 200000},
+        "defaultMaxOutputTokens": 64000,
+        "modelMaxOutputTokens": {"claude-sonnet-5": 64000},
+        "modelInputModalities": {"claude-sonnet-5": ["text", "image"]},
+        "noReasoningModels": [],
+        "noVisionModels": [],
+        "reasoningEfforts": ["low", "medium", "high"],
+        "modelReasoningEfforts": {"claude-sonnet-5": ["low", "high"]},
+        "reasoningEffortMap": {"low": "low"},
+        "modelReasoningEffortMap": {"claude-sonnet-5": {"high": "high"}},
+        "noTemperatureModels": [],
+        "noTopPModels": [],
+        "noPenaltyModels": [],
+        "autoToolChoiceOnlyModels": [],
+        "preserveReasoningContentModels": ["claude-sonnet-5"],
+    }
+)
+with open(path, "w") as stream:
+    json.dump(config, stream)
+PY
+"$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
+    || fail "OpenCodex OAuth runtime reconciliation fields created setup drift"
+
+python3 - "$OPENCODEX_CONFIG" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as stream:
+    config = json.load(stream)
+config["providers"]["anthropic"]["baseUrl"] = "https://drift.example"
+with open(path, "w") as stream:
+    json.dump(config, stream)
+PY
+if "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY"; then
+    fail "setup-owned Anthropic provider drift was ignored"
+fi
+
+cp "$TEST_TMP/opencodex-config-clean.json" "$OPENCODEX_CONFIG"
+python3 - "$OPENCODEX_CONFIG" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as stream:
+    config = json.load(stream)
+# API key values are intentionally redacted from status comparisons.
+config["providers"]["commandcode"]["apiKey"] = "rotated-secret"
+with open(path, "w") as stream:
+    json.dump(config, stream)
+PY
+"$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
+    || fail "API key redaction created setup drift"
+python3 - "$OPENCODEX_CONFIG" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as stream:
+    config = json.load(stream)
+config["providers"]["commandcode"]["models"] = ["runtime-field-must-not-be-ignored"]
+with open(path, "w") as stream:
+    json.dump(config, stream)
+PY
+if "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY"; then
+    fail "runtime-field drift on a key-auth provider was ignored"
+fi
+cp "$TEST_TMP/opencodex-config-clean.json" "$OPENCODEX_CONFIG"
 
 python3 - "$ROOT/files/opencodex" "$OPENCODEX_REGISTRY" <<'PY'
 import copy
@@ -306,6 +401,65 @@ namespace = runpy.run_path(sys.argv[1], run_name="opencodex_test")
 assert namespace["PROVIDER_CONSUMER_MODULES"] == ("claudex", "opencodex", "refresh-models")
 registry = namespace["load_registry"](Path(sys.argv[2]))
 module_globals = namespace["choose_launch"].__globals__
+
+# The neutral provider state overrides OpenAI-compatible registry defaults,
+# while OAuth providers remain registry-owned.
+provider_state_path = Path(tempfile.mkdtemp()) / "state.json"
+module_globals["PROVIDER_STATE"] = provider_state_path
+fallback_providers = namespace["enabled_providers"](registry)
+assert "commandcode" in fallback_providers  # missing file preserves bootstrap behavior
+provider_state_path.write_text(json.dumps({
+    "version": 1,
+    "providers": {
+        "commandcode": {"enabled": False},
+        "codex": {"enabled": False},
+        "anthropic": {"enabled": False},
+    },
+}))
+disabled_providers = namespace["enabled_providers"](registry)
+assert "commandcode" not in disabled_providers
+assert "codex" in disabled_providers and "anthropic" in disabled_providers
+disabled_index = {
+    "commandcode/hidden": {"id": "commandcode/hidden", "efforts": []},
+}
+assert namespace["provider_model_options"]("other", registry, disabled_index) == []
+
+registry_disabled = copy.deepcopy(registry)
+registry_disabled["providers"]["commandcode"]["enabled"] = False
+provider_state_path.write_text(json.dumps({
+    "version": 1,
+    "providers": {"commandcode": {"enabled": True}},
+}))
+assert "commandcode" in namespace["enabled_providers"](registry_disabled)
+
+provider_state_path.write_text(json.dumps({
+    "version": 1,
+    "providers": {"commandcode": {"enabled": False}},
+}))
+original_urlopen = namespace["urllib"].request.urlopen
+try:
+    namespace["urllib"].request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("disabled provider was probed")
+    )
+    assert namespace["provider_support_index"](
+        registry, {"commandcode": {"key": "secret"}}
+    ) == {}
+finally:
+    namespace["urllib"].request.urlopen = original_urlopen
+
+for malformed in (
+    [],
+    {"version": 99, "providers": {}},
+    {"version": 1, "providers": {"commandcode": {"enabled": "no"}}},
+):
+    provider_state_path.write_text(json.dumps(malformed))
+    try:
+        namespace["enabled_providers"](registry)
+    except namespace["UserError"] as exc:
+        assert "provider state" in str(exc)
+    else:
+        raise AssertionError("malformed provider state was accepted")
+provider_state_path.unlink()
 
 # Provider-owned OAuth is completed synchronously before either discovery path.
 events = []

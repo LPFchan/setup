@@ -41,6 +41,10 @@ AUTH_JSON = Path(
         os.environ.get("CLAUDEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json"),
     )
 )
+PROVIDER_STATE_VERSION = 1
+PROVIDER_STATE = Path(
+    os.environ.get("PROVIDER_STATE_PATH", HOME / ".config/providers/state.json")
+).expanduser()
 SESSIONS = Path(
     os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
 )
@@ -48,6 +52,29 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
 # Modules consuming the shared claudex-profiles.json registry.
 PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "refresh-models")
+# OAuth provider presets are reconciled and persisted by OpenCodex at runtime.
+# They are not setup-owned desired state and must not make status report drift.
+OAUTH_RECONCILE_FIELDS = frozenset(
+    {
+        "models",
+        "contextWindow",
+        "modelContextWindows",
+        "defaultMaxOutputTokens",
+        "modelMaxOutputTokens",
+        "modelInputModalities",
+        "noReasoningModels",
+        "noVisionModels",
+        "reasoningEfforts",
+        "modelReasoningEfforts",
+        "reasoningEffortMap",
+        "modelReasoningEffortMap",
+        "noTemperatureModels",
+        "noTopPModels",
+        "noPenaltyModels",
+        "autoToolChoiceOnlyModels",
+        "preserveReasoningContentModels",
+    }
+)
 
 
 class UserError(RuntimeError):
@@ -155,6 +182,35 @@ def load_auth_strict() -> dict[str, Any]:
     if not isinstance(data, dict):
         raise UserError(f"local auth store {AUTH_JSON} must contain a JSON object")
     return data
+
+
+def load_provider_state(path: Path | None = None) -> dict[str, dict[str, bool]]:
+    """Load durable local enablement shared by provider consumers."""
+    if path is None:
+        path = PROVIDER_STATE
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read provider state {path}: {exc}") from exc
+    providers = data.get("providers") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != PROVIDER_STATE_VERSION
+        or not isinstance(providers, dict)
+    ):
+        raise UserError(f"invalid provider state {path}: expected version 1 provider state")
+    if not all(
+        isinstance(name, str)
+        and NAME_RE.fullmatch(name)
+        and isinstance(entry, dict)
+        and set(entry) == {"enabled"}
+        and isinstance(entry["enabled"], bool)
+        for name, entry in providers.items()
+    ):
+        raise UserError(f"invalid provider state {path}: provider entries require boolean enabled")
+    return providers
 
 
 def write_json_atomic(path: Path, data: dict[str, Any], mode: int = 0o600) -> None:
@@ -317,6 +373,10 @@ def opencodex_config_status(registry_path: Path) -> bool:
         for name in managed:
             if isinstance(providers.get(name), dict):
                 providers[name]["apiKey"] = ""
+                descriptor = registry["providers"][name]
+                if descriptor.get("auth", {}).get("type") == "oauth":
+                    for field in OAUTH_RECONCILE_FIELDS:
+                        providers[name].pop(field, None)
     record = load_json_object(OPENCODEX_MANAGED, "managed provider record")
     return original == desired and record == {"version": 1, "providers": sorted(managed)}
 
@@ -479,13 +539,30 @@ def model_efforts(info: dict[str, Any]) -> list[str]:
     return [EFFORT_DEFAULT]
 
 
+def provider_enabled(
+    name: str,
+    descriptor: dict[str, Any],
+    state: dict[str, dict[str, bool]] | None = None,
+) -> bool:
+    """Resolve registry defaults plus local overrides for API-key providers."""
+    if descriptor.get("provider_type") != "OpenAICompatible":
+        return descriptor.get("enabled") is not False
+    if state is None:
+        state = load_provider_state()
+    entry = state.get(name)
+    if entry is not None:
+        return entry["enabled"]
+    return descriptor.get("enabled") is not False
+
+
 def enabled_providers(registry: dict[str, Any]) -> list[str]:
-    """Enabled provider names from the registry, OAuth (codex) included."""
+    """Effective provider names, including registry-governed OAuth providers."""
     providers = registry.get("providers", {})
+    state = load_provider_state()
     names = [
         name
         for name, descriptor in providers.items()
-        if descriptor.get("enabled") is not False
+        if provider_enabled(name, descriptor, state)
     ]
     # OAuth providers (codex) carry no 'enabled' flag; OpenAICompatible ones do.
     for name, descriptor in providers.items():
@@ -624,10 +701,11 @@ def provider_support_index(
         except UserError:
             return {}
     support: dict[str, str] = {}
+    state = load_provider_state()
     for name, descriptor in registry.get("providers", {}).items():
         if descriptor.get("provider_type") != "OpenAICompatible":
             continue
-        if descriptor.get("enabled") is False:
+        if not provider_enabled(name, descriptor, state):
             continue
         base = (descriptor.get("base_url") or "").rstrip("/")
         auth = descriptor.get("auth") or {}
@@ -725,8 +803,9 @@ def ensure_provider_auth(provider: str | None) -> bool:
 def ensure_discovery_auth(registry: dict[str, Any]) -> None:
     """Import/login managed Anthropic OAuth before discovering proxy models."""
     ensure_opencodex()
+    state = load_provider_state()
     for provider, descriptor in registry.get("providers", {}).items():
-        if descriptor.get("enabled") is False:
+        if not provider_enabled(provider, descriptor, state):
             continue
         auth = descriptor.get("auth") or {}
         if (
@@ -1390,7 +1469,7 @@ def choose_launch(
 ) -> tuple[str, str, str | None, str | None] | None:
     providers = enabled_providers(registry)
     if not providers and not catalog_model_index():
-        raise UserError("no enabled providers in the registry")
+        raise UserError("no enabled providers")
     ensure_discovery_auth(registry)
     harnesses = available_harnesses()
     if not harnesses:
@@ -1430,9 +1509,13 @@ def main() -> int:
                 "usage: opencodex run <provider> [--model MODEL] [--effort EFFORT] [claude|codex|grok] [arguments]"
             )
         provider = sys.argv[2]
+        effective_providers = enabled_providers(registry)
         if provider not in registry.get("providers", {}):
-            names = ", ".join(enabled_providers(registry)) or "none"
+            names = ", ".join(effective_providers) or "none"
             raise UserError(f"unknown provider: {provider} (enabled: {names})")
+        if provider not in effective_providers:
+            names = ", ".join(effective_providers) or "none"
+            raise UserError(f"provider is disabled: {provider} (enabled: {names})")
         model, effort, args = split_launch_args(sys.argv[3:])
         harness = "claude"
         if args and args[0] in HARNESSES:
