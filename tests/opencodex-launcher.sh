@@ -63,6 +63,19 @@ case "${1:-}" in
     claude)
         printf '%s\n' "$@" > "$TEST_TMP/claude-args"
         env | grep -E '^(ANTHROPIC_|MAX_THINKING_TOKENS=)' | sort > "$TEST_TMP/claude-env"
+        # The launcher records sessions by diffing ~/.claude/projects, so the
+        # stub must produce the jsonl a real claude run would.
+        sid=""
+        previous=""
+        for arg in "$@"; do
+            case "$previous" in --session-id|--resume|-r) sid="$arg" ;; esac
+            previous="$arg"
+        done
+        if [[ -n "$sid" ]]; then
+            jsonl="$HOME/.claude/projects/-test-proj/$sid.jsonl"
+            mkdir -p "$(dirname "$jsonl")"
+            printf '{"type":"user","message":{"role":"user","content":"turn"}}\n' >> "$jsonl"
+        fi
         ;;
     *) printf '%s\n' "$@" > "$TEST_TMP/ocx-args" ;;
 esac
@@ -208,6 +221,25 @@ uuid.UUID(sys.argv[1])
 PY
 grep -Fqx "$generated_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "new Claude session did not record its generated UUID"
+
+# A resume under the same provider refreshes the row instead of duplicating
+# or clobbering it: the sidecar still holds exactly one line for the sid.
+"$ROOT/files/opencodex" run commandcode claude --resume "$resume_id"
+[[ $(grep -c "^$resume_id"$'\t' "$HOME/.config/opencodex/sessions.tsv") == 1 ]] \
+    || fail "resume duplicated the session mapping"
+grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
+    || fail "resume clobbered the session provider mapping"
+
+# Codex and grok harness sessions stay out of the sidecar: their ids are
+# resumable through their own harnesses, and recording them here would
+# mistag a same-named claude session. The earlier codex/grok launches must
+# not have added rows — only the five claude launches (the picker launch,
+# the --effort default launch, the two resumes, and the new session above)
+# belong, all under provider commandcode.
+[[ $(wc -l < "$HOME/.config/opencodex/sessions.tsv") == 5 ]] \
+    || fail "sidecar holds unexpected rows beyond the five claude sessions"
+! grep -Evq $'\tcommandcode$' "$HOME/.config/opencodex/sessions.tsv" \
+    || fail "a session recorded under something other than its provider"
 
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
 jq -e '.syncResumeHistory == false' "$OPENCODEX_CONFIG" >/dev/null \

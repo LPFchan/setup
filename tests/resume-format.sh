@@ -257,7 +257,7 @@ expected_legacy_args=$(printf '%s\nrun\ncommandcode\n--config\n%s/.config/claude
     || { echo "FAIL: resume dropped legacy clxcc compatibility" >&2; exit 1; }
 
 # OpenCodex-routed Claude sessions have no Claudex model marker. Its launcher
-# records the selected profile in a separate sidecar so resume can route the
+# records the routing provider in a separate sidecar so resume can route the
 # transcript back through OpenCodex without changing Claudex compatibility.
 ocxid="aaaaaaaa-bbbb-cccc-dddd-111111111111"
 ocxcwd="$HOME/opencodex-proj"
@@ -289,6 +289,33 @@ expected_opencodex_args=$(printf '%s\nrun\ncommandcode\nclaude\n--resume\n%s' "$
     || { echo "FAIL: resume did not dispatch the mapped OpenCodex session" >&2; exit 1; }
 [[ $(cat "$TEST_TMP/tmux-args") == $'rename-window\n--\nopencodex' ]] \
     || { echo "FAIL: resume did not set the OpenCodex tmux title" >&2; exit 1; }
+
+# The sidecar speaks provider, not profile: a session recorded under a bare
+# provider name (e.g. a picker-launched codex session) must route through
+# that provider verbatim.
+ocxpid="aaaaaaaa-bbbb-cccc-dddd-222222222222"
+ocxpcwd="$HOME/opencodex-codex-proj"
+mkdir -p "$ocxpcwd" "$HOME/.claude/projects/-home-opencodex-codex-proj"
+ocxpsession="$HOME/.claude/projects/-home-opencodex-codex-proj/$ocxpid.jsonl"
+{
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Picker codex session"}}\n' "$ocxpcwd"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}]}}\n'
+} > "$ocxpsession"
+printf '%s\t%s\n' "$ocxpid" "codex" >> "$HOME/.config/opencodex/sessions.tsv"
+touch -t 202407061300.00 "$ocxpsession"
+
+cat > "$FAKE_BIN/fzf" <<EOF
+#!/usr/bin/env bash
+selection=\$(cat)
+printf '%s\n' "\$selection" | grep 'ocx|' | grep '$ocxpid' | head -1
+EOF
+chmod +x "$FAKE_BIN/fzf"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencodex-provider-stderr"
+
+expected_ocxp_args=$(printf '%s\nrun\ncodex\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxpid")
+[[ $(cat "$TEST_TMP/opencodex-args") == "$expected_ocxp_args" ]] \
+    || { echo "FAIL: resume did not dispatch a provider-named OpenCodex session through its provider" >&2; exit 1; }
 
 # Hermes persists sessions in ~/.hermes/state.db. Only top-level interactive
 # CLI sessions belong in the human resume picker; tool and child sessions must

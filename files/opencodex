@@ -351,13 +351,56 @@ def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | 
         print("Enter a listed number.", file=sys.stderr)
 
 
-def record_session_id(provider: str, sid: str) -> None:
+def session_files() -> dict[Path, int]:
+    root = HOME / ".claude/projects"
+    if not root.exists():
+        return {}
+    result: dict[Path, int] = {}
+    for path in root.glob("*/*.jsonl"):
+        try:
+            result[path] = path.stat().st_mtime_ns
+        except OSError:
+            pass
+    return result
+
+
+def record_session(provider: str, before: dict[Path, int], sid: str | None) -> None:
+    """Map the claude session a launch actually ran to its provider.
+
+    The launch command line alone cannot prove which session ran (a resume
+    arg could name one sid while the harness continues another), so the
+    projects dir is diffed and only a touched jsonl earns a row: the known
+    sid's file when there is one, else the newest touched file (a bare
+    --continue). Rows are replace-on-rewrite so a resume refreshes the
+    mapping instead of appending a duplicate.
+    """
+    touched = [
+        (mtime, path)
+        for path, mtime in session_files().items()
+        if before.get(path) != mtime
+    ]
+    if not touched:
+        return
+    path = None
+    if sid is not None:
+        for _, candidate in touched:
+            if candidate.stem == sid:
+                path = candidate
+                break
+    if path is None and sid is None:
+        path = max(touched)[1]
+    if path is None:
+        return
     SESSIONS.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(SESSIONS, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.write(fd, f"{sid}\t{provider}\n".encode())
-    finally:
-        os.close(fd)
+    entries: list[str] = []
+    if SESSIONS.exists():
+        entries = [
+            line
+            for line in SESSIONS.read_text().splitlines()
+            if not line.startswith(path.stem + "\t")
+        ]
+    entries.append(f"{path.stem}\t{provider}")
+    SESSIONS.write_text("\n".join(entries) + "\n")
 
 
 def session_id_from_args(args: list[str]) -> str | None:
@@ -640,7 +683,6 @@ def launch(
     args: list[str],
     model: str | None = None,
     effort: str | None = None,
-    record: str | None = None,
 ) -> int:
     ensure_opencodex()
     if model is None:
@@ -697,9 +739,10 @@ def launch(
     command.extend(args)
     if provider is not None:
         record_picker_state(provider, routed)
+    before = session_files()
     result = subprocess.run(command, env=env)
-    if sid is not None:
-        record_session_id(record or provider or "custom", sid)
+    if provider is not None:
+        record_session(provider, before, sid)
     return result.returncode
 
 
@@ -1289,7 +1332,7 @@ def main() -> int:
                     f"provider {provider} has no default model; pass --model"
                 )
         model = routed_model(registry, provider, model)
-        return launch(provider, harness, args, model, effort, record=provider)
+        return launch(provider, harness, args, model, effort)
     if len(sys.argv) > 1:
         if not OCX.is_file() or not os.access(OCX, os.X_OK):
             raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
