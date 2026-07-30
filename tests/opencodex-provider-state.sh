@@ -41,6 +41,22 @@ assert namespace["provider_model_options"](
     {"commandcode/hidden": {"id": "commandcode/hidden", "efforts": []}},
 ) == []
 
+# Local status reaches the OpenCodex config, which is what `ocx sync` filters on
+# when it rebuilds the Codex model catalog the desktop picker reads.
+auth = {"commandcode": {"key": "secret"}}
+desired, _ = namespace["desired_opencodex_config"](registry, {}, auth)
+assert desired["providers"]["commandcode"]["disabled"] is True
+state_path.write_text(json.dumps({
+    "version": 1,
+    "providers": {"commandcode": {"enabled": True}},
+}))
+desired, _ = namespace["desired_opencodex_config"](registry, {}, auth)
+assert desired["providers"]["commandcode"]["disabled"] is False
+
+# A local enable never resurrects a provider whose key is gone.
+desired, _ = namespace["desired_opencodex_config"](registry, {}, {})
+assert desired["providers"]["commandcode"]["disabled"] is True
+
 # Explicit local true overrides an OpenAI-compatible registry default.
 registry_disabled = copy.deepcopy(registry)
 registry_disabled["providers"]["commandcode"]["enabled"] = False

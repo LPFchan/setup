@@ -679,6 +679,26 @@ def _sync_opencode_provider_statuses(servers):
     save_json(OPENCODE_PATH, opencode)
 
 
+def _sync_opencodex_provider_statuses():
+    """Mirror provider status into OpenCodex and the Codex model catalog.
+
+    The launcher owns the registry-default plus provider-state resolution, so
+    re-applying it there is what sets each provider's `disabled` flag; `ocx
+    sync` then rebuilds the catalog that Codex's `model_catalog_json` points
+    at, which is where the desktop model picker reads its list.
+    """
+    if not (os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK)):
+        return
+    if subprocess.run([OPENCODEX_BIN, "__apply"]).returncode:
+        print("  OpenCodex config unchanged; run: setup update opencodex", file=sys.stderr)
+        return
+    ocx = shutil.which("ocx")
+    if ocx is None:
+        return
+    if subprocess.run([ocx, "sync"]).returncode:
+        print("  Codex model catalog unchanged; run: ocx sync", file=sys.stderr)
+
+
 def _set_provider_enabled(provider, enabled):
     servers = _load_servers()
     if servers is None:
@@ -701,6 +721,7 @@ def _set_provider_enabled(provider, enabled):
     state.setdefault("providers", {}).setdefault(provider, {})["enabled"] = enabled
     save_json_atomic(STATE_PATH, state)
     _sync_opencode_provider_statuses(servers)
+    _sync_opencodex_provider_statuses()
     print(f"{provider}: {'enabled' if enabled else 'disabled'}")
     return True
 

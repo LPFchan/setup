@@ -92,7 +92,10 @@ adding or deleting its key. `refresh-models provider add` provides the same
 endpoint discovery, model mapping, redacted publish, and provisioning flow as
 Claudex's **Add profile…** action. Disabled providers are mirrored into
 OpenCode's `disabled_providers` list, skipped by manual and scheduled refreshes,
-and hidden from OpenCodex launcher selection.
+and hidden from OpenCodex launcher selection. They are also mirrored into
+OpenCodex's own `disabled` flag and resynced through `ocx sync`, so a disabled
+provider's models leave the Codex model catalog too — which is what the Codex
+CLI and the Codex Desktop model picker read.
 
 The `resume` picker reads Claude Code, Codex, OpenCode, Antigravity CLI,
 ForgeCode, Hermes, and Grok Build session stores, then forwards the selected

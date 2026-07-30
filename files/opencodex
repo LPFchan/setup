@@ -306,6 +306,12 @@ def desired_opencodex_config(
     for stale in managed_provider_names() - managed:
         providers.pop(stale, None)
 
+    # Machine-local enablement is provider-owned state, and OpenCodex's own
+    # `disabled` flag is what `ocx sync` filters on when it rebuilds the Codex
+    # model catalog. Mirroring it here is what keeps a disabled provider out of
+    # the Codex model picker, not just out of launcher selection.
+    state = load_provider_state()
+
     for name in sorted(managed):
         descriptor = registry["providers"][name]
         default_model = provider_default_model(registry, name)
@@ -325,13 +331,19 @@ def desired_opencodex_config(
             auth_name = descriptor["auth"]["key"]
             entry = auth_data.get(auth_name, {})
             key = entry.get("key", "") if isinstance(entry, dict) else ""
+            override = state.get(name)
+            enabled = (
+                override["enabled"]
+                if override is not None
+                else descriptor.get("enabled") is True
+            )
             provider.update(
                 {
                     "adapter": "openai-chat",
                     "baseUrl": descriptor["base_url"],
                     "authMode": "key",
                     "apiKey": key,
-                    "disabled": descriptor.get("enabled") is not True or not bool(key),
+                    "disabled": not enabled or not bool(key),
                     "liveModels": True,
                 }
             )
@@ -1492,7 +1504,11 @@ def main() -> int:
         if command == "__validate":
             load_registry(Path(sys.argv[2]))
         elif command == "__apply":
-            apply_opencodex_registry(Path(sys.argv[2]))
+            # The registry path is optional so provider-state consumers can
+            # re-apply enablement without knowing where the snapshot lives.
+            apply_opencodex_registry(
+                Path(sys.argv[2]) if len(sys.argv) > 2 else REGISTRY
+            )
         elif command == "__remove":
             remove_opencodex_managed()
         elif command == "__status":
