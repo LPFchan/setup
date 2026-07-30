@@ -862,6 +862,9 @@ def launch(
     if explicit is not None:
         env["MAX_THINKING_TOKENS"] = EFFORT_THINKING_TOKENS[explicit]
     command = [str(OCX), "claude"]
+    # A settings.json "model" pin outranks ANTHROPIC_MODEL in claude's
+    # precedence; the --model flag is the only override that always wins.
+    command.extend(["--model", routed])
     if "--dangerously-skip-permissions" not in args:
         command.append("--dangerously-skip-permissions")
     sid = session_id_from_args(args)
@@ -1191,11 +1194,11 @@ def handle_mouse(
 
     width, gap = reel_geometry(cols)
     reel = reel_at(x, width, gap)
-    if button & curses.BUTTON4_PRESSED:
+    if button & getattr(curses, "BUTTON4_PRESSED", 0):
         if reel is not None:
             state.focus = reel
         return "up"
-    if button & curses.BUTTON5_PRESSED:
+    if button & getattr(curses, "BUTTON5_PRESSED", 0):
         if reel is not None:
             state.focus = reel
         return "down"
@@ -1317,18 +1320,17 @@ def run_reel_picker(
     def loop(stdscr: Any) -> tuple[str, str, str | None] | str | None:
         curses.curs_set(0)
         stdscr.keypad(True)
-        mouse_events = (
-            curses.BUTTON1_PRESSED
-            | curses.BUTTON1_RELEASED
-            | curses.BUTTON4_PRESSED
-            | curses.BUTTON5_PRESSED
-        )
-        # Horizontal wheel (shift+scroll), drag, and quick clicks are not in
-        # every curses build.
-        for optional in (
-            "BUTTON6_PRESSED", "BUTTON7_PRESSED", "BUTTON1_REPEAT", "BUTTON1_CLICKED",
+        # BUTTON5 (wheel down) and the horizontal wheel are not in every
+        # curses build — macOS ncurses stops at BUTTON4 — so every constant
+        # is looked up defensively.
+        mouse_events = 0
+        for name in (
+            "BUTTON1_PRESSED", "BUTTON1_RELEASED", "BUTTON4_PRESSED",
+            "BUTTON5_PRESSED", "BUTTON6_PRESSED", "BUTTON7_PRESSED",
+            "BUTTON1_REPEAT", "BUTTON1_CLICKED",
         ):
-            mouse_events |= getattr(curses, optional, 0)
+            mouse_events |= getattr(curses, name, 0)
+        curses.mousemask(mouse_events)
         curses.mousemask(mouse_events)
         if curses.has_colors():
             curses.start_color()

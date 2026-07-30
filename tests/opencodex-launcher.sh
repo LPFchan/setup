@@ -111,6 +111,9 @@ rm -f "$TEST_TMP/fzf-call"
 "$ROOT/files/opencodex"
 grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
     || fail "picker model selection did not override ANTHROPIC_MODEL"
+# The --model flag is the only override that beats a settings.json "model" pin.
+[[ $(awk 'previous == "--model" { print; exit } { previous = $0 }' "$TEST_TMP/claude-args") == "commandcode/$cc_opus" ]] \
+    || fail "claude was not launched with --model <routed model>"
 ! grep -q '^ANTHROPIC_DEFAULT_' "$TEST_TMP/claude-env" \
     || fail "launch still set claude alias model env vars"
 grep -Fqx "MAX_THINKING_TOKENS=128000" "$TEST_TMP/claude-env" \
