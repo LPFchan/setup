@@ -4,7 +4,9 @@
 #
 # Installs a four-reel provider/model/effort/harness launcher at ~/.local/bin/opencodex, a
 # latest OpenCodex runtime, and a setup-managed provider registry snapshot.
-# Profile metadata is fleet state; credentials remain machine-local.
+# Routing is provider-only; provider metadata is fleet state (shared with
+# claudex and refresh-models via files/claudex-profiles.json) while
+# credentials remain machine-local.
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
@@ -136,13 +138,13 @@ _install_assets() {
     mv "$bin_tmp" "$BIN"
 }
 
-_apply_all_profiles() {
+_apply_all_providers() {
     OPENCODEX_AUTH_JSON="$AUTH_JSON" OPENCODEX_BIN="$OPENCODEX_BIN" \
         OPENCODEX_CONFIG="$OPENCODEX_CONFIG" OPENCODEX_MANAGED="$OPENCODEX_MANAGED" \
         python3 "$BIN" __apply "$REGISTRY"
 }
 
-_profiles_current() {
+_providers_current() {
     OPENCODEX_AUTH_JSON="$AUTH_JSON" OPENCODEX_CONFIG="$OPENCODEX_CONFIG" \
         OPENCODEX_MANAGED="$OPENCODEX_MANAGED" \
         python3 "$BIN" __status "$REGISTRY"
@@ -200,7 +202,7 @@ _apply() {
     hash=$(_desired_hash_from "$staged" "$version")
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
-    _apply_all_profiles || return 1
+    _apply_all_providers || return 1
     _activate_runtime || return 1
     record_script_state "$MODULE" "$(_release_ref "$version")" "$hash" "$hash"
     echo "opencodex: $action -> $BIN"
@@ -234,7 +236,7 @@ status() {
     if (( drift == 0 )); then
         [[ "$installed" == "$version" ]] || drift=1
         _assets_current_from "$staged" || drift=1
-        (( drift == 1 )) || _profiles_current || drift=1
+        (( drift == 1 )) || _providers_current || drift=1
         (( drift == 1 )) || _runtime_active || drift=1
     fi
     rm -rf "$staged"

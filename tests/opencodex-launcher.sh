@@ -34,8 +34,8 @@ import json
 import sys
 
 registry = json.load(open(sys.argv[1]))
-profile = next(p for p in registry["profiles"] if p["name"] == "commandcode")
-models = sorted({profile["default_model"], *profile["models"].values()})
+provider = registry["providers"]["commandcode"]
+models = sorted({provider["default_model"], "moonshotai/Kimi-K3", "MiniMaxAI/MiniMax-M3"})
 catalog = {
     "models": [
         {
@@ -94,8 +94,8 @@ chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" 
 PATH="$TEST_TMP:$PATH"
 export PATH
 
-cc_default="$(jq -r '.profiles[] | select(.name == "commandcode") | .default_model' "$OPENCODEX_REGISTRY")"
-cc_opus="$(jq -r '.profiles[] | select(.name == "commandcode") | .models.opus' "$OPENCODEX_REGISTRY")"
+cc_default="$(jq -r '.providers.commandcode.default_model' "$OPENCODEX_REGISTRY")"
+cc_opus="moonshotai/Kimi-K3"
 # The fallback prompt lists display labels (routing prefix stripped), so the
 # canned answers use the stripped form too.
 printf '%s\n' commandcode "$cc_default" high codex > "$TEST_TMP/fzf-responses"
@@ -125,7 +125,7 @@ grep -Fqx "MAX_THINKING_TOKENS=128000" "$TEST_TMP/claude-env" \
 grep -Fq "\"commandcode\": \"commandcode/$cc_opus\"" "$OPENCODEX_PICKER_STATE" \
     || fail "launch did not update the remembered model for commandcode"
 
-expected_model="commandcode/$(jq -r '.profiles[] | select(.name == "commandcode") | .default_model' "$OPENCODEX_REGISTRY")"
+expected_model="commandcode/$(jq -r '.providers.commandcode.default_model' "$OPENCODEX_REGISTRY")"
 expected_catalog_override=$(python3 - "$CODEX_HOME/opencodex-catalog.json" <<'PY'
 import json
 import sys
@@ -144,7 +144,7 @@ key, value = sys.argv[1].split("=", 1)
 assert tomllib.loads(f"{key} = {value}\n")[key] == sys.argv[2]
 PY
 
-override_model=$(jq -r '.profiles[] | select(.name == "commandcode") | .models.opus' "$OPENCODEX_REGISTRY")
+override_model="$cc_opus"
 "$ROOT/files/opencodex" run commandcode --model "$override_model" codex
 [[ $(head -4 "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s' \
     -c "$expected_catalog_override" -m "commandcode/$override_model")" ]] \
@@ -164,6 +164,11 @@ grep -Fqx -- '--model' "$TEST_TMP/codex-args" && grep -Fqx 'kept' "$TEST_TMP/cod
     || fail "run accepted an invalid effort"
 grep -q 'unknown reasoning effort: bogus' "$TEST_TMP/effort-error" \
     || fail "invalid effort did not produce a clear error"
+
+! "$ROOT/files/opencodex" run bogus codex 2>"$TEST_TMP/provider-error" \
+    || fail "run accepted an unknown provider"
+grep -q 'unknown provider: bogus' "$TEST_TMP/provider-error" \
+    || fail "an unknown provider did not produce a clear error"
 
 "$ROOT/files/opencodex" run commandcode grok
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
@@ -211,6 +216,7 @@ jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null
     || fail "OpenCodex provider credentials were not rendered"
 
 python3 - "$ROOT/files/opencodex" "$OPENCODEX_REGISTRY" <<'PY'
+import copy
 import runpy
 import sys
 from pathlib import Path
@@ -225,6 +231,40 @@ try:
 finally:
     namespace["sys"].platform = original
 assert config["syncResumeHistory"] is True
+assert config["providers"]["commandcode"]["defaultModel"] == "xiaomi/mimo-v2.5-pro"
+assert config["providers"]["kimicode"]["defaultModel"] == "k3"
+
+# A provider-only entry (no same-named profile anywhere) still supplies its
+# defaultModel from the provider descriptor's default_model.
+solo_registry = copy.deepcopy(registry)
+solo_registry["profiles"] = []
+solo_registry["providers"]["soloroute"] = {
+    "provider_type": "OpenAICompatible",
+    "base_url": "https://solo.example/v1",
+    "api_format": "openai",
+    "npm": "@ai-sdk/openai-compatible",
+    "auth": {"type": "api-key", "store": "opencode", "key": "soloroute"},
+    "enabled": True,
+    "default_model": "solo-model",
+}
+namespace["validate_registry"](solo_registry)
+config, _ = namespace["desired_opencodex_config"](solo_registry, {}, {"soloroute": {"key": "k"}})
+assert config["providers"]["soloroute"]["defaultModel"] == "solo-model"
+
+# The validator no longer requires a profiles array...
+namespace["validate_registry"]({"version": 1, "providers": registry["providers"]})
+bare = copy.deepcopy(registry)
+del bare["profiles"]
+namespace["validate_registry"](bare)
+# ...but a malformed provider default_model is still rejected.
+broken = copy.deepcopy(registry)
+broken["providers"]["commandcode"]["default_model"] = ""
+try:
+    namespace["validate_registry"](broken)
+except namespace["UserError"]:
+    pass
+else:
+    raise AssertionError("an empty provider default_model was accepted")
 
 index = {
     "gpt-5.6-sol": {"id": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "default_effort": "low"},
@@ -251,7 +291,7 @@ other = namespace["provider_model_options"]("other", registry, index)
 assert [model for _, model, _ in other] == ["unknown/mystery"]  # bare ids belong to codex
 
 state = namespace["ReelState"](providers, registry, index, list(namespace["HARNESSES"]), {})
-assert state.provider_names == providers + ["other", "Add profile…"]
+assert state.provider_names == providers + ["other"]
 
 def provider_walk(current, target):
     current.focus = 0  # provider-walk loops spin forever on any other reel
@@ -318,8 +358,7 @@ assert first_row + body <= rows - 1  # and it never spills onto the hint row
 assert first_row >= header_y + 1
 provider_walk(state, "other")
 namespace["handle_key"](state, "down")
-assert state.selected_provider() == "Add profile…"
-assert namespace["handle_key"](state, "enter") == "add"
+assert state.selected_provider() == providers[0]  # the reel wraps
 assert namespace["handle_key"](state, "cancel") == "cancel"
 
 # Last-used memory seeds the model cursor; stale entries fall back to first.
@@ -355,7 +394,7 @@ assert loading.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"  # remembe
 assert "other" in loading.provider_names  # late 'other' row appears
 late = namespace["ReelState"](providers, registry, {}, list(namespace["HARNESSES"]), {})
 late.swap_index({"unknown/mystery": {"id": "unknown/mystery", "efforts": []}})
-assert late.provider_names[-2:] == ["other", "Add profile…"]  # inserted before Add profile
+assert late.provider_names[-1] == "other"  # the late 'other' row appears last
 
 # The picker only offers harnesses whose subprocess entry points resolve.
 original_which = namespace["shutil"].which

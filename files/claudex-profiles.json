@@ -7,7 +7,8 @@
       "auth": {
         "type": "oauth",
         "provider": "chatgpt"
-      }
+      },
+      "default_model": "gpt-5.6-sol"
     },
     "grimoire": {
       "provider_type": "OpenAICompatible",
@@ -43,7 +44,8 @@
         "store": "opencode",
         "key": "commandcode"
       },
-      "enabled": true
+      "enabled": true,
+      "default_model": "xiaomi/mimo-v2.5-pro"
     },
     "kimicode": {
       "provider_type": "OpenAICompatible",
@@ -55,7 +57,8 @@
         "store": "opencode",
         "key": "kimicode"
       },
-      "enabled": true
+      "enabled": true,
+      "default_model": "k3"
     }
   },
   "profiles": [

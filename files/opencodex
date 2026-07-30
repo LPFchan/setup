@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import getpass
 import json
 import os
 from pathlib import Path
@@ -45,14 +44,9 @@ AUTH_JSON = Path(
 SESSIONS = Path(
     os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
 )
-SETUP_REPO = os.environ.get("OPENCODEX_SETUP_REPO", "git@github.com:LPFchan/setup.git")
-SETUP_BIN = os.environ.get("OPENCODEX_SETUP_BIN", "setup")
-RAW_REPO = os.environ.get(
-    "OPENCODEX_RAW_REPO", "https://raw.githubusercontent.com/LPFchan/setup"
-)
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROVIDER_TYPES = {"OpenAICompatible", "OpenAIResponses"}
-STRIP_PARAMS = {"Auto", "None", "All"}
+# Modules consuming the shared claudex-profiles.json registry.
 PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "refresh-models")
 
 
@@ -82,17 +76,24 @@ def _string(value: Any, field: str) -> str:
 def validate_registry(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("version") != 1:
         raise UserError("registry version must be 1")
+    # The registry file is shared with claudex and refresh-models, which
+    # remain profile-based; opencodex routes by provider alone and only
+    # loosely tolerates the array when present.
     profiles = data.get("profiles")
-    if not isinstance(profiles, list) or not profiles:
-        raise UserError("registry profiles must be a non-empty list")
-    providers = data.get("providers", {})
-    if providers and not isinstance(providers, dict):
-        raise UserError("registry providers must be an object")
+    if profiles is None:
+        profiles = []
+    if not isinstance(profiles, list):
+        raise UserError("registry profiles must be a list")
+    providers = data.get("providers")
+    if not isinstance(providers, dict) or not providers:
+        raise UserError("registry providers must be a non-empty object")
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise UserError(f"invalid provider: {provider_name}")
         if provider.get("provider_type") not in PROVIDER_TYPES:
             raise UserError(f"invalid provider_type for {provider_name}")
+        if provider.get("default_model") is not None:
+            _string(provider["default_model"], f"default_model for {provider_name}")
         base_url = _string(provider.get("base_url"), f"base_url for {provider_name}")
         if not valid_base_url(base_url):
             raise UserError(f"invalid base_url for {provider_name}")
@@ -114,49 +115,16 @@ def validate_registry(data: Any) -> dict[str, Any]:
         else:
             _string(auth.get("provider"), f"oauth provider for {provider_name}")
     seen: set[str] = set()
-    for profile in profiles:
-        if not isinstance(profile, dict):
-            raise UserError("each profile must be an object")
-        name = _string(profile.get("name"), "profile name")
+    for entry in profiles:
+        if not isinstance(entry, dict):
+            raise UserError("each entry in the registry's profile array must be an object")
+        name = _string(entry.get("name"), "profile name")
         if not NAME_RE.fullmatch(name) or name in seen:
             raise UserError(f"invalid or duplicate profile name: {name}")
         seen.add(name)
-        provider_name = profile.get("provider")
-        if provider_name is not None and providers and provider_name not in providers:
+        provider_name = entry.get("provider")
+        if provider_name is not None and provider_name not in providers:
             raise UserError(f"unknown provider for {name}: {provider_name}")
-        if provider_name in providers:
-            provider = providers[provider_name]
-            for field in ("provider_type", "base_url", "auth"):
-                if profile.get(field) != provider.get(field):
-                    raise UserError(f"{field} for {name} disagrees with provider {provider_name}")
-        if profile.get("provider_type") not in PROVIDER_TYPES:
-            raise UserError(f"invalid provider_type for {name}")
-        base_url = _string(profile.get("base_url"), f"base_url for {name}")
-        if not valid_base_url(base_url):
-            raise UserError(f"invalid base_url for {name}")
-        _string(profile.get("default_model"), f"default_model for {name}")
-        if not isinstance(profile.get("priority"), int):
-            raise UserError(f"priority for {name} must be an integer")
-        if not isinstance(profile.get("enabled"), bool):
-            raise UserError(f"enabled for {name} must be a boolean")
-        if profile.get("strip_params") not in STRIP_PARAMS:
-            raise UserError(f"invalid strip_params for {name}")
-        models = profile.get("models")
-        if not isinstance(models, dict) or set(models) != {"haiku", "sonnet", "opus"}:
-            raise UserError(f"models for {name} must map haiku, sonnet, and opus")
-        for alias in ("haiku", "sonnet", "opus"):
-            _string(models[alias], f"{alias} model for {name}")
-        auth = profile.get("auth")
-        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key"}:
-            raise UserError(f"invalid auth descriptor for {name}")
-        if auth["type"] == "oauth":
-            _string(auth.get("provider"), f"oauth provider for {name}")
-        else:
-            if auth.get("store") != "opencode":
-                raise UserError(f"unsupported auth store for {name}")
-            key = _string(auth.get("key"), f"auth key for {name}")
-            if not NAME_RE.fullmatch(key):
-                raise UserError(f"invalid auth key for {name}")
     return data
 
 
@@ -164,7 +132,7 @@ def load_registry(path: Path = REGISTRY) -> dict[str, Any]:
     try:
         return validate_registry(json.loads(path.read_text()))
     except (OSError, json.JSONDecodeError) as exc:
-        raise UserError(f"cannot read profile registry {path}: {exc}") from exc
+        raise UserError(f"cannot read provider registry {path}: {exc}") from exc
 
 
 def load_auth() -> dict[str, Any]:
@@ -246,16 +214,22 @@ def opencodex_seed() -> dict[str, Any]:
     }
 
 
-def provider_profiles(registry: dict[str, Any], provider_name: str) -> list[dict[str, Any]]:
-    return sorted(
-        [
-            profile
-            for profile in registry["profiles"]
-            if profile.get("provider") == provider_name
-        ],
-        key=lambda profile: profile["priority"],
-        reverse=True,
-    )
+def provider_default_model(registry: dict[str, Any], provider_name: str) -> str | None:
+    """The provider's default model from its registry descriptor.
+
+    The shared registry file still carries a profiles array for claudex and
+    refresh-models, which remain profile-based; a same-named entry there is
+    honored as a one-release fallback only.
+    """
+    provider = registry.get("providers", {}).get(provider_name, {})
+    if provider.get("default_model"):
+        return provider["default_model"]
+    for profile in registry.get("profiles") or []:
+        if isinstance(profile, dict) and profile.get("name") == provider_name:
+            default = profile.get("default_model")
+            if isinstance(default, str) and default:
+                return default
+    return None
 
 
 def desired_opencodex_config(
@@ -278,7 +252,7 @@ def desired_opencodex_config(
 
     for name in sorted(managed):
         descriptor = registry["providers"][name]
-        profiles = provider_profiles(registry, name)
+        default_model = provider_default_model(registry, name)
         auth_name = descriptor["auth"]["key"]
         entry = auth_data.get(auth_name, {})
         key = entry.get("key", "") if isinstance(entry, dict) else ""
@@ -294,12 +268,12 @@ def desired_opencodex_config(
                 "liveModels": True,
             }
         )
-        if profiles:
-            provider["defaultModel"] = profiles[0]["default_model"]
+        if default_model:
+            provider["defaultModel"] = default_model
         else:
             provider.pop("defaultModel", None)
         # Never pin models/selectedModels: with liveModels the proxy serves
-        # each provider's full rotating fleet, not a profile-mapped subset.
+        # each provider's full rotating fleet, not a mapped subset.
         provider.pop("models", None)
         provider.pop("selectedModels", None)
         providers[name] = provider
@@ -362,7 +336,7 @@ def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | 
         )
         return proc.stdout.rstrip("\n") if proc.returncode == 0 else None
     if not sys.stdin.isatty():
-        raise UserError("interactive profile selection requires a TTY")
+        raise UserError("interactive selection requires a TTY")
     print(prompt)
     for index, option in enumerate(options, 1):
         print(f"  {index}. {option}")
@@ -377,161 +351,11 @@ def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | 
         print("Enter a listed number.", file=sys.stderr)
 
 
-def discover_models(base_url: str, token: str) -> list[str]:
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/models",
-        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            payload = json.load(response)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise UserError(f"model discovery failed: {exc}") from exc
-    rows = payload.get("data") if isinstance(payload, dict) else None
-    models = sorted(
-        {row.get("id") for row in rows or [] if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]}
-    )
-    if not models:
-        raise UserError("the endpoint returned no model IDs")
-    return models
-
-
-def run_git(args: list[str], cwd: Path | None = None, capture: bool = False) -> str:
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode:
-        detail = proc.stderr.strip() if proc.stderr else "git command failed"
-        raise UserError(detail)
-    return proc.stdout.rstrip("\r\n") if capture and proc.stdout else ""
-
-
-def store_token(name: str, token: str) -> None:
-    data = load_auth_strict()
-    if name in data:
-        raise UserError(f"the local auth store already contains an entry named {name}")
-    data[name] = {"type": "api", "key": token}
-    AUTH_JSON.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".auth.", dir=AUTH_JSON.parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(tmp_name, AUTH_JSON)
-    finally:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-
-
-def provision_profile(profile: dict[str, Any], token: str) -> None:
-    auth_data = load_auth_strict()
-    if profile["name"] in auth_data:
-        raise UserError(
-            f"the local auth store already contains an entry named {profile['name']}"
-        )
-    with tempfile.TemporaryDirectory(prefix="opencodex-profile-") as temp:
-        clone = Path(temp) / "setup"
-        run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
-        registry_path = clone / "files/claudex-profiles.json"
-        data = load_registry(registry_path)
-        if any(item["name"] == profile["name"] for item in data["profiles"]):
-            raise UserError(f"profile {profile['name']} already exists in the setup repository")
-        if profile["name"] in data.get("providers", {}):
-            raise UserError(f"provider {profile['name']} already exists in the setup repository")
-        data.setdefault("providers", {})[profile["name"]] = {
-            "provider_type": profile["provider_type"],
-            "base_url": profile["base_url"],
-            "api_format": "openai",
-            "npm": "@ai-sdk/openai-compatible",
-            "auth": profile["auth"],
-            "enabled": True,
-        }
-        data["profiles"].append(profile)
-        validate_registry(data)
-        registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        changed = run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
-        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
-            raise UserError("temporary clone contains changes outside the profile registry")
-        run_git(["diff", "--check"], cwd=clone)
-        run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
-        run_git(
-            [
-                "-c", "user.name=opencodex launcher",
-                "-c", "user.email=opencodex@localhost",
-                "commit", "--quiet", "-m", f"Add opencodex profile {profile['name']}",
-            ],
-            cwd=clone,
-        )
-        run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
-        commit = run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
-    store_token(profile["name"], token)
-    env = os.environ.copy()
-    env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
-    proc = subprocess.run([SETUP_BIN, "update", *PROVIDER_CONSUMER_MODULES], env=env)
-    if proc.returncode:
-        raise UserError(
-            "the profile was pushed and its token was stored, but setup provisioning failed; run setup update claudex opencodex refresh-models"
-        )
-
-
-def add_profile(registry: dict[str, Any]) -> None:
-    existing = {profile["name"] for profile in registry["profiles"]}
-    existing.update(registry.get("providers", {}))
-    name = input("Profile name: ").strip()
-    if not NAME_RE.fullmatch(name) or name in existing:
-        raise UserError("profile names must be unique lowercase letters, digits, or hyphens")
-    if name in load_auth_strict():
-        raise UserError("the local auth store already uses that name; choose another profile name")
-    base_url = input("OpenAI-compatible API base URL: ").strip().rstrip("/")
-    if not valid_base_url(base_url):
-        raise UserError("the API base URL must be an HTTP(S) URL")
-    token = getpass.getpass("API token: ")
-    if not token:
-        raise UserError("the API token cannot be empty")
-    models = discover_models(base_url, token)
-    mappings: dict[str, str] = {}
-    for alias in ("opus", "sonnet", "haiku"):
-        selected = choose(f"Map {alias}", models)
-        if selected is None:
-            return
-        mappings[alias] = selected
-    profile = {
-        "name": name,
-        "provider": name,
-        "provider_type": "OpenAICompatible",
-        "base_url": base_url,
-        "auth": {"type": "api-key", "store": "opencode", "key": name},
-        "default_model": mappings["opus"],
-        "priority": max(0, 80 - len(existing)),
-        "enabled": True,
-        "strip_params": "Auto",
-        "models": {"haiku": mappings["haiku"], "sonnet": mappings["sonnet"], "opus": mappings["opus"]},
-    }
-    validate_registry({"version": 1, "profiles": [profile]})
-    print("\nProfile to publish:")
-    print(f"  name: {name}")
-    print(f"  endpoint: {base_url}")
-    for alias in ("opus", "sonnet", "haiku"):
-        print(f"  {alias}: {mappings[alias]}")
-    print("  token: [stored locally]")
-    if input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
-        return
-    provision_profile(profile, token)
-    print(f"opencodex: profile {name} added and provisioned")
-
-
-def record_session_id(profile: str, sid: str) -> None:
+def record_session_id(provider: str, sid: str) -> None:
     SESSIONS.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(SESSIONS, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, f"{sid}\t{profile}\n".encode())
+        os.write(fd, f"{sid}\t{provider}\n".encode())
     finally:
         os.close(fd)
 
@@ -554,20 +378,14 @@ def session_id_from_args(args: list[str]) -> str | None:
     return None
 
 
-def profile_by_name(registry: dict[str, Any], name: str) -> dict[str, Any]:
-    for profile in registry["profiles"]:
-        if profile["name"] == name:
-            return profile
-    raise UserError(f"unknown managed profile: {name}")
-
-
-def routed_model(profile: dict[str, Any], model: str) -> str:
-    auth = profile["auth"]
-    if profile["provider_type"] == "OpenAIResponses" and auth.get("provider") == "chatgpt":
+def routed_model(registry: dict[str, Any], provider: str, model: str) -> str:
+    descriptor = registry.get("providers", {}).get(provider, {})
+    auth = descriptor.get("auth", {})
+    if descriptor.get("provider_type") == "OpenAIResponses" and auth.get("provider") == "chatgpt":
         return model
-    if model.startswith(f"{profile['provider']}/"):
+    if model.startswith(f"{provider}/"):
         return model
-    return f"{profile['provider']}/{model}"
+    return f"{provider}/{model}"
 
 
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -885,7 +703,6 @@ def launch(
     return result.returncode
 
 
-ADD_PROFILE = "Add profile…"
 OTHER_PROVIDER = "other"
 HARNESSES = ("claude", "codex", "grok")
 REEL_TITLES = ("Provider", "Model", "Effort", "Harness")
@@ -987,7 +804,6 @@ class ReelState:
         self.provider_names = list(providers)
         if provider_model_options(OTHER_PROVIDER, registry, index):
             self.provider_names.append(OTHER_PROVIDER)
-        self.provider_names.append(ADD_PROFILE)
         self.focus = 0
         self.cursors = [0, 0, 0, 0]
         self.models: list[tuple[str, str, str | None]] = []
@@ -1001,7 +817,7 @@ class ReelState:
         has_other = OTHER_PROVIDER in self.provider_names
         if provider_model_options(OTHER_PROVIDER, self.registry, index):
             if not has_other:
-                self.provider_names.insert(-1, OTHER_PROVIDER)  # before Add profile
+                self.provider_names.append(OTHER_PROVIDER)
         elif has_other:
             self.provider_names.remove(OTHER_PROVIDER)
             self.cursors[0] = min(self.cursors[0], len(self.provider_names) - 1)
@@ -1009,10 +825,7 @@ class ReelState:
 
     def _refresh_provider(self, initial: bool = False) -> None:
         provider = self.selected_provider()
-        if provider == ADD_PROFILE:
-            self.models = []
-        else:
-            self.models = provider_model_options(provider, self.registry, self.index)
+        self.models = provider_model_options(provider, self.registry, self.index)
         cursor = 0
         remembered = self.remembered.get(provider)
         if remembered is not None:
@@ -1098,7 +911,7 @@ def reel_at(x: int, width: int, gap: int) -> int | None:
 
 
 def handle_key(state: ReelState, action: str) -> str | None:
-    """Returns 'launch', 'add', 'cancel', or None (state mutated in place)."""
+    """Returns 'launch', 'cancel', or None (state mutated in place)."""
     if action == "left":
         state.move_focus(-1)
     elif action == "right":
@@ -1108,8 +921,6 @@ def handle_key(state: ReelState, action: str) -> str | None:
     elif action == "down":
         state.move_cursor(1)
     elif action == "enter":
-        if state.selected_provider() == ADD_PROFILE:
-            return "add"
         if state.selected_model() is None:
             return None
         return "launch"
@@ -1231,7 +1042,7 @@ def run_reel_picker(
     providers: list[str], registry: dict[str, Any], harnesses: list[str]
 ) -> tuple[str, str, str | None, str | None] | str | None:
     """Four-reel provider/model/effort/harness picker. Returns a selection
-    4-tuple, 'add' for the Add-profile flow, or None when cancelled.
+    4-tuple or None when cancelled.
 
     The UI opens immediately with an empty model index; a background thread
     runs merged_model_index() and the model reel spins until it lands."""
@@ -1390,8 +1201,6 @@ def run_reel_picker(
             result = handle_key(state, action)
             if result == "cancel":
                 return None
-            if result == "add":
-                return "add"
             if result == "launch":
                 return state.selection()
 
@@ -1403,16 +1212,13 @@ def _choose_launch_fallback(
     registry: dict[str, Any],
     index: dict[str, dict[str, Any]],
     harnesses: list[str],
-) -> tuple[str, str, str | None, str | None] | str | None:
+) -> tuple[str, str, str | None, str | None] | None:
     names = list(providers)
     if provider_model_options(OTHER_PROVIDER, registry, index):
         names.append(OTHER_PROVIDER)
-    names.append(ADD_PROFILE)
     name = choose("opencodex provider", names)
     if name is None:
         return None
-    if name == ADD_PROFILE:
-        return "add"
     options = provider_model_options(name, registry, index)
     chosen = choose("model", [label for label, _, _ in options])
     if chosen is None:
@@ -1427,7 +1233,7 @@ def _choose_launch_fallback(
 
 def choose_launch(
     registry: dict[str, Any],
-) -> tuple[str, str, str | None, str | None] | str | None:
+) -> tuple[str, str, str | None, str | None] | None:
     providers = enabled_providers(registry)
     if not providers and not catalog_model_index():
         raise UserError("no enabled providers in the registry")
@@ -1458,7 +1264,7 @@ def main() -> int:
         elif command == "__status":
             return 0 if opencodex_config_status(Path(sys.argv[2])) else 1
         elif command == "__names":
-            print("\n".join(item["name"] for item in load_registry(Path(sys.argv[2]))["profiles"]))
+            print("\n".join(load_registry(Path(sys.argv[2]))["providers"]))
         else:
             raise UserError("unknown internal command")
         return 0
@@ -1466,25 +1272,30 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "run":
         if len(sys.argv) < 3:
             raise UserError(
-                "usage: opencodex run <profile> [--model MODEL] [--effort EFFORT] [claude|codex] [arguments]"
+                "usage: opencodex run <provider> [--model MODEL] [--effort EFFORT] [claude|codex|grok] [arguments]"
             )
-        profile = profile_by_name(registry, sys.argv[2])
+        provider = sys.argv[2]
+        if provider not in registry.get("providers", {}):
+            names = ", ".join(enabled_providers(registry)) or "none"
+            raise UserError(f"unknown provider: {provider} (enabled: {names})")
         model, effort, args = split_launch_args(sys.argv[3:])
         harness = "claude"
         if args and args[0] in HARNESSES:
             harness, args = args[0], args[1:]
-        provider = profile["provider"]
-        model = routed_model(profile, profile["default_model"] if model is None else model)
-        return launch(provider, harness, args, model, effort, record=profile["name"])
+        if model is None:
+            model = provider_default_model(registry, provider)
+            if model is None:
+                raise UserError(
+                    f"provider {provider} has no default model; pass --model"
+                )
+        model = routed_model(registry, provider, model)
+        return launch(provider, harness, args, model, effort, record=provider)
     if len(sys.argv) > 1:
         if not OCX.is_file() or not os.access(OCX, os.X_OK):
             raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
         return subprocess.run([str(OCX), *sys.argv[1:]]).returncode
     selection = choose_launch(registry)
     if selection is None:
-        return 0
-    if selection == "add":
-        add_profile(registry)
         return 0
     provider, harness, model, effort = selection
     return launch(provider, harness, [], model, effort)
