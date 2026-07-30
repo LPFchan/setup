@@ -22,6 +22,9 @@ export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
 # Point the live-probe at a dead port: the catalog fixture must be the only
 # model source, otherwise the real ocx on this machine injects extra models.
 export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
+# Disable the per-provider capability probe too: the catalog fixture must be
+# the only source of reasoning metadata in this offline environment.
+export OPENCODEX_CAPABILITY_PROBE=0
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
 cp "$ROOT/files/claudex-profiles.json" "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
@@ -68,6 +71,10 @@ cat > "$TEST_TMP/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$TEST_TMP/codex-args"
 EOF
+cat > "$TEST_TMP/grok" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$TEST_TMP/grok-args"
+EOF
 # Stateful fzf stub: each invocation consumes stdin and prints the next canned
 # selection from fzf-responses, driving the launcher's fallback prompt chain.
 cat > "$TEST_TMP/fzf" <<'EOF'
@@ -79,7 +86,7 @@ n=$((n + 1))
 echo "$n" > "$TEST_TMP/fzf-call"
 sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
-chmod +x "$OPENCODEX_BIN" "$TEST_TMP/codex" "$TEST_TMP/fzf"
+chmod +x "$OPENCODEX_BIN" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/fzf"
 PATH="$TEST_TMP:$PATH"
 export PATH
 
@@ -148,6 +155,17 @@ grep -Fqx -- '--model' "$TEST_TMP/codex-args" && grep -Fqx 'kept' "$TEST_TMP/cod
     || fail "run accepted an invalid effort"
 grep -q 'unknown reasoning effort: bogus' "$TEST_TMP/effort-error" \
     || fail "invalid effort did not produce a clear error"
+
+"$ROOT/files/opencodex" run commandcode grok
+[[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
+    || fail "grok harness did not receive the routed default model via -m"
+"$ROOT/files/opencodex" run commandcode --model "$override_model" grok
+[[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
+    || fail "grok harness did not receive the routed override model via -m"
+
+"$ROOT/files/opencodex" run commandcode --effort default claude
+! grep -q '^MAX_THINKING_TOKENS=' "$TEST_TMP/claude-env" \
+    || fail "'default' effort should not set MAX_THINKING_TOKENS"
 
 resume_id="11111111-2222-4333-8444-555555555555"
 "$ROOT/files/opencodex" run commandcode claude --resume "$resume_id"
@@ -222,18 +240,22 @@ assert [model for _, model, _ in other] == ["unknown/mystery"]  # bare ids belon
 
 state = namespace["ReelState"](providers, registry, index, {})
 assert state.provider_names == providers + ["other", "Add profile…"]
+
+def provider_walk(current, target):
+    current.focus = 0  # provider-walk loops spin forever on any other reel
+    while current.selected_provider() != target:
+        namespace["handle_key"](current, "down")
 sel_provider, harness, model, effort = state.selection()
 assert sel_provider == "codex" and harness == "claude"
-assert model == "gpt-5.6-sol" and effort == "low"  # catalog default effort
-while state.selected_provider() != "commandcode":
-    namespace["handle_key"](state, "down")
+assert model == "gpt-5.6-sol" and effort == "high"  # full tier: top real level
+provider_walk(state, "commandcode")
 namespace["handle_key"](state, "right")
 assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"  # alphabetical first
 namespace["handle_key"](state, "down")
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
 assert state.efforts() == ["low", "medium", "high"]  # effort reel follows the model
 namespace["handle_key"](state, "right")
-assert state.selected_effort() == "medium"  # catalog default for that model
+assert state.selected_effort() == "high"  # full tier: top real level for that model
 namespace["handle_key"](state, "right")
 namespace["handle_key"](state, "down")
 assert state.selection()[1] == "codex"  # harness reel
@@ -246,8 +268,32 @@ namespace["handle_key"](state, "left")  # back through effort...
 namespace["handle_key"](state, "left")  # ...and model...
 namespace["handle_key"](state, "left")  # ...to the provider reel
 assert state.focus == 0
-while state.selected_provider() != "other":
-    namespace["handle_key"](state, "down")
+import curses as curses_mod
+rows, cols = 30, 120
+width, gap = namespace["reel_geometry"](cols)
+wheel_right = getattr(curses_mod, "BUTTON6_PRESSED", None)
+wheel_left = getattr(curses_mod, "BUTTON7_PRESSED", None)
+if wheel_right is not None and wheel_left is not None:
+    namespace["handle_mouse"](state, wheel_right, 0, 0, rows, cols)
+    assert state.focus == 1  # horizontal wheel moves focus like the arrow keys
+    namespace["handle_mouse"](state, wheel_left, 0, 0, rows, cols)
+    assert state.focus == 0
+click = getattr(curses_mod, "BUTTON1_PRESSED", None)
+if click is not None:
+    _, _, _, _, body, first_row = namespace["picker_layout"](rows, cols)
+    reel_x = width + gap  # x offset of reel 1 (model)
+    before = state.cursors[1]
+    target_row = first_row + 2  # two entries below the centered selector
+    namespace["handle_mouse"](state, click, reel_x + 1, target_row, rows, cols)
+    assert state.focus == 1  # a click focuses the reel under the pointer
+    assert state.cursors[1] == min(before + 2, len(state.reel_entries(1)) - 1)
+    drag = getattr(curses_mod, "BUTTON1_REPEAT", None)
+    if drag is not None:
+        namespace["handle_mouse"](state, drag, reel_x + 1, target_row + 1, rows, cols)
+        assert state.cursors[1] == min(before + 3, len(state.reel_entries(1)) - 1)
+    namespace["handle_key"](state, "left")  # mouse assertions end on the model reel
+assert state.focus == 0
+provider_walk(state, "other")
 namespace["handle_key"](state, "down")
 assert state.selected_provider() == "Add profile…"
 assert namespace["handle_key"](state, "enter") == "add"
@@ -256,13 +302,24 @@ assert namespace["handle_key"](state, "cancel") == "cancel"
 # Last-used memory seeds the model cursor; stale entries fall back to first.
 remembered = {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"}
 state = namespace["ReelState"](providers, registry, index, remembered)
-while state.selected_provider() != "commandcode":
-    namespace["handle_key"](state, "down")
+provider_walk(state, "commandcode")
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
 stale = namespace["ReelState"](providers, registry, index, {"commandcode": "commandcode/rotated-out"})
-while stale.selected_provider() != "commandcode":
-    namespace["handle_key"](stale, "down")
+provider_walk(stale, "commandcode")
 assert stale.selected_model() == "commandcode/moonshotai/Kimi-K3"  # silent fallback
+
+# Effort choices follow the server's reasoning-support tier.
+model_efforts = namespace["model_efforts"]
+assert model_efforts({"efforts": ["low", "medium"]}) == ["low", "medium"]  # full: real levels
+assert model_efforts({"efforts": [], "support": "partial"}) == ["none", "default"]  # partial
+assert model_efforts({"efforts": []}) == ["default"]  # none
+assert model_efforts({}) == ["default"]  # absent info -> default
+probe = namespace["_probe_capability"]
+assert probe({"reasoning_effort": True}) is True
+assert probe({"supports_reasoning": True}) is True
+assert probe({"capabilities": ["completion"]}) is False
+assert probe({"capabilities": ["embedding"]}) is False
+assert probe({}) is False
 
 split = namespace["split_launch_args"]
 assert split(["--model", "m", "--effort", "high", "codex", "-x"]) == ("m", "high", ["codex", "-x"])

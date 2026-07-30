@@ -571,7 +571,8 @@ def routed_model(profile: dict[str, Any], model: str) -> str:
 
 
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
-DEFAULT_EFFORTS = ("low", "medium", "high")
+EFFORT_NONE = "none"      # model accepts reasoning but the user disables it
+EFFORT_DEFAULT = "default"  # let the server/harness choose; launcher sends nothing
 EFFORT_THINKING_TOKENS = {
     "low": "4000",
     "medium": "16000",
@@ -583,6 +584,27 @@ EFFORT_THINKING_TOKENS = {
 OCX_MODELS_URL = os.environ.get(
     "OPENCODEX_MODELS_URL", "http://localhost:10100/v1/models"
 )
+# Per-provider capability probing hits each provider's own /v1/models. Tests
+# disable it (and the live probe) so the catalog fixture is the only source.
+OPENCODEX_CAPABILITY_PROBE = os.environ.get("OPENCODEX_CAPABILITY_PROBE", "1") != "0"
+
+
+def model_efforts(info: dict[str, Any]) -> list[str]:
+    """Effort choices for one model, from the server's reasoning support tier.
+
+    The proxy strips per-model capability fields, so support is tiered from
+    the catalog (discrete levels = full) and a per-provider capability probe
+    (boolean/on-off = partial, absent = none):
+
+      full    -> the real levels the server advertised
+      partial -> reasoning exists but no level names: [none, default]
+      none    -> no reasoning support advertised:     [default]
+    """
+    if info.get("efforts"):
+        return list(info["efforts"])
+    if info.get("support") == "partial":
+        return [EFFORT_NONE, EFFORT_DEFAULT]
+    return [EFFORT_DEFAULT]
 
 
 def enabled_providers(registry: dict[str, Any]) -> list[str]:
@@ -664,14 +686,10 @@ def catalog_model_index(
             if isinstance(level, dict) and level.get("effort") in EFFORT_ORDER
         ]
         efforts.sort(key=EFFORT_ORDER.index)
-        default_effort = entry.get("default_reasoning_level")
-        if default_effort not in EFFORT_ORDER:
-            default_effort = "medium"
         model_id = _restore_catalog_slug(slug, known_ids)
-        info = index.setdefault(model_id, {"id": model_id, "efforts": efforts, "default_effort": default_effort})
+        info = index.setdefault(model_id, {"id": model_id, "efforts": efforts})
         if efforts and not info["efforts"]:
             info["efforts"] = efforts
-            info["default_effort"] = default_effort
     return index
 
 
@@ -687,14 +705,85 @@ def live_model_index(url: str = OCX_MODELS_URL, timeout: float = 0.75) -> dict[s
     index: dict[str, dict[str, Any]] = {}
     for row in rows or []:
         if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]:
-            index[row["id"]] = {"id": row["id"], "efforts": [], "default_effort": "medium"}
+            index[row["id"]] = {"id": row["id"], "efforts": []}
     return index
 
 
+def _probe_capability(row: dict[str, Any]) -> bool:
+    """Whether one upstream /v1/models row advertises reasoning support.
+
+    Providers use different shapes: crofai uses a boolean `reasoning_effort`
+    (or `custom_reasoning`), kimicode a boolean `supports_reasoning`, and a
+    non-completion `capabilities` list marks non-reasoning endpoints.
+    """
+    for key in ("reasoning_effort", "custom_reasoning", "supports_reasoning"):
+        if row.get(key):
+            return True
+    capabilities = row.get("capabilities")
+    if isinstance(capabilities, list) and capabilities:
+        if not any(cap in ("completion", "chat") for cap in capabilities):
+            return False
+    return False
+
+
+def provider_support_index(
+    registry: dict[str, Any], auth_data: dict[str, Any] | None = None, timeout: float = 0.9
+) -> dict[str, str]:
+    """Model id -> 'partial', from each provider's own /v1/models capability
+    fields. The proxy nulls these out, so the upstream endpoints are queried
+    directly. Disabled without an OPENCODEX_AUTH_JSON; failures yield {}."""
+    if not OPENCODEX_CAPABILITY_PROBE:
+        return {}
+    if auth_data is None:
+        try:
+            auth_data = load_auth()
+        except UserError:
+            return {}
+    support: dict[str, str] = {}
+    for name, descriptor in registry.get("providers", {}).items():
+        if descriptor.get("provider_type") != "OpenAICompatible":
+            continue
+        if descriptor.get("enabled") is False:
+            continue
+        base = (descriptor.get("base_url") or "").rstrip("/")
+        auth = descriptor.get("auth") or {}
+        entry = auth_data.get(auth.get("key", ""), {})
+        key = entry.get("key", "") if isinstance(entry, dict) else ""
+        if not base or not key:
+            continue
+        request = urllib.request.Request(
+            f"{base}/models",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {key}",
+                # Some edges (Cloudflare) 403 Python's default UA on /models.
+                "User-Agent": "opencodex-launcher",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.load(response)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            continue
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        for row in rows or []:
+            if not (isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]):
+                continue
+            if _probe_capability(row):
+                support[f"{name}/{row['id']}"] = "partial"
+    return support
+
+
 def merged_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Codex catalog + live proxy, merged. The live proxy is the freshness
-    layer (always current when ocx runs); the catalog fills effort metadata.
-    Models unknown to either do not appear (the registry carries none)."""
+    """Codex catalog + live proxy + provider capability probe, merged. The
+    live proxy is the freshness layer (always current when ocx runs); the
+    catalog supplies discrete effort levels; the probe marks reasoning
+    support the proxy strips. Models unknown to all three do not appear.
+
+    The probe is authoritative for the providers it can see: when it reports
+    only partial reasoning support, its verdict overrides the catalog's
+    blanket level list (which ocx writes for every model regardless). The
+    catalog still wins where the probe has no signal (codex, commandcode)."""
     live = live_model_index()
     index: dict[str, dict[str, Any]] = {}
     known_ids = set(live)
@@ -703,11 +792,10 @@ def merged_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
             current = index.setdefault(model_id, dict(info))
             if info["efforts"]:
                 current["efforts"] = list(info["efforts"])
-                current["default_effort"] = info["default_effort"]
-    for info in index.values():
-        if not info["efforts"]:
-            info["efforts"] = list(DEFAULT_EFFORTS)
-            info["default_effort"] = "medium"
+    for model_id, support in provider_support_index(registry).items():
+        info = index.setdefault(model_id, {"id": model_id, "efforts": []})
+        info["support"] = support
+        info["efforts"] = []  # partial support: no discrete levels to offer
     return index
 
 
@@ -730,15 +818,18 @@ def launch(
     ensure_opencodex()
     if model is None:
         raise UserError("a model is required to launch")
-    if effort is not None and effort not in EFFORT_ORDER:
+    if effort is not None and effort not in EFFORT_ORDER + (EFFORT_NONE, EFFORT_DEFAULT):
         raise UserError(f"unknown reasoning effort: {effort}")
+    # "default"/"none" are pass-throughs: send no explicit effort so the
+    # server/harness applies its own. Only real levels are forwarded.
+    explicit = effort if effort in EFFORT_ORDER else None
     routed = model
     if harness == "codex":
         overrides = [
             f"model_catalog_json={json.dumps(str(CODEX_CATALOG), ensure_ascii=False)}"
         ]
-        if effort is not None:
-            overrides.append(f"model_reasoning_effort={json.dumps(effort)}")
+        if explicit is not None:
+            overrides.append(f"model_reasoning_effort={json.dumps(explicit)}")
         command = ["codex"]
         for override in overrides:
             command.extend(["-c", override])
@@ -746,12 +837,21 @@ def launch(
         if provider is not None:
             record_picker_state(provider, routed)
         return subprocess.run(command).returncode
+    if harness == "grok":
+        # Grok Build routes through the proxy's OpenAI-compatible
+        # /v1/chat/completions endpoint. The model reel already holds the full
+        # provider/model route, which ocx auto-registers as an ocx-* alias, so
+        # the route is passed straight through. Grok has no per-request effort
+        # flag; reasoning stays at the server's default for the route.
+        if provider is not None:
+            record_picker_state(provider, routed)
+        return subprocess.run(["grok", "-m", routed, *args]).returncode
     if harness != "claude":
         raise UserError(f"unknown harness: {harness}")
     env = os.environ.copy()
     env["ANTHROPIC_MODEL"] = routed
-    if effort is not None:
-        env["MAX_THINKING_TOKENS"] = EFFORT_THINKING_TOKENS[effort]
+    if explicit is not None:
+        env["MAX_THINKING_TOKENS"] = EFFORT_THINKING_TOKENS[explicit]
     command = [str(OCX), "claude"]
     if "--dangerously-skip-permissions" not in args:
         command.append("--dangerously-skip-permissions")
@@ -775,7 +875,7 @@ def launch(
 
 ADD_PROFILE = "Add profile…"
 OTHER_PROVIDER = "other"
-HARNESSES = ("claude", "codex")
+HARNESSES = ("claude", "codex", "grok")
 REEL_TITLES = ("Provider", "Model", "Effort", "Harness")
 MIN_PICKER_COLS = 70
 MIN_PICKER_ROWS = 12
@@ -841,7 +941,9 @@ def provider_model_options(
     else:
         prefix = f"{provider}/"
         entries = sorted(model_id for model_id in index if model_id.startswith(prefix))
-    return [(model, model, index[model]["default_effort"]) for model in entries]
+    # The third tuple slot is unused; the effort reel derives its choices from
+    # the model's support tier via model_efforts().
+    return [(model, model, None) for model in entries]
 
 
 class ReelState:
@@ -884,13 +986,12 @@ class ReelState:
 
     def _refresh_efforts(self) -> None:
         efforts = self.efforts()
-        default = None
-        if self.models:
-            default = self.models[self.cursors[1]][2]
-        if default in efforts:
-            self.cursors[2] = efforts.index(default)
+        # Prefer the server's neutral default, else the last entry (the
+        # default tier's single choice, or the highest real level).
+        if EFFORT_DEFAULT in efforts:
+            self.cursors[2] = efforts.index(EFFORT_DEFAULT)
         else:
-            self.cursors[2] = min(1, len(efforts) - 1)
+            self.cursors[2] = max(0, len(efforts) - 1)
 
     def selected_provider(self) -> str:
         return self.provider_names[self.cursors[0]]
@@ -899,7 +1000,7 @@ class ReelState:
         if not self.models:
             return []
         model_id = self.models[self.cursors[1]][1]
-        return list(self.index.get(model_id, {}).get("efforts", DEFAULT_EFFORTS))
+        return model_efforts(self.index.get(model_id, {}))
 
     def reel_entries(self, reel: int) -> list[str]:
         if reel == 0:
@@ -1001,7 +1102,7 @@ def split_launch_args(args: list[str]) -> tuple[str | None, str | None, list[str
         if option == "--model":
             model = value
         else:
-            if value not in EFFORT_ORDER:
+            if value not in EFFORT_ORDER + (EFFORT_NONE, EFFORT_DEFAULT):
                 raise UserError(f"unknown reasoning effort: {value}")
             effort = value
     return model, effort, rest
@@ -1015,6 +1116,71 @@ def picker_available() -> bool:
     except ImportError:
         return False
     return True
+
+
+def picker_layout(rows: int, cols: int) -> tuple[int, int, int, int, int, int]:
+    """(width, gap, header_y, center_y, body, first_row) for the reels."""
+    width, gap = reel_geometry(cols)
+    header_y = 2
+    center_y = rows // 2
+    body = min(rows - header_y - 3, 15)
+    body = max(body, 3)
+    if body % 2 == 0:
+        body -= 1  # keep a single unambiguous center row
+    return width, gap, header_y, center_y, body, center_y - body // 2
+
+
+def reel_row_at(
+    state: "ReelState", reel: int, y: int, rows: int, cols: int
+) -> int | None:
+    """Model index under screen row y in the given reel, else None."""
+    _, _, _, _, body, first_row = picker_layout(rows, cols)
+    row = y - first_row
+    if row < 0 or row >= body:
+        return None
+    index = state.cursors[reel] - body // 2 + row
+    entries = state.reel_entries(reel)
+    return index if 0 <= index < len(entries) else None
+
+
+def select_row(state: "ReelState", reel: int, y: int, rows: int, cols: int) -> None:
+    """Move the reel's selection to the entry under screen row y."""
+    index = reel_row_at(state, reel, y, rows, cols)
+    if index is None:
+        return
+    state.cursors[reel] = index
+    if reel == 0:
+        state._refresh_provider()
+    elif reel == 1:
+        state._refresh_efforts()
+
+
+def handle_mouse(
+    state: "ReelState", button: int, x: int, y: int, rows: int, cols: int
+) -> str | None:
+    """Map a mouse event to a picker action, or None when fully handled here."""
+    import curses
+
+    width, gap = reel_geometry(cols)
+    reel = reel_at(x, width, gap)
+    if button & curses.BUTTON4_PRESSED:
+        if reel is not None:
+            state.focus = reel
+        return "up"
+    if button & curses.BUTTON5_PRESSED:
+        if reel is not None:
+            state.focus = reel
+        return "down"
+    if button & getattr(curses, "BUTTON6_PRESSED", 0):
+        return "left"
+    if button & getattr(curses, "BUTTON7_PRESSED", 0):
+        return "right"
+    if button & (curses.BUTTON1_PRESSED | getattr(curses, "BUTTON1_REPEAT", 0)):
+        if reel is None:
+            return None
+        state.focus = reel
+        select_row(state, reel, y, rows, cols)
+    return None
 
 
 def run_reel_picker(
@@ -1082,15 +1248,7 @@ def run_reel_picker(
             stdscr.refresh()
             return
         draw(stdscr, 0, 0, cols, " opencodex ".center(cols - 1), attrs["title"])
-        width, gap = reel_geometry(cols)
-        # A fixed, screen-centered viewport: every reel shares the same center
-        # row, so no reel's length shifts any other reel's position.
-        header_y = 2
-        center_y = rows // 2
-        body = min(rows - header_y - 3, 15)
-        body = max(body, 3)
-        if body % 2 == 0:
-            body -= 1  # keep a single unambiguous center row
+        width, gap, header_y, center_y, body, _ = picker_layout(rows, cols)
         for reel in range(4):
             render_reel(
                 stdscr, reel * (width + gap), header_y, center_y, body, width,
@@ -1103,7 +1261,16 @@ def run_reel_picker(
     def loop(stdscr: Any) -> tuple[str, str, str | None] | str | None:
         curses.curs_set(0)
         stdscr.keypad(True)
-        curses.mousemask(curses.BUTTON4_PRESSED | curses.BUTTON5_PRESSED)
+        mouse_events = (
+            curses.BUTTON1_PRESSED
+            | curses.BUTTON1_RELEASED
+            | curses.BUTTON4_PRESSED
+            | curses.BUTTON5_PRESSED
+        )
+        # Horizontal wheel (shift+scroll) and drag are not in every curses build.
+        for optional in ("BUTTON6_PRESSED", "BUTTON7_PRESSED", "BUTTON1_REPEAT"):
+            mouse_events |= getattr(curses, optional, 0)
+        curses.mousemask(mouse_events)
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
@@ -1132,19 +1299,14 @@ def run_reel_picker(
             key = stdscr.getch()
             if key == curses.KEY_MOUSE:
                 try:
-                    _, x, _, _, button = curses.getmouse()
+                    _, x, y, _, button = curses.getmouse()
                 except curses.error:
                     continue
-                _, cols = stdscr.getmaxyx()
-                width, gap = reel_geometry(cols)
-                reel = reel_at(x, width, gap)
-                if reel is not None:
-                    state.focus = reel
-                if button & curses.BUTTON4_PRESSED:
-                    action = "up"
-                elif button & curses.BUTTON5_PRESSED:
-                    action = "down"
-                else:
+                if button & curses.BUTTON1_RELEASED:
+                    continue
+                rows, cols = stdscr.getmaxyx()
+                action = handle_mouse(state, button, x, y, rows, cols)
+                if action is None:
                     continue
             else:
                 action = translate(key)
@@ -1178,8 +1340,7 @@ def _choose_launch_fallback(
     if chosen is None:
         return None
     model_id = next(model for label, model, _ in options if label == chosen)
-    efforts = index.get(model_id, {}).get("efforts", DEFAULT_EFFORTS)
-    effort = choose("effort", efforts)
+    effort = choose("effort", model_efforts(index.get(model_id, {})))
     if effort is None:
         return None
     harness = choose("harness", list(HARNESSES))
