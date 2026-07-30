@@ -693,9 +693,10 @@ def ensure_opencodex() -> None:
         raise UserError("OpenCodex could not be started")
 
 
-def ensure_provider_auth(provider: str | None) -> None:
+def ensure_provider_auth(provider: str | None) -> bool:
+    """Ensure provider-owned OAuth is usable; return whether login was new."""
     if provider != "anthropic":
-        return
+        return False
     proc = subprocess.run(
         [str(OCX), "account", "list", provider, "--json", "--all"],
         text=True,
@@ -713,9 +714,27 @@ def ensure_provider_auth(provider: str | None) -> None:
         and account.get("needsReauth") is not True
         for account in accounts
     ):
-        return
+        return False
     if subprocess.run([str(OCX), "login", provider]).returncode:
         raise UserError("Anthropic OAuth login failed; run ocx login anthropic")
+    if subprocess.run([str(OCX), "sync"]).returncode:
+        raise UserError("OpenCodex sync failed after Anthropic OAuth login; run ocx sync")
+    return True
+
+
+def ensure_discovery_auth(registry: dict[str, Any]) -> None:
+    """Import/login managed Anthropic OAuth before discovering proxy models."""
+    ensure_opencodex()
+    for provider, descriptor in registry.get("providers", {}).items():
+        if descriptor.get("enabled") is False:
+            continue
+        auth = descriptor.get("auth") or {}
+        if (
+            descriptor.get("provider_type") == "DirectAnthropic"
+            and auth.get("type") == "oauth"
+            and auth.get("provider") == "anthropic"
+        ):
+            ensure_provider_auth(provider)
 
 
 def launch(
@@ -746,7 +765,7 @@ def launch(
             command.extend(["-c", override])
         command.extend(["-m", routed, *args])
         if provider is not None:
-            record_picker_state(provider, routed)
+            record_picker_state(provider, routed, effort, harness)
         return subprocess.run(command).returncode
     if harness == "grok":
         # Grok Build routes through the proxy's OpenAI-compatible
@@ -755,7 +774,7 @@ def launch(
         # the route is passed straight through. Grok has no per-request effort
         # flag; reasoning stays at the server's default for the route.
         if provider is not None:
-            record_picker_state(provider, routed)
+            record_picker_state(provider, routed, effort, harness)
         return subprocess.run(["grok", "-m", routed, *args]).returncode
     if harness != "claude":
         raise UserError(f"unknown harness: {harness}")
@@ -780,7 +799,7 @@ def launch(
         command.extend(["--session-id", sid])
     command.extend(args)
     if provider is not None:
-        record_picker_state(provider, routed)
+        record_picker_state(provider, routed, effort, harness)
     before = session_files()
     result = subprocess.run(command, env=env)
     if provider is not None:
@@ -796,6 +815,7 @@ MIN_PICKER_ROWS = 12
 PICKER_STATE = Path(
     os.environ.get("OPENCODEX_PICKER_STATE", HOME / ".config/opencodex/picker-state.json")
 )
+PICKER_STATE_VERSION = 1
 
 
 def available_harnesses() -> list[str]:
@@ -803,28 +823,66 @@ def available_harnesses() -> list[str]:
     return [harness for harness in HARNESSES if shutil.which(harness) is not None]
 
 
-def load_picker_state() -> dict[str, str]:
-    """Last-used model per provider, tolerating a missing/corrupt state file."""
-    try:
-        data = json.loads(PICKER_STATE.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+def empty_picker_state() -> dict[str, Any]:
     return {
-        provider: model
-        for provider, model in data.items()
-        if isinstance(provider, str) and isinstance(model, str)
+        "version": PICKER_STATE_VERSION,
+        "provider": None,
+        "harness": None,
+        "models": {},
+        "efforts": {},
     }
 
 
-def record_picker_state(provider: str, model: str) -> None:
-    state = load_picker_state()
-    if state.get(provider) == model:
-        return
-    state[provider] = model
+def load_picker_state() -> dict[str, Any]:
+    """Load sanitized picker memory, migrating the legacy provider/model map."""
     try:
-        write_json_atomic(PICKER_STATE, state)
+        data = json.loads(PICKER_STATE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return empty_picker_state()
+    if not isinstance(data, dict):
+        return empty_picker_state()
+    if "version" not in data:
+        state = empty_picker_state()
+        state["models"] = {
+            provider: model
+            for provider, model in data.items()
+            if isinstance(provider, str) and isinstance(model, str)
+        }
+        return state
+    if data.get("version") != PICKER_STATE_VERSION:
+        return empty_picker_state()
+    state = empty_picker_state()
+    if isinstance(data.get("provider"), str):
+        state["provider"] = data["provider"]
+    if isinstance(data.get("harness"), str):
+        state["harness"] = data["harness"]
+    for key in ("models", "efforts"):
+        values = data.get(key)
+        if isinstance(values, dict):
+            state[key] = {
+                name: value
+                for name, value in values.items()
+                if isinstance(name, str) and isinstance(value, str)
+            }
+    return state
+
+
+def record_picker_state(
+    provider: str, model: str, effort: str | None, harness: str
+) -> None:
+    state = load_picker_state()
+    updated = dict(state)
+    updated["provider"] = provider
+    updated["harness"] = harness
+    updated["models"] = dict(state["models"])
+    updated["models"][provider] = model
+    updated["efforts"] = dict(state["efforts"])
+    if effort is not None:
+        updated["efforts"][model] = effort
+    if updated == state:
+        return
+    try:
+        write_json_atomic(PICKER_STATE, updated)
     except OSError:
         pass  # remembering is best-effort; never block a launch on it
 
@@ -880,17 +938,23 @@ class ReelState:
         registry: dict[str, Any],
         index: dict[str, dict[str, Any]],
         harnesses: list[str],
-        remembered: dict[str, str] | None = None,
+        remembered: dict[str, Any] | None = None,
     ) -> None:
         self.registry = registry
         self.index = index
-        self.remembered = remembered or {}
+        self.remembered = remembered or empty_picker_state()
         self.harnesses = list(harnesses)
         self.provider_names = list(providers)
         if provider_model_options(OTHER_PROVIDER, registry, index):
             self.provider_names.append(OTHER_PROVIDER)
         self.focus = 0
         self.cursors = [0, 0, 0, 0]
+        remembered_provider = self.remembered.get("provider")
+        if remembered_provider in self.provider_names:
+            self.cursors[0] = self.provider_names.index(remembered_provider)
+        remembered_harness = self.remembered.get("harness")
+        if remembered_harness in self.harnesses:
+            self.cursors[3] = self.harnesses.index(remembered_harness)
         self.models: list[tuple[str, str, str | None]] = []
         self._refresh_provider(initial=True)
 
@@ -912,7 +976,7 @@ class ReelState:
         provider = self.selected_provider()
         self.models = provider_model_options(provider, self.registry, self.index)
         cursor = 0
-        remembered = self.remembered.get(provider)
+        remembered = self.remembered.get("models", {}).get(provider)
         if remembered is not None:
             for position, (_, model, _) in enumerate(self.models):
                 if model == remembered:
@@ -923,6 +987,11 @@ class ReelState:
 
     def _refresh_efforts(self) -> None:
         efforts = self.efforts()
+        model = self.selected_model()
+        remembered = self.remembered.get("efforts", {}).get(model)
+        if remembered in efforts:
+            self.cursors[2] = efforts.index(remembered)
+            return
         # Prefer the server's neutral default, else the last entry (the
         # default tier's single choice, or the highest real level).
         if EFFORT_DEFAULT in efforts:
@@ -1322,6 +1391,7 @@ def choose_launch(
     providers = enabled_providers(registry)
     if not providers and not catalog_model_index():
         raise UserError("no enabled providers in the registry")
+    ensure_discovery_auth(registry)
     harnesses = available_harnesses()
     if not harnesses:
         raise UserError("no supported harness is installed (claude, codex, or grok)")

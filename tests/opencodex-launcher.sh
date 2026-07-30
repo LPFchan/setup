@@ -61,6 +61,7 @@ cat > "$OPENCODEX_BIN" <<'EOF'
 case "${1:-}" in
     ensure) printf 'ensure\n' >> "$TEST_TMP/ocx-calls" ;;
     account)
+        printf 'account %s\n' "${3:-}" >> "$TEST_TMP/ocx-calls"
         if [[ -e "$TEST_TMP/anthropic-login" ]]; then
             printf '{"accounts":[{"type":"oauth","needsReauth":false}]}\n'
         else
@@ -71,6 +72,7 @@ case "${1:-}" in
         printf 'login %s\n' "${2:-}" >> "$TEST_TMP/ocx-calls"
         touch "$TEST_TMP/anthropic-login"
         ;;
+    sync) printf 'sync\n' >> "$TEST_TMP/ocx-calls" ;;
     claude)
         printf '%s\n' "$@" > "$TEST_TMP/claude-args"
         env | grep -E '^(ANTHROPIC_|MAX_THINKING_TOKENS=)' | sort > "$TEST_TMP/claude-env"
@@ -131,8 +133,18 @@ printf '%s\n' commandcode "$cc_default" high codex > "$TEST_TMP/fzf-responses"
     || fail "fallback picker did not launch codex with the chosen model and effort"
 grep -c -- '--prompt' "$TEST_TMP/fzf-args" | grep -q '^4$' \
     || fail "fallback picker did not prompt for provider, model, effort, and harness"
-grep -Fq "\"commandcode\": \"commandcode/$cc_default\"" "$OPENCODEX_PICKER_STATE" \
-    || fail "launch did not remember the picked model for commandcode"
+jq -e --arg model "commandcode/$cc_default" '
+    .version == 1 and .provider == "commandcode" and .harness == "codex"
+    and .models.commandcode == $model and .efforts[$model] == "high"
+' "$OPENCODEX_PICKER_STATE" >/dev/null \
+    || fail "launch did not remember all four picker selections"
+[[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
+    || fail "pre-discovery authentication did not login exactly once"
+[[ $(grep -c '^sync$' "$TEST_TMP/ocx-calls") == 1 ]] \
+    || fail "fresh pre-discovery login did not sync exactly once"
+[[ $(sed -n '1,4p' "$TEST_TMP/ocx-calls") == "$(printf '%s\n%s\n%s\n%s' \
+    ensure 'account anthropic' 'login anthropic' sync)" ]] \
+    || fail "Anthropic authentication did not finish before model discovery/launch"
 
 printf '%s\n' commandcode "$cc_opus" max claude > "$TEST_TMP/fzf-responses"
 rm -f "$TEST_TMP/fzf-call"
@@ -146,8 +158,11 @@ grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
     || fail "launch still set claude alias model env vars"
 grep -Fqx "MAX_THINKING_TOKENS=128000" "$TEST_TMP/claude-env" \
     || fail "picker effort selection did not set MAX_THINKING_TOKENS"
-grep -Fq "\"commandcode\": \"commandcode/$cc_opus\"" "$OPENCODEX_PICKER_STATE" \
-    || fail "launch did not update the remembered model for commandcode"
+jq -e --arg model "commandcode/$cc_opus" '
+    .provider == "commandcode" and .harness == "claude"
+    and .models.commandcode == $model and .efforts[$model] == "max"
+' "$OPENCODEX_PICKER_STATE" >/dev/null \
+    || fail "launch did not update model, effort, and harness memory"
 
 expected_model="commandcode/$(jq -r '.providers.commandcode.default_model' "$OPENCODEX_REGISTRY")"
 expected_catalog_override=$(python3 - "$CODEX_HOME/opencodex-catalog.json" <<'PY'
@@ -206,10 +221,14 @@ anthropic_default=$(jq -r '.providers.anthropic.default_model' "$OPENCODEX_REGIS
 [[ $(tail -2 "$TEST_TMP/codex-args") == "$(printf '%s\n%s' -m "anthropic/$anthropic_default")" ]] \
     || fail "Anthropic OAuth profile did not route its default model"
 [[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
-    || fail "first Anthropic launch did not authenticate exactly once"
+    || fail "healthy Anthropic account repeated the pre-discovery login"
+[[ $(grep -c '^sync$' "$TEST_TMP/ocx-calls") == 1 ]] \
+    || fail "healthy Anthropic account repeated sync"
 "$ROOT/files/opencodex" run anthropic codex
 [[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
     || fail "authenticated Anthropic launch repeated OAuth login"
+[[ $(grep -c '^sync$' "$TEST_TMP/ocx-calls") == 1 ]] \
+    || fail "authenticated Anthropic launch repeated sync"
 
 "$ROOT/files/opencodex" run commandcode --effort default claude
 ! grep -q '^MAX_THINKING_TOKENS=' "$TEST_TMP/claude-env" \
@@ -276,13 +295,90 @@ jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null
 
 python3 - "$ROOT/files/opencodex" "$OPENCODEX_REGISTRY" <<'PY'
 import copy
+import json
 import runpy
 import sys
+import tempfile
+import types
 from pathlib import Path
 
 namespace = runpy.run_path(sys.argv[1], run_name="opencodex_test")
 assert namespace["PROVIDER_CONSUMER_MODULES"] == ("claudex", "opencodex", "refresh-models")
 registry = namespace["load_registry"](Path(sys.argv[2]))
+module_globals = namespace["choose_launch"].__globals__
+
+# Provider-owned OAuth is completed synchronously before either discovery path.
+events = []
+original_auth = module_globals["ensure_discovery_auth"]
+original_merge = module_globals["merged_model_index"]
+original_picker = module_globals["picker_available"]
+original_harnesses = module_globals["available_harnesses"]
+original_fallback = module_globals["_choose_launch_fallback"]
+try:
+    module_globals["ensure_discovery_auth"] = lambda current: events.append("auth")
+    def fetched(current):
+        assert events == ["auth"]
+        events.append("fetch")
+        return {"anthropic/claude-opus-5": {"id": "anthropic/claude-opus-5", "efforts": []}}
+    module_globals["merged_model_index"] = fetched
+    module_globals["picker_available"] = lambda: False
+    module_globals["available_harnesses"] = lambda: ["codex"]
+    def fallback(providers, current, index, harnesses):
+        assert "anthropic/claude-opus-5" in index
+        events.append("select")
+        return "anthropic", "codex", "anthropic/claude-opus-5", "default"
+    module_globals["_choose_launch_fallback"] = fallback
+    assert namespace["choose_launch"](registry)[2] == "anthropic/claude-opus-5"
+    assert events == ["auth", "fetch", "select"]
+finally:
+    module_globals["ensure_discovery_auth"] = original_auth
+    module_globals["merged_model_index"] = original_merge
+    module_globals["picker_available"] = original_picker
+    module_globals["available_harnesses"] = original_harnesses
+    module_globals["_choose_launch_fallback"] = original_fallback
+
+# A fresh account login syncs once; a healthy account does neither.
+original_run = namespace["subprocess"].run
+calls = []
+def fresh_run(command, **kwargs):
+    calls.append(command[1:])
+    stdout = '{"accounts":[]}' if command[1:3] == ["account", "list"] else ""
+    return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+try:
+    namespace["subprocess"].run = fresh_run
+    assert namespace["ensure_provider_auth"]("anthropic") is True
+    assert calls == [
+        ["account", "list", "anthropic", "--json", "--all"],
+        ["login", "anthropic"],
+        ["sync"],
+    ]
+    calls.clear()
+    def healthy_run(command, **kwargs):
+        calls.append(command[1:])
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout='{"accounts":[{"type":"oauth","needsReauth":false}]}',
+            stderr="",
+        )
+    namespace["subprocess"].run = healthy_run
+    assert namespace["ensure_provider_auth"]("anthropic") is False
+    assert calls == [["account", "list", "anthropic", "--json", "--all"]]
+    def failed_sync_run(command, **kwargs):
+        stdout = '{"accounts":[]}' if command[1:3] == ["account", "list"] else ""
+        return types.SimpleNamespace(
+            returncode=1 if command[1:] == ["sync"] else 0,
+            stdout=stdout,
+            stderr="",
+        )
+    namespace["subprocess"].run = failed_sync_run
+    try:
+        namespace["ensure_provider_auth"]("anthropic")
+    except namespace["UserError"] as exc:
+        assert str(exc) == "OpenCodex sync failed after Anthropic OAuth login; run ocx sync"
+    else:
+        raise AssertionError("a failed post-login sync was ignored")
+finally:
+    namespace["subprocess"].run = original_run
 original = namespace["sys"].platform
 namespace["sys"].platform = "darwin"
 try:
@@ -435,20 +531,63 @@ namespace["handle_key"](state, "down")
 assert state.selected_provider() == providers[0]  # the reel wraps
 assert namespace["handle_key"](state, "cancel") == "cancel"
 
-# Last-used memory seeds the model cursor; stale entries fall back to first.
-remembered = {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"}
+# All four last-used values seed their reels. Effort memory is keyed by the
+# full routed model id so provider/model changes restore the right value.
+remembered = {
+    "version": 1,
+    "provider": "commandcode",
+    "harness": "codex",
+    "models": {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"},
+    "efforts": {"commandcode/xiaomi/mimo-v2.5-pro": "medium"},
+}
 state = namespace["ReelState"](providers, registry, index, list(namespace["HARNESSES"]), remembered)
-provider_walk(state, "commandcode")
+assert state.selected_provider() == "commandcode"
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
+assert state.selected_effort() == "medium"
+assert state.selection()[1] == "codex"
 stale = namespace["ReelState"](
     providers,
     registry,
     index,
     list(namespace["HARNESSES"]),
-    {"commandcode": "commandcode/rotated-out"},
+    {
+        "version": 1,
+        "provider": "rotated-out",
+        "harness": "missing",
+        "models": {providers[0]: "rotated-out/model"},
+        "efforts": {index[next(iter(index))]["id"]: "impossible"},
+    },
 )
-provider_walk(stale, "commandcode")
-assert stale.selected_model() == "commandcode/moonshotai/Kimi-K3"  # silent fallback
+assert stale.selected_provider() == providers[0]
+assert stale.selection()[1] == namespace["HARNESSES"][0]
+assert stale.cursors[1] == 0 and stale.selected_effort() in stale.efforts()
+
+# Disk state round-trips, preserves old effort when a direct run omits it,
+# migrates the legacy flat map in memory, and rejects malformed fields safely.
+state_path = Path(tempfile.mkdtemp()) / "picker-state.json"
+module_globals["PICKER_STATE"] = state_path
+namespace["record_picker_state"]("commandcode", "commandcode/xiaomi/mimo-v2.5-pro", "medium", "codex")
+namespace["record_picker_state"]("commandcode", "commandcode/xiaomi/mimo-v2.5-pro", None, "claude")
+round_trip = namespace["load_picker_state"]()
+assert round_trip == {
+    "version": 1,
+    "provider": "commandcode",
+    "harness": "claude",
+    "models": {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"},
+    "efforts": {"commandcode/xiaomi/mimo-v2.5-pro": "medium"},
+}
+state_path.write_text(json.dumps({"commandcode": "commandcode/moonshotai/Kimi-K3", "bad": 7}))
+legacy = namespace["load_picker_state"]()
+assert legacy["models"] == {"commandcode": "commandcode/moonshotai/Kimi-K3"}
+assert legacy["provider"] is None and legacy["harness"] is None
+for malformed in (
+    "not json",
+    "[]",
+    '{"version":99,"provider":"commandcode"}',
+    '{"version":1,"provider":[],"harness":7,"models":null,"efforts":"high"}',
+):
+    state_path.write_text(malformed)
+    assert namespace["load_picker_state"]() == namespace["empty_picker_state"]()
 
 # A late-arriving index (background fetch) swaps in without losing the
 # provider cursor, and a remembered model is re-applied to the new list.
@@ -457,14 +596,23 @@ loading = namespace["ReelState"](
     registry,
     {},
     list(namespace["HARNESSES"]),
-    {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"},
+    {
+        "version": 1,
+        "provider": "commandcode",
+        "harness": "grok",
+        "models": {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"},
+        "efforts": {"commandcode/xiaomi/mimo-v2.5-pro": "medium"},
+    },
 )
 assert loading.models == []  # spinner state: no models before the fetch lands
 assert "other" not in loading.provider_names
-provider_walk(loading, "commandcode")
+assert loading.selected_provider() == "commandcode"
+assert loading.selection()[1] == "grok"
 loading.swap_index(index)
 assert loading.selected_provider() == "commandcode"  # provider cursor kept
 assert loading.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"  # remembered re-applied
+assert loading.selected_effort() == "medium"
+assert loading.selection()[1] == "grok"  # provider/harness survive the late fetch
 assert "other" in loading.provider_names  # late 'other' row appears
 late = namespace["ReelState"](providers, registry, {}, list(namespace["HARNESSES"]), {})
 late.swap_index({"unknown/mystery": {"id": "unknown/mystery", "efforts": []}})
