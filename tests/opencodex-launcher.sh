@@ -92,7 +92,9 @@ export PATH
 
 cc_default="$(jq -r '.profiles[] | select(.name == "commandcode") | .default_model' "$OPENCODEX_REGISTRY")"
 cc_opus="$(jq -r '.profiles[] | select(.name == "commandcode") | .models.opus' "$OPENCODEX_REGISTRY")"
-printf '%s\n' commandcode "commandcode/$cc_default" high codex > "$TEST_TMP/fzf-responses"
+# The fallback prompt lists display labels (routing prefix stripped), so the
+# canned answers use the stripped form too.
+printf '%s\n' commandcode "$cc_default" high codex > "$TEST_TMP/fzf-responses"
 "$ROOT/files/opencodex"
 [[ $(cat "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
     -c "$(python3 -c 'import json,sys; print("model_catalog_json=" + json.dumps(sys.argv[1]))' "$CODEX_HOME/opencodex-catalog.json")" \
@@ -104,7 +106,7 @@ grep -c -- '--prompt' "$TEST_TMP/fzf-args" | grep -q '^4$' \
 grep -Fq "\"commandcode\": \"commandcode/$cc_default\"" "$OPENCODEX_PICKER_STATE" \
     || fail "launch did not remember the picked model for commandcode"
 
-printf '%s\n' commandcode "commandcode/$cc_opus" max claude > "$TEST_TMP/fzf-responses"
+printf '%s\n' commandcode "$cc_opus" max claude > "$TEST_TMP/fzf-responses"
 rm -f "$TEST_TMP/fzf-call"
 "$ROOT/files/opencodex"
 grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
@@ -229,7 +231,10 @@ providers = namespace["enabled_providers"](registry)
 assert "codex" in providers and "commandcode" in providers and "kimicode" in providers
 
 options = namespace["provider_model_options"]("commandcode", registry, index)
-assert options[0][0] == "commandcode/moonshotai/Kimi-K3"  # alphabetical, no "(default)" labels
+# Labels drop the routing prefix (the provider reel already names it)...
+assert options[0][0] == "moonshotai/Kimi-K3"
+assert [label for label, _, _ in options] == ["moonshotai/Kimi-K3", "xiaomi/mimo-v2.5-pro"]
+# ...while ids keep it, since it makes the model routable.
 assert [model for _, model, _ in options] == [
     "commandcode/moonshotai/Kimi-K3", "commandcode/xiaomi/mimo-v2.5-pro",
 ]

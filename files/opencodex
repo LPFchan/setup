@@ -927,7 +927,9 @@ def provider_model_options(
     """(label, model id, default effort) triples for the model reel.
 
     OAuth providers (codex) serve bare ids; OpenAICompatible providers serve
-    '{provider}/'-prefixed ids; 'other' claims whatever remains.
+    '{provider}/'-prefixed ids; 'other' claims whatever remains. The prefix
+    is routing metadata — the provider reel already names it — so labels
+    drop it for readability while ids keep it.
     """
     providers = registry.get("providers", {})
     if provider == OTHER_PROVIDER:
@@ -952,7 +954,11 @@ def provider_model_options(
         entries = sorted(model_id for model_id in index if model_id.startswith(prefix))
     # The third tuple slot is unused; the effort reel derives its choices from
     # the model's support tier via model_efforts().
-    return [(model, model, None) for model in entries]
+    prefix = f"{provider}/"
+    return [
+        (model[len(prefix):] if model.startswith(prefix) else model, model, None)
+        for model in entries
+    ]
 
 
 class ReelState:
