@@ -446,4 +446,57 @@ actual_grok_args=$(cat "$TEST_TMP/grok-args")
 [[ "$actual_grok_args" == "$expected_grok_args" ]] \
     || { echo "FAIL: resume did not dispatch Grok: $actual_grok_args" >&2; exit 1; }
 
+# Kimi Code stores sessions under ~/.kimi-code/sessions/<workDirKey>/<id>/
+# with state.json (title + timestamps); session_index.jsonl maps the session
+# to its working directory. Sessions without a title must stay out of the
+# picker; real sessions resume via `kimi --session <id>`.
+kmid="session_8a0c1def-382d-4693-bba9-68cccb63753d"
+kmcwd="$HOME/kimi-proj"
+kmdir="$HOME/.kimi-code/sessions/wd_kimi-proj_aabbccddeeff/$kmid"
+mkdir -p "$kmcwd" "$kmdir" "$HOME/.kimi-code/sessions/wd_empty_001122334455/session_00000000-0000-4000-8000-000000000000"
+cat > "$kmdir/state.json" <<'EOF'
+{
+  "createdAt": "2024-07-08T12:00:00.000Z",
+  "updatedAt": "2024-07-08T12:30:00.000Z",
+  "title": "Resume Kimi work",
+  "isCustomTitle": false
+}
+EOF
+cat > "$HOME/.kimi-code/sessions/wd_empty_001122334455/session_00000000-0000-4000-8000-000000000000/state.json" <<'EOF'
+{
+  "createdAt": "2024-07-08T13:00:00.000Z",
+  "updatedAt": "2024-07-08T13:00:00.000Z",
+  "title": "",
+  "isCustomTitle": false
+}
+EOF
+cat > "$HOME/.kimi-code/session_index.jsonl" <<EOF
+{"sessionId":"$kmid","sessionDir":"$kmdir","workDir":"$kmcwd"}
+EOF
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+[[ "$selection" != *"session_00000000-0000-4000-8000-000000000000"* ]] || exit 2
+printf '%s\n' "$selection" | grep 'km|' | head -1
+EOF
+cat > "$FAKE_BIN/kimi" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/kimi-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/kimi"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/kimi-stderr"
+
+expected_tmux_args=$'rename-window\n--\nkimi'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the Kimi tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_kimi_args=$(printf '%s\n--session\n%s' "$FAKE_BIN/kimi" "$kmid")
+actual_kimi_args=$(cat "$TEST_TMP/kimi-args")
+[[ "$actual_kimi_args" == "$expected_kimi_args" ]] \
+    || { echo "FAIL: resume did not dispatch Kimi: $actual_kimi_args" >&2; exit 1; }
+
 echo "resume format tests passed"

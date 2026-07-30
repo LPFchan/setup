@@ -167,6 +167,30 @@ PATH="$TEST_TMP/bin:/usr/bin:/bin" "$zsh_bin" -f -c 'source "$1"; ai' \
 grep -q '^opencodex-dispatched:0$' "$TEST_TMP/launches" \
     || fail "ai-menu did not dispatch the opencodex launcher without profile arguments"
 
+# Kimi Code is a plain harness entry dispatched with no arguments.
+cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
+#!/bin/sh
+case "$1" in
+    --help) echo '--grid-span-prefix=STR'; exit ;;
+esac
+input=$(cat)
+printf '%s\n' "$input" > "$AI_MENU_GRID_INPUT"
+printf 'tool\037kimi\037kimi\n'
+EOF
+cat > "$TEST_TMP/bin/kimi" <<'EOF'
+#!/bin/sh
+printf 'kimi-dispatched:%s\n' "$#" >> "$AI_MENU_TEST_LOG"
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/kimi"
+rm -f "$TEST_TMP/launches"
+AI_MENU_TEST_LOG="$TEST_TMP/launches" AI_MENU_GRID_INPUT="$TEST_TMP/kimi-grid" \
+PATH="$TEST_TMP/bin:/usr/bin:/bin" "$zsh_bin" -f -c 'source "$1"; ai' \
+    zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
+[[ $(grep -c $'tool\037kimi\037kimi' "$TEST_TMP/kimi-grid") -eq 1 ]] \
+    || fail "ai-menu did not expose exactly one kimi entry"
+grep -q '^kimi-dispatched:0$' "$TEST_TMP/launches" \
+    || fail "ai-menu did not dispatch kimi without arguments"
+
 # A pre-capable binary triggers repair on every invocation (no permanent failed
 # marker); if repair does not fix it, ai-menu falls back to plain fzf.
 cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'

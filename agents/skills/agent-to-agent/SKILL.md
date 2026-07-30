@@ -1,6 +1,6 @@
 ---
 name: agent-to-agent
-description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, or Hermes Agent through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
+description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, Hermes Agent, Grok Build, or Kimi Code CLI through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
 ---
 
 # Agent to Agent
@@ -57,6 +57,14 @@ This workflow runs a resumable external child-harness session. Hermes's native
 `delegate_task` is useful for ordinary delegation, but is not a substitute when
 the parent must retain and explicitly resume an external child conversation.
 
+### Kimi Code CLI
+
+When Kimi Code is the orchestrator, pass `run_in_background=true` on the Bash
+tool call; never `nohup`. The run is exempt from the foreground timeout,
+persists across turns, and a completion notification arrives automatically
+when the process exits. Output can be read mid-run with TaskOutput, and
+TaskStop cancels the child.
+
 ## Select the target
 
 - For Codex, read [references/codex.md](references/codex.md) and follow it.
@@ -68,6 +76,9 @@ the parent must retain and explicitly resume an external child conversation.
   [references/antigravity.md](references/antigravity.md) and follow it.
 - For Hermes Agent, read [references/hermes.md](references/hermes.md) and
   follow it.
+- For Grok Build, read [references/grok.md](references/grok.md) and follow it.
+- For Kimi Code CLI, read [references/kimi.md](references/kimi.md) and follow
+  it.
 
 Keep one child session per delegated task. Give the child the goal, working
 directory, relevant context, constraints, and expected result. Review its

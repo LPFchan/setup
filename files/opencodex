@@ -867,6 +867,15 @@ def launch(
         if provider is not None:
             record_picker_state(provider, routed, effort, harness)
         return subprocess.run(["grok", "-m", routed, *args]).returncode
+    if harness == "kimi":
+        # Kimi Code takes a model alias via -m; the route is passed straight
+        # through like the Grok branch. The alias must exist in kimi's own
+        # config.toml ([models."<alias>"]) — ocx does not write kimi config.
+        # Kimi has no per-request effort flag; reasoning stays at the model's
+        # configured default_effort.
+        if provider is not None:
+            record_picker_state(provider, routed, effort, harness)
+        return subprocess.run(["kimi", "-m", routed, *args]).returncode
     if harness != "claude":
         raise UserError(f"unknown harness: {harness}")
     env = os.environ.copy()
@@ -899,7 +908,7 @@ def launch(
 
 
 OTHER_PROVIDER = "other"
-HARNESSES = ("claude", "codex", "grok")
+HARNESSES = ("claude", "codex", "grok", "kimi")
 REEL_TITLES = ("Provider", "Model", "Effort", "Harness")
 MIN_PICKER_COLS = 70
 MIN_PICKER_ROWS = 12
@@ -1500,7 +1509,7 @@ def choose_launch(
     ensure_discovery_auth(registry)
     harnesses = available_harnesses()
     if not harnesses:
-        raise UserError("no supported harness is installed (claude, codex, or grok)")
+        raise UserError("no supported harness is installed (claude, codex, grok, or kimi)")
     if picker_available():
         try:
             # The picker fetches the model index in the background so the UI
@@ -1537,7 +1546,7 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "run":
         if len(sys.argv) < 3:
             raise UserError(
-                "usage: opencodex run <provider> [--model MODEL] [--effort EFFORT] [claude|codex|grok] [arguments]"
+                "usage: opencodex run <provider> [--model MODEL] [--effort EFFORT] [claude|codex|grok|kimi] [arguments]"
             )
         provider = sys.argv[2]
         effective_providers = enabled_providers(registry)

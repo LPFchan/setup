@@ -109,6 +109,10 @@ cat > "$TEST_TMP/grok" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$TEST_TMP/grok-args"
 EOF
+cat > "$TEST_TMP/kimi" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$TEST_TMP/kimi-args"
+EOF
 # Stateful fzf stub: each invocation consumes stdin and prints the next canned
 # selection from fzf-responses, driving the launcher's fallback prompt chain.
 cat > "$TEST_TMP/fzf" <<'EOF'
@@ -120,7 +124,7 @@ n=$((n + 1))
 echo "$n" > "$TEST_TMP/fzf-call"
 sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
-chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/fzf"
+chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/kimi" "$TEST_TMP/fzf"
 PATH="$TEST_TMP:$PATH"
 export PATH
 
@@ -228,6 +232,13 @@ rm "$PROVIDER_STATE_PATH"
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "grok harness did not receive the routed override model via -m"
 
+"$ROOT/files/opencodex" run commandcode kimi
+[[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
+    || fail "kimi harness did not receive the routed default model via -m"
+"$ROOT/files/opencodex" run commandcode --model "$override_model" kimi
+[[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
+    || fail "kimi harness did not receive the routed override model via -m"
+
 anthropic_default=$(jq -r '.providers.anthropic.default_model' "$OPENCODEX_REGISTRY")
 "$ROOT/files/opencodex" run anthropic codex
 [[ $(tail -2 "$TEST_TMP/codex-args") == "$(printf '%s\n%s' -m "anthropic/$anthropic_default")" ]] \
@@ -282,10 +293,10 @@ grep -Fqx "$generated_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv"
 grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "resume clobbered the session provider mapping"
 
-# Codex and grok harness sessions stay out of the sidecar: their ids are
-# resumable through their own harnesses, and recording them here would
-# mistag a same-named claude session. The earlier codex/grok launches must
-# not have added rows — only the five claude launches (the picker launch,
+# Codex, grok, and kimi harness sessions stay out of the sidecar: their ids
+# are resumable through their own harnesses, and recording them here would
+# mistag a same-named claude session. The earlier codex/grok/kimi launches
+# must not have added rows — only the five claude launches (the picker launch,
 # the --effort default launch, the two resumes, and the new session above)
 # belong, all under provider commandcode.
 # Arithmetic, not string, comparison: BSD wc pads its count with spaces.

@@ -11,6 +11,8 @@ Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/
 
 - **hermes**: use `background=true` + `notify_on_complete=true` for long-running
   terminal tasks (builds, downloads, training, data processing).
+- **kimi**: use `run_in_background=true` on the Bash tool for long-running
+  terminal tasks; completion notifications arrive automatically.
 - **opencode**: use `nohup` for long-running terminal tasks (survives the tool
   timeout). Config: `~/.config/opencode/opencode.json`.
 

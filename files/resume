@@ -10,7 +10,8 @@ usage() {
 Usage: resume [--help]
 
   Interactively pick and resume a Claude Code, Codex, OpenCode,
-  Antigravity CLI, ForgeCode, Hermes, or Grok Build session via fzf.
+  Antigravity CLI, ForgeCode, Hermes, Grok Build, or Kimi Code
+  session via fzf.
 
   Without arguments, opens an fzf picker of recent sessions. Selecting
   a session resumes it with the appropriate tool.
@@ -31,6 +32,7 @@ AGY_LAST_CACHE="$HOME/.gemini/antigravity-cli/cache/last_conversations.json"
 FG_DB="$HOME/.forge/.forge.db"
 HERMES_DB="$HOME/.hermes/state.db"
 GROK_DIR="$HOME/.grok/sessions"
+KIMI_DIR="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
 MAX_SESSIONS=100
 # Only the newest SCAN_LIMIT files per source get the expensive per-file jq
 # extraction; the merged list is then trimmed to MAX_SESSIONS. Without this the
@@ -398,6 +400,61 @@ for ts, sid, cwd, title in rows[:limit]:
     print(f"{ts}|gk|{sid}|{cwd}|{title}")
 PYEOF
     fi
+
+    # Kimi Code stores sessions/<workDirKey>/<sessionId>/state.json (title and
+    # timestamps) under ~/.kimi-code, with session_index.jsonl mapping
+    # sessionId -> workDir. Empty sessions (no title yet) are omitted so the
+    # picker stays useful.
+    if [[ -d "$KIMI_DIR/sessions" ]]; then
+        python3 - "$KIMI_DIR" "$HOME" "$SCAN_LIMIT" << 'PYEOF'
+import json, sys
+from datetime import datetime
+from pathlib import Path
+
+root, home, limit = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+workdirs = {}
+index = root / "session_index.jsonl"
+if index.is_file():
+    try:
+        for line in index.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            sid, wd = rec.get("sessionId"), rec.get("workDir")
+            if sid and wd:
+                workdirs[sid] = wd
+    except Exception:
+        pass
+
+rows = []
+for state in root.glob("sessions/*/*/state.json"):
+    try:
+        data = json.loads(state.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    sid = state.parent.name
+    title = (data.get("title") or "").strip()
+    if not title:
+        continue
+    cwd = workdirs.get(sid) or home
+    ts_raw = data.get("updatedAt") or data.get("createdAt") or ""
+    try:
+        ts = int(datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        try:
+            ts = int(state.stat().st_mtime)
+        except Exception:
+            ts = 0
+    clean_cwd = str(cwd).replace("|", "/").replace("\n", " ").replace("\r", " ")
+    clean_title = " ".join(str(title).replace("|", "/").split())
+    rows.append((ts, sid, clean_cwd, clean_title))
+
+rows.sort(key=lambda r: r[0], reverse=True)
+for ts, sid, cwd, title in rows[:limit]:
+    print(f"{ts}|km|{sid}|{cwd}|{title}")
+PYEOF
+    fi
 }
 
 format_for_fzf() {
@@ -418,6 +475,7 @@ format_for_fzf() {
             fg) label="forge" ;;
             hm) label="hermes" ;;
             gk) label="grok" ;;
+            km) label="kimi" ;;
         esac
         display_cwd=$(echo "$cwd" | sed "s|^$HOME|~|")
         printf "%s  %-10s  %-22s  %s\t%s|%s|%s\n" \
@@ -478,6 +536,7 @@ case "$tool" in
     fg) harness=forge; resume_args=(--conversation-id "$id") ;;
     hm) harness=hermes; resume_args=(chat --resume "$id") ;;
     gk) harness=grok; resume_args=(--resume "$id") ;;
+    km) harness=kimi; resume_args=(--session "$id") ;;
     *) exit 0 ;;
 esac
 
