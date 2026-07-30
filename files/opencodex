@@ -896,6 +896,11 @@ PICKER_STATE = Path(
 )
 
 
+def available_harnesses() -> list[str]:
+    """Harnesses whose subprocess entry points are executable on this machine."""
+    return [harness for harness in HARNESSES if shutil.which(harness) is not None]
+
+
 def load_picker_state() -> dict[str, str]:
     """Last-used model per provider, tolerating a missing/corrupt state file."""
     try:
@@ -972,11 +977,13 @@ class ReelState:
         providers: list[str],
         registry: dict[str, Any],
         index: dict[str, dict[str, Any]],
+        harnesses: list[str],
         remembered: dict[str, str] | None = None,
     ) -> None:
         self.registry = registry
         self.index = index
         self.remembered = remembered or {}
+        self.harnesses = list(harnesses)
         self.provider_names = list(providers)
         if provider_model_options(OTHER_PROVIDER, registry, index):
             self.provider_names.append(OTHER_PROVIDER)
@@ -1041,7 +1048,7 @@ class ReelState:
             return [label for label, _, _ in self.models]
         if reel == 2:
             return self.efforts()
-        return list(HARNESSES)
+        return self.harnesses
 
     def move_focus(self, delta: int) -> None:
         self.focus = (self.focus + delta) % len(REEL_TITLES)
@@ -1066,7 +1073,7 @@ class ReelState:
     def selection(self) -> tuple[str, str, str | None, str | None]:
         return (
             self.selected_provider(),
-            HARNESSES[self.cursors[3]],
+            self.harnesses[self.cursors[3]],
             self.selected_model(),
             self.selected_effort(),
         )
@@ -1221,7 +1228,7 @@ SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⦠⦯⦿"
 
 
 def run_reel_picker(
-    providers: list[str], registry: dict[str, Any]
+    providers: list[str], registry: dict[str, Any], harnesses: list[str]
 ) -> tuple[str, str, str | None, str | None] | str | None:
     """Four-reel provider/model/effort/harness picker. Returns a selection
     4-tuple, 'add' for the Add-profile flow, or None when cancelled.
@@ -1231,7 +1238,7 @@ def run_reel_picker(
     import curses
     import threading
 
-    state = ReelState(providers, registry, {}, load_picker_state())
+    state = ReelState(providers, registry, {}, harnesses, load_picker_state())
     fetched: dict[str, Any] = {}
 
     def fetch() -> None:
@@ -1392,7 +1399,10 @@ def run_reel_picker(
 
 
 def _choose_launch_fallback(
-    providers: list[str], registry: dict[str, Any], index: dict[str, dict[str, Any]]
+    providers: list[str],
+    registry: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    harnesses: list[str],
 ) -> tuple[str, str, str | None, str | None] | str | None:
     names = list(providers)
     if provider_model_options(OTHER_PROVIDER, registry, index):
@@ -1411,7 +1421,7 @@ def _choose_launch_fallback(
     effort = choose("effort", model_efforts(index.get(model_id, {})))
     if effort is None:
         return None
-    harness = choose("harness", list(HARNESSES))
+    harness = choose("harness", harnesses)
     return None if harness is None else (name, harness, model_id, effort)
 
 
@@ -1421,14 +1431,19 @@ def choose_launch(
     providers = enabled_providers(registry)
     if not providers and not catalog_model_index():
         raise UserError("no enabled providers in the registry")
+    harnesses = available_harnesses()
+    if not harnesses:
+        raise UserError("no supported harness is installed (claude, codex, or grok)")
     if picker_available():
         try:
             # The picker fetches the model index in the background so the UI
             # opens immediately.
-            return run_reel_picker(providers, registry)
+            return run_reel_picker(providers, registry, harnesses)
         except Exception as exc:
             print(f"opencodex: picker unavailable ({exc}); using prompts", file=sys.stderr)
-    return _choose_launch_fallback(providers, registry, merged_model_index(registry))
+    return _choose_launch_fallback(
+        providers, registry, merged_model_index(registry), harnesses
+    )
 
 
 def main() -> int:

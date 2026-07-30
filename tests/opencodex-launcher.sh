@@ -71,6 +71,10 @@ cat > "$TEST_TMP/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$TEST_TMP/codex-args"
 EOF
+cat > "$TEST_TMP/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
 cat > "$TEST_TMP/grok" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$TEST_TMP/grok-args"
@@ -86,7 +90,7 @@ n=$((n + 1))
 echo "$n" > "$TEST_TMP/fzf-call"
 sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
-chmod +x "$OPENCODEX_BIN" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/fzf"
+chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/fzf"
 PATH="$TEST_TMP:$PATH"
 export PATH
 
@@ -246,7 +250,7 @@ assert [model for _, model, _ in oauth_options] == ["gpt-5.6-sol"]  # bare ids
 other = namespace["provider_model_options"]("other", registry, index)
 assert [model for _, model, _ in other] == ["unknown/mystery"]  # bare ids belong to codex
 
-state = namespace["ReelState"](providers, registry, index, {})
+state = namespace["ReelState"](providers, registry, index, list(namespace["HARNESSES"]), {})
 assert state.provider_names == providers + ["other", "Add profile…"]
 
 def provider_walk(current, target):
@@ -320,16 +324,28 @@ assert namespace["handle_key"](state, "cancel") == "cancel"
 
 # Last-used memory seeds the model cursor; stale entries fall back to first.
 remembered = {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"}
-state = namespace["ReelState"](providers, registry, index, remembered)
+state = namespace["ReelState"](providers, registry, index, list(namespace["HARNESSES"]), remembered)
 provider_walk(state, "commandcode")
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
-stale = namespace["ReelState"](providers, registry, index, {"commandcode": "commandcode/rotated-out"})
+stale = namespace["ReelState"](
+    providers,
+    registry,
+    index,
+    list(namespace["HARNESSES"]),
+    {"commandcode": "commandcode/rotated-out"},
+)
 provider_walk(stale, "commandcode")
 assert stale.selected_model() == "commandcode/moonshotai/Kimi-K3"  # silent fallback
 
 # A late-arriving index (background fetch) swaps in without losing the
 # provider cursor, and a remembered model is re-applied to the new list.
-loading = namespace["ReelState"](providers, registry, {}, {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"})
+loading = namespace["ReelState"](
+    providers,
+    registry,
+    {},
+    list(namespace["HARNESSES"]),
+    {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"},
+)
 assert loading.models == []  # spinner state: no models before the fetch lands
 assert "other" not in loading.provider_names
 provider_walk(loading, "commandcode")
@@ -337,9 +353,20 @@ loading.swap_index(index)
 assert loading.selected_provider() == "commandcode"  # provider cursor kept
 assert loading.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"  # remembered re-applied
 assert "other" in loading.provider_names  # late 'other' row appears
-late = namespace["ReelState"](providers, registry, {}, {})
+late = namespace["ReelState"](providers, registry, {}, list(namespace["HARNESSES"]), {})
 late.swap_index({"unknown/mystery": {"id": "unknown/mystery", "efforts": []}})
 assert late.provider_names[-2:] == ["other", "Add profile…"]  # inserted before Add profile
+
+# The picker only offers harnesses whose subprocess entry points resolve.
+original_which = namespace["shutil"].which
+try:
+    namespace["shutil"].which = lambda name: f"/bin/{name}" if name in {"claude", "codex"} else None
+    assert namespace["available_harnesses"]() == ["claude", "codex"]
+finally:
+    namespace["shutil"].which = original_which
+filtered = namespace["ReelState"](providers, registry, index, ["codex"], {})
+assert filtered.reel_entries(3) == ["codex"]
+assert filtered.selection()[1] == "codex"
 
 # Effort choices follow the server's reasoning-support tier.
 model_efforts = namespace["model_efforts"]
