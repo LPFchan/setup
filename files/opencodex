@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile-selecting launcher and registry helper for OpenCodex."""
+"""Provider/model/effort/harness reel-picker launcher and registry helper for OpenCodex."""
 
 from __future__ import annotations
 
@@ -279,13 +279,6 @@ def desired_opencodex_config(
     for name in sorted(managed):
         descriptor = registry["providers"][name]
         profiles = provider_profiles(registry, name)
-        models = sorted(
-            {
-                model
-                for profile in profiles
-                for model in [profile["default_model"], *profile["models"].values()]
-            }
-        )
         auth_name = descriptor["auth"]["key"]
         entry = auth_data.get(auth_name, {})
         key = entry.get("key", "") if isinstance(entry, dict) else ""
@@ -303,12 +296,12 @@ def desired_opencodex_config(
         )
         if profiles:
             provider["defaultModel"] = profiles[0]["default_model"]
-            provider["models"] = models
-            provider["selectedModels"] = models
         else:
             provider.pop("defaultModel", None)
-            provider.pop("models", None)
-            provider.pop("selectedModels", None)
+        # Never pin models/selectedModels: with liveModels the proxy serves
+        # each provider's full rotating fleet, not a profile-mapped subset.
+        provider.pop("models", None)
+        provider.pop("selectedModels", None)
         providers[name] = provider
 
     config["syncResumeHistory"] = sys.platform == "darwin"
@@ -360,7 +353,7 @@ def remove_opencodex_managed() -> None:
 
 
 def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | None:
-    if shutil.which("fzf") and sys.stdin.isatty():
+    if shutil.which("fzf") and (sys.stdin.isatty() or not sys.stdout.isatty()):
         proc = subprocess.run(
             ["fzf", "--prompt", f"{prompt} > ", "--height=50%", "--reverse"],
             input="\n".join(options) + "\n",
@@ -572,7 +565,150 @@ def routed_model(profile: dict[str, Any], model: str) -> str:
     auth = profile["auth"]
     if profile["provider_type"] == "OpenAIResponses" and auth.get("provider") == "chatgpt":
         return model
+    if model.startswith(f"{profile['provider']}/"):
+        return model
     return f"{profile['provider']}/{model}"
+
+
+EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
+DEFAULT_EFFORTS = ("low", "medium", "high")
+EFFORT_THINKING_TOKENS = {
+    "low": "4000",
+    "medium": "16000",
+    "high": "48000",
+    "xhigh": "96000",
+    "max": "128000",
+    "ultra": "128000",
+}
+OCX_MODELS_URL = os.environ.get(
+    "OPENCODEX_MODELS_URL", "http://localhost:10100/v1/models"
+)
+
+
+def enabled_providers(registry: dict[str, Any]) -> list[str]:
+    """Enabled provider names from the registry, OAuth (codex) included."""
+    providers = registry.get("providers", {})
+    names = [
+        name
+        for name, descriptor in providers.items()
+        if descriptor.get("enabled") is not False
+    ]
+    # OAuth providers (codex) carry no 'enabled' flag; OpenAICompatible ones do.
+    for name, descriptor in providers.items():
+        if descriptor.get("provider_type") == "OpenAIResponses" and name not in names:
+            names.append(name)
+    return sorted(names)
+
+
+def provider_uses_bare_ids(registry: dict[str, Any], provider: str) -> bool:
+    descriptor = registry.get("providers", {}).get(provider, {})
+    return descriptor.get("provider_type") == "OpenAIResponses"
+
+
+def provider_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Offline baseline: no model ids of its own (the registry's providers only
+    know base_urls), so this simply returns an empty index. Model data comes
+    from the catalog and the live proxy. Kept as a named seam for symmetry and
+    so a future registry-carried model list has one obvious home."""
+    return {}
+
+
+def _restore_catalog_slug(slug: str, known_ids: set[str] | None) -> str:
+    """Undo the catalog's provider/model joining when it hid a '/' in the id.
+
+    Slugs are routable ids verbatim except when the model id itself contains
+    '/': the catalog then rewrites the remainder's '/' to '-'
+    (commandcode/moonshotai/Kimi-K3 -> commandcode/moonshotai-Kimi-K3). An
+    explicitly encoded remainder ('_' for '/', '--' for a literal '-') is
+    unambiguous — the catalog's own dash-joining never produces either — and
+    is restored first. Otherwise the reverse mapping is found by replacing
+    dashes left-to-right until a known id is produced.
+    """
+    if "/" not in slug:
+        return slug
+    provider, _, rest = slug.partition("/")
+    if "_" in rest:
+        return f"{provider}/{rest.replace('_', '/').replace('--', '-')}"
+    known_ids = known_ids or set()
+    chars = list(rest)
+    for index, char in enumerate(chars):
+        if char != "-":
+            continue
+        candidate = f"{provider}/{''.join(chars[:index] + ['/'] + chars[index + 1:])}"
+        if candidate in known_ids:
+            return candidate
+    return slug
+
+
+def catalog_model_index(
+    path: Path = CODEX_CATALOG, known_ids: set[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Model id -> info, from the ocx-generated Codex catalog."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    models = data.get("models")
+    if not isinstance(models, list):
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+        efforts = [
+            level["effort"]
+            for level in entry.get("supported_reasoning_levels", [])
+            if isinstance(level, dict) and level.get("effort") in EFFORT_ORDER
+        ]
+        efforts.sort(key=EFFORT_ORDER.index)
+        default_effort = entry.get("default_reasoning_level")
+        if default_effort not in EFFORT_ORDER:
+            default_effort = "medium"
+        model_id = _restore_catalog_slug(slug, known_ids)
+        info = index.setdefault(model_id, {"id": model_id, "efforts": efforts, "default_effort": default_effort})
+        if efforts and not info["efforts"]:
+            info["efforts"] = efforts
+            info["default_effort"] = default_effort
+    return index
+
+
+def live_model_index(url: str = OCX_MODELS_URL, timeout: float = 0.75) -> dict[str, dict[str, Any]]:
+    """Model id -> info, from the running ocx proxy's /v1/models (best effort)."""
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return {}
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    index: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]:
+            index[row["id"]] = {"id": row["id"], "efforts": [], "default_effort": "medium"}
+    return index
+
+
+def merged_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Codex catalog + live proxy, merged. The live proxy is the freshness
+    layer (always current when ocx runs); the catalog fills effort metadata.
+    Models unknown to either do not appear (the registry carries none)."""
+    live = live_model_index()
+    index: dict[str, dict[str, Any]] = {}
+    known_ids = set(live)
+    for source in (catalog_model_index(known_ids=known_ids), live):
+        for model_id, info in source.items():
+            current = index.setdefault(model_id, dict(info))
+            if info["efforts"]:
+                current["efforts"] = list(info["efforts"])
+                current["default_effort"] = info["default_effort"]
+    for info in index.values():
+        if not info["efforts"]:
+            info["efforts"] = list(DEFAULT_EFFORTS)
+            info["default_effort"] = "medium"
+    return index
 
 
 def ensure_opencodex() -> None:
@@ -583,26 +719,39 @@ def ensure_opencodex() -> None:
         raise UserError("OpenCodex could not be started")
 
 
-def launch(profile: dict[str, Any], harness: str, args: list[str]) -> int:
+def launch(
+    provider: str | None,
+    harness: str,
+    args: list[str],
+    model: str | None = None,
+    effort: str | None = None,
+    record: str | None = None,
+) -> int:
     ensure_opencodex()
-    model = routed_model(profile, profile["default_model"])
+    if model is None:
+        raise UserError("a model is required to launch")
+    if effort is not None and effort not in EFFORT_ORDER:
+        raise UserError(f"unknown reasoning effort: {effort}")
+    routed = model
     if harness == "codex":
-        catalog_override = (
+        overrides = [
             f"model_catalog_json={json.dumps(str(CODEX_CATALOG), ensure_ascii=False)}"
-        )
-        return subprocess.run(
-            ["codex", "-c", catalog_override, "-m", model, *args]
-        ).returncode
+        ]
+        if effort is not None:
+            overrides.append(f"model_reasoning_effort={json.dumps(effort)}")
+        command = ["codex"]
+        for override in overrides:
+            command.extend(["-c", override])
+        command.extend(["-m", routed, *args])
+        if provider is not None:
+            record_picker_state(provider, routed)
+        return subprocess.run(command).returncode
     if harness != "claude":
         raise UserError(f"unknown harness: {harness}")
     env = os.environ.copy()
-    env["ANTHROPIC_MODEL"] = model
-    for alias, env_name in {
-        "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    }.items():
-        env[env_name] = routed_model(profile, profile["models"][alias])
+    env["ANTHROPIC_MODEL"] = routed
+    if effort is not None:
+        env["MAX_THINKING_TOKENS"] = EFFORT_THINKING_TOKENS[effort]
     command = [str(OCX), "claude"]
     if "--dangerously-skip-permissions" not in args:
         command.append("--dangerously-skip-permissions")
@@ -616,68 +765,440 @@ def launch(profile: dict[str, Any], harness: str, args: list[str]) -> int:
         sid = str(uuid.uuid4())
         command.extend(["--session-id", sid])
     command.extend(args)
+    if provider is not None:
+        record_picker_state(provider, routed)
     result = subprocess.run(command, env=env)
     if sid is not None:
-        record_session_id(profile["name"], sid)
+        record_session_id(record or provider or "custom", sid)
     return result.returncode
 
 
-def choose_launch(registry: dict[str, Any]) -> tuple[str, str] | None:
-    profiles = [profile["name"] for profile in registry["profiles"] if profile["enabled"]]
-    profiles.append("Add profile…")
-    harnesses = ["claude", "codex"]
-    picker = HOME / ".local/bin/fzf-multicolumn"
-    if not picker.is_file() or not os.access(picker, os.X_OK):
-        profile = choose("opencodex profile", profiles)
-        if profile is None:
-            return None
-        if profile == "Add profile…":
-            return profile, "claude"
-        harness = choose("harness", harnesses)
-        return None if harness is None else (profile, harness)
+ADD_PROFILE = "Add profile…"
+OTHER_PROVIDER = "other"
+HARNESSES = ("claude", "codex")
+REEL_TITLES = ("Provider", "Model", "Effort", "Harness")
+MIN_PICKER_COLS = 70
+MIN_PICKER_ROWS = 12
+PICKER_STATE = Path(
+    os.environ.get("OPENCODEX_PICKER_STATE", HOME / ".config/opencodex/picker-state.json")
+)
 
-    delimiter = "\x1f"
-    rows = max(len(profiles), len(harnesses))
-    options: list[str] = []
-    for index in range(rows):
-        if index < len(profiles):
-            options.append(f"provider{delimiter}{profiles[index]}{delimiter}{profiles[index]}")
+
+def load_picker_state() -> dict[str, str]:
+    """Last-used model per provider, tolerating a missing/corrupt state file."""
+    try:
+        data = json.loads(PICKER_STATE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        provider: model
+        for provider, model in data.items()
+        if isinstance(provider, str) and isinstance(model, str)
+    }
+
+
+def record_picker_state(provider: str, model: str) -> None:
+    state = load_picker_state()
+    if state.get(provider) == model:
+        return
+    state[provider] = model
+    try:
+        write_json_atomic(PICKER_STATE, state)
+    except OSError:
+        pass  # remembering is best-effort; never block a launch on it
+
+
+def provider_model_options(
+    provider: str,
+    registry: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+) -> list[tuple[str, str, str | None]]:
+    """(label, model id, default effort) triples for the model reel.
+
+    OAuth providers (codex) serve bare ids; OpenAICompatible providers serve
+    '{provider}/'-prefixed ids; 'other' claims whatever remains.
+    """
+    providers = registry.get("providers", {})
+    if provider == OTHER_PROVIDER:
+        entries = [
+            model_id
+            for model_id in index
+            if "/" in model_id and model_id.split("/", 1)[0] not in providers
+        ]
+        entries += [
+            model_id
+            for model_id in index
+            if "/" not in model_id
+            and not any(
+                provider_uses_bare_ids(registry, name) for name in enabled_providers(registry)
+            )
+        ]
+        entries = sorted(set(entries))
+    elif provider_uses_bare_ids(registry, provider):
+        entries = sorted(model_id for model_id in index if "/" not in model_id)
+    else:
+        prefix = f"{provider}/"
+        entries = sorted(model_id for model_id in index if model_id.startswith(prefix))
+    return [(model, model, index[model]["default_effort"]) for model in entries]
+
+
+class ReelState:
+    """Pure picker state; mutated by handle_key, rendered by the curses layer."""
+
+    def __init__(
+        self,
+        providers: list[str],
+        registry: dict[str, Any],
+        index: dict[str, dict[str, Any]],
+        remembered: dict[str, str] | None = None,
+    ) -> None:
+        self.registry = registry
+        self.index = index
+        self.remembered = remembered or {}
+        self.provider_names = list(providers)
+        if provider_model_options(OTHER_PROVIDER, registry, index):
+            self.provider_names.append(OTHER_PROVIDER)
+        self.provider_names.append(ADD_PROFILE)
+        self.focus = 0
+        self.cursors = [0, 0, 0, 0]
+        self.models: list[tuple[str, str, str | None]] = []
+        self._refresh_provider(initial=True)
+
+    def _refresh_provider(self, initial: bool = False) -> None:
+        provider = self.selected_provider()
+        if provider == ADD_PROFILE:
+            self.models = []
         else:
-            options.append(f"blank{delimiter} {delimiter} ")
-        if index < len(harnesses):
-            options.append(f"harness{delimiter}{harnesses[index]}{delimiter}{harnesses[index]}")
+            self.models = provider_model_options(provider, self.registry, self.index)
+        cursor = 0
+        remembered = self.remembered.get(provider)
+        if remembered is not None:
+            for position, (_, model, _) in enumerate(self.models):
+                if model == remembered:
+                    cursor = position
+                    break
+        self.cursors[1] = cursor
+        self._refresh_efforts()
+
+    def _refresh_efforts(self) -> None:
+        efforts = self.efforts()
+        default = None
+        if self.models:
+            default = self.models[self.cursors[1]][2]
+        if default in efforts:
+            self.cursors[2] = efforts.index(default)
         else:
-            options.append(f"blank{delimiter} {delimiter} ")
-    proc = subprocess.run(
-        [
-            str(picker),
-            "--grid=2",
-            "--grid-gap=6",
-            f"--delimiter={delimiter}",
-            "--with-nth=3",
-            "--multi=2",
-            "--height=50%",
-            "--reverse",
-            "--border",
-            "--header=TAB: select one provider and one harness · ENTER: launch",
-            "--prompt=opencodex > ",
-        ],
-        input="\n".join(options) + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
+            self.cursors[2] = min(1, len(efforts) - 1)
+
+    def selected_provider(self) -> str:
+        return self.provider_names[self.cursors[0]]
+
+    def efforts(self) -> list[str]:
+        if not self.models:
+            return []
+        model_id = self.models[self.cursors[1]][1]
+        return list(self.index.get(model_id, {}).get("efforts", DEFAULT_EFFORTS))
+
+    def reel_entries(self, reel: int) -> list[str]:
+        if reel == 0:
+            return self.provider_names
+        if reel == 1:
+            return [label for label, _, _ in self.models]
+        if reel == 2:
+            return self.efforts()
+        return list(HARNESSES)
+
+    def move_focus(self, delta: int) -> None:
+        self.focus = (self.focus + delta) % len(REEL_TITLES)
+
+    def move_cursor(self, delta: int) -> None:
+        length = len(self.reel_entries(self.focus))
+        if not length:
+            return
+        self.cursors[self.focus] = (self.cursors[self.focus] + delta) % length
+        if self.focus == 0:
+            self._refresh_provider()
+        elif self.focus == 1:
+            self._refresh_efforts()
+
+    def selected_model(self) -> str | None:
+        return self.models[self.cursors[1]][1] if self.models else None
+
+    def selected_effort(self) -> str | None:
+        efforts = self.efforts()
+        return efforts[self.cursors[2]] if efforts else None
+
+    def selection(self) -> tuple[str, str, str | None, str | None]:
+        return (
+            self.selected_provider(),
+            HARNESSES[self.cursors[3]],
+            self.selected_model(),
+            self.selected_effort(),
+        )
+
+
+PICKER_GAP = 2
+
+
+def reel_geometry(cols: int) -> tuple[int, int]:
+    """(reel width, gap) for the terminal width."""
+    return (cols - PICKER_GAP * 3) // 4, PICKER_GAP
+
+
+def reel_at(x: int, width: int, gap: int) -> int | None:
+    """Reel index under the x coordinate, or None over a gap/padding."""
+    if x < 0 or width <= 0:
         return None
-    selections = [line.split(delimiter, 2) for line in proc.stdout.splitlines()]
-    selected_profiles = [row[1] for row in selections if len(row) == 3 and row[0] == "provider"]
-    selected_harnesses = [row[1] for row in selections if len(row) == 3 and row[0] == "harness"]
-    if len(selected_profiles) > 1 or len(selected_harnesses) > 1:
-        raise UserError("select one provider and one harness")
-    profile = selected_profiles[0] if selected_profiles else choose("opencodex profile", profiles)
-    if profile == "Add profile…":
-        return profile, "claude"
-    harness = selected_harnesses[0] if selected_harnesses else choose("harness", harnesses)
-    return None if profile is None or harness is None else (profile, harness)
+    reel, offset = divmod(x, width + gap)
+    if reel >= len(REEL_TITLES) or offset >= width:
+        return None
+    return reel
+
+
+def handle_key(state: ReelState, action: str) -> str | None:
+    """Returns 'launch', 'add', 'cancel', or None (state mutated in place)."""
+    if action == "left":
+        state.move_focus(-1)
+    elif action == "right":
+        state.move_focus(1)
+    elif action == "up":
+        state.move_cursor(-1)
+    elif action == "down":
+        state.move_cursor(1)
+    elif action == "enter":
+        if state.selected_provider() == ADD_PROFILE:
+            return "add"
+        if state.selected_model() is None:
+            return None
+        return "launch"
+    elif action == "cancel":
+        return "cancel"
+    return None
+
+
+def split_launch_args(args: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """Extract leading '--model X' / '--effort X' (or = forms) from run arguments.
+
+    Only honored before the harness token; anything after it is forwarded.
+    """
+    model = None
+    effort = None
+    rest = list(args)
+    while rest and rest[0].startswith(("--model", "--effort")):
+        token = rest.pop(0)
+        option, separator, inline = token.partition("=")
+        if option not in ("--model", "--effort"):
+            raise UserError(f"unknown run option: {option}")
+        value = inline if separator else None
+        if value is None:
+            if not rest:
+                raise UserError(f"{option} requires a value")
+            value = rest.pop(0)
+        if not value:
+            raise UserError(f"{option} requires a value")
+        if option == "--model":
+            model = value
+        else:
+            if value not in EFFORT_ORDER:
+                raise UserError(f"unknown reasoning effort: {value}")
+            effort = value
+    return model, effort, rest
+
+
+def picker_available() -> bool:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        import curses  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def run_reel_picker(
+    providers: list[str], registry: dict[str, Any], index: dict[str, dict[str, Any]]
+) -> tuple[str, str, str | None, str | None] | str | None:
+    """Four-reel provider/model/effort/harness picker. Returns a selection
+    4-tuple, 'add' for the Add-profile flow, or None when cancelled."""
+    import curses
+
+    state = ReelState(providers, registry, index, load_picker_state())
+
+    def translate(key: int) -> str | None:
+        if key in (curses.KEY_LEFT, ord("h")):
+            return "left"
+        if key in (curses.KEY_RIGHT, ord("l")):
+            return "right"
+        if key in (curses.KEY_UP, ord("k")):
+            return "up"
+        if key in (curses.KEY_DOWN, ord("j")):
+            return "down"
+        if key in (10, 13, curses.KEY_ENTER):
+            return "enter"
+        if key in (27, ord("q")):
+            return "cancel"
+        return None
+
+    def draw(stdscr: Any, y: int, x: int, width: int, text: str, attr: int) -> None:
+        try:
+            stdscr.addnstr(y, x, text.ljust(width), width, attr)
+        except curses.error:
+            pass
+
+    def render_reel(
+        stdscr: Any, x: int, header_y: int, center_y: int, body: int, width: int,
+        reel: int, entries: list[str], attrs: dict[str, int],
+    ) -> None:
+        focused = state.focus == reel
+        cursor = state.cursors[reel]
+        header = f"▸ {REEL_TITLES[reel]} ◂" if focused else f"  {REEL_TITLES[reel]}"
+        draw(stdscr, header_y, x, width, header, attrs["header"] if focused else attrs["dim"])
+        # The selected row is pinned to the reel's vertical center; the list
+        # scrolls underneath it as the cursor moves.
+        offset = cursor - body // 2
+        for row in range(body):
+            index = offset + row
+            y = center_y - body // 2 + row
+            if index < 0 or index >= len(entries):
+                draw(stdscr, y, x, width, "", attrs["normal"])
+                continue
+            selected = index == cursor
+            if selected and focused:
+                attr = attrs["selected"]
+            elif selected:
+                attr = attrs["selected_dim"]
+            else:
+                attr = attrs["normal"]
+            draw(stdscr, y, x, width, entries[index], attr)
+
+    def render(stdscr: Any, attrs: dict[str, int]) -> None:
+        stdscr.erase()
+        rows, cols = stdscr.getmaxyx()
+        if cols < MIN_PICKER_COLS or rows < MIN_PICKER_ROWS:
+            message = f"terminal too small (need {MIN_PICKER_COLS}x{MIN_PICKER_ROWS})"
+            draw(stdscr, rows // 2, 0, cols, message.center(cols - 1), attrs["dim"])
+            stdscr.refresh()
+            return
+        draw(stdscr, 0, 0, cols, " opencodex ".center(cols - 1), attrs["title"])
+        width, gap = reel_geometry(cols)
+        # A fixed, screen-centered viewport: every reel shares the same center
+        # row, so no reel's length shifts any other reel's position.
+        header_y = 2
+        center_y = rows // 2
+        body = min(rows - header_y - 3, 15)
+        body = max(body, 3)
+        if body % 2 == 0:
+            body -= 1  # keep a single unambiguous center row
+        for reel in range(4):
+            render_reel(
+                stdscr, reel * (width + gap), header_y, center_y, body, width,
+                reel, state.reel_entries(reel), attrs,
+            )
+        hint = "←/→ column · ↑/↓ select · enter launch · q cancel"
+        draw(stdscr, rows - 1, 0, cols, hint.center(cols - 1), attrs["dim"])
+        stdscr.refresh()
+
+    def loop(stdscr: Any) -> tuple[str, str, str | None] | str | None:
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        curses.mousemask(curses.BUTTON4_PRESSED | curses.BUTTON5_PRESSED)
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
+            curses.init_pair(3, curses.COLOR_CYAN, -1)
+            attrs = {
+                "selected": curses.color_pair(1) | curses.A_BOLD,
+                "selected_dim": curses.color_pair(2),
+                "header": curses.color_pair(3) | curses.A_BOLD,
+                "title": curses.A_BOLD,
+                "dim": curses.A_DIM,
+                "normal": curses.A_NORMAL,
+            }
+        else:
+            attrs = {
+                "selected": curses.A_REVERSE | curses.A_BOLD,
+                "selected_dim": curses.A_REVERSE,
+                "header": curses.A_BOLD,
+                "title": curses.A_BOLD,
+                "dim": curses.A_DIM,
+                "normal": curses.A_NORMAL,
+            }
+        while True:
+            render(stdscr, attrs)
+            key = stdscr.getch()
+            if key == curses.KEY_MOUSE:
+                try:
+                    _, x, _, _, button = curses.getmouse()
+                except curses.error:
+                    continue
+                _, cols = stdscr.getmaxyx()
+                width, gap = reel_geometry(cols)
+                reel = reel_at(x, width, gap)
+                if reel is not None:
+                    state.focus = reel
+                if button & curses.BUTTON4_PRESSED:
+                    action = "up"
+                elif button & curses.BUTTON5_PRESSED:
+                    action = "down"
+                else:
+                    continue
+            else:
+                action = translate(key)
+                if action is None:
+                    continue
+            result = handle_key(state, action)
+            if result == "cancel":
+                return None
+            if result == "add":
+                return "add"
+            if result == "launch":
+                return state.selection()
+
+    return curses.wrapper(loop)
+
+
+def _choose_launch_fallback(
+    providers: list[str], registry: dict[str, Any], index: dict[str, dict[str, Any]]
+) -> tuple[str, str, str | None, str | None] | str | None:
+    names = list(providers)
+    if provider_model_options(OTHER_PROVIDER, registry, index):
+        names.append(OTHER_PROVIDER)
+    names.append(ADD_PROFILE)
+    name = choose("opencodex provider", names)
+    if name is None:
+        return None
+    if name == ADD_PROFILE:
+        return "add"
+    options = provider_model_options(name, registry, index)
+    chosen = choose("model", [label for label, _, _ in options])
+    if chosen is None:
+        return None
+    model_id = next(model for label, model, _ in options if label == chosen)
+    efforts = index.get(model_id, {}).get("efforts", DEFAULT_EFFORTS)
+    effort = choose("effort", efforts)
+    if effort is None:
+        return None
+    harness = choose("harness", list(HARNESSES))
+    return None if harness is None else (name, harness, model_id, effort)
+
+
+def choose_launch(
+    registry: dict[str, Any],
+) -> tuple[str, str, str | None, str | None] | str | None:
+    providers = enabled_providers(registry)
+    index = merged_model_index(registry)
+    if not providers and not index:
+        raise UserError("no enabled providers in the registry")
+    if picker_available():
+        try:
+            return run_reel_picker(providers, registry, index)
+        except Exception as exc:
+            print(f"opencodex: picker unavailable ({exc}); using prompts", file=sys.stderr)
+    return _choose_launch_fallback(providers, registry, index)
 
 
 def main() -> int:
@@ -699,13 +1220,17 @@ def main() -> int:
     registry = load_registry()
     if len(sys.argv) >= 2 and sys.argv[1] == "run":
         if len(sys.argv) < 3:
-            raise UserError("usage: opencodex run <profile> [claude|codex] [arguments]")
+            raise UserError(
+                "usage: opencodex run <profile> [--model MODEL] [--effort EFFORT] [claude|codex] [arguments]"
+            )
         profile = profile_by_name(registry, sys.argv[2])
+        model, effort, args = split_launch_args(sys.argv[3:])
         harness = "claude"
-        args = sys.argv[3:]
-        if args and args[0] in {"claude", "codex"}:
+        if args and args[0] in HARNESSES:
             harness, args = args[0], args[1:]
-        return launch(profile, harness, args)
+        provider = profile["provider"]
+        model = routed_model(profile, profile["default_model"] if model is None else model)
+        return launch(provider, harness, args, model, effort, record=profile["name"])
     if len(sys.argv) > 1:
         if not OCX.is_file() or not os.access(OCX, os.X_OK):
             raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
@@ -713,11 +1238,11 @@ def main() -> int:
     selection = choose_launch(registry)
     if selection is None:
         return 0
-    selected, harness = selection
-    if selected == "Add profile…":
+    if selection == "add":
         add_profile(registry)
         return 0
-    return launch(profile_by_name(registry, selected), harness, [])
+    provider, harness, model, effort = selection
+    return launch(provider, harness, [], model, effort)
 
 
 if __name__ == "__main__":

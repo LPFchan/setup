@@ -7,15 +7,49 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 export HOME="$TEST_TMP/home"
 export TEST_TMP
+# The launcher copies the process env into the harness; inherited provider
+# aliases from the outer shell must not pollute the launch-env assertions.
+while IFS='=' read -r name _; do
+    case "$name" in ANTHROPIC_*|MAX_THINKING_TOKENS) unset "$name" ;; esac
+done < <(env)
 export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_CONFIG="$HOME/.opencodex/config.json"
 export OPENCODEX_MANAGED="$HOME/.opencodex/setup-managed-providers.json"
 export OPENCODEX_BIN="$HOME/.local/bin/ocx"
 export CODEX_HOME="$TEST_TMP/codex \"home"
-mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")"
+export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
+# Point the live-probe at a dead port: the catalog fixture must be the only
+# model source, otherwise the real ocx on this machine injects extra models.
+export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
+mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
 cp "$ROOT/files/claudex-profiles.json" "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
+# Minimal codex catalog so the picker lists commandcode models in this offline env.
+python3 - "$OPENCODEX_REGISTRY" "$CODEX_HOME/opencodex-catalog.json" <<'PY'
+import json
+import sys
+
+registry = json.load(open(sys.argv[1]))
+profile = next(p for p in registry["profiles"] if p["name"] == "commandcode")
+models = sorted({profile["default_model"], *profile["models"].values()})
+catalog = {
+    "models": [
+        {
+            # Encoded so hierarchy is unambiguous: '_' marks a '/', '-'
+            # doubles to '--'. Neither pattern can arise from ocx's real
+            # dash-joining (its '_' never survives; '--' never occurs).
+            "slug": f"commandcode/{model.replace('-', '--').replace('/', '_')}",
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [
+                {"effort": level} for level in ("low", "medium", "high")
+            ],
+        }
+        for model in models
+    ]
+}
+json.dump(catalog, open(sys.argv[2], "w"))
+PY
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -25,7 +59,7 @@ case "${1:-}" in
     ensure) printf 'ensure\n' >> "$TEST_TMP/ocx-calls" ;;
     claude)
         printf '%s\n' "$@" > "$TEST_TMP/claude-args"
-        env | grep '^ANTHROPIC_' | sort > "$TEST_TMP/claude-env"
+        env | grep -E '^(ANTHROPIC_|MAX_THINKING_TOKENS=)' | sort > "$TEST_TMP/claude-env"
         ;;
     *) printf '%s\n' "$@" > "$TEST_TMP/ocx-args" ;;
 esac
@@ -34,23 +68,47 @@ cat > "$TEST_TMP/codex" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$TEST_TMP/codex-args"
 EOF
-cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
+# Stateful fzf stub: each invocation consumes stdin and prints the next canned
+# selection from fzf-responses, driving the launcher's fallback prompt chain.
+cat > "$TEST_TMP/fzf" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$TEST_TMP/picker-args"
-cat > "$TEST_TMP/picker-input"
-printf 'provider\037commandcode\037commandcode\n'
-printf 'harness\037codex\037codex\n'
+printf '%s\n' "$@" >> "$TEST_TMP/fzf-args"
+cat > /dev/null
+n=$(cat "$TEST_TMP/fzf-call" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$TEST_TMP/fzf-call"
+sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
-chmod +x "$OPENCODEX_BIN" "$TEST_TMP/codex" "$HOME/.local/bin/fzf-multicolumn"
+chmod +x "$OPENCODEX_BIN" "$TEST_TMP/codex" "$TEST_TMP/fzf"
 PATH="$TEST_TMP:$PATH"
 export PATH
 
+cc_default="$(jq -r '.profiles[] | select(.name == "commandcode") | .default_model' "$OPENCODEX_REGISTRY")"
+cc_opus="$(jq -r '.profiles[] | select(.name == "commandcode") | .models.opus' "$OPENCODEX_REGISTRY")"
+printf '%s\n' commandcode "commandcode/$cc_default" high codex > "$TEST_TMP/fzf-responses"
 "$ROOT/files/opencodex"
-grep -q -- '--grid=2' "$TEST_TMP/picker-args" || fail "picker did not request two columns"
-grep -q $'provider\037commandcode\037commandcode' "$TEST_TMP/picker-input" \
-    || fail "picker omitted provider entries"
-grep -q $'harness\037claude\037claude' "$TEST_TMP/picker-input" \
-    || fail "picker omitted harness entries"
+[[ $(cat "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+    -c "$(python3 -c 'import json,sys; print("model_catalog_json=" + json.dumps(sys.argv[1]))' "$CODEX_HOME/opencodex-catalog.json")" \
+    -c "$(python3 -c 'import json; print("model_reasoning_effort=" + json.dumps("high"))')" \
+    -m "commandcode/$cc_default")" ]] \
+    || fail "fallback picker did not launch codex with the chosen model and effort"
+grep -c -- '--prompt' "$TEST_TMP/fzf-args" | grep -q '^4$' \
+    || fail "fallback picker did not prompt for provider, model, effort, and harness"
+grep -Fq "\"commandcode\": \"commandcode/$cc_default\"" "$OPENCODEX_PICKER_STATE" \
+    || fail "launch did not remember the picked model for commandcode"
+
+printf '%s\n' commandcode "commandcode/$cc_opus" max claude > "$TEST_TMP/fzf-responses"
+rm -f "$TEST_TMP/fzf-call"
+"$ROOT/files/opencodex"
+grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
+    || fail "picker model selection did not override ANTHROPIC_MODEL"
+! grep -q '^ANTHROPIC_DEFAULT_' "$TEST_TMP/claude-env" \
+    || fail "launch still set claude alias model env vars"
+grep -Fqx "MAX_THINKING_TOKENS=128000" "$TEST_TMP/claude-env" \
+    || fail "picker effort selection did not set MAX_THINKING_TOKENS"
+grep -Fq "\"commandcode\": \"commandcode/$cc_opus\"" "$OPENCODEX_PICKER_STATE" \
+    || fail "launch did not update the remembered model for commandcode"
+
 expected_model="commandcode/$(jq -r '.profiles[] | select(.name == "commandcode") | .default_model' "$OPENCODEX_REGISTRY")"
 expected_catalog_override=$(python3 - "$CODEX_HOME/opencodex-catalog.json" <<'PY'
 import json
@@ -69,6 +127,27 @@ import tomllib
 key, value = sys.argv[1].split("=", 1)
 assert tomllib.loads(f"{key} = {value}\n")[key] == sys.argv[2]
 PY
+
+override_model=$(jq -r '.profiles[] | select(.name == "commandcode") | .models.opus' "$OPENCODEX_REGISTRY")
+"$ROOT/files/opencodex" run commandcode --model "$override_model" codex
+[[ $(head -4 "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s' \
+    -c "$expected_catalog_override" -m "commandcode/$override_model")" ]] \
+    || fail "run --model did not override the codex model"
+"$ROOT/files/opencodex" run commandcode --effort ultra --model "$override_model" codex
+[[ $(head -6 "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+    -c "$expected_catalog_override" -c "$(python3 -c 'import json; print("model_reasoning_effort=" + json.dumps("ultra"))')" \
+    -m "commandcode/$override_model")" ]] \
+    || fail "run --effort did not add the reasoning effort override"
+"$ROOT/files/opencodex" run commandcode codex --model kept --effort low
+grep -Fqx -- '--model' "$TEST_TMP/codex-args" && grep -Fqx 'kept' "$TEST_TMP/codex-args" \
+    || fail "run swallowed a --model placed after the harness"
+[[ $(head -4 "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s' \
+    -c "$expected_catalog_override" -m "$expected_model")" ]] \
+    || fail "a --model after the harness changed the launched model"
+! "$ROOT/files/opencodex" run commandcode --effort bogus codex 2>"$TEST_TMP/effort-error" \
+    || fail "run accepted an invalid effort"
+grep -q 'unknown reasoning effort: bogus' "$TEST_TMP/effort-error" \
+    || fail "invalid effort did not produce a clear error"
 
 resume_id="11111111-2222-4333-8444-555555555555"
 "$ROOT/files/opencodex" run commandcode claude --resume "$resume_id"
@@ -119,6 +198,97 @@ try:
 finally:
     namespace["sys"].platform = original
 assert config["syncResumeHistory"] is True
+
+index = {
+    "gpt-5.6-sol": {"id": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "default_effort": "low"},
+    "commandcode/moonshotai/Kimi-K3": {"id": "commandcode/moonshotai/Kimi-K3", "efforts": ["low", "medium"], "default_effort": "low"},
+    "commandcode/xiaomi/mimo-v2.5-pro": {"id": "commandcode/xiaomi/mimo-v2.5-pro", "efforts": ["low", "medium", "high"], "default_effort": "medium"},
+    "kimicode/kimi-for-coding": {"id": "kimicode/kimi-for-coding", "efforts": ["low", "medium"], "default_effort": "low"},
+    "unknown/mystery": {"id": "unknown/mystery", "efforts": ["low", "medium", "high"], "default_effort": "medium"},
+}
+
+providers = namespace["enabled_providers"](registry)
+assert "codex" in providers and "commandcode" in providers and "kimicode" in providers
+
+options = namespace["provider_model_options"]("commandcode", registry, index)
+assert options[0][0] == "commandcode/moonshotai/Kimi-K3"  # alphabetical, no "(default)" labels
+assert [model for _, model, _ in options] == [
+    "commandcode/moonshotai/Kimi-K3", "commandcode/xiaomi/mimo-v2.5-pro",
+]
+oauth_options = namespace["provider_model_options"]("codex", registry, index)
+assert [model for _, model, _ in oauth_options] == ["gpt-5.6-sol"]  # bare ids
+other = namespace["provider_model_options"]("other", registry, index)
+assert [model for _, model, _ in other] == ["unknown/mystery"]  # bare ids belong to codex
+
+state = namespace["ReelState"](providers, registry, index, {})
+assert state.provider_names == providers + ["other", "Add profile…"]
+sel_provider, harness, model, effort = state.selection()
+assert sel_provider == "codex" and harness == "claude"
+assert model == "gpt-5.6-sol" and effort == "low"  # catalog default effort
+while state.selected_provider() != "commandcode":
+    namespace["handle_key"](state, "down")
+namespace["handle_key"](state, "right")
+assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"  # alphabetical first
+namespace["handle_key"](state, "down")
+assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
+assert state.efforts() == ["low", "medium", "high"]  # effort reel follows the model
+namespace["handle_key"](state, "right")
+assert state.selected_effort() == "medium"  # catalog default for that model
+namespace["handle_key"](state, "right")
+namespace["handle_key"](state, "down")
+assert state.selection()[1] == "codex"  # harness reel
+assert state.focus == 3
+namespace["handle_key"](state, "right")
+assert state.focus == 0  # focus wraps around all four reels
+namespace["handle_key"](state, "left")
+assert state.focus == 3  # and wraps backwards too
+namespace["handle_key"](state, "left")  # back through effort...
+namespace["handle_key"](state, "left")  # ...and model...
+namespace["handle_key"](state, "left")  # ...to the provider reel
+assert state.focus == 0
+while state.selected_provider() != "other":
+    namespace["handle_key"](state, "down")
+namespace["handle_key"](state, "down")
+assert state.selected_provider() == "Add profile…"
+assert namespace["handle_key"](state, "enter") == "add"
+assert namespace["handle_key"](state, "cancel") == "cancel"
+
+# Last-used memory seeds the model cursor; stale entries fall back to first.
+remembered = {"commandcode": "commandcode/xiaomi/mimo-v2.5-pro"}
+state = namespace["ReelState"](providers, registry, index, remembered)
+while state.selected_provider() != "commandcode":
+    namespace["handle_key"](state, "down")
+assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
+stale = namespace["ReelState"](providers, registry, index, {"commandcode": "commandcode/rotated-out"})
+while stale.selected_provider() != "commandcode":
+    namespace["handle_key"](stale, "down")
+assert stale.selected_model() == "commandcode/moonshotai/Kimi-K3"  # silent fallback
+
+split = namespace["split_launch_args"]
+assert split(["--model", "m", "--effort", "high", "codex", "-x"]) == ("m", "high", ["codex", "-x"])
+assert split(["codex", "--model", "m"]) == (None, None, ["codex", "--model", "m"])
+assert split(["--effort=max", "claude"]) == (None, "max", ["claude"])
+assert split([]) == (None, None, [])
+
+known = {"commandcode/moonshotai/Kimi-K3", "gpt-5.6-sol"}
+restore = namespace["_restore_catalog_slug"]
+assert restore("commandcode/moonshotai-Kimi-K3", known) == "commandcode/moonshotai/Kimi-K3"
+assert restore("commandcode/MiniMaxAI-MiniMax-M3", {"commandcode/MiniMaxAI/MiniMax-M3"}) == "commandcode/MiniMaxAI/MiniMax-M3"
+assert restore("commandcode/moonshotai_Kimi--K3", set()) == "commandcode/moonshotai/Kimi-K3"  # '_' + '--' encoding
+assert restore("commandcode/xiaomi_mimo--v2.5--pro", set()) == "commandcode/xiaomi/mimo-v2.5-pro"
+assert restore("commandcode/MiniMaxAI_MiniMax--M3", set()) == "commandcode/MiniMaxAI/MiniMax-M3"
+assert restore("gpt-5.6-sol", known) == "gpt-5.6-sol"
+assert restore("crofai/glm-5.2", known) == "crofai/glm-5.2"
+
+width, gap = namespace["reel_geometry"](120)
+reel_at = namespace["reel_at"]
+assert reel_at(0, width, gap) == 0
+assert reel_at(width - 1, width, gap) == 0
+assert reel_at(width, width, gap) is None  # gap between reels
+assert reel_at(width + gap, width, gap) == 1
+assert reel_at(3 * (width + gap), width, gap) == 3
+assert reel_at(4 * (width + gap), width, gap) is None  # padding
+assert reel_at(-1, width, gap) is None
 PY
 
 "$ROOT/files/opencodex" --version

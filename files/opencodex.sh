@@ -2,7 +2,7 @@
 # setup-module: opencodex
 # setup-type: script
 #
-# Installs a two-column provider/harness launcher at ~/.local/bin/opencodex, a
+# Installs a three-reel provider/model/harness launcher at ~/.local/bin/opencodex, a
 # latest OpenCodex runtime, and a setup-managed provider registry snapshot.
 # Profile metadata is fleet state; credentials remain machine-local.
 
