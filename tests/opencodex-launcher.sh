@@ -291,8 +291,19 @@ if click is not None:
     if drag is not None:
         namespace["handle_mouse"](state, drag, reel_x + 1, target_row + 1, rows, cols)
         assert state.cursors[1] == min(before + 3, len(state.reel_entries(1)) - 1)
-    namespace["handle_key"](state, "left")  # mouse assertions end on the model reel
+    # A click on a reel's padding (no entry under the pointer) still focuses it.
+    state.focus = 0
+    namespace["handle_mouse"](state, click, 2 * (width + gap) + 1, 0, rows, cols)
+    assert state.focus == 2
+    namespace["handle_key"](state, "left")  # ...back through effort...
+    namespace["handle_key"](state, "left")  # ...to the provider reel
 assert state.focus == 0
+
+# The reel body uses all rows between the header and the hint line.
+_, _, header_y, center_y, body, first_row = namespace["picker_layout"](rows, cols)
+assert body >= rows - header_y - 4  # no artificial 15-row cap
+assert first_row + body <= rows - 1  # and it never spills onto the hint row
+assert first_row >= header_y + 1
 provider_walk(state, "other")
 namespace["handle_key"](state, "down")
 assert state.selected_provider() == "Add profile…"
@@ -315,11 +326,14 @@ assert model_efforts({"efforts": [], "support": "partial"}) == ["none", "default
 assert model_efforts({"efforts": []}) == ["default"]  # none
 assert model_efforts({}) == ["default"]  # absent info -> default
 probe = namespace["_probe_capability"]
-assert probe({"reasoning_effort": True}) is True
-assert probe({"supports_reasoning": True}) is True
-assert probe({"capabilities": ["completion"]}) is False
-assert probe({"capabilities": ["embedding"]}) is False
-assert probe({}) is False
+assert probe({"supported_reasoning_levels": [{"effort": "low"}]}) == "full"
+assert probe({"think_efforts": {"support": True, "values": ["low", "high"]}}) == "full"
+assert probe({"reasoning_effort": True}) == "partial"
+assert probe({"supports_reasoning": True}) == "partial"
+assert probe({"custom_reasoning": True}) == "partial"
+assert probe({"capabilities": ["completion"]}) == "none"  # no reasoning metadata
+assert probe({"capabilities": ["embedding"]}) == "none"
+assert probe({}) == "none"
 
 split = namespace["split_launch_args"]
 assert split(["--model", "m", "--effort", "high", "codex", "-x"]) == ("m", "high", ["codex", "-x"])

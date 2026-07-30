@@ -709,29 +709,36 @@ def live_model_index(url: str = OCX_MODELS_URL, timeout: float = 0.75) -> dict[s
     return index
 
 
-def _probe_capability(row: dict[str, Any]) -> bool:
-    """Whether one upstream /v1/models row advertises reasoning support.
+def _probe_capability(row: dict[str, Any]) -> str:
+    """Reasoning-support tier advertised by one upstream /v1/models row.
 
-    Providers use different shapes: crofai uses a boolean `reasoning_effort`
-    (or `custom_reasoning`), kimicode a boolean `supports_reasoning`, and a
-    non-completion `capabilities` list marks non-reasoning endpoints.
+    'full' when the row lists discrete levels, 'partial' when it only flags
+    reasoning as a boolean (crofai's `reasoning_effort`/`custom_reasoning`,
+    kimicode's `supports_reasoning`), else 'none' — the provider serves the
+    model but offers no reasoning control, so the picker must not invent
+    low~ultra choices for it.
     """
+    levels = row.get("supported_reasoning_levels")
+    if isinstance(levels, list) and levels:
+        return "full"
+    think = row.get("think_efforts")
+    if isinstance(think, dict) and think.get("values"):
+        return "full"
     for key in ("reasoning_effort", "custom_reasoning", "supports_reasoning"):
         if row.get(key):
-            return True
-    capabilities = row.get("capabilities")
-    if isinstance(capabilities, list) and capabilities:
-        if not any(cap in ("completion", "chat") for cap in capabilities):
-            return False
-    return False
+            return "partial"
+    return "none"
 
 
 def provider_support_index(
     registry: dict[str, Any], auth_data: dict[str, Any] | None = None, timeout: float = 0.9
 ) -> dict[str, str]:
-    """Model id -> 'partial', from each provider's own /v1/models capability
+    """Model id -> support tier, from each provider's own /v1/models capability
     fields. The proxy nulls these out, so the upstream endpoints are queried
-    directly. Disabled without an OPENCODEX_AUTH_JSON; failures yield {}."""
+    directly. Every visible model is recorded (including 'none'): an endpoint
+    that omits reasoning metadata means no reasoning control, which must
+    override the catalog's blanket level list. Disabled without an
+    OPENCODEX_AUTH_JSON; failures yield {}."""
     if not OPENCODEX_CAPABILITY_PROBE:
         return {}
     if auth_data is None:
@@ -769,8 +776,7 @@ def provider_support_index(
         for row in rows or []:
             if not (isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]):
                 continue
-            if _probe_capability(row):
-                support[f"{name}/{row['id']}"] = "partial"
+            support[f"{name}/{row['id']}"] = _probe_capability(row)
     return support
 
 
@@ -780,10 +786,12 @@ def merged_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
     catalog supplies discrete effort levels; the probe marks reasoning
     support the proxy strips. Models unknown to all three do not appear.
 
-    The probe is authoritative for the providers it can see: when it reports
-    only partial reasoning support, its verdict overrides the catalog's
-    blanket level list (which ocx writes for every model regardless). The
-    catalog still wins where the probe has no signal (codex, commandcode)."""
+    The probe is authoritative for the providers it can see: whatever tier
+    it reports overrides the catalog's blanket level list (which ocx writes
+    for every model regardless). 'none' clears the list entirely — a provider
+    with no reasoning metadata offers no reasoning control, so the picker
+    shows only "default". The catalog still wins where the probe has no
+    signal (codex, or a provider whose endpoint is unreachable)."""
     live = live_model_index()
     index: dict[str, dict[str, Any]] = {}
     known_ids = set(live)
@@ -795,7 +803,8 @@ def merged_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for model_id, support in provider_support_index(registry).items():
         info = index.setdefault(model_id, {"id": model_id, "efforts": []})
         info["support"] = support
-        info["efforts"] = []  # partial support: no discrete levels to offer
+        if support != "full":
+            info["efforts"] = []  # no discrete levels to offer
     return index
 
 
@@ -1123,8 +1132,7 @@ def picker_layout(rows: int, cols: int) -> tuple[int, int, int, int, int, int]:
     width, gap = reel_geometry(cols)
     header_y = 2
     center_y = rows // 2
-    body = min(rows - header_y - 3, 15)
-    body = max(body, 3)
+    body = max(rows - header_y - 3, 3)  # all rows between the header and hint
     if body % 2 == 0:
         body -= 1  # keep a single unambiguous center row
     return width, gap, header_y, center_y, body, center_y - body // 2
@@ -1175,11 +1183,14 @@ def handle_mouse(
         return "left"
     if button & getattr(curses, "BUTTON7_PRESSED", 0):
         return "right"
-    if button & (curses.BUTTON1_PRESSED | getattr(curses, "BUTTON1_REPEAT", 0)):
+    click_buttons = curses.BUTTON1_PRESSED | getattr(curses, "BUTTON1_REPEAT", 0)
+    # xterm-family terminals report a quick click as CLICKED, not PRESSED.
+    click_buttons |= getattr(curses, "BUTTON1_CLICKED", 0)
+    if button & click_buttons:
         if reel is None:
             return None
-        state.focus = reel
-        select_row(state, reel, y, rows, cols)
+        state.focus = reel  # clicking anywhere on a reel focuses it...
+        select_row(state, reel, y, rows, cols)  # ...and selects if a row is hit
     return None
 
 
@@ -1267,8 +1278,11 @@ def run_reel_picker(
             | curses.BUTTON4_PRESSED
             | curses.BUTTON5_PRESSED
         )
-        # Horizontal wheel (shift+scroll) and drag are not in every curses build.
-        for optional in ("BUTTON6_PRESSED", "BUTTON7_PRESSED", "BUTTON1_REPEAT"):
+        # Horizontal wheel (shift+scroll), drag, and quick clicks are not in
+        # every curses build.
+        for optional in (
+            "BUTTON6_PRESSED", "BUTTON7_PRESSED", "BUTTON1_REPEAT", "BUTTON1_CLICKED",
+        ):
             mouse_events |= getattr(curses, optional, 0)
         curses.mousemask(mouse_events)
         if curses.has_colors():
