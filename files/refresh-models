@@ -73,6 +73,27 @@ def load_json(path):
         return json.load(f)
 
 
+def load_json_or_quarantine(path):
+    """Read JSON, setting a corrupt file aside so the next write can recover.
+
+    An interrupted write can leave a truncated file behind. Without this the
+    read fails on every subsequent run and the tool can never repair itself.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        return load_json(path)
+    except json.JSONDecodeError as exc:
+        quarantined = path + ".corrupt"
+        os.replace(path, quarantined)
+        print(
+            f"  {os.path.basename(path)} was corrupt ({exc}); "
+            f"moved to {quarantined} and rebuilding",
+            file=sys.stderr,
+        )
+        return {}
+
+
 def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -82,11 +103,18 @@ def save_json(path, data):
 def save_json_atomic(path, data):
     directory = os.path.dirname(path)
     pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o600
     fd, tmp_name = tempfile.mkstemp(prefix=".refresh-models.", dir=directory)
     try:
         with os.fdopen(fd, "w") as handle:
             json.dump(data, handle, indent=2)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
     finally:
         try:
@@ -429,7 +457,7 @@ def refresh_server(name, cfg):
         if not model_id:
             continue
         models[model_id] = handler(m)
-    opencode = load_json(OPENCODE_PATH) if os.path.exists(OPENCODE_PATH) else {}
+    opencode = load_json_or_quarantine(OPENCODE_PATH)
     provider_block = opencode.get("provider", {})
     existing = provider_block.setdefault(name, {})
     existing["npm"] = npm
@@ -441,7 +469,7 @@ def refresh_server(name, cfg):
     existing["models"] = models
     provider_block[name] = existing
     opencode["provider"] = provider_block
-    save_json(OPENCODE_PATH, opencode)
+    save_json_atomic(OPENCODE_PATH, opencode)
     jsonc_path = OPENCODE_PATH.replace(".json", ".jsonc")
     if jsonc_path != OPENCODE_PATH and os.path.exists(jsonc_path):
         os.remove(jsonc_path)
@@ -662,7 +690,7 @@ def _provider_enabled(name, cfg):
 
 def _sync_opencode_provider_statuses(servers):
     """Mirror managed provider status without changing unrelated providers."""
-    opencode = load_json(OPENCODE_PATH) if os.path.exists(OPENCODE_PATH) else {}
+    opencode = load_json_or_quarantine(OPENCODE_PATH)
     configured_disabled = opencode.get("disabled_providers", [])
     if not isinstance(configured_disabled, list):
         configured_disabled = []
@@ -675,8 +703,7 @@ def _sync_opencode_provider_statuses(servers):
         opencode["disabled_providers"] = disabled
     else:
         opencode.pop("disabled_providers", None)
-    pathlib.Path(os.path.dirname(OPENCODE_PATH)).mkdir(parents=True, exist_ok=True)
-    save_json(OPENCODE_PATH, opencode)
+    save_json_atomic(OPENCODE_PATH, opencode)
 
 
 def _sync_opencodex_provider_statuses():
