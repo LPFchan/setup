@@ -117,9 +117,38 @@ _claudex_profile_for() {
 # sidecar and records only sessions its claude harness actually ran.
 _opencodex_provider_for() {
     local sid="$1"
+    local session_file="${2:-}"
     local mapping="$HOME/.config/opencodex/sessions.tsv"
-    [[ -f "$mapping" ]] || return
-    grep "^${sid}	" "$mapping" 2>/dev/null | tail -1 | cut -f2
+    local provider
+    if [[ -f "$mapping" ]]; then
+        provider=$(grep "^${sid}	" "$mapping" 2>/dev/null | tail -1 | cut -f2)
+        if [[ -n "$provider" ]]; then
+            echo "$provider"
+            return
+        fi
+    fi
+
+    # A running or interrupted session can lack a durable sidecar row. Recover
+    # non-Claude models only when one configured provider has that exact
+    # default; native Claude model names are deliberately never inferred.
+    local registry="$HOME/.config/opencodex/managed-profiles.json"
+    [[ -f "$registry" ]] || return
+    if [[ -z "$session_file" ]]; then
+        session_file=$(find "$CLAUDE_DIR" -maxdepth 2 -type f -name "$sid.jsonl" -print -quit 2>/dev/null)
+    fi
+    [[ -f "$session_file" ]] || return
+    local model
+    model=$(jq -r 'select(.type == "assistant" and .message.role == "assistant")
+                   | .message.model // empty
+                   | select(. != "<synthetic>")' "$session_file" 2>/dev/null | tail -1)
+    [[ -n "$model" && "$model" != claude-* ]] || return
+    provider=$(jq -r --arg model "$model" '
+        .providers | to_entries[]
+        | select(.value.default_model == $model)
+        | .key
+    ' "$registry" 2>/dev/null | head -2)
+    [[ -n "$provider" && "$provider" != *$'\n'* ]] || return
+    echo "$provider"
 }
 
 collect_sessions() {
@@ -143,7 +172,7 @@ collect_sessions() {
             tag=cc
             if grep -m1 -q '"model":"claudex-proxy"' "$f" 2>/dev/null; then
                 tag=clx
-            elif [[ -n "$(_opencodex_provider_for "$id")" ]]; then
+            elif [[ -n "$(_opencodex_provider_for "$id" "$f")" ]]; then
                 tag=ocx
             fi
             msg=$(_cc_first_msg "$f")
@@ -159,6 +188,8 @@ collect_sessions() {
             meta=$(head -1 "$f" 2>/dev/null)
             src=$(echo "$meta" | jq -r '.payload.thread_source // ""' 2>/dev/null)
             [[ "$src" == "subagent" ]] && continue
+            source=$(echo "$meta" | jq -r '.payload.source // ""' 2>/dev/null)
+            [[ "$source" == "exec" ]] && continue
             cwd=$(echo "$meta" | jq -r '.payload.cwd // ""' 2>/dev/null || echo "")
             msg=$(_cx_first_msg "$f")
             echo "$mtime|cx|$id|$cwd|${msg:-}"

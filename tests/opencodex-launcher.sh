@@ -88,6 +88,10 @@ case "${1:-}" in
             case "$previous" in --session-id|--resume|-r) sid="$arg" ;; esac
             previous="$arg"
         done
+        if [[ -n "${EXPECT_PRECLAIM:-}" && -n "$sid" ]]; then
+            grep -Fqx "$sid"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
+                && touch "$TEST_TMP/session-preclaimed"
+        fi
         if [[ -n "$sid" ]]; then
             jsonl="$HOME/.claude/projects/-test-proj/$sid.jsonl"
             mkdir -p "$(dirname "$jsonl")"
@@ -275,7 +279,7 @@ grep -Fqx -- "$short_resume_id" "$TEST_TMP/claude-args" || fail "Claude's short 
 grep -Fqx "$short_resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "short resume mapping did not preserve the requested session id"
 
-"$ROOT/files/opencodex" run commandcode claude
+EXPECT_PRECLAIM=1 "$ROOT/files/opencodex" run commandcode claude
 generated_id=$(awk 'previous == "--session-id" { print; exit } { previous = $0 }' "$TEST_TMP/claude-args")
 python3 - "$generated_id" <<'PY'
 import sys
@@ -284,6 +288,8 @@ uuid.UUID(sys.argv[1])
 PY
 grep -Fqx "$generated_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "new Claude session did not record its generated UUID"
+[[ -e "$TEST_TMP/session-preclaimed" ]] \
+    || fail "new Claude session was not mapped before the child process started"
 
 # A resume under the same provider refreshes the row instead of duplicating
 # or clobbering it: the sidecar still holds exactly one line for the sid.

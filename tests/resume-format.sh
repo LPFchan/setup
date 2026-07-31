@@ -35,10 +35,17 @@ export PATH
 
 session="$HOME/.codex/sessions/rollout-2024-07-03T18-46-40-test-session.jsonl"
 cat > "$session" <<'EOF'
-{"payload":{"thread_source":"","cwd":"/tmp/project"}}
+{"type":"session_meta","payload":{"source":"cli","thread_source":"","cwd":"/tmp/project"}}
 {"type":"response_item","role":"user","payload":{"content":[{"type":"input_text","text":"Fix timestamp display"}]}}
 EOF
 touch -t 202407031846.40 "$session"
+
+programmatic_session="$HOME/.codex/sessions/rollout-2024-07-03T18-47-40-programmatic-session.jsonl"
+cat > "$programmatic_session" <<'EOF'
+{"type":"session_meta","payload":{"source":"exec","thread_source":"","cwd":"/tmp/project"}}
+{"type":"response_item","role":"user","payload":{"content":[{"type":"input_text","text":"Programmatic Codex run"}}]}}
+EOF
+touch -t 202407031847.40 "$programmatic_session"
 
 if "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/stderr"; then
     echo "FAIL: picker failure should fail resume" >&2
@@ -64,6 +71,8 @@ row=$(cat "$TEST_TMP/fzf-input")
     || { echo "FAIL: resume used fallback timestamp: $row" >&2; exit 1; }
 [[ "$row" == *"codex"* && "$row" == *"Fix timestamp display"* ]] \
     || { echo "FAIL: resume row did not include expected session metadata: $row" >&2; exit 1; }
+[[ "$row" != *"Programmatic Codex run"* ]] \
+    || { echo "FAIL: resume included a programmatic Codex exec session" >&2; exit 1; }
 
 cat > "$FAKE_BIN/fzf" <<'EOF'
 #!/usr/bin/env bash
@@ -316,6 +325,33 @@ TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencodex-provide
 expected_ocxp_args=$(printf '%s\nrun\ncodex\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxpid")
 [[ $(cat "$TEST_TMP/opencodex-args") == "$expected_ocxp_args" ]] \
     || { echo "FAIL: resume did not dispatch a provider-named OpenCodex session through its provider" >&2; exit 1; }
+
+# A uniquely matching non-Claude provider default recovers an active session
+# whose sidecar row is not yet durable.
+ocxactiveid="aaaaaaaa-bbbb-cccc-dddd-333333333333"
+ocxactivecwd="$HOME/opencodex-active-proj"
+mkdir -p "$ocxactivecwd" "$HOME/.claude/projects/-home-opencodex-active-proj"
+ocxactivesession="$HOME/.claude/projects/-home-opencodex-active-proj/$ocxactiveid.jsonl"
+{
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Active OpenCodex session"}}\n' "$ocxactivecwd"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}]}}\n'
+} > "$ocxactivesession"
+printf '{"providers":{"codex":{"default_model":"gpt-5.6-sol"},"other":{"default_model":"other-model"}}}\n' \
+    > "$HOME/.config/opencodex/managed-profiles.json"
+touch -t 202407061400.00 "$ocxactivesession"
+
+cat > "$FAKE_BIN/fzf" <<EOF
+#!/usr/bin/env bash
+selection=\$(cat)
+printf '%s\n' "\$selection" | grep 'ocx|' | grep '$ocxactiveid' | head -1
+EOF
+chmod +x "$FAKE_BIN/fzf"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencodex-active-stderr"
+
+expected_ocxactive_args=$(printf '%s\nrun\ncodex\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxactiveid")
+[[ $(cat "$TEST_TMP/opencodex-args") == "$expected_ocxactive_args" ]] \
+    || { echo "FAIL: resume did not recover an active unmapped OpenCodex session" >&2; exit 1; }
 
 # Hermes persists sessions in ~/.hermes/state.db. Only top-level interactive
 # CLI sessions belong in the human resume picker; tool and child sessions must

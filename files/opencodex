@@ -447,15 +447,25 @@ def session_files() -> dict[Path, int]:
     return result
 
 
+def write_session_mapping(provider: str, sid: str) -> None:
+    SESSIONS.parent.mkdir(parents=True, exist_ok=True)
+    entries: list[str] = []
+    if SESSIONS.exists():
+        entries = [
+            line
+            for line in SESSIONS.read_text().splitlines()
+            if not line.startswith(sid + "\t")
+        ]
+    entries.append(f"{sid}\t{provider}")
+    SESSIONS.write_text("\n".join(entries) + "\n")
+
+
 def record_session(provider: str, before: dict[Path, int], sid: str | None) -> None:
     """Map the claude session a launch actually ran to its provider.
 
-    The launch command line alone cannot prove which session ran (a resume
-    arg could name one sid while the harness continues another), so the
-    projects dir is diffed and only a touched jsonl earns a row: the known
-    sid's file when there is one, else the newest touched file (a bare
-    --continue). Rows are replace-on-rewrite so a resume refreshes the
-    mapping instead of appending a duplicate.
+    Known session ids are claimed before launch so active sessions are
+    immediately resumable through OpenCodex. The projects dir diff resolves
+    selectors without an id, such as a bare --continue.
     """
     touched = [
         (mtime, path)
@@ -474,16 +484,7 @@ def record_session(provider: str, before: dict[Path, int], sid: str | None) -> N
         path = max(touched)[1]
     if path is None:
         return
-    SESSIONS.parent.mkdir(parents=True, exist_ok=True)
-    entries: list[str] = []
-    if SESSIONS.exists():
-        entries = [
-            line
-            for line in SESSIONS.read_text().splitlines()
-            if not line.startswith(path.stem + "\t")
-        ]
-    entries.append(f"{path.stem}\t{provider}")
-    SESSIONS.write_text("\n".join(entries) + "\n")
+    write_session_mapping(provider, path.stem)
 
 
 def session_id_from_args(args: list[str]) -> str | None:
@@ -901,6 +902,8 @@ def launch(
     if provider is not None:
         record_picker_state(provider, routed, effort, harness)
     before = session_files()
+    if provider is not None and sid is not None:
+        write_session_mapping(provider, sid)
     result = subprocess.run(command, env=env)
     if provider is not None:
         record_session(provider, before, sid)

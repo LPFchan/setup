@@ -100,7 +100,10 @@ CLI and the Codex Desktop model picker read.
 The `resume` picker reads Claude Code, Codex, OpenCode, Antigravity CLI,
 ForgeCode, Hermes, Grok Build, and Kimi Code session stores, then forwards the
 selected harness name to the current tmux window title before resuming the
-session. Antigravity entries come from its documented transcript trees under
+session. Codex `exec` sessions are omitted because they are non-interactive.
+OpenCodex-owned Claude sessions are labeled and resumed through their recorded
+provider while they are still active. Antigravity entries come from its
+documented transcript trees under
 `~/.gemini/antigravity-cli/brain/` and resume with `agy --conversation <id>`.
 Hermes entries come from top-level interactive CLI sessions in
 `~/.hermes/state.db`. Grok entries come from
