@@ -17,6 +17,9 @@ ZSHRC="$HOME/.zshrc"
 
 BLOCK_CONTENT='set -g default-terminal "tmux-256color"
 set -g allow-passthrough on
+# Advertise and forward the kitty keyboard protocol so apps (vim/nvim, shells,
+# TUIs) can bind modified keys like Ctrl-Enter that terminals otherwise elide.
+set -g extended-keys on
 # Fixed array indexes keep repeated `source-file` reloads idempotent. The tmux
 # pattern covers nested fleet sessions whose outer terminal is another tmux.
 set -s terminal-features[90] "xterm*:RGB"
