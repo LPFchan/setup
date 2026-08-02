@@ -250,7 +250,7 @@ ai() {
     _ai_intake_history
     _ai_stamp_recent_dir
 
-    local choice line
+    local choice line kimi_bin
     local -a options ssh_hosts words tools folders
     local -A folder_paths
     # $HOST is set natively by zsh — no fork, unlike $(hostname).
@@ -259,9 +259,12 @@ ai() {
     # Forkless availability filter: ${+commands[...]} is a hash lookup,
     # so missing tools drop out of the menu without any external probe.
     local tool
-    for tool in claude codex claudex opencodex opencode agy hermes grok kimi; do
+    for tool in claude codex claudex opencodex opencode agy hermes grok; do
         (( ${+commands[$tool]} )) && tools+=("$tool")
     done
+    kimi_bin=${commands[kimi]-}
+    [[ -n $kimi_bin ]] || kimi_bin=${KIMI_CODE_HOME:-$HOME/.kimi-code}/bin/kimi
+    [[ -x $kimi_bin ]] && tools+=(kimi)
     tools+=(setup resume neither)
 
     # Forkless parse: $(<file) + (z) word-split instead of $(grep | awk).
@@ -421,7 +424,7 @@ ai() {
         agy) agy --dangerously-skip-permissions ;;
         hermes) hermes ;;
         grok) grok ;;
-        kimi) kimi ;;
+        kimi) "$kimi_bin" ;;
         setup) setup ;;
         resume) resume ;;
         neither|""|" ") ;;

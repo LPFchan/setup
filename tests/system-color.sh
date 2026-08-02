@@ -46,6 +46,17 @@ has_managed_block "$HOME/.zshenv" system-color \
 grep -Fq "alias ll='ls -alFh'" "$HOME/.zshrc" \
     || fail "zsh-basics did not install the ll alias"
 
+# A managed terminal guard must scope only its own behavior. Returning from the
+# sourced .zshrc would suppress installer-owned PATH entries appended later.
+printf '\nexport POST_SETUP_GUARD=visible\n' >> "$HOME/.zshrc"
+guard_result=$(TERM_PROGRAM= SSH_TTY= TMUX= zsh -dfc '
+    source "$1"
+    print -r -- "$POST_SETUP_GUARD"
+    if alias ll >/dev/null 2>&1; then print alias-loaded; else print alias-skipped; fi
+' _ "$HOME/.zshrc")
+[[ "$guard_result" == $'visible\nalias-skipped' ]] \
+    || fail "zsh-basics guard escaped its managed block: $guard_result"
+
 # Full saturation/value means every generated RGB triplet has at least one
 # channel at 00 and at least one at FF.
 rgb=${SYSTEM_COLOR_HEX#\#}

@@ -7,7 +7,9 @@
 MODULE="starship"
 BIN="$HOME/.local/bin/starship"
 
-BLOCK_CONTENT='if command -v starship >/dev/null; then
+BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
+   && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
+   && command -v starship >/dev/null; then
     _STARSHIP_CACHE="$HOME/.cache/starship-init.zsh"
     if [[ -f "$_STARSHIP_CACHE" ]]; then
         source "$_STARSHIP_CACHE"

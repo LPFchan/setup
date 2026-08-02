@@ -19,6 +19,7 @@ import uuid
 
 
 HOME = Path.home()
+KIMI_HOME = Path(os.environ.get("KIMI_CODE_HOME", HOME / ".kimi-code")).expanduser()
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex")).expanduser().resolve()
 CODEX_CATALOG = CODEX_HOME / "opencodex-catalog.json"
 OCX = Path(os.environ.get("OPENCODEX_BIN", HOME / ".local/bin/ocx"))
@@ -876,7 +877,12 @@ def launch(
         # configured default_effort.
         if provider is not None:
             record_picker_state(provider, routed, effort, harness)
-        return subprocess.run(["kimi", "-m", routed, *args]).returncode
+        kimi = kimi_executable()
+        if kimi is None:
+            raise UserError(
+                f"Kimi executable not found on PATH or at {KIMI_HOME / 'bin/kimi'}"
+            )
+        return subprocess.run([kimi, "-m", routed, *args]).returncode
     if harness != "claude":
         raise UserError(f"unknown harness: {harness}")
     env = os.environ.copy()
@@ -921,9 +927,23 @@ PICKER_STATE = Path(
 PICKER_STATE_VERSION = 1
 
 
+def kimi_executable() -> str | None:
+    """Resolve Kimi from PATH or its native per-user installation directory."""
+    command = shutil.which("kimi")
+    if command is not None:
+        return command
+    private_command = KIMI_HOME / "bin/kimi"
+    return str(private_command) if os.access(private_command, os.X_OK) else None
+
+
 def available_harnesses() -> list[str]:
     """Harnesses whose subprocess entry points are executable on this machine."""
-    return [harness for harness in HARNESSES if shutil.which(harness) is not None]
+    return [
+        harness
+        for harness in HARNESSES
+        if (kimi_executable() if harness == "kimi" else shutil.which(harness))
+        is not None
+    ]
 
 
 def empty_picker_state() -> dict[str, Any]:

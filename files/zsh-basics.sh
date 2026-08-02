@@ -7,18 +7,17 @@
 MODULE="zsh-basics"
 ZSHENV="$HOME/.zshenv"
 
-BLOCK_CONTENT='[[ -o interactive && -t 0 ]] || return
-[[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] || return
+BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]]; then
+    alias /exit='"'"'exit'"'"'
+    alias ll='"'"'ls -alFh'"'"'
 
-alias /exit='"'"'exit'"'"'
-alias ll='"'"'ls -alFh'"'"'
-
-setopt NO_NOMATCH
-# NFD Hangul (macOS drag-and-drop paths, APFS filenames) renders as <11xx>
-# placeholders and garbles ZLE redraw/cursor math without this.
-setopt COMBINING_CHARS
-bindkey -e
-WORDCHARS=${WORDCHARS//\//}'
+    setopt NO_NOMATCH
+    # NFD Hangul (macOS drag-and-drop paths, APFS filenames) renders as <11xx>
+    # placeholders and garbles ZLE redraw/cursor math without this.
+    setopt COMBINING_CHARS
+    bindkey -e
+    WORDCHARS=${WORDCHARS//\//}
+fi'
 
 # Shared machine identity for shell-launched tools. POSIX cksum makes the hue
 # stable for a given short hostname; the integer HSV conversion fixes

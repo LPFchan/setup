@@ -282,6 +282,7 @@ touch -t 202407061200.00 "$ocxsession"
 cat > "$FAKE_BIN/fzf" <<'EOF'
 #!/usr/bin/env bash
 selection=$(cat)
+[[ "$selection" != *"opencodex:"* ]] || exit 2
 printf '%s\n' "$selection" | grep 'ocx|' | head -1
 EOF
 cat > "$FAKE_BIN/opencodex" <<'EOF'
@@ -534,5 +535,19 @@ expected_kimi_args=$(printf '%s\n--session\n%s' "$FAKE_BIN/kimi" "$kmid")
 actual_kimi_args=$(cat "$TEST_TMP/kimi-args")
 [[ "$actual_kimi_args" == "$expected_kimi_args" ]] \
     || { echo "FAIL: resume did not dispatch Kimi: $actual_kimi_args" >&2; exit 1; }
+
+# Native Kimi installs live below KIMI_CODE_HOME. Resume must still dispatch
+# them when the caller did not inherit that private bin directory on PATH.
+mkdir -p "$HOME/.kimi-code/bin"
+mv "$FAKE_BIN/kimi" "$HOME/.kimi-code/bin/kimi"
+rm -f "$TEST_TMP/kimi-args" "$TEST_TMP/tmux-args"
+TMUX=test-session PATH="$FAKE_BIN:/usr/bin:/bin" \
+    "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/kimi-private-stderr"
+expected_kimi_args=$(printf '%s\n--session\n%s' "$HOME/.kimi-code/bin/kimi" "$kmid")
+actual_kimi_args=$(cat "$TEST_TMP/kimi-args")
+[[ "$actual_kimi_args" == "$expected_kimi_args" ]] \
+    || { echo "FAIL: resume did not dispatch private Kimi: $actual_kimi_args" >&2; exit 1; }
+[[ $(cat "$TEST_TMP/tmux-args") == $'rename-window\n--\nkimi' ]] \
+    || { echo "FAIL: private Kimi path leaked into the tmux title" >&2; exit 1; }
 
 echo "resume format tests passed"

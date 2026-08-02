@@ -35,8 +35,19 @@ EOF
 chmod +x "$TEST_TMP/bin/fzf"
 
 run_zsh() {
-    AI_MENU_TEST_LOG="$TEST_TMP/launches" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
-        ZDOTDIR="$HOME" "$zsh_bin" -i -c "$1" >/dev/null 2>&1
+    local shell_command="$zsh_bin -i -c ${(q)1}"
+    case "$(uname -s)" in
+        Darwin)
+            AI_MENU_TEST_LOG="$TEST_TMP/launches" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+                ZDOTDIR="$HOME" TERM=xterm-256color TMUX=test-session \
+                script -q /dev/null "$zsh_bin" -i -c "$1" >/dev/null 2>&1
+            ;;
+        *)
+            AI_MENU_TEST_LOG="$TEST_TMP/launches" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+                ZDOTDIR="$HOME" TERM=xterm-256color TMUX=test-session \
+                script -qec "$shell_command" /dev/null >/dev/null 2>&1
+            ;;
+    esac
 }
 
 run_ai() {
@@ -190,6 +201,17 @@ PATH="$TEST_TMP/bin:/usr/bin:/bin" "$zsh_bin" -f -c 'source "$1"; ai' \
     || fail "ai-menu did not expose exactly one kimi entry"
 grep -q '^kimi-dispatched:0$' "$TEST_TMP/launches" \
     || fail "ai-menu did not dispatch kimi without arguments"
+
+# The native Kimi installer uses a private bin directory that may not be in an
+# inherited PATH. It remains both discoverable and launchable from ai-menu.
+mkdir -p "$HOME/.kimi-code/bin"
+mv "$TEST_TMP/bin/kimi" "$HOME/.kimi-code/bin/kimi"
+rm -f "$TEST_TMP/launches"
+run_ai
+[[ $(grep -c $'tool\037kimi\037kimi' "$TEST_TMP/kimi-grid") -eq 1 ]] \
+    || fail "ai-menu omitted private Kimi when it was absent from PATH"
+grep -q '^kimi-dispatched:0$' "$TEST_TMP/launches" \
+    || fail "ai-menu did not dispatch private Kimi"
 
 # A pre-capable binary triggers repair on every invocation (no permanent failed
 # marker); if repair does not fix it, ai-menu falls back to plain fzf.

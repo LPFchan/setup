@@ -8,7 +8,10 @@ MODULE="zsh-syntax-highlighting"
 DIR="$ZSH_PLUGINS_DIR/zsh-syntax-highlighting"
 REPO="https://github.com/zsh-users/zsh-syntax-highlighting.git"
 
-BLOCK_CONTENT='if [[ -d "$HOME/.zsh/zsh-syntax-highlighting" ]] && (( ${+functions[zsh-defer]} )); then
+BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
+   && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
+   && [[ -d "$HOME/.zsh/zsh-syntax-highlighting" ]] \
+   && (( ${+functions[zsh-defer]} )); then
     zsh-defer source "$HOME/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 fi'
 

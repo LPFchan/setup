@@ -498,7 +498,7 @@ format_for_fzf() {
                 label="claudex"
                 [[ "$clx_profile" != "codex" ]] && label="claudex:$clx_profile"
                 ;;
-            ocx) label="opencodex:$(_opencodex_provider_for "$id")" ;;
+            ocx) label="opencodex" ;;
             clxcc) label="claudex-cc" ;;
             cx) label="codex" ;;
             oc) label="opencode" ;;
@@ -571,8 +571,17 @@ case "$tool" in
     *) exit 0 ;;
 esac
 
+if [[ "$tool" == "km" ]] && ! command -v kimi >/dev/null 2>&1; then
+    if [[ -x "$KIMI_DIR/bin/kimi" ]]; then
+        harness="$KIMI_DIR/bin/kimi"
+    else
+        echo "resume: Kimi executable not found on PATH or at $KIMI_DIR/bin/kimi" >&2
+        exit 127
+    fi
+fi
+
 if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
-    tmux rename-window -- "$harness" || true
+    tmux rename-window -- "${harness##*/}" || true
 fi
 
 exec "$harness" "${resume_args[@]}"

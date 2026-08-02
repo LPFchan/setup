@@ -10,7 +10,9 @@ DIR2="$ZSH_PLUGINS_DIR/zsh-defer"
 REPO1="https://github.com/LPFchan/zsh-autocomplete.git"
 REPO2="https://github.com/romkatv/zsh-defer.git"
 
-BLOCK_CONTENT='if [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]; then
+BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
+   && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
+   && [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]; then
     source ~/.zsh/zsh-autocomplete/zsh-autocomplete.plugin.zsh
     source ~/.zsh/zsh-defer/zsh-defer.plugin.zsh
     zstyle '\'':autocomplete:'\'' persist-context yes

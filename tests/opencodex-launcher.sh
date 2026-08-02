@@ -243,6 +243,15 @@ rm "$PROVIDER_STATE_PATH"
 [[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "kimi harness did not receive the routed override model via -m"
 
+# The native Kimi install remains launchable without its private bin directory
+# on PATH, and the provider/model routing contract stays unchanged.
+mkdir -p "$HOME/.kimi-code/bin"
+mv "$TEST_TMP/kimi" "$HOME/.kimi-code/bin/kimi"
+rm -f "$TEST_TMP/kimi-args"
+PATH="$TEST_TMP:/usr/bin:/bin" "$ROOT/files/opencodex" run commandcode kimi
+[[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
+    || fail "opencodex did not dispatch private Kimi with the routed model"
+
 anthropic_default=$(jq -r '.providers.anthropic.default_model' "$OPENCODEX_REGISTRY")
 "$ROOT/files/opencodex" run anthropic codex
 [[ $(tail -2 "$TEST_TMP/codex-args") == "$(printf '%s\n%s' -m "anthropic/$anthropic_default")" ]] \
@@ -824,7 +833,7 @@ assert late.provider_names[-1] == "other"  # the late 'other' row appears last
 original_which = namespace["shutil"].which
 try:
     namespace["shutil"].which = lambda name: f"/bin/{name}" if name in {"claude", "codex"} else None
-    assert namespace["available_harnesses"]() == ["claude", "codex"]
+    assert namespace["available_harnesses"]() == ["claude", "codex", "kimi"]
 finally:
     namespace["shutil"].which = original_which
 filtered = namespace["ReelState"](providers, registry, index, ["codex"], {})

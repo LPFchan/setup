@@ -102,7 +102,8 @@ ForgeCode, Hermes, Grok Build, and Kimi Code session stores, then forwards the
 selected harness name to the current tmux window title before resuming the
 session. Codex `exec` sessions are omitted because they are non-interactive.
 OpenCodex-owned Claude sessions are labeled and resumed through their recorded
-provider while they are still active. Antigravity entries come from its
+provider while they are still active; the picker displays the compact
+`opencodex` label without exposing that routing detail. Antigravity entries come from its
 documented transcript trees under
 `~/.gemini/antigravity-cli/brain/` and resume with `agy --conversation <id>`.
 Hermes entries come from top-level interactive CLI sessions in
@@ -110,6 +111,9 @@ Hermes entries come from top-level interactive CLI sessions in
 `~/.grok/sessions/*/summary.json` and resume with `grok --resume <id>`.
 Kimi Code entries come from `~/.kimi-code/sessions/*/*/state.json` (working
 directories from `session_index.jsonl`) and resume with `kimi --session <id>`.
+The resume picker, AI menu, and OpenCodex launcher resolve Kimi from `PATH`
+first and then from `${KIMI_CODE_HOME:-~/.kimi-code}/bin/kimi`, matching its
+native per-user installation layout.
 
 ### Script modules
 
@@ -118,7 +122,7 @@ directories from `session_index.jsonl`) and resume with `kimi --session <id>`.
 | `zsh-autocomplete` | `~/.zsh/zsh-autocomplete/` + `~/.zsh/zsh-defer/` | plugin source + history + autocomplete settings | `files/zsh-autocomplete.sh` |
 | `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
 | `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
-| `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | interactive/terminal guards, `/exit` and `ll` aliases, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
+| `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | self-contained interactive/terminal guard, `/exit` and `ll` aliases, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
 | `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
 | `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | `~/.bashrc.d/ai-menu` (three-column span-aware picker; setup/resume/neither are full-width rows; repairs and reprobes the managed picker, with stock `fzf` fallback only here) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
@@ -264,9 +268,10 @@ is otherwise historical — so after every run
 reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER` above,
 idempotently and without touching unmanaged content. `tmux-autostart` runs first
 (every interactive TTY shell outside tmux swaps into it before anything heavy),
-`tmux-title` installs the hooks used by shells inside tmux,
-`zsh-basics`' early `return` guards precede what they gate,
-`zsh-syntax-highlighting` follows
+`tmux-title` installs the hooks used by shells inside tmux. Each interactive
+setup block guards only its own behavior; none returns from the user's whole
+`.zshrc`, so unmanaged installer additions later in the file are always
+evaluated. `zsh-syntax-highlighting` follows
 `zsh-autocomplete` (which loads `zsh-defer`), and `ai-menu` autolaunches `ai`
 last once the shell is fully initialized. Blocks with unknown labels are kept and
 sorted after the known ones.

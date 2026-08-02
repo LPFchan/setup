@@ -17,14 +17,16 @@ SETUP_STATE_DIR="${STATE_DIR:-$HOME/.local/state/setup}"
 SRC_CLONE="$SETUP_STATE_DIR/ai-menu-src"
 SOURCE_PATHS=(files/ai-menu files/ai-menu.sh)
 
-BLOCK_CONTENT='[[ ${(t)AI_AUTO_LAUNCHED} == *export* ]] && unset AI_AUTO_LAUNCHED
-[[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
-ai_autolaunch_disabled=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-autolaunch-disabled
-if (( ${+functions[ai]} )) && (( ! ${+AI_AUTO_LAUNCHED} )) && [[ ! -e $ai_autolaunch_disabled ]]; then
-    typeset -g +x AI_AUTO_LAUNCHED=1
-    ai
-fi
-unset ai_autolaunch_disabled'
+BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]]; then
+    [[ ${(t)AI_AUTO_LAUNCHED} == *export* ]] && unset AI_AUTO_LAUNCHED
+    [[ -f "$HOME/.bashrc.d/ai-menu" ]] && source "$HOME/.bashrc.d/ai-menu"
+    ai_autolaunch_disabled=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-autolaunch-disabled
+    if (( ${+functions[ai]} )) && (( ! ${+AI_AUTO_LAUNCHED} )) && [[ ! -e $ai_autolaunch_disabled ]]; then
+        typeset -g +x AI_AUTO_LAUNCHED=1
+        ai
+    fi
+    unset ai_autolaunch_disabled
+fi'
 
 _sync_src() {
     case "$SRC_CLONE" in
