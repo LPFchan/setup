@@ -19,7 +19,11 @@ BLOCK_CONTENT='set -g default-terminal "tmux-256color"
 set -g allow-passthrough on
 # Advertise and forward the kitty keyboard protocol so apps (vim/nvim, shells,
 # TUIs) can bind modified keys like Ctrl-Enter that terminals otherwise elide.
-set -g extended-keys on
+# `always` forwards extended keys even when the outer terminal does not
+# advertise support; csi-u encodes them unambiguously (Tab vs Ctrl-I,
+# Enter vs Ctrl-M), which TUIs like Kimi Code expect.
+set -g extended-keys always
+set -g extended-keys-format csi-u
 # Fixed array indexes keep repeated `source-file` reloads idempotent. The tmux
 # pattern covers nested fleet sessions whose outer terminal is another tmux.
 set -s terminal-features[90] "xterm*:RGB"
