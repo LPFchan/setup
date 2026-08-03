@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
+description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (eleven, bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
 argument-hint: "Host name (e.g. bingus, grimoire) or fleet question"
 tags: [fleet, ssh, remote, hosts, infrastructure]
 audience: fleet
@@ -46,6 +46,9 @@ terminal, such as entering an admin password manually.
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
 - for sophisticated computer-use tasks: summon codex agent here
+
+## eleven — Fedora 44 laptop (Intel i5-5250U, 8 GB)
+- eleven.tailaa113.ts.net (no static IP) · user yeowool
 
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
