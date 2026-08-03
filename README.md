@@ -1,356 +1,159 @@
 # setup
 
-Curl-installable personal Linux/macOS machine setup.
+Personal Linux and macOS machine setup, installed with a single command.
 
-This repo is the source of truth for live scripts and generated config.
-Repo: https://github.com/LPFchan/setup
+This repository is the single source of truth for all live setup scripts and managed configurations.
 
-## Install
+**Repository:** https://github.com/LPFchan/setup
+
+---
+
+## Quick Start
+
+Run this command in `zsh` to install:
 
 ```zsh
 curl -fsSL https://setup.lost.plus/install.sh | zsh
 ```
 
-`zsh` is the sole setup runtime and must already be available on the machine.
-The installer, `setup` CLI, shared helper library, and in-process script-module
-payloads run exclusively under zsh. The installer places the CLI in
-`~/.local/bin/`, then an argument-free interactive run
-bootstraps the managed `fzf-multicolumn` module and opens its span-aware,
-six-track reconfigure UI. Each module has a batch-selection checkbox and a
-separate, column-aligned detail cell that opens its individual action menu; the header reports
-the batch selection count, shows only actions applicable to at least one selected
-module, and redraws checkbox toggles in place without restarting the picker while
-retaining the focused cell. Canceling an individual action menu reuses the current
-status snapshot instead of reprobing remote state. The initial picker opens before
-status probing completes and shows fzf's loading spinner; its column-heading cell
-opens the legacy `<ALL MODULES>` action menu. Existing managed binaries that predate
-`--grid-span-prefix` are upgraded before use. Stock `fzf` and Homebrew are not
-setup UI dependencies on Linux or macOS. When no interactive terminal is
-available, setup prints an actionable warning and falls back to the
-non-interactive update report; explicit commands never bootstrap the picker.
-The supported span-capable release floor is `fzf-multicolumn
-v0.74.0-multicolumn.3`, whose published release assets are used by fresh
-bootstrap installs.
+> **Note:** `zsh` is required. The installer places the `setup` CLI tool in `~/.local/bin/`.
 
-## Modules
+Running `setup` without arguments opens an interactive terminal menu (powered by `fzf`) where you can pick, install, update, or configure modules.
 
-Setup filters the local catalog before list, status, install, update, diff, and
-the interactive picker:
-
-1. **Audience** — compares key material in `~/.ssh/*.pub` with
-   `https://github.com/LPFchan.keys`. A matching machine sees fleet entries;
-   otherwise rows whose manifest `audience` is `fleet` are omitted. If the key
-   list cannot be fetched, setup fails closed to the public catalog. This is
-   catalog filtering, not access control: the key list and this repository are
-   public. Fleet-only modules: `kernel-simmer`, `service-ctl`, `gpu-fancontrol`,
-   `monitoring`, `backup`, and `ssh-aliases`.
-2. **Platform** — compares `uname -s` (lowercased) with the optional manifest
-   `platform` column. Empty platform means every OS; `linux` / `darwin` restrict
-   the row to that kernel. Linux-only modules: `kernel-simmer`, `service-ctl`,
-   `gpu-fancontrol`, `monitoring`, `backup`, and `system-updates`.
-
-### File modules
-
-| module | target | source |
-|--------|--------|--------|
-| `setup` | `~/.local/bin/setup` | `bin/setup` |
-| `resume` | `~/.local/bin/resume` | `files/resume` |
-| `kernel-simmer` | `~/.local/bin/kernel-simmer` | `bin/kernel-simmer` |
-| `service-ctl` | `~/.local/bin/service-ctl` | `bin/service-ctl` |
-| `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | `files/gpu-fancontrol` |
-| `monitoring` | `~/.local/bin/monitoring` | `files/monitoring` |
-| `backup` | `~/.local/bin/backup` | `bin/backup` |
-| `system-updates` | `~/.local/bin/system-updates` | `bin/system-updates` |
-
-`system-updates` is a public Linux-only service module. On capability-checked
-Apt and DNF systems it installs every non-interactive stable package update
-offered by currently enabled distribution and third-party repositories, without
-adding repositories or changing trust. Native package holds and excludes remain
-in force. Apt uses `apt-get full-upgrade`; DNF uses `dnf --refresh upgrade`.
-Updates run daily between 03:00 and 03:30 local time. A separate non-persistent
-timer checks at exactly 07:00 and reboots only when the backend still reports a
-reboot is required and no active non-system login session exists. A missed check
-does not catch up after 07:00. Enabling installs a root-owned executable copy at
-`/usr/local/libexec/system-updates`; systemd never executes the user-managed
-copy. The module disables only competing native automatic-install timers and
-restores their prior enabled/active states on disable.
-
-`refresh-models` reads OpenAI-compatible providers from the shared
-`~/.config/claudex/managed-profiles.json` registry. Both `claudex` and
-`refresh-models` independently install and refresh that snapshot, so either
-module works alone and the registry remains while either consumer is installed.
-Machine-local enable/disable overrides are provider-owned state at
-`~/.config/providers/state.json`; both `refresh-models` and the OpenCodex
-launcher consume it. Install and update migrate enablement from the former
-`refresh-models-state.json` file and the obsolete `refresh-models.json` provider
-registry, leaving provider definitions and local preferences in their canonical
-locations.
-Entering a key with
-`refresh-models auth` enables that provider; `refresh-models provider enable
-<provider>` and `refresh-models provider disable <provider>` toggle it without
-adding or deleting its key. `refresh-models provider add` provides the same
-endpoint discovery, model mapping, redacted publish, and provisioning flow as
-Claudex's **Add profile…** action. Disabled providers are mirrored into
-OpenCode's `disabled_providers` list, skipped by manual and scheduled refreshes,
-and hidden from OpenCodex launcher selection. They are also mirrored into
-OpenCodex's own `disabled` flag and resynced through `ocx sync`, so a disabled
-provider's models leave the Codex model catalog too — which is what the Codex
-CLI and the Codex Desktop model picker read.
-
-The `resume` picker reads Claude Code, Codex, OpenCode, Antigravity CLI,
-ForgeCode, Hermes, Grok Build, and Kimi Code session stores, then forwards the
-selected harness name to the current tmux window title before resuming the
-session. Codex `exec` sessions are omitted because they are non-interactive.
-OpenCodex-owned Claude sessions are labeled and resumed through their recorded
-provider while they are still active; the picker displays the compact
-`opencodex` label without exposing that routing detail. Antigravity entries come from its
-documented transcript trees under
-`~/.gemini/antigravity-cli/brain/` and resume with `agy --conversation <id>`.
-Hermes entries come from top-level interactive CLI sessions in
-`~/.hermes/state.db`. Grok entries come from
-`~/.grok/sessions/*/summary.json` and resume with `grok --resume <id>`.
-Kimi Code entries come from `~/.kimi-code/sessions/*/*/state.json` (working
-directories from `session_index.jsonl`) and resume with `kimi --session <id>`.
-The resume picker, AI menu, and OpenCodex launcher resolve Kimi from `PATH`
-first and then from `${KIMI_CODE_HOME:-~/.kimi-code}/bin/kimi`, matching its
-native per-user installation layout.
-
-### Script modules
-
-| module | installs | manages block | source |
-|--------|----------|---------------|--------|
-| `zsh-autocomplete` | `~/.zsh/zsh-autocomplete/` + `~/.zsh/zsh-defer/` | plugin source + history + autocomplete settings | `files/zsh-autocomplete.sh` |
-| `zsh-syntax-highlighting` | `~/.zsh/zsh-syntax-highlighting/` | deferred syntax highlighting | `files/zsh-syntax-highlighting.sh` |
-| `starship` | `~/.local/bin/starship` | cached starship init | `files/starship.sh` |
-| `zsh-basics` | shared `SYSTEM_COLOR_*` machine identity in `~/.zshenv` | self-contained interactive/terminal guard, `/exit` and `ll` aliases, `setopt NO_NOMATCH`, Emacs keybindings, `WORDCHARS` | `files/zsh-basics.sh` |
-| `agents` | `~/.agents/` (AGENTS.md + skills) | — | `files/agents.sh` |
-| `ssh-aliases` | (none) | outbound `Host` aliases in `~/.ssh/config` | `files/ssh-aliases.sh` |
-| `ai-menu` | `~/.bashrc.d/ai-menu` (three-column span-aware picker; setup/resume/neither are full-width rows; repairs and reprobes the managed picker, with stock `fzf` fallback only here) | source + `ai` autolaunch in `~/.zshrc`; `ai enable`/`ai disable` persistently toggle only autolaunch without editing the managed block; hands selected tools/SSH hosts to the tmux title helper | `files/ai-menu.sh` |
-| `claudex` | `~/.local/bin/claudex` profile launcher + `~/.local/libexec/claudex-core` (latest LPFchan fork release) + managed profiles in `~/.config/claudex/config.toml` | — | `files/claudex.sh` |
-| `opencodex` | `~/.local/bin/opencodex` provider/harness launcher + latest OpenCodex runtime and service + managed providers in `~/.opencodex/config.json` | — | `files/opencodex.sh` |
-| `refresh-models` | `~/.local/bin/refresh-models` + the shared provider registry in `~/.config/claudex/managed-profiles.json` | — | `files/refresh-models.sh` |
-| `tmux` | `tmux` via the detected platform package manager + `~/.local/bin/tmux-cpu-mem` (Linux/macOS status helper) | truecolor and OSC 52 clipboard forwarding for direct and nested tmux clients (including `COLORTERM=truecolor` for pane applications and Claude Code's tmux truecolor override), mouse/one-line wheel scrolling/mouse copying that exits at the live bottom and remains in scrolled history/drag-to-reorder tabs/persistent right-click window and hostname menus/double-click tab close and home-started new tabs/top status bar colored from `SYSTEM_COLOR_HEX`, dimmed inactive windows plus a bold current window using the machine color and contrast text, clean command-derived titles without indexes/flags, and a dynamically sized 12-character-minimum hostname in `~/.tmux.conf`; interactive TTY autostart and zsh title hooks in `~/.zshrc` (reloads a running server on install) | `files/tmux.sh` |
-
-Script modules differ from file modules: they define `install()`, `status()`, `update()`, `uninstall()` functions instead of copying a file. Git-cloned plugins are updated via `git pull`, binaries via re-running their installer. Payloads run in a subshell (they inherit `bin/setup`'s and `lib/script-helpers.sh`'s functions, but nothing they define or set persists in the setup process — a leaked `install()` would shadow coreutils `install` for later file-module writes), so all durable module state must go through files such as `script-state.tsv`.
-
-The `claudex` module installs a launcher at `~/.local/bin/claudex` and the latest [LPFchan/claudex](https://github.com/LPFchan/claudex) release at `~/.local/libexec/claudex-core`. Each setup run resolves GitHub's latest release, verifies the downloaded archive against GitHub's published SHA-256 digest, and stores the readable tag alongside the desired-state hash. New releases become normal setup drift, and status reports the installed and latest versions directly. Running `claudex` opens one picker for every profile declared in `files/claudex-profiles.json`; ordinary Claudex subcommands are forwarded to the core, while `claudex run <profile>` adds the canonical global config and records the selected profile so `resume` returns to the same backend. Setup renders every managed profile into `~/.config/claudex/config.toml`, preserves foreign profiles, repairs registry/profile/wrapper/core drift, and excludes credential values from freshness checks. The built-in `codex` profile uses ChatGPT OAuth, and API-key profiles resolve their credentials from the machine-local `~/.local/share/opencode/auth.json`.
-
-The picker’s **Add profile…** flow accepts an OpenAI-compatible endpoint and a hidden token, discovers its `/models` catalog, and maps Opus, Sonnet, and Haiku. After a redacted confirmation it clones `git@github.com:LPFchan/setup.git` into a private temporary directory, changes only `files/claudex-profiles.json`, commits and fast-forward pushes `main`, stores the token locally, then provisions `claudex` from the exact pushed commit. Tokens are never written to the repository or temporary clone and are not distributed to other machines. A failed push leaves local auth and Claudex config untouched; if setup fails after the push, rerunning `setup update claudex` completes provisioning with the retained local token.
-
-The `opencodex` module independently installs npm's latest [OpenCodex](https://github.com/lidge-jun/opencodex), its login-managed proxy service, and a four-reel launcher. Each setup run resolves the package's `latest` tag and stores the readable version alongside the desired-state hash, while npm verifies the package integrity during installation. Status reports the installed and latest versions directly. Choose a provider, model, reasoning effort, and any installed Claude Code, Codex, Grok, or Kimi Code harness; unavailable harnesses are omitted. Kimi Code launches pass the routed model straight to `kimi -m`, so a matching `[models."<alias>"]` entry must already exist in `~/.kimi-code/config.toml` — the launcher does not write kimi's configuration. While the picker is open, each provider keeps its current model and each model keeps its current effort. Launching records all four selections for the next run. It installs its own provider snapshot at `~/.config/opencodex/managed-profiles.json` from the same canonical `files/claudex-profiles.json` metadata and reads API-key credentials from the machine-local OpenCode auth store without changing the Claudex runtime or configuration. The built-in Codex provider forwards the native Codex login, while the built-in Anthropic provider imports or starts OpenCodex's Claude Pro/Max OAuth login before model discovery when needed, synchronizes the resulting catalog, and routes `anthropic/<model>` through the proxy. In Claudex, the shared Anthropic profile uses Claude Code's native OAuth session directly. Provider publication refreshes every installed consumer. OpenCodex catalog routing is available to Codex CLI on every host; Codex harness launches pin the generated catalog on the command line so newly available provider models are immediately visible, and Codex Desktop history synchronization is enabled only on macOS.
-
-Both `setup status` and the interactive module table run the same live
-`status()` probe for each script module. The probe result is authoritative for
-freshness; `script-state.tsv` is only a durable installation marker and a cache
-of the last observed refs. Binary script modules inspect the executable at
-their declared managed target, so an unrelated command earlier on `PATH` does
-not affect lifecycle status. `setup update` uses that live result too: current
-script modules are left untouched, outdated modules run `update()`, uninstalled
-modules are reported as new, and modules whose freshness cannot be probed are
-skipped with a warning.
-
-The block-writing modules (`zsh-basics`, `ssh-aliases`, `tmux`, `ai-menu`) detect **source drift**: `status()` derives its `expected` hash from the module's own desired content in scope (`BLOCK_CONTENT`, plus the helper/payload for combined modules) via `setup_managed_block_body` in `lib/script-helpers.sh`, and compares it to the installed block — so editing a module's source shows `outdated` before `setup update` re-applies it, mirroring how file modules compare against `checksums.tsv`. For `zsh-basics`, the `.zshrc` baseline and `.zshenv` system-color block are checked together. For `tmux`, the `.tmux.conf` block, `~/.zshrc` autostart and title-hook blocks, and derived helper (`~/.local/bin/tmux-cpu-mem`) are checked together. For `ai-menu` the payload's source of truth is `files/ai-menu` in the module's git clone (`~/.local/state/setup/ai-menu-src`, synced on install/update); `status()` compares only the scoped source paths (`files/ai-menu`, `files/ai-menu.sh`) with remote HEAD before hashing its payload, so unrelated repo pushes do not mark it outdated and a stale or diverged clone cannot make an old installed payload appear current.
-
-The `tmux` module also treats the executable as a required dependency. On
-install or repair it uses Homebrew/MacPorts on macOS, or a detected supported
-package manager on Linux, before writing setup-owned configuration. Removing
-the module leaves the system package installed because setup cannot safely
-distinguish a package it installed from one that was already shared with other
-tools.
-
-### `agents` — canonical agent instructions
-
-Installs the canonical agent payload from `agents/` (this repo) into `~/.agents/`
-and symlinks it into every harness so all machines share one source of truth:
-
-- `agents/AGENTS.md` → `~/.agents/AGENTS.md`, symlinked to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/AGENTS.md`, and `~/.config/opencode/AGENTS.md`
-- `agents/skills/*` → `~/.agents/skills/`, symlinked per-skill into `~/.claude/skills/`, `~/.codex/skills/`, and Antigravity's `~/.gemini/config/skills/`
-
-Skills with `audience: fleet` in their frontmatter are copied and linked only
-on matching machines. An update removes their managed harness links if the
-machine is no longer in the GitHub key list. The fleet-only skills are `fleet`,
-`grimoire`, and `proactive-docs`.
-
-Existing real files/dirs at any target are backed up to `*.pre-agents.bak` before
-symlinking; `uninstall` removes the symlinks and restores the backups. The module
-keeps its own clone of this repo at `~/.local/state/setup/agents-src` and tracks
-content under `agents/` and `files/agents.sh` for update detection. Unrelated
-repo pushes do not mark it outdated; legacy `FLEET.md` artifacts are removed on
-install/update. Global skills carry a `version:` in frontmatter.
-
-Edit the payload under `agents/` here, push, and `setup update` syncs every machine.
-
-### `ssh-aliases` — outbound SSH host aliases
-
-Manages a marker-delimited block of `Host` stanzas in `~/.ssh/config`, built from
-the fleet table in `files/ssh-aliases.sh` and **omitting the current machine**
-(matched by `hostname`; override with `SSH_ALIASES_SELF`). The fleet table can
-attach a per-host terminal fallback; `bingus` uses `xterm-256color` because
-Synology DSM lacks the `tmux-256color` terminfo entry advertised by SSH clients
-running inside tmux. Also normalizes
-`~/.ssh` (700) and `~/.ssh/config` (600) permissions. Keep the table in sync with
-`agents/skills/fleet/SKILL.md`.
+---
 
 ## Commands
 
 ```bash
-setup list                # list available modules
-setup status              # show installed state (local/remote hashes)
-setup install resume      # install + enable module
-setup uninstall resume    # disable + remove module
-setup enable kernel-simmer # enable service module
-setup enable system-updates # enable safe daily package updates
-setup disable backup      # disable service module
-setup update              # update installed modules, report new ones
-setup diff resume         # show diff against remote
-setup doctor              # check required tools (including git)
-setup schedule            # install the daily auto-update timer
-setup schedule status     # show whether the timer is configured and active
-setup                     # interactive fzf reconfigure
+setup                     # Open interactive menu to pick and configure modules
+setup list                # List all available modules
+setup status              # Check installed versions and remote updates
+setup update              # Update all installed modules
+setup install <module>    # Install and enable a module (e.g., setup install resume)
+setup uninstall <module>  # Disable and remove a module
+setup enable <module>     # Enable a background service module (e.g., setup enable system-updates)
+setup disable <module>    # Disable a background service module
+setup diff <module>       # Show differences between local setup and remote repository
+setup doctor              # Check for required tools (like git)
+setup schedule            # Set up the daily automatic update timer
+setup schedule status     # Check if the auto-update timer is active
 ```
 
-When an executable update changes an active service module, `setup update`
-re-runs that module's enable transition. Inactive services remain inactive.
-Machines running an older updater must run `setup update setup` once before
-using this behavior.
+---
 
-The `backup` module uses incremental Restic snapshots over SFTP to `bingus`.
-The repository uses Restic's empty-password mode. By default it backs up files
-up to 20 MiB, excludes known disposable dependency/cache trees, and records
-metadata for larger files. `~/Eastself` is included in full as a large-path
-exception. Reconstruction manifests capture Python environments, JavaScript
-dependency trees and toolchains, Rust projects and toolchains, and Hugging Face
-repository revisions; each environment is graded `exact`, `partial`, or
-`unknown`. Its policy lives in
-`/etc/backup/{config,sources,excludes,large-whitelist}`.
-If the distro package lacks empty-password support, enable installs a pinned
-official Restic binary after verifying its published SHA-256 checksum.
+## How Modules Work
 
-Before enabling the schedule, compare Bingus's SSH fingerprint against DSM and
-add the confirmed key to `~/.ssh/known_hosts`; setup refuses unconfirmed host
-keys. Backups run daily around 09:00 without catch-up runs after downtime.
+Setup automatically filters available modules based on your machine:
 
-## Global system color
+1. **Audience Filter:** Compares your public SSH key (`~/.ssh/*.pub`) against the team key list at `https://github.com/LPFchan.keys`. If your key matches, fleet-only modules are made available.
+2. **Platform Filter:** Checks your operating system (`Linux` or `macOS`) and shows only modules that work on your system.
 
-The `zsh-basics` module owns a `system-color` block in `~/.zshenv` that exports
-a deterministic machine identity for every zsh-launched tool:
+---
 
-- `SYSTEM_COLOR_HUE` — integer hue from `cksum(lowercase short hostname) % 360`
-- `SYSTEM_COLOR_HEX` — `#RRGGBB` converted from HSV with saturation and
-  value/brightness fixed at 100%
-- `SYSTEM_COLOR_TEXT_HEX` — black or white foreground chosen for contrast
+## Modules
 
-Only the hostname determines the shared color; no per-machine palette is
-stored. Tmux consumes these variables for its status bar, and other tools can
-use the same exported values without reproducing the hash or color conversion.
+### File Modules
 
-## .zshrc managed blocks
+Simple modules that copy a managed script or executable to your machine.
 
-Setup manages shell config via marker-delimited blocks in `.zshrc`, kept in a
-fixed **canonical order** (top → bottom):
+| Module | Target Path | Description |
+|--------|-------------|-------------|
+| `setup` | `~/.local/bin/setup` | Main setup CLI tool |
+| `resume` | `~/.local/bin/resume` | Quick interactive session selector for AI coding tools (Claude, Codex, OpenCode, Antigravity, Grok, Kimi, etc.) |
+| `kernel-simmer` | `~/.local/bin/kernel-simmer` | Fleet-only kernel performance tuning tool |
+| `service-ctl` | `~/.local/bin/service-ctl` | Fleet-only system service controller |
+| `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | GPU fan speed control script |
+| `monitoring` | `~/.local/bin/monitoring` | System monitoring utility |
+| `backup` | `~/.local/bin/backup` | Restic-based incremental backup script to `bingus` |
+| `system-updates` | `~/.local/bin/system-updates` | Safe daily package updater (Linux only, runs between 03:00–03:30) |
 
-```
-# >>> setup:tmux-autostart >>>  — replace every interactive TTY shell outside tmux with `tmux new-session -A -s main`
-# >>> setup:tmux-title >>>      — name windows from launched commands and SSH destinations
-# >>> setup:zsh-basics >>>      — interactive/tty/terminal guards + /exit and ll aliases + baseline zsh behavior
-# >>> setup:starship >>>        — cached starship init
-# >>> setup:zsh-autocomplete >>> — plugin source + history settings + autocomplete config (loads zsh-defer)
-# >>> setup:zsh-syntax-highlighting >>> — deferred syntax highlighting (needs zsh-defer → after zsh-autocomplete)
-# >>> setup:ai-menu >>>         — source ~/.bashrc.d/ai-menu + `ai` autolaunch (owned by the ai-menu module)
-```
+---
 
-`tmux-autostart`, `tmux-title`, and `zsh-basics` are prepended by their
-respective modules; the remaining blocks are appended by their own script
-modules. Because
-`manage_block` only sets a block's position at creation, the accumulated order
-is otherwise historical — so after every run
-`normalize_block_order` (defined in `bin/setup`, mirrored in `install.sh`)
-reorders the managed blocks to the canonical `ZSHRC_BLOCK_ORDER` above,
-idempotently and without touching unmanaged content. `tmux-autostart` runs first
-(every interactive TTY shell outside tmux swaps into it before anything heavy),
-`tmux-title` installs the hooks used by shells inside tmux. Each interactive
-setup block guards only its own behavior; none returns from the user's whole
-`.zshrc`, so unmanaged installer additions later in the file are always
-evaluated. `zsh-syntax-highlighting` follows
-`zsh-autocomplete` (which loads `zsh-defer`), and `ai-menu` autolaunches `ai`
-last once the shell is fully initialized. Blocks with unknown labels are kept and
-sorted after the known ones.
+### Script Modules
 
-> Migration: the core-owned `zsh-init` block (formerly `zsh-ai`) is folded into
-> the module-owned `zsh-basics` block on update, so no orphaned duplicate
-> remains.
+Modules that run setup, update, and cleanup scripts to configure tools and shell environments.
 
-Every managed block's first line is a warning so agents (and humans) know not to
-edit inside it — the block is regenerated from source on `setup update`:
+| Module | What it installs / manages | Source File |
+|--------|---------------------------|-------------|
+| `zsh-autocomplete` | Tab completion and history configuration (`~/.zsh/`) | `files/zsh-autocomplete.sh` |
+| `zsh-syntax-highlighting` | Command syntax highlighting (`~/.zsh/`) | `files/zsh-syntax-highlighting.sh` |
+| `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
+| `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
+| `agents` | AI agent instructions and skills (`~/.agents/`, linked to all installed AI harnesses) | `files/agents.sh` |
+| `ssh-aliases` | Manages outbound host shortcuts in `~/.ssh/config` | `files/ssh-aliases.sh` |
+| `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu) | `files/ai-menu.sh` |
+| `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
+| `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
+| `refresh-models` | Model list synchronization for AI providers | `files/refresh-models.sh` |
+| `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, and title hooks | `files/tmux.sh` |
 
-```
-# [setup] managed block — do NOT edit between these markers; overwritten on 'setup update'. Source: LPFchan/setup
-```
+---
 
-The warning is part of the block body, so it participates in drift detection.
-Existing blocks are rewritten once (shown as `outdated`) on the next update.
+## Detailed Feature Overview
 
-Each block is guarded so missing plugins don't break the shell:
-- `[[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]` for autocomplete
-- `(( ${+functions[zsh-defer]} ))` for syntax-highlighting (checks if zsh-defer is loaded)
-- `command -v starship` for starship
+### AI Tools Integration
 
-**Local-only content** (not managed by setup, stays in user space):
-- Env vars, PATH additions, MCP tokens (should be in `.zshenv`)
-- `_BREW_PREFIX="/opt/homebrew"` (Apple Silicon specific)
-- `fzf` shell integration (intentionally disabled)
-- The ai-menu autolaunch preference (`${XDG_STATE_HOME:-~/.local/state}/setup/ai-menu-autolaunch-disabled`), managed through `ai enable` and `ai disable` rather than by editing `.zshrc`
-- `COMBINING_CHARS`, `disable log` (macOS `/etc/zshrc` replacements)
+- **`agents`**: Deploys standard AI instructions (`AGENTS.md`) and skills to `~/.agents/`, and symlinks them into Claude Code (`~/.claude/`), Codex (`~/.codex/`), Antigravity (`~/.gemini/`), OpenCode (`~/.config/opencode/`), and the home directory.
+- **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, and Kimi Code so you can jump right back into any session.
+- **`claudex` & `opencodex`**: Profile launchers that manage custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
 
-### Cleanup after first install
+---
 
-After `setup install` on a fresh machine, the `.zshrc` may have duplicate lines (old unmanaged content + new managed blocks). Use an LLM to identify and remove duplicates — the managed blocks are the source of truth.
+### Shell & Environment Configuration
 
-## Shared helpers
+Setup manages your `~/.zshrc` using guarded blocks. Block order is automatically maintained from top to bottom:
 
-`lib/script-helpers.sh` provides shared functions for script modules:
+1. `tmux-autostart` — Automatically launches or attaches to a main tmux session on interactive terminals
+2. `tmux-title` — Updates window titles with active commands and SSH destinations
+3. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
+4. `starship` — Initializes the Starship prompt
+5. `zsh-autocomplete` — Sets up tab completion and history search
+6. `zsh-syntax-highlighting` — Enables syntax highlighting
+7. `ai-menu` — Enables the `ai` menu command and autolaunch hook
 
-- `git_clone_if_missing` — idempotent git clone
-- `git_local_ref` / `git_remote_ref` — local vs remote HEAD comparison
-- `git_fetch_origin_head` — fetch remote HEAD into `FETCH_HEAD` without moving the local branch
-- `git_path_content_hash` / `git_scoped_content_refs` — compare path-scoped blob/tree content between a local clone and remote HEAD
-- `git_sync_private_clone_to_origin_head` — reset a module-managed private clone to remote HEAD for install/update
-- `git_check_status` — returns 0=current, 1=outdated, 2=missing
-- `git_pull_ff` — fast-forward only pull
-- `setup_sha256_string` — hash a string (not a file)
-- `setup_managed_block_body` — reproduce the exact block-body bytes `manage_block` writes (warning line + content), so a module can hash its *desired* block from source for drift detection
-- `record_script_state` / `script_state_for` — cache the last observed script-module refs in `script-state.tsv` (a non-empty entry also durably marks lifecycle membership and provides a fallback when a live probe fails; live probes determine freshness)
-- `is_script_installed` — check if a script module has been installed
+> ⚠️ **Warning:** Do not edit inside managed blocks marked `# >>> setup:<name> >>>`. Any changes inside these blocks will be overwritten when running `setup update`. Add custom shell configs outside these blocks or in `~/.zshenv`.
 
-Helpers are fetched from `SOURCE_URL/lib/script-helpers.sh` at startup and cached at `~/.local/state/setup/lib/`.
+---
 
-## State files
+### Unique Machine Color Scheme
+
+The `zsh-basics` module automatically generates a unique, consistent color identity for your machine based on its hostname:
+- `SYSTEM_COLOR_HUE`: Integer hue derived from `cksum(hostname)`
+- `SYSTEM_COLOR_HEX`: Vibrant `#RRGGBB` hex color
+- `SYSTEM_COLOR_TEXT_HEX`: High-contrast black or white text color
+
+This color is exported to your environment and used by `tmux` and other tools for clear visual identification across servers.
+
+---
+
+### Backups (`backup` module)
+
+- Uses [Restic](https://restic.net/) for daily incremental backups to `bingus` over SFTP (around 09:00 AM).
+- Backs up user files up to 20 MiB, excluding temporary build and cache directories.
+- Full backup path exceptions (like `~/Eastself`) are backed up without size limits.
+- Automatically saves dependency environment manifests for Python, Node.js, and Rust projects.
+
+---
+
+## Shared Helpers & State Files
+
+Configuration and state are tracked locally in `~/.local/state/setup/`:
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `manifest.tsv` | repo | module declarations |
-| `checksums.tsv` | repo | SHA256 of file module sources (auto-generated by pre-commit hook) |
-| `installed.tsv` | `~/.local/state/setup/` | hash tracking for file modules |
-| `script-state.tsv` | `~/.local/state/setup/` | durable script-module installation markers and last-observed hash/version cache (not freshness authority) |
+| `manifest.tsv` | Repository | Catalog of available modules, target paths, and requirements |
+| `checksums.tsv` | Repository | SHA256 checksums of source files |
+| `installed.tsv` | `~/.local/state/setup/` | Tracks installed file modules |
+| `script-state.tsv` | `~/.local/state/setup/` | Cache of script module installation states and versions |
 
-## Design
-
-- GitHub is the canonical code host.
-- GitHub Pages serves the public installer at `https://setup.lost.plus`.
-- `install.sh` bootstraps the updater CLI.
-- `manifest.tsv` declares module, target path, mode, source path, optional
-  `audience`, and optional `platform`.
-- `mode=script` modules are fetched from SOURCE_URL and executed locally.
-- Each managed source file declares its own module and version.
-- Secrets do not belong in this repo.
+---
 
 ## Contributing
 
-After cloning, enable the tracked pre-commit hook:
+To contribute or modify setup scripts, set up the pre-commit hook:
 
 ```bash
 git config core.hooksPath hooks
 ```
 
-The hook checks the setup runtime with `zsh -n`, checks separately installed
-Bash tools with `bash -n`, and regenerates `checksums.tsv` on commit.
+The hook automatically runs `zsh -n` and `bash -n` syntax checks and updates `checksums.tsv` whenever you make a commit.
