@@ -488,7 +488,7 @@ import types
 from pathlib import Path
 
 namespace = runpy.run_path(sys.argv[1], run_name="opencodex_test")
-assert namespace["PROVIDER_CONSUMER_MODULES"] == ("claudex", "opencodex", "refresh-models")
+assert namespace["PROVIDER_CONSUMER_MODULES"] == ("claudex", "opencodex", "providers")
 registry = namespace["load_registry"](Path(sys.argv[2]))
 module_globals = namespace["choose_launch"].__globals__
 

@@ -12,7 +12,7 @@ export CLAUDEX_CORE="$HOME/.local/libexec/claudex-core"
 export CLAUDEX_CONFIG="$HOME/.config/claudex/config.toml"
 export CLAUDEX_REGISTRY="$HOME/.config/claudex/managed-profiles.json"
 export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
-export REFRESH_MODELS_BIN="$HOME/.local/bin/refresh-models"
+export PROVIDERS_BIN="$HOME/.local/bin/providers"
 export CLAUDEX_LAUNCHER_SOURCE="$ROOT/files/claudex"
 export CLAUDEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
 export CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
@@ -128,10 +128,10 @@ remove_script_state "$MODULE"
 expect_status 2 uninstalled
 
 install_surfaces
-mkdir -p "${REFRESH_MODELS_BIN:h}"
-print '#!/bin/sh' > "$REFRESH_MODELS_BIN"
-chmod +x "$REFRESH_MODELS_BIN"
+mkdir -p "${PROVIDERS_BIN:h}"
+print '#!/bin/sh' > "$PROVIDERS_BIN"
+chmod +x "$PROVIDERS_BIN"
 uninstall
-[[ -f "$REGISTRY" ]] || fail "claudex removed a registry still used by refresh-models"
+[[ -f "$REGISTRY" ]] || fail "claudex removed a registry still used by providers"
 
 echo "claudex lifecycle tests passed"

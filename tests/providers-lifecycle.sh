@@ -7,19 +7,19 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 export HOME="$TEST_TMP/home"
 export XDG_STATE_HOME="$TEST_TMP/state"
-export REFRESH_MODELS_BIN="$HOME/.local/bin/refresh-models"
+export PROVIDERS_BIN="$HOME/.local/bin/providers"
 export CLAUDEX_BIN="$HOME/.local/bin/claudex"
 export CLAUDEX_REGISTRY="$HOME/.config/claudex/managed-profiles.json"
 export CLAUDEX_CONFIG="$HOME/.config/claudex/config.toml"
 export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
-export REFRESH_MODELS_SOURCE="$ROOT/files/refresh-models"
+export PROVIDERS_SOURCE="$ROOT/files/providers"
 export CLAUDEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
 mkdir -p "$XDG_STATE_HOME"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 source "$ROOT/lib/script-helpers.sh"
-source "$ROOT/files/refresh-models.sh"
+source "$ROOT/files/providers.sh"
 
 expect_status() {
     local expected_rc="$1" expected_word="$2" output rc=0
@@ -29,7 +29,7 @@ expect_status() {
 }
 
 mkdir -p "${BIN:h}"
-cp "$ROOT/files/refresh-models" "$BIN"
+cp "$ROOT/files/providers" "$BIN"
 chmod +x "$BIN"
 expect_status 1 outdated
 
@@ -59,7 +59,7 @@ cp "$ROOT/files/claudex" "$CLAUDEX_BIN"
 chmod +x "$CLAUDEX_BIN"
 update
 grep -q 'name = "commandcode"' "$CLAUDEX_CONFIG" \
-    || fail "refresh-models did not apply the shared registry to co-installed Claudex"
+    || fail "providers did not apply the shared registry to co-installed Claudex"
 grep -q 'name = "codex"' "$CLAUDEX_CONFIG" \
     || fail "shared registry lost the Codex OAuth profile"
 grep -q 'oauth_provider = "chatgpt"' "$CLAUDEX_CONFIG" \
@@ -78,11 +78,11 @@ assert 'provider_type = "DirectAnthropic"' in body
 assert 'oauth_provider = "claude"' in body
 PY
 uninstall
-[[ -f "$REGISTRY" ]] || fail "refresh-models removed a registry still used by Claudex"
+[[ -f "$REGISTRY" ]] || fail "providers removed a registry still used by Claudex"
 
 rm -f "$CLAUDEX_BIN"
 install
 uninstall
 [[ ! -e "$REGISTRY" ]] || fail "last registry consumer left an orphaned registry"
 
-echo "refresh-models lifecycle tests passed"
+echo "providers lifecycle tests passed"

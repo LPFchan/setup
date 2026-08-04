@@ -113,7 +113,7 @@ mkdir -p "${shared_registry:h}"
 cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
 (
     export CLAUDEX_REGISTRY="$shared_registry"
-    export REFRESH_MODELS_BIN="$HOME/.local/bin/missing-refresh-models"
+    export PROVIDERS_BIN="$HOME/.local/bin/missing-providers"
     source "$ROOT/files/claudex.sh"
     uninstall >/dev/null
 )
@@ -123,10 +123,10 @@ cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
 (
     export CLAUDEX_REGISTRY="$shared_registry"
     export CLAUDEX_BIN="$HOME/.local/bin/missing-claudex"
-    source "$ROOT/files/refresh-models.sh"
+    source "$ROOT/files/providers.sh"
     uninstall >/dev/null
 )
-[[ -f "$REGISTRY" ]] || fail "refresh-models uninstall removed opencodex's independent snapshot"
+[[ -f "$REGISTRY" ]] || fail "providers uninstall removed opencodex's independent snapshot"
 
 uninstall
 [[ ! -e "$REGISTRY" ]] || fail "opencodex uninstall left its provider snapshot"

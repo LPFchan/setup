@@ -6,6 +6,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
 export CLAUDEX_REGISTRY="$TMP/registry.json"
 export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
+export PROVIDERS_CACHE_PATH="$HOME/.config/providers/credentials.json"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"provider":{"foreign":{}},"disabled_providers":["foreign-disabled"]}\n' > "$HOME/.config/opencode/opencode.json"
 printf '{"demo":{"type":"api","key":"demo-key"}}\n' > "$HOME/.local/share/opencode/auth.json"
@@ -21,10 +22,16 @@ printf '{"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > 
 
 python3 - <<PY
 import copy, importlib.machinery, importlib.util, json, os, sys
-path = '$ROOT/files/refresh-models'
-loader = importlib.machinery.SourceFileLoader('refresh_models_test', path)
+path = '$ROOT/files/providers'
+loader = importlib.machinery.SourceFileLoader('providers_test', path)
 spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+
+# Network-optional: no vault token means the local cache is authoritative.
+m.vault_available = lambda: False
+
+# Keep the test hermetic: the real ocx/codex sync must not run from here.
+m._sync_opencodex_provider_statuses = lambda: None
 
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/claudex-profiles.json'
@@ -35,7 +42,7 @@ for executable in (m.CLAUDEX_BIN, m.OPENCODEX_BIN):
     with open(executable, 'w') as handle:
         handle.write('#!/bin/sh\n')
     os.chmod(executable, 0o700)
-assert m._provider_consumer_modules() == ['claudex', 'opencodex', 'refresh-models']
+assert m._provider_consumer_modules() == ['claudex', 'opencodex', 'providers']
 m.REGISTRY_PATH = fixture_registry
 servers = m._load_servers()
 assert set(servers) == {'demo', 'unused'}
@@ -87,19 +94,25 @@ opencode = m.load_json(m.OPENCODE_PATH)
 assert opencode['disabled_providers'] == ['foreign-disabled', 'unused']
 assert 'foreign' in opencode['provider']
 
+# Refresh: only enabled providers with a key are refreshed.
 seen = []
 m.refresh_server = lambda name, cfg: seen.append(name) or True
 sys.argv = [path]
 m.main()
 assert seen == ['demo'], seen
 
+# Enabling without a key is refused (key comes from vault or cache).
+assert not m._set_provider_enabled('demo', False) is False  # no-op sanity
 assert m._set_provider_enabled('demo', False)
 assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is False
 assert set(m.load_json(m.OPENCODE_PATH)['disabled_providers']) == {
     'foreign-disabled', 'demo', 'unused'
 }
 
-assert not m._set_provider_enabled('unused', True)
+assert not m._set_provider_enabled('unused', True)  # no key yet
+m.cache_set('unused', 'unused-key')
+assert m._set_provider_enabled('unused', True)
+assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
 assert m._set_provider_enabled('demo', True)
 assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is True
 
@@ -147,6 +160,13 @@ with open(m.LEGACY_STATE_PATH, 'w') as handle:
     handle.write('{truncated')
 assert m._load_provider_state() is None
 assert os.path.exists(m.LEGACY_STATE_PATH)
+
+# Naming convention: only {PROVIDER}_API_KEY items are conforming.
+assert m._conforming_item_name('DEEPSEEK_API_KEY')
+assert m._conforming_item_name('OPENCODE_GO_API_KEY')
+assert not m._conforming_item_name('VAST.AI API KEY')
+assert not m._conforming_item_name('GITHUB_COPILOT_OAUTH_TOKEN')
+assert not m._conforming_item_name('deepseek_api_key')
 PY
 
-echo "refresh-models provider tests passed"
+echo "providers provider tests passed"

@@ -22,9 +22,9 @@ status() { printf "%-25s %-12s\n" fail uninstalled; return 2; }
 update() { return 8; }'
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state"
 mkdir -p "$HOME/.local/bin" "$XDG_STATE_HOME/setup"
-cp "$ROOT/files/refresh-models" "$HOME/.local/bin/refresh-models"
-chmod +x "$HOME/.local/bin/refresh-models"
-printf x > "$XDG_STATE_HOME/setup/refresh-models.needs-provider-setup"
+cp "$ROOT/files/providers" "$HOME/.local/bin/providers"
+chmod +x "$HOME/.local/bin/providers"
+printf x > "$XDG_STATE_HOME/setup/providers.needs-provider-setup"
 if output=$(LINUX_SETUP_SOURCE_URL="file://$source_dir" zsh "$ROOT/bin/setup" install fail 2>&1); then rc=0; else rc=$?; fi
 [[ $rc -ne 0 ]] || { echo "install status was masked by provider setup" >&2; exit 1; }
 [[ "$output" == *'provider setup is pending'* ]] || { echo "provider setup did not run after failed install" >&2; exit 1; }

@@ -62,7 +62,7 @@ for public in "$public_linux" "$public_darwin"; do
         echo "public catalog exposed fleet entries" >&2
         exit 1
     }
-    [[ "$public" == *setup* && "$public" == *refresh-models* ]] || {
+    [[ "$public" == *setup* && "$public" == *providers* ]] || {
         echo "public catalog omitted public entries" >&2
         exit 1
     }

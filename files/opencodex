@@ -110,7 +110,7 @@ def _string(value: Any, field: str) -> str:
 def validate_registry(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("version") != 1:
         raise UserError("registry version must be 1")
-    # The registry file is shared with claudex and refresh-models, which
+    # The registry file is shared with claudex and providers, which
     # remain profile-based; opencodex routes by provider alone and only
     # loosely tolerates the array when present.
     profiles = data.get("profiles")
@@ -281,7 +281,7 @@ def provider_default_model(registry: dict[str, Any], provider_name: str) -> str 
     """The provider's default model from its registry descriptor.
 
     The shared registry file still carries a profiles array for claudex and
-    refresh-models, which remain profile-based; a same-named entry there is
+    providers, which remain profile-based; a same-named entry there is
     honored as a one-release fallback only.
     """
     provider = registry.get("providers", {}).get(provider_name, {})

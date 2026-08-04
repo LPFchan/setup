@@ -85,20 +85,20 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 5. `files/providers.sh` module (setup-module: providers, script). Rename from `refresh-models.sh`: `install/update/status/uninstall`, `__validate`/`__migrate-state`/`__apply` surface, `record_script_state` "provider-registry" tag.
 6. Timer: keep systemd/launchd hourly unit, rename to `providers.{service,timer}` + `com.lost.plus.providers` plist. Same cadence, same `needs-provider-setup` marker path (`~/.local/state/setup/providers.needs-provider-setup`).
 
-### Phase 3 — Migration (order matters)
+### Phase 3 — Migration (order matters) ✅ COMPLETE
 1. Read current `~/.local/share/opencode/auth.json` api-type entries → enroll each into vault (matches existing conforming items; skips already-present).
 2. Build local cache from vault.
 3. Write opencode mirror + `.zshenv` from cache.
 4. `setup update providers` converges; state/enablement carried over from `~/.config/providers/state.json` (already the shared path).
 5. One-time: delete the now-redundant copy in `auth.json`? **No** — opencode still reads it; it becomes a mirror. Only `providers` writes it going forward.
 
-### Phase 4 — Consumers + retirement
+### Phase 4 — Consumers + retirement ✅ COMPLETE
 - `opencodex`/`claudex`: no code change (read auth.json as before). Verify `opencodex_config_status` blanking still hides keys (it does — `opencodex:572-574`).
 - `PROVIDER_CONSUMER_MODULES` in opencodex (`opencodex:61`, test `opencodex-launcher.sh:491`) → `("claudex", "opencodex", "providers")`.
 - Manifest (`manifest.tsv:11`), README (`README.md:88`), checksums: `refresh-models` → `providers`, retired row for old module (pattern: claudex's `retired` row).
 - Retire `refresh-models` binary/state cleanly (keep vault + auth.json untouched).
 
-### Phase 5 — Tests
+### Phase 5 — Tests ✅ COMPLETE
 - Rename `refresh-models-{lifecycle,onboarding,providers}.sh` → `providers-*.sh`.
 - Update `process-boundaries.sh:25-27` marker path.
 - Update `opencodex-launcher.sh:491`, `claudex-lifecycle.sh:15,135`, `opencodex-lifecycle.sh:116,126,129`, `catalog-audience.sh:65` refs.
