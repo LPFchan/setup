@@ -387,8 +387,13 @@ def live_proxy_port() -> int | None:
     return port if isinstance(payload, dict) and payload.get("status") == "ok" else None
 
 
-def live_provider_disabled(port: int) -> dict[str, bool] | None:
-    """Provider -> disabled, as the RUNNING proxy sees it. None if unreadable."""
+def live_provider_view(port: int) -> dict[str, dict[str, Any]] | None:
+    """Provider name -> full row, as the RUNNING proxy sees it. None if unreadable.
+
+    Rows are already URL-sanitized by the proxy (no userinfo/query/hash;
+    trailing slash preserved). Missing optional fields are tolerated by
+    callers, so the minimal rows the test fixtures serve never falsely flag.
+    """
     try:
         token = ADMIN_TOKEN.read_text().strip()
     except OSError:
@@ -407,35 +412,129 @@ def live_provider_disabled(port: int) -> dict[str, bool] | None:
     if not isinstance(payload, list):
         return None
     return {
-        row["name"]: row.get("disabled") is True
+        row["name"]: row
         for row in payload
         if isinstance(row, dict) and isinstance(row.get("name"), str)
     }
 
 
+def live_provider_disabled(port: int) -> dict[str, bool] | None:
+    """Provider -> disabled, as the RUNNING proxy sees it. None if unreadable."""
+    view = live_provider_view(port)
+    if view is None:
+        return None
+    return {name: row.get("disabled") is True for name, row in view.items()}
+
+
+def _normalized_base_url(value: str) -> str:
+    """Routing-safe form of a base URL: no userinfo/query/fragment/trailing '/'.
+
+    The proxy URL-sanitizes /api/providers rows (no userinfo, no query, no
+    fragment) but keeps the trailing slash as stored, so both sides are
+    reduced to the same shape before comparison.
+    """
+    parsed = urllib.parse.urlsplit(value)
+    if not parsed.scheme or not parsed.hostname:
+        return value.rstrip("/")
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{parsed.hostname}{port}"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, "", "")).rstrip("/")
+
+
+def provider_config_diff(
+    desired_providers: dict[str, Any], live_view: dict[str, dict[str, Any]]
+) -> list[str]:
+    """Human-readable reasons the RUNNING proxy's provider routing is stale.
+
+    Direction is desired -> live: only stored-config providers are inspected,
+    and a live-only provider (added out-of-band via ocx or the GUI) is never
+    flagged. A field absent from a live row — or unset in the desired entry —
+    is not compared, so minimal rows (the test fixtures) never falsely flag.
+    """
+    reasons: list[str] = []
+    for name, desired in desired_providers.items():
+        if not isinstance(desired, dict):
+            continue
+        live = live_view.get(name)
+        if not isinstance(live, dict):
+            reasons.append(f"provider '{name}' is not loaded by the running proxy")
+            continue
+        for field in ("adapter", "authMode", "defaultModel"):
+            if field in live and desired.get(field) is not None and desired[field] != live[field]:
+                reasons.append(
+                    f"provider '{name}' {field} differs "
+                    f"(config: {desired[field]}, proxy: {live[field]})"
+                )
+        if "disabled" in live and (desired.get("disabled") is True) != (
+            live["disabled"] is True
+        ):
+            reasons.append(
+                f"provider '{name}' disabled differs "
+                f"(config: {desired.get('disabled') is True}, proxy: {live['disabled'] is True})"
+            )
+        if "liveModels" in live and (
+            desired.get("liveModels", True) is not False
+        ) != (live["liveModels"] is not False):
+            reasons.append(
+                f"provider '{name}' liveModels differs "
+                f"(config: {desired.get('liveModels', True) is not False}, "
+                f"proxy: {live['liveModels'] is not False})"
+            )
+        if (
+            "baseUrl" in live
+            and "baseUrl" in desired
+            and _normalized_base_url(str(desired["baseUrl"]))
+            != _normalized_base_url(str(live["baseUrl"]))
+        ):
+            reasons.append(
+                f"provider '{name}' baseUrl differs "
+                f"(config: {desired['baseUrl']}, proxy: {live['baseUrl']})"
+            )
+        if "hasApiKey" in live and bool(desired.get("apiKey")) != (live["hasApiKey"] is True):
+            reasons.append(
+                f"provider '{name}' hasApiKey differs "
+                f"(config: {bool(desired.get('apiKey'))}, proxy: {live['hasApiKey'] is True})"
+            )
+    return reasons
+
+
+def proxy_restart_status() -> tuple[bool, int | None, list[str]]:
+    """(running, port, reasons) — is the live proxy serving stale routing config?
+
+    A healthy but unreadable live view reports no reasons, so callers never
+    blind-restart; only a readable view is diffed against the stored config.
+    """
+    port = live_proxy_port()
+    if port is None:
+        return False, None, []
+    live = live_provider_view(port)
+    if live is None:
+        return True, port, []
+    stored = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
+    providers = stored.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+    return True, port, provider_config_diff(providers, live)
+
+
 def converge_live_proxy(desired: dict[str, Any]) -> None:
-    """Restart a running proxy whose in-memory enablement is stale.
+    """Restart a running proxy whose in-memory provider routing is stale.
 
     The server snapshots config.json at startup and never watches the file, so
     a provider we enable on disk keeps failing every request with
-    `Provider is disabled: <name>` until the process restarts — while `ocx
-    sync` has already published its models to the Codex catalog. Comparing the
-    live view (not the disk diff) is what heals a proxy that went stale on an
-    earlier apply. `ocx restart` is stop + ensure; ensure waits for health and
-    resyncs the catalog.
+    `Provider is disabled: <name>` — or stays entirely absent from
+    /api/providers (the reported deepseek case) — until the process restarts.
+    Comparing the live view (not the disk diff) is what heals a proxy that
+    went stale on an earlier apply. `ocx restart` is stop + ensure; ensure
+    waits for health and resyncs the catalog.
     """
     port = live_proxy_port()
     if port is None:
         return
-    live = live_provider_disabled(port)
+    live = live_provider_view(port)
     if live is None:
         return
-    providers = desired.get("providers", {})
-    if all(
-        live[name] == (provider.get("disabled") is True)
-        for name, provider in providers.items()
-        if isinstance(provider, dict) and name in live
-    ):
+    if not provider_config_diff(desired.get("providers", {}), live):
         return
     if not (OCX.is_file() and os.access(OCX, os.X_OK)):
         print(
@@ -924,7 +1023,29 @@ def launch(
     model: str | None = None,
     effort: str | None = None,
 ) -> int:
-    ensure_opencodex()
+    running, port, reasons = proxy_restart_status()
+    if running and reasons:
+        # The proxy snapshots config.json at startup and never reloads it, so
+        # a stale live view would serve the old routing to every harness the
+        # moment it launches. `ocx restart` is stop + ensure, so the plain
+        # ensure below is skipped (restart covers it and resyncs the catalog).
+        print(
+            "opencodex: proxy config changed since it started; "
+            "running `ocx restart` to apply it",
+            file=sys.stderr,
+        )
+        for reason in reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        if not (OCX.is_file() and os.access(OCX, os.X_OK)):
+            print(
+                "opencodex: config changed but ocx is missing; "
+                "restart the proxy to apply it",
+                file=sys.stderr,
+            )
+        elif subprocess.run([str(OCX), "restart"]).returncode:
+            print("opencodex: proxy restart failed; run: ocx restart", file=sys.stderr)
+    else:
+        ensure_opencodex()
     ensure_provider_auth(provider)
     if model is None:
         raise UserError("a model is required to launch")
@@ -1433,6 +1554,10 @@ def run_reel_picker(
 
     def fetch() -> None:
         try:
+            fetched["proxy"] = proxy_restart_status()
+        except Exception:
+            fetched["proxy"] = None
+        try:
             fetched["index"] = merged_model_index(registry)
         except Exception:
             fetched["index"] = {}  # a failed fetch still ends the spinner
@@ -1504,6 +1629,21 @@ def run_reel_picker(
             stdscr.refresh()
             return
         draw(stdscr, 0, 0, cols, " opencodex ".center(cols - 1), attrs["title"])
+        proxy = fetched.get("proxy")
+        if proxy is None:
+            indicator, style = "ocx …", "dim"
+        else:
+            proxy_running, proxy_port, proxy_reasons = proxy
+            if proxy_running and proxy_reasons:
+                indicator = f"● ocx :{proxy_port} running · restart on launch"
+                style = "warn"
+            elif proxy_running:
+                indicator = f"● ocx :{proxy_port} running"
+                style = "normal"
+            else:
+                indicator = "○ ocx stopped"
+                style = "dim"
+        draw(stdscr, 1, 0, cols, indicator.center(cols - 1), attrs[style])
         width, gap, header_y, center_y, body, _ = picker_layout(rows, cols)
         for reel in range(4):
             render_reel(
@@ -1535,12 +1675,14 @@ def run_reel_picker(
             curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
             curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
             curses.init_pair(3, curses.COLOR_CYAN, -1)
+            curses.init_pair(4, curses.COLOR_YELLOW, -1)
             attrs = {
                 "selected": curses.color_pair(1) | curses.A_BOLD,
                 "selected_dim": curses.color_pair(2),
                 "header": curses.color_pair(3) | curses.A_BOLD,
                 "title": curses.A_BOLD,
                 "dim": curses.A_DIM,
+                "warn": curses.color_pair(4) | curses.A_BOLD,
                 "normal": curses.A_NORMAL,
             }
         else:
@@ -1550,6 +1692,7 @@ def run_reel_picker(
                 "header": curses.A_BOLD,
                 "title": curses.A_BOLD,
                 "dim": curses.A_DIM,
+                "warn": curses.A_BOLD,
                 "normal": curses.A_NORMAL,
             }
         # Wake periodically so the spinner animates and the fetched index is
@@ -1664,10 +1807,12 @@ def catalogue(
 
     Reads exactly the sources the picker reads — enabled_providers() for
     disablement, merged_model_index() for models, model_efforts() for the
-    effort reel, available_harnesses() for the harness reel — but nothing
-    that can block, prompt, or start anything: no OAuth discovery, no proxy
-    launch. With the proxy down merged_model_index() narrows to the Codex
-    catalog, which is the right answer here rather than an error.
+    effort reel, available_harnesses() for the harness reel — plus the live
+    proxy's routing status, but nothing that can block, prompt, or start
+    anything: no OAuth discovery, no proxy launch, no restart. The proxy
+    status line is read-only (health + /api/providers HTTP). With the proxy
+    down merged_model_index() narrows to the Codex catalog, which is the right
+    answer here rather than an error.
 
     Model ids are routable verbatim (routed_model() is the identity on them:
     routed providers already carry their prefix, bare-id ChatGPT OAuth takes
@@ -1717,7 +1862,17 @@ def catalogue(
                 ],
             }
         )
-    return {"providers": entries, "harnesses": available_harnesses()}
+    running, port, reasons = proxy_restart_status()
+    return {
+        "providers": entries,
+        "harnesses": available_harnesses(),
+        "proxy": {
+            "running": running,
+            "port": port,
+            "restart_pending": bool(reasons),
+            "reasons": reasons,
+        },
+    }
 
 
 def render_catalogue(data: dict[str, Any]) -> str:
@@ -1732,6 +1887,18 @@ def render_catalogue(data: dict[str, Any]) -> str:
         "# launch: opencodex run <provider> --model <model> [--effort <effort>] [<harness>]",
         f"# harnesses: {harnesses}",
     ]
+    proxy = data.get("proxy", {})
+    if proxy.get("running"):
+        lines.append(f"# proxy: running on {proxy.get('port')}")
+        if proxy.get("restart_pending"):
+            lines.append(
+                "# warning: opencodex config changed since proxy start; "
+                "invoking opencodex will run: ocx restart"
+            )
+            for reason in proxy.get("reasons", []):
+                lines.append(f"#   - {reason}")
+    else:
+        lines.append("# proxy: stopped")
     if any(not entry["launchable"] for entry in data["providers"]):
         lines.append(
             "# status=unlaunchable: 'other' collects models no enabled provider"

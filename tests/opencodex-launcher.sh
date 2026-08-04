@@ -256,6 +256,8 @@ grep -qx "commandcode	commandcode/$cc_opus	low,medium,high	launchable" "$TEST_TM
     || fail "list did not print every catalogued commandcode model"
 grep -q '^# harnesses: claude, codex, grok, kimi$' "$TEST_TMP/list-out" \
     || fail "list did not report the available harnesses"
+grep -qx '# proxy: stopped' "$TEST_TMP/list-out" \
+    || fail "list did not report the stopped proxy"
 [[ $(grep -vc '^#' "$TEST_TMP/list-out") -eq 3 ]] \
     || fail "list printed rows beyond the three catalogued models"
 
@@ -272,6 +274,9 @@ jq -e '(.harnesses | index("codex")) and ([.providers[] | select(.name == "comma
     and ([.models[] | select(.id == $model) | .efforts] | first == ["low","medium","high"]))' \
     --arg model "$expected_model" "$TEST_TMP/list-json" >/dev/null \
     || fail "list --json did not carry the expected catalogue shape"
+jq -e '.proxy.running == false and .proxy.restart_pending == false
+    and .proxy.reasons == [] and .proxy.port == null' "$TEST_TMP/list-json" >/dev/null \
+    || fail "list --json did not report the offline proxy state"
 
 ! "$ROOT/files/opencodex" list --provider bogus </dev/null \
     2>"$TEST_TMP/list-unknown-error" \

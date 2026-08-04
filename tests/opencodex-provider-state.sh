@@ -174,6 +174,113 @@ port_file.write_text(json.dumps({"pid": 1, "port": server.server_address[1]}))
 token_file.write_text("wrong-token\n")
 namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
 assert restarts == [], restarts
+
+# The reported deepseek bug: a provider in the stored config but MISSING from
+# the live view (the proxy snapshots config at startup) must restart even when
+# no field can be compared — a live-only row is never the reason.
+restarts.clear()
+token_file.write_text("test-token\n")
+live_disabled = {"openai": True}
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": True}}})
+assert restarts == [[str(ocx), "restart"]], restarts
+
+# Field tolerance: a minimal live row (name+disabled only) whose disabled flag
+# matches must not falsely restart, however richly the desired entry is set —
+# fields absent from the live row are not compared.
+restarts.clear()
+live_disabled = {"commandcode": True}
+namespace["converge_live_proxy"]({
+    "providers": {
+        "commandcode": {
+            "disabled": True,
+            "adapter": "openai-chat",
+            "authMode": "key",
+            "liveModels": True,
+            "defaultModel": "some-model",
+            "baseUrl": "https://example.com/v1",
+            "apiKey": "secret",
+        }
+    }
+})
+assert restarts == [], restarts
+
+# The invocation path restarts a stale proxy instead of plain-ensuring, and a
+# fresh proxy is plain-ensured as before.
+config_path = Path(globals_["OPENCODEX_CONFIG"])
+config_path.parent.mkdir(parents=True, exist_ok=True)
+token_file.write_text("test-token\n")
+restarts.clear()
+config_path.write_text(json.dumps({"providers": {"commandcode": {"disabled": False}}}))
+live_disabled = {"commandcode": True}
+namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
+assert [str(ocx), "restart"] in restarts, restarts
+assert [str(ocx), "ensure"] not in restarts, restarts
+restarts.clear()
+config_path.write_text(json.dumps({"providers": {"commandcode": {"disabled": True}}}))
+namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
+assert [str(ocx), "restart"] not in restarts, restarts
+assert [str(ocx), "ensure"] in restarts, restarts
+
+# Pure comparison logic: absent providers flag, per-field diffs flag, and
+# live-only / live-row-absent-field rows do not.
+diff = namespace["provider_config_diff"]
+assert diff(
+    {"deepseek": {"disabled": False}},
+    {"openai": {"disabled": False}},
+) == ["provider 'deepseek' is not loaded by the running proxy"]
+assert diff(
+    {"commandcode": {"disabled": False}},
+    {"commandcode": {"disabled": True}},
+) == ["provider 'commandcode' disabled differs (config: False, proxy: True)"]
+assert diff(
+    {"commandcode": {"disabled": True, "adapter": "openai-chat"}},
+    {"commandcode": {"disabled": True}},
+) == []  # minimal live row: nothing beyond disabled to compare
+assert diff(
+    {"commandcode": {"disabled": True}},
+    {"commandcode": {"disabled": True}, "user-added": {"disabled": False}},
+) == []  # live-only providers are not setup-owned
+assert diff(
+    {"commandcode": {"disabled": True, "adapter": "anthropic"}},
+    {"commandcode": {"disabled": True, "adapter": "openai-chat"}},
+) == ["provider 'commandcode' adapter differs (config: anthropic, proxy: openai-chat)"]
+assert diff(
+    {"cc": {"disabled": True, "baseUrl": "https://example.com/v1/"}},
+    {"cc": {"disabled": True, "baseUrl": "https://example.com/v1"}},
+) == []  # a trailing slash is not routing drift
+assert diff(
+    {"cc": {"disabled": True, "baseUrl": "https://user:pass@example.com/v1"}},
+    {"cc": {"disabled": True, "baseUrl": "https://example.com/v1"}},
+) == []  # userinfo is stripped by the proxy, not routing drift
+assert diff(
+    {"cc": {"disabled": True, "apiKey": "secret"}},
+    {"cc": {"disabled": True, "hasApiKey": True}},
+) == []
+assert diff(
+    {"cc": {"disabled": True}},
+    {"cc": {"disabled": True, "hasApiKey": True}},
+) == ["provider 'cc' hasApiKey differs (config: False, proxy: True)"]
+
+# proxy_restart_status: unreadable live never reports a pending restart, and a
+# missing port is simply "not running" regardless of stored config.
+orig_port = globals_["live_proxy_port"]
+orig_view = globals_["live_provider_view"]
+try:
+    globals_["live_proxy_port"] = lambda: 10100
+    config_path.write_text(json.dumps({"providers": {"deepseek": {"disabled": False}}}))
+    globals_["live_provider_view"] = lambda port: {"openai": {"disabled": False}}
+    assert namespace["proxy_restart_status"]() == (
+        True,
+        10100,
+        ["provider 'deepseek' is not loaded by the running proxy"],
+    )
+    globals_["live_provider_view"] = lambda port: None
+    assert namespace["proxy_restart_status"]() == (True, 10100, [])
+    globals_["live_proxy_port"] = lambda: None
+    assert namespace["proxy_restart_status"]() == (False, None, [])
+finally:
+    globals_["live_proxy_port"] = orig_port
+    globals_["live_provider_view"] = orig_view
 server.shutdown()
 
 for malformed in (

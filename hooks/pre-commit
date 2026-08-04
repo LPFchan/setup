@@ -18,7 +18,7 @@ for f in bin/*; do
     bash -n "$f" || { echo "Syntax error in $f — commit blocked" >&2; exit 1; }
 done
 
-for f in files/refresh-models; do
+for f in files/refresh-models files/opencodex; do
     [[ -f "$f" ]] || continue
     python3 -c "import py_compile; py_compile.compile('$f', doraise=True)" || exit 1
 done
