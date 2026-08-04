@@ -34,6 +34,8 @@ Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/
   included); if a branch seems warranted, propose it and wait. Do not branch
   "to be safe," to isolate work, or by default. Leftover branches are the user's
   to clean, so don't make them.
+- **Git commits**: commit in reasonable slices autonomously; do not gate them
+  behind operator input.
 - Global skills load from `~/.agents/skills/`.
 - Python: always use the repo-local `.venv` and its pip. Never
   `--break-system-packages` on system Python. Use `pipx` if a global install is
