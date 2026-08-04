@@ -16,8 +16,8 @@ RETIRED_FILE="$STATE_DIR/retired.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring refresh-models backup system-updates"
-USER_SERVICE_MODULES="refresh-models"
+SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring providers backup system-updates"
+USER_SERVICE_MODULES="providers"
 BATCH=0
 
 # SOURCE_URL normally points at a moving GitHub branch.  Raw GitHub caches each
@@ -84,7 +84,7 @@ module_enable_cmd() {
         service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin enable --all" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin service-ctl); echo "$bin enable $1" ;;
-        refresh-models) bin=$(_resolve_bin refresh-models); echo "$bin enable" ;;
+        providers)     bin=$(_resolve_bin providers); echo "$bin enable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
     esac
@@ -97,7 +97,7 @@ module_disable_cmd() {
         service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin disable --all" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin service-ctl); echo "$bin disable $1" ;;
-        refresh-models) bin=$(_resolve_bin refresh-models); echo "$bin disable" ;;
+        providers)     bin=$(_resolve_bin providers); echo "$bin disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
     esac
@@ -109,7 +109,7 @@ module_service_unit() {
         kernel-simmer)  echo "kernel-simmer.timer" ;;
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;
-        refresh-models) echo "refresh-models.timer" ;;
+        providers)     echo "providers.timer" ;;
         backup)         echo "backup.timer" ;;
         system-updates) echo "system-updates.timer" ;;
     esac
@@ -128,9 +128,9 @@ module_is_active() {
     if echo " ${USER_SERVICE_MODULES} " | grep -q " $1 "; then
         user_flag="--user"
     fi
-    # macOS: check launchd for refresh-models
-    if [[ "$1" == "refresh-models" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
-        launchctl print "gui/$(id -u)/com.lost.plus.refresh-models" &>/dev/null && return 0
+    # macOS: check launchd for providers
+    if [[ "$1" == "providers" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
+        launchctl print "gui/$(id -u)/com.lost.plus.providers" &>/dev/null && return 0
         return 1
     fi
     [[ "$(systemctl ${user_flag} is-active "${unit}" 2>/dev/null)" == "active" ]]
@@ -306,58 +306,6 @@ remote_checksum() {
     local source="$1"
     [[ -z "${_CSUM_CACHE:-}" ]] && fetch_checksums
     printf '%s\n' "${_CSUM_CACHE:-}" | grep "^${source}"$'\t' | head -1 | cut -f2
-}
-
-_migrate_auth_json() {
-    local old="$HOME/.local/share/opencode/auth.json"
-    [[ -f "$old" ]] || return 0
-    python3 -c "
-import json, os, pathlib
-old = os.path.expanduser('~/.local/share/opencode/auth.json')
-zsenv = os.path.expanduser('~/.zshenv')
-begin = '# BEGIN setup:api-keys'
-end = '# END setup:api-keys'
-try:
-    data = json.load(open(old))
-except Exception:
-    exit(0)
-if not isinstance(data, dict) or not data:
-    exit(0)
-lines = []
-for p, e in data.items():
-    if not isinstance(e, dict):
-        continue
-    etype = e.get('type', '')
-    if etype == 'api':
-        key = e.get('key', '')
-        if key and isinstance(key, str) and key.strip():
-            provider = p.replace('-', '_').upper()
-            lines.append(f'export {provider}_API_KEY={key.strip()}')
-    elif etype == 'oauth':
-        access = e.get('access', '')
-        if access and isinstance(access, str):
-            provider = p.replace('-', '_').upper()
-            lines.append(f'export {provider}_OAUTH_TOKEN={access}')
-if not lines:
-    exit(0)
-existing = []
-in_block = False
-if os.path.exists(zsenv):
-    for l in open(zsenv):
-        s = l.strip()
-        if s == begin: in_block = True; continue
-        if s == end: in_block = False; continue
-        if not in_block:
-            existing.append(l)
-with open(zsenv, 'w') as f:
-    for l in existing:
-        f.write(l)
-    f.write(f'\n{begin}\n')
-    for l in lines:
-        f.write(l + '\n')
-    f.write(f'{end}\n')
-print(f'Exported {len(lines)} key(s) from {old} to {zsenv}')
-" 2>&1 || true
 }
 
 module_for() {
@@ -885,9 +833,6 @@ install_one() {
     # force reinstall would. See the drift routing in the condition below.
     if [[ -f "$target" && -n "$old_hash" ]] && [[ "$new_hash" == "$old_hash" ]] \
        && [[ "$disk_hash" == "$old_hash" ]] && [[ "$FORCE" -ne 1 ]]; then
-        if [[ "$module" == "refresh-models" ]]; then
-            _migrate_auth_json
-        fi
         echo "$module ${old_hash:0:7} (current) -> $target"
         rm -f "$payload"
         return 0
@@ -906,9 +851,6 @@ install_one() {
         record_hash "$target" "$new_hash" "$new_hash"
         echo "$module ${new_hash:0:7} (foreign) -> $target"
         rm -f "$payload"
-        if [[ "$module" == "refresh-models" ]]; then
-            _migrate_auth_json
-        fi
         if [[ "$module" == "setup" ]]; then
             echo "Restarting setup..."
             exec "$target" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
@@ -926,9 +868,6 @@ install_one() {
         echo "$module ${old_hash:0:7} -> ${new_hash:0:7} -> $target"
     else
         echo "$module ${new_hash:0:7} (install) -> $target"
-    fi
-    if [[ "$module" == "refresh-models" ]]; then
-        _migrate_auth_json
     fi
     rm -f "$payload"
     if [[ "$module" == "setup" ]]; then
@@ -2358,27 +2297,27 @@ cmd_reconfigure() {
     return "$interactive_failed"
 }
 
-_post_refresh_models_setup() {
-    local marker="$STATE_DIR/refresh-models.needs-provider-setup"
+_post_providers_setup() {
+    local marker="$STATE_DIR/providers.needs-provider-setup"
     [[ -f "$marker" ]] || return 0
 
-    local refresh_bin="$HOME/.local/bin/refresh-models"
-    [[ -x "$refresh_bin" ]] || refresh_bin=$(command -v refresh-models 2>/dev/null || true)
-    if [[ ! -x "$refresh_bin" ]]; then
-        echo "Warning: refresh-models provider setup is pending, but its executable is unavailable." >&2
+    local providers_bin="$HOME/.local/bin/providers"
+    [[ -x "$providers_bin" ]] || providers_bin=$(command -v providers 2>/dev/null || true)
+    if [[ ! -x "$providers_bin" ]]; then
+        echo "Warning: providers provider setup is pending, but its executable is unavailable." >&2
         return 1
     fi
     if [[ -t 1 && -r /dev/tty ]]; then
         echo
-        echo "Choose which refresh-models providers to configure; blank keys stay disabled."
-        if "$refresh_bin" auth </dev/tty >/dev/tty 2>&1; then
+        echo "Choose which providers to configure; blank keys stay disabled."
+        if "$providers_bin" auth </dev/tty >/dev/tty 2>&1; then
             rm -f "$marker"
             return 0
         fi
-        echo "Warning: refresh-models provider setup failed; it will be offered again." >&2
+        echo "Warning: providers provider setup failed; it will be offered again." >&2
         return 1
     fi
-    echo "Warning: refresh-models provider setup is pending. Run '$refresh_bin auth' to choose providers." >&2
+    echo "Warning: providers provider setup is pending. Run '$providers_bin auth' to choose providers." >&2
     return 1
 }
 
@@ -2413,7 +2352,7 @@ if [[ -z "$cmd" ]]; then
         echo "Warning: no interactive terminal; running non-interactive update. Use 'setup' in a terminal for module selection." >&2
         cmd_update || main_rc=$?
     fi
-    _post_refresh_models_setup || true
+    _post_providers_setup || true
     exit "$main_rc"
 fi
 
@@ -2423,13 +2362,13 @@ case "$cmd" in
     install)
         command_rc=0
         cmd_install "$@" || command_rc=$?
-        _post_refresh_models_setup || true
+        _post_providers_setup || true
         exit "$command_rc"
         ;;
     update)
         command_rc=0
         cmd_update "$@" || command_rc=$?
-        _post_refresh_models_setup || true
+        _post_providers_setup || true
         exit "$command_rc"
         ;;
     uninstall) cmd_uninstall "$@" ;;

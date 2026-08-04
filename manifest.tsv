@@ -8,7 +8,8 @@ kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux
 service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl	fleet	linux
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
-refresh-models	~/.local/bin/refresh-models	script	files/refresh-models.sh
+providers	~/.local/bin/providers	script	files/providers.sh
+refresh-models	~/.local/bin/refresh-models	script	files/refresh-models.sh			retired
 backup	~/.local/bin/backup	0755	bin/backup	fleet	linux
 system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux
 zsh-autocomplete	~/.zsh/zsh-autocomplete	script	files/zsh-autocomplete.sh

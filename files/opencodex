@@ -58,7 +58,7 @@ ADMIN_TOKEN = Path(
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
 # Modules consuming the shared claudex-profiles.json registry.
-PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "refresh-models")
+PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "providers")
 # OAuth provider presets are reconciled and persisted by OpenCodex at runtime.
 # They are not setup-owned desired state and must not make status report drift.
 OAUTH_RECONCILE_FIELDS = frozenset(

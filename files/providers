@@ -1,0 +1,1673 @@
+#!/usr/bin/env python3
+# setup-module: providers
+# setup-source: files/providers
+"""providers — vault-owned API-key store for AI providers.
+
+Canonical credentials live in vaultwarden (folder llm, items named
+{PROVIDER}_API_KEY per the C1 convention). A local 0600 cache serves
+offline/headless contexts; opencode's native auth.json and ~/.zshenv are
+mirrors written by this tool so existing consumers keep working.
+
+Commands:
+  (no args)                    Refresh model lists for all enabled providers
+  <provider>                   Refresh model list for one enabled provider
+  --list                       List configured provider names
+  auth                         Interactive API key enrollment (prompts per provider)
+  auth <provider> <key>        Write key directly (agent-friendly)
+  ls                           List providers and enrollment status (never the key)
+  enable                       Install the hourly systemd/launchd timer
+  disable                      Remove the timer
+  status                       Show timer, provider, and credential status
+  sync                         vault -> cache -> opencode auth.json -> .zshenv
+  audit                        List vault llm items, flag non-conforming names
+  rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
+  provider add                 Add a provider through the shared Claudex registry
+  provider enable <provider>   Enable a provider that has an API key
+  provider disable <provider>  Disable a provider without deleting its key
+"""
+
+import getpass, json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import urllib.error, urllib.parse, urllib.request
+
+PROVIDER_STATE_VERSION = 1
+STATE_PATH = os.path.expanduser(
+    os.environ.get("PROVIDER_STATE_PATH", "~/.config/providers/state.json")
+)
+CACHE_PATH = os.path.expanduser(
+    os.environ.get("PROVIDERS_CACHE_PATH", "~/.config/providers/credentials.json")
+)
+LEGACY_STATE_PATH = os.path.expanduser(
+    "~/.config/opencode/refresh-models-state.json"
+)
+LEGACY_CONFIG_PATH = os.path.expanduser("~/.config/opencode/refresh-models.json")
+REGISTRY_PATH = os.environ.get(
+    "CLAUDEX_REGISTRY",
+    os.path.expanduser("~/.config/claudex/managed-profiles.json"),
+)
+CLAUDEX_BIN = os.environ.get("CLAUDEX_BIN", os.path.expanduser("~/.local/bin/claudex"))
+OPENCODEX_BIN = os.environ.get(
+    "OPENCODEX_LAUNCHER", os.path.expanduser("~/.local/bin/opencodex")
+)
+SETUP_REPO = os.environ.get("PROVIDER_SETUP_REPO", "git@github.com:LPFchan/setup.git")
+SETUP_BIN = os.environ.get("PROVIDER_SETUP_BIN", "setup")
+RAW_REPO = os.environ.get(
+    "PROVIDER_RAW_REPO", "https://raw.githubusercontent.com/LPFchan/setup"
+)
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+OPENCODE_PATH = os.path.expanduser("~/.config/opencode/opencode.json")
+ZSENV_PATH = os.path.expanduser("~/.zshenv")
+SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
+OLD_AUTH_PATH = os.path.expanduser("~/.local/share/opencode/auth.json")
+# canonical vault store (folder + item-name convention)
+VAULT_FOLDER = "llm"
+VAULT_URL = os.environ.get(
+    "VAULTWARDEN_MCP_URL", os.environ.get("VAULTWARDEN_URL", "https://vault.lost.plus/mcp")
+)
+VAULT_TOKEN = os.environ.get("VAULTWARDEN_SECRETS_TOKEN") or os.environ.get(
+    "VAULTWARDEN_MCP_TOKEN", ""
+)
+
+AUTH_BLOCK_BEGIN = "# BEGIN setup:api-keys"
+AUTH_BLOCK_END = "# END setup:api-keys"
+
+SERVICE_UNIT = """[Unit]
+Description=Refresh provider model list from configured providers
+
+[Service]
+Type=oneshot
+ExecStart=%s
+"""
+
+TIMER_UNIT = """[Unit]
+Description=Hourly providers check
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+
+def load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def load_json_or_quarantine(path):
+    """Read JSON, setting a corrupt file aside so the next write can recover.
+
+    An interrupted write can leave a truncated file behind. Without this the
+    read fails on every subsequent run and the tool can never repair itself.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        return load_json(path)
+    except json.JSONDecodeError as exc:
+        quarantined = path + ".corrupt"
+        os.replace(path, quarantined)
+        print(
+            f"  {os.path.basename(path)} was corrupt ({exc}); "
+            f"moved to {quarantined} and rebuilding",
+            file=sys.stderr,
+        )
+        return {}
+
+
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def save_json_atomic(path, data, mode=None):
+    directory = os.path.dirname(path)
+    pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+    try:
+        mode = os.stat(path).st_mode & 0o777 if mode is None else mode
+    except FileNotFoundError:
+        mode = 0o600 if mode is None else mode
+    fd, tmp_name = tempfile.mkstemp(prefix=".providers.", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _env_name(provider):
+    return f"{provider.replace('-', '_').upper()}_API_KEY"
+
+
+def _oauth_env_name(provider):
+    return f"{provider.replace('-', '_').upper()}_OAUTH_TOKEN"
+
+
+def _provider_from_env(env_name):
+    if env_name.endswith("_API_KEY"):
+        return env_name[:-8].lower().replace("_", "-")
+    if env_name.endswith("_OAUTH_TOKEN"):
+        return env_name[:-12].lower().replace("_", "-")
+    return ""
+
+
+# --- vault transport ---------------------------------------------------
+
+
+class VaultError(RuntimeError):
+    pass
+
+
+def vault_available():
+    return bool(VAULT_TOKEN)
+
+
+def _vault_call(tool, arguments):
+    """Call a vaultwarden MCP tool over direct HTTP. Raises VaultError on
+    transport/protocol failure; returns the tool's text payload on success."""
+    if not VAULT_TOKEN:
+        raise VaultError("vault token not set (VAULTWARDEN_SECRETS_TOKEN / VAULTWARDEN_MCP_TOKEN)")
+    body = {
+        "jsonrpc": "2.0",
+        "id": id(arguments),
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
+    req = urllib.request.Request(
+        VAULT_URL,
+        data=json.dumps(body).encode(),
+        headers={
+            "Authorization": f"Bearer {VAULT_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            # The vault proxy 403s Python's default UA (like Cloudflare edges).
+            "User-Agent": "providers/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read())
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise VaultError(f"vault unreachable: {exc}") from exc
+    result = payload.get("result", {})
+    if result.get("isError"):
+        text = ""
+        for content in result.get("content", []):
+            if content.get("type") == "text":
+                text += content.get("text", "")
+        raise VaultError(text or f"{tool} failed")
+    text = ""
+    for content in result.get("content", []):
+        if content.get("type") == "text":
+            text += content.get("text", "")
+    return text
+
+
+def vault_list_items():
+    text = _vault_call("list_secrets", {"folder": VAULT_FOLDER})
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = {}
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise VaultError("vault list_secrets returned an unexpected shape")
+    return [item for item in items if isinstance(item, dict) and item.get("name")]
+
+
+def vault_get(item_name):
+    text = _vault_call("get_secret", {"folder": VAULT_FOLDER, "item_name": item_name})
+    if not text:
+        return None
+    try:
+        structured = json.loads(text)
+        if isinstance(structured, dict) and "result" in structured:
+            return structured["result"]
+    except json.JSONDecodeError:
+        pass
+    return text
+
+
+def vault_add(item_name, value):
+    _vault_call("add_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
+
+
+def vault_rename(old_name, new_name, item_id=None):
+    args = {"folder": VAULT_FOLDER, "item_name": old_name, "new_name": new_name}
+    if item_id:
+        args["item_id"] = item_id
+    _vault_call("rename_secret", args)
+
+
+def vault_delete(item_name, item_id=None):
+    args = {"folder": VAULT_FOLDER, "item_name": item_name}
+    if item_id:
+        args["item_id"] = item_id
+    _vault_call("delete_secret", args)
+
+
+# --- local cache (offline source of truth) ------------------------------
+
+
+def _load_cache():
+    if not os.path.exists(CACHE_PATH):
+        return {}
+    try:
+        data = load_json(CACHE_PATH)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_cache(data):
+    save_json_atomic(CACHE_PATH, data, mode=0o600)
+
+
+def cache_get(provider):
+    return _load_cache().get(provider, "")
+
+
+def cache_set(provider, key):
+    data = _load_cache()
+    data[provider] = key
+    _save_cache(data)
+
+
+def cache_remove(provider):
+    data = _load_cache()
+    if provider in data:
+        del data[provider]
+        _save_cache(data)
+
+
+def _sync_cache_from_vault(servers):
+    """Pull the whole vault llm/ folder into the local cache, not just the
+    registry-listed servers: the vault is canonical, so every conforming
+    {PROVIDER}_API_KEY item becomes a cached provider (the 4 extra live
+    providers, e.g. alibaba/ollama-cloud, are enrolled in vault but absent
+    from the shared registry).
+    Network-optional: on vault unreachable, keep the cache and note it."""
+    if not vault_available():
+        print("  vault token unset; using local cache", file=sys.stderr)
+        return True
+    try:
+        items = {item["name"]: item for item in vault_list_items()}
+    except VaultError as exc:
+        print(f"  vault unreachable ({exc}); using local cache", file=sys.stderr)
+        return True
+    cache = _load_cache()
+    changed = False
+    for env_name, item in items.items():
+        if item.get("deleted"):
+            continue
+        if not env_name.endswith("_API_KEY"):
+            continue
+        provider = _provider_from_env(env_name)
+        if not provider:
+            continue
+        value = vault_get(env_name)
+        if value is None:
+            continue
+        if cache.get(provider) != value:
+            cache[provider] = value
+            changed = True
+    if changed:
+        _save_cache(cache)
+    return True
+
+
+# --- .zshenv api-keys block --------------------------------------------
+
+
+def _source_zsenv():
+    """Export .zshenv api-keys block into os.environ (for launchd/cron contexts)."""
+    if not os.path.exists(ZSENV_PATH):
+        return
+    in_block = False
+    with open(ZSENV_PATH) as f:
+        for line in f:
+            s = line.strip()
+            if s == AUTH_BLOCK_BEGIN:
+                in_block = True
+                continue
+            if s == AUTH_BLOCK_END:
+                in_block = False
+                continue
+            if in_block and s.startswith("export ") and "=" in s:
+                kv = s[len("export "):]
+                name, _, val = kv.partition("=")
+                if name and val:
+                    os.environ[name] = val
+
+
+def _read_env_block():
+    if not os.path.exists(ZSENV_PATH):
+        return {}
+    keys = {}
+    in_block = False
+    with open(ZSENV_PATH) as f:
+        for line in f:
+            if line.strip() == AUTH_BLOCK_BEGIN:
+                in_block = True
+                continue
+            if line.strip() == AUTH_BLOCK_END:
+                in_block = False
+                continue
+            if in_block:
+                line = line.strip()
+                if line.startswith("export ") and "=" in line:
+                    kv = line[len("export "):]
+                    name, _, val = kv.partition("=")
+                    keys[name] = val
+    return keys
+
+
+def _write_env_block(lines):
+    ensure_block = False
+    existing = []
+    if os.path.exists(ZSENV_PATH):
+        in_block = False
+        with open(ZSENV_PATH) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped == AUTH_BLOCK_BEGIN:
+                    in_block = True
+                    continue
+                if stripped == AUTH_BLOCK_END:
+                    in_block = False
+                    continue
+                if not in_block:
+                    existing.append(line)
+                # drop old block lines
+        ensure_block = True
+    else:
+        ensure_block = True
+
+    with open(ZSENV_PATH, "w") as f:
+        for line in existing:
+            f.write(line)
+        if ensure_block:
+            f.write(f"\n{AUTH_BLOCK_BEGIN}\n")
+            for l in lines:
+                f.write(l + "\n")
+            f.write(f"{AUTH_BLOCK_END}\n")
+
+
+def _sync_zsenv_to_cache():
+    """Ensure the local cache reflects the .zshenv api-keys block.
+    Never deletes entries that exist only in the cache."""
+    block = _read_env_block()
+    if not block:
+        return
+    cache = _load_cache()
+    changed = False
+    for env_name, value in block.items():
+        provider = _provider_from_env(env_name)
+        if not provider:
+            continue
+        if env_name.endswith("_API_KEY"):
+            if cache.get(provider) != value:
+                cache[provider] = value
+                changed = True
+    if changed:
+        _save_cache(cache)
+
+
+def _write_auth_mirror(cache):
+    """Write opencode's native auth.json from the cache (api-type entries only).
+
+    Mirrors only providers that appear in the cache; never deletes OAuth or
+    unrelated entries that exist only in auth.json.
+    """
+    existing = {}
+    if os.path.exists(OLD_AUTH_PATH):
+        try:
+            existing = load_json(OLD_AUTH_PATH)
+        except Exception:
+            existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    for provider, value in cache.items():
+        if not value:
+            continue
+        if provider not in existing or existing.get(provider, {}).get("key") != value:
+            existing[provider] = {"type": "api", "key": value}
+    pathlib.Path(os.path.dirname(OLD_AUTH_PATH)).mkdir(parents=True, exist_ok=True)
+    save_json_atomic(OLD_AUTH_PATH, existing, mode=0o600)
+
+
+def _write_env_mirror(cache):
+    """Write the .zshenv api-keys block from the cache, preserving OAuth
+    token lines from auth.json.
+
+    api-type providers come from the cache (vault-authoritative); OAuth tokens
+    (*_OAUTH_TOKEN) are owned by their harnesses and carried through from
+    auth.json unchanged, never written from the cache.
+    """
+    lines = [f"export {_env_name(p)}={v}" for p, v in sorted(cache.items()) if v]
+    if os.path.exists(OLD_AUTH_PATH):
+        try:
+            auth = load_json(OLD_AUTH_PATH)
+        except Exception:
+            auth = {}
+        if isinstance(auth, dict):
+            for provider, entry in sorted(auth.items()):
+                if isinstance(entry, dict) and entry.get("type") == "oauth":
+                    access = entry.get("access", "")
+                    if access:
+                        lines.append(f"export {_oauth_env_name(provider)}={access}")
+    _write_env_block(lines)
+
+
+def _sync_mirrors():
+    """cache -> opencode auth.json + .zshenv. Both mirrors are one-way;
+    the cache (from vault) is authoritative for api keys."""
+    cache = _load_cache()
+    _write_auth_mirror(cache)
+    _write_env_mirror(cache)
+
+
+def _fallback_auth_json(provider):
+    """Last-resort read of opencode's old auth.json for providers the vault
+    does not (yet) manage. Kept for backward compatibility with OAuth entries."""
+    if not os.path.exists(OLD_AUTH_PATH):
+        return ""
+    try:
+        data = load_json(OLD_AUTH_PATH)
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    entry = data.get(provider, {})
+    if not isinstance(entry, dict):
+        return ""
+    etype = entry.get("type", "")
+    if etype == "api":
+        return entry.get("key", "")
+    if etype == "oauth":
+        return entry.get("access", "")
+    return ""
+
+
+def _get_key(provider):
+    """Resolve a provider's api key: cache (canonical local) first, then env,
+    then legacy auth.json."""
+    key = cache_get(provider)
+    if key:
+        return key
+    key = os.environ.get(_env_name(provider), "")
+    if key:
+        return key
+    key = _read_env_block().get(_env_name(provider), "")
+    if key:
+        return key
+    return _fallback_auth_json(provider)
+
+
+# --- registry / servers ------------------------------------------------
+
+
+def get_auth(auth_cfg):
+    if auth_cfg is None:
+        return None, None
+    atype = auth_cfg.get("type")
+    if atype == "auth_json":
+        provider = auth_cfg.get("provider", "")
+        key = _get_key(provider)
+        if key:
+            return "api_key", key
+    elif atype == "api_key":
+        return "api_key", auth_cfg["key"]
+    elif atype == "bearer":
+        return "bearer", auth_cfg["key"]
+    return None, None
+
+
+def as_number(value, default=0):
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_int(value, default):
+    number = as_number(value, default)
+    try:
+        return int(number)
+    except (TypeError, ValueError):
+        return default
+
+
+def fetch_models(base_url, auth_cfg):
+    url = base_url.rstrip("/") + "/models"
+    req = urllib.request.Request(url)
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "providers/1.0")
+    auth_type, auth_val = get_auth(auth_cfg)
+    if auth_type in ("api_key", "bearer"):
+        req.add_header("Authorization", f"Bearer {auth_val}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        print(f"  HTTP {e.code} fetching {url}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  Error fetching {url}: {e}", file=sys.stderr)
+        return None
+
+
+def model_to_config_grimoire(m):
+    cost = m.get("cost", {})
+    return {
+        "limit": {
+            "context": as_int(m.get("context"), 32768),
+            "output": as_int(m.get("output"), 16384),
+        },
+        "cost": {
+            "input": as_number(cost.get("input")),
+            "output": as_number(cost.get("output")),
+            "cache_read": as_number(cost.get("cache_read")),
+        },
+    }
+
+
+def model_to_config_crofai(m):
+    pricing = m.get("pricing", {})
+    return {
+        "limit": {
+            "context": as_int(m.get("context_length"), 32768),
+            "output": as_int(m.get("max_completion_tokens"), 16384),
+        },
+        "cost": {
+            "input": as_number(pricing.get("prompt")),
+            "output": as_number(pricing.get("completion")),
+            "cache_read": as_number(pricing.get("cache_prompt")),
+        },
+    }
+
+
+def model_to_config_openai(m):
+    return {
+        "limit": {
+            "context": m.get("context_length", 32768),
+            "output": m.get("max_completion_tokens", 16384),
+        },
+        "cost": {"input": 0, "output": 0, "cache_read": 0},
+    }
+
+
+FORMAT_HANDLERS = {
+    "grimoire": model_to_config_grimoire,
+    "crofai": model_to_config_crofai,
+    "openai": model_to_config_openai,
+}
+
+
+def _grimoire_url():
+    import socket
+    host = socket.gethostname()
+    if "grimoire" in host.lower():
+        return "http://localhost:9001/v1"
+    return "https://chat.lost.plus/v1"
+
+
+def refresh_server(name, cfg):
+    base_url = cfg["baseURL"]
+    if name == "grimoire":
+        base_url = _grimoire_url()
+    fmt = cfg.get("api_format", "openai")
+    handler = FORMAT_HANDLERS.get(fmt, FORMAT_HANDLERS["openai"])
+    npm = cfg.get("npm", "@ai-sdk/openai-compatible")
+    print(f"  {name} ({base_url}) ...", file=sys.stderr)
+    resp = fetch_models(base_url, cfg.get("auth"))
+    if resp is None:
+        return False
+    models_list = resp.get("data", resp.get("models", []))
+    if not models_list:
+        print(f"  Warning: no models returned for {name}", file=sys.stderr)
+        return False
+    models = {}
+    for m in models_list:
+        model_id = m.get("id", "")
+        if not model_id:
+            continue
+        models[model_id] = handler(m)
+    opencode = load_json_or_quarantine(OPENCODE_PATH)
+    provider_block = opencode.get("provider", {})
+    existing = provider_block.setdefault(name, {})
+    existing["npm"] = npm
+    existing["name"] = name
+    if "options" not in existing:
+        existing["options"] = {"baseURL": base_url}
+    else:
+        existing["options"]["baseURL"] = base_url
+    existing["models"] = models
+    provider_block[name] = existing
+    opencode["provider"] = provider_block
+    save_json_atomic(OPENCODE_PATH, opencode)
+    jsonc_path = OPENCODE_PATH.replace(".json", ".jsonc")
+    if jsonc_path != OPENCODE_PATH and os.path.exists(jsonc_path):
+        os.remove(jsonc_path)
+        print(f"  Removed stale {os.path.basename(jsonc_path)}", file=sys.stderr)
+    print(f"  {name}: {len(models)} models updated", file=sys.stderr)
+    return True
+
+
+# --- systemd / launchd management --------------------------------------
+
+
+LAUNCHD_DIR = os.path.expanduser("~/Library/LaunchAgents")
+PLIST_NAME = "com.lost.plus.providers"
+
+
+def _is_macos():
+    return sys.platform == "darwin"
+
+
+PROVIDER_URLS = {
+    "grimoire": "http://localhost:9001 (self-hosted)",
+    "crofai": "https://crof.ai",
+    "commandcode": "https://commandcode.ai/studio → Settings → API Keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+}
+
+
+def _load_servers():
+    """Load OpenAI-compatible providers from the canonical Claudex registry."""
+    try:
+        registry = _validate_registry(load_json(REGISTRY_PATH))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"Cannot read provider registry {REGISTRY_PATH}: {exc}", file=sys.stderr)
+        return None
+    profiles = registry.get("profiles") if isinstance(registry, dict) else None
+    if not isinstance(registry, dict) or registry.get("version") != 1 or not isinstance(profiles, list):
+        print(f"Invalid provider registry: {REGISTRY_PATH}", file=sys.stderr)
+        return None
+    providers = registry.get("providers")
+    entries = providers.items() if isinstance(providers, dict) else (
+        (profile.get("name"), profile) for profile in profiles if isinstance(profile, dict)
+    )
+    servers = {}
+    for name, profile in entries:
+        if not isinstance(profile, dict):
+            continue
+        auth = profile.get("auth", {})
+        if profile.get("provider_type") != "OpenAICompatible":
+            continue
+        if not isinstance(auth, dict) or auth.get("type") != "api-key":
+            continue
+        base_url = profile.get("base_url")
+        auth_key = auth.get("key")
+        if not all(isinstance(value, str) and value for value in (name, base_url, auth_key)):
+            continue
+        servers[name] = {
+            "baseURL": base_url,
+            "api_format": profile.get("api_format", "openai"),
+            "npm": profile.get("npm", "@ai-sdk/openai-compatible"),
+            "auth": {"type": "auth_json", "provider": auth_key},
+            "registry_enabled": profile.get("enabled") is True,
+        }
+    return servers
+
+
+def _load_provider_state():
+    if not os.path.exists(STATE_PATH):
+        migrated = _migrate_refresh_models_provider_state()
+        if migrated is not None:
+            _cleanup_legacy_provider_state()
+            return migrated
+        if os.path.exists(LEGACY_STATE_PATH):
+            return migrated
+        return _migrate_legacy_provider_state()
+    try:
+        data = load_json(STATE_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Cannot read provider state {STATE_PATH}; all providers are disabled: {exc}", file=sys.stderr)
+        return None
+    if not _valid_provider_state(data):
+        print(f"Invalid provider state {STATE_PATH}; all providers are disabled", file=sys.stderr)
+        return None
+    _cleanup_legacy_provider_state()
+    return data
+
+
+def _valid_provider_state(data):
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != PROVIDER_STATE_VERSION
+        or not isinstance(data.get("providers"), dict)
+    ):
+        return False
+    return all(
+        isinstance(name, str)
+        and NAME_RE.fullmatch(name)
+        and isinstance(entry, dict)
+        and set(entry) == {"enabled"}
+        and isinstance(entry["enabled"], bool)
+        for name, entry in data["providers"].items()
+    )
+
+
+def _cleanup_legacy_provider_state():
+    for path in (LEGACY_STATE_PATH, LEGACY_CONFIG_PATH):
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"Removed obsolete provider state {path}")
+
+
+def _migrate_refresh_models_provider_state():
+    """Move refresh-models' old state into the neutral provider namespace."""
+    if not os.path.exists(LEGACY_STATE_PATH):
+        return None
+    try:
+        data = load_json(LEGACY_STATE_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"Cannot migrate provider state {LEGACY_STATE_PATH}; all providers are disabled: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    providers = data.get("providers") if isinstance(data, dict) else None
+    if not isinstance(providers, dict):
+        print(
+            f"Cannot migrate provider state {LEGACY_STATE_PATH}; all providers are disabled",
+            file=sys.stderr,
+        )
+        return None
+    migrated = {
+        "version": PROVIDER_STATE_VERSION,
+        "providers": {
+            name: {"enabled": entry["enabled"]}
+            for name, entry in providers.items()
+            if isinstance(name, str)
+            and NAME_RE.fullmatch(name)
+            and isinstance(entry, dict)
+            and isinstance(entry.get("enabled"), bool)
+        },
+    }
+    if len(migrated["providers"]) != len(providers):
+        print(
+            f"Cannot migrate invalid provider state {LEGACY_STATE_PATH}; all providers are disabled",
+            file=sys.stderr,
+        )
+        return None
+    save_json_atomic(STATE_PATH, migrated)
+    os.remove(LEGACY_STATE_PATH)
+    print(f"Migrated provider state to {STATE_PATH} and removed {LEGACY_STATE_PATH}")
+    return migrated
+
+
+def _migrate_legacy_provider_state():
+    if not os.path.exists(LEGACY_CONFIG_PATH):
+        return {"version": PROVIDER_STATE_VERSION, "providers": {}}
+    try:
+        data = load_json(LEGACY_CONFIG_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"Cannot migrate obsolete provider registry {LEGACY_CONFIG_PATH}; all providers are disabled: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    legacy_servers = data.get("servers", {}) if isinstance(data, dict) else None
+    if not isinstance(legacy_servers, dict):
+        print(
+            f"Cannot migrate obsolete provider registry {LEGACY_CONFIG_PATH}; all providers are disabled",
+            file=sys.stderr,
+        )
+        return None
+    shared_servers = _load_servers()
+    if shared_servers is None:
+        return None
+    local_only = sorted(set(legacy_servers) - set(shared_servers))
+    if local_only:
+        print(
+            f"Dropping obsolete local-only provider definitions: {', '.join(local_only)}",
+            file=sys.stderr,
+        )
+    providers = {}
+    for name, cfg in legacy_servers.items():
+        if name in shared_servers and isinstance(cfg, dict) and isinstance(cfg.get("enabled"), bool):
+            providers[name] = {"enabled": cfg["enabled"]}
+    migrated = {"version": PROVIDER_STATE_VERSION, "providers": providers}
+    save_json_atomic(STATE_PATH, migrated)
+    os.remove(LEGACY_CONFIG_PATH)
+    print(f"Migrated provider state to {STATE_PATH} and removed {LEGACY_CONFIG_PATH}")
+    return migrated
+
+
+def _auth_provider(name, cfg):
+    auth = cfg.get("auth", {})
+    return auth.get("provider", name) if isinstance(auth, dict) else name
+
+
+def _provider_enabled(name, cfg):
+    provider_state = _load_provider_state()
+    if provider_state is None:
+        return False
+    state = provider_state.get("providers", {}).get(name, {})
+    if isinstance(state, dict) and "enabled" in state:
+        return state["enabled"] is True
+    return cfg.get("registry_enabled") is True and bool(_get_key(_auth_provider(name, cfg)))
+
+
+def _sync_opencode_provider_statuses(servers):
+    """Mirror managed provider status without changing unrelated providers."""
+    opencode = load_json_or_quarantine(OPENCODE_PATH)
+    configured_disabled = opencode.get("disabled_providers", [])
+    if not isinstance(configured_disabled, list):
+        configured_disabled = []
+    managed = set(servers)
+    disabled = [name for name in configured_disabled if name not in managed]
+    disabled.extend(
+        name for name, cfg in servers.items() if not _provider_enabled(name, cfg)
+    )
+    if disabled:
+        opencode["disabled_providers"] = disabled
+    else:
+        opencode.pop("disabled_providers", None)
+    save_json_atomic(OPENCODE_PATH, opencode)
+
+
+def _sync_opencodex_provider_statuses():
+    """Mirror provider status into OpenCodex and the Codex model catalog."""
+    if not (os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK)):
+        return
+    if subprocess.run([OPENCODEX_BIN, "__apply"]).returncode:
+        print("  OpenCodex config unchanged; run: setup update opencodex", file=sys.stderr)
+        return
+    ocx = shutil.which("ocx")
+    if ocx is None:
+        return
+    if subprocess.run([ocx, "sync"]).returncode:
+        print("  Codex model catalog unchanged; run: ocx sync", file=sys.stderr)
+
+
+def _set_provider_enabled(provider, enabled):
+    servers = _load_servers()
+    if servers is None:
+        return False
+    if provider not in servers:
+        print(f"Unknown provider: {provider}", file=sys.stderr)
+        print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
+        return False
+    auth_provider = _auth_provider(provider, servers[provider])
+    if enabled and not _get_key(auth_provider):
+        print(
+            f"Cannot enable {provider}: no API key. "
+            f"Run: providers auth {provider} <key>",
+            file=sys.stderr,
+        )
+        return False
+    state = _load_provider_state()
+    if state is None:
+        return False
+    state.setdefault("providers", {}).setdefault(provider, {})["enabled"] = enabled
+    save_json_atomic(STATE_PATH, state)
+    _sync_opencode_provider_statuses(servers)
+    _sync_opencodex_provider_statuses()
+    print(f"{provider}: {'enabled' if enabled else 'disabled'}")
+    return True
+
+
+def _set_key(provider, key):
+    """Enroll a key: write to vault (canonical), refresh cache, then mirrors."""
+    cache_set(provider, key)
+    if vault_available():
+        try:
+            items = {item["name"] for item in vault_list_items()}
+            env_name = _env_name(provider)
+            if env_name not in items:
+                vault_add(env_name, key)
+            else:
+                vault_call_edit(env_name, key)
+        except VaultError as exc:
+            print(f"  vault write failed ({exc}); key cached locally", file=sys.stderr)
+    _sync_mirrors()
+    print(f"Saved {_env_name(provider)} to vault (llm/) and mirrors")
+
+
+def vault_call_edit(item_name, value):
+    _vault_call("edit_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
+
+
+def cmd_auth():
+    """Interactive or direct API key onboarding.
+
+    providers auth                     → interactive prompt for all missing keys
+    providers auth <provider> <key>    → write key directly (agent-friendly)
+    """
+    _sync_cache_from_vault(_load_servers() or {})
+
+    servers = _load_servers()
+    if servers is None:
+        sys.exit(1)
+
+    if len(sys.argv) >= 4:
+        provider = sys.argv[2]
+        key = sys.argv[3]
+        if provider not in servers:
+            print(f"Unknown provider: {provider}", file=sys.stderr)
+            print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
+            sys.exit(1)
+        _set_key(_auth_provider(provider, servers[provider]), key)
+        if not _set_provider_enabled(provider, True):
+            sys.exit(1)
+        return
+
+    cache = _load_cache()
+    missing = [s for s, cfg in servers.items() if not cache_get(_auth_provider(s, cfg))]
+    configured = [s for s, cfg in servers.items() if cache_get(_auth_provider(s, cfg))]
+
+    if configured:
+        print("Configured:")
+        for s in configured:
+            print(f"  {s}: ✓")
+        print()
+
+    if not missing:
+        _sync_opencode_provider_statuses(servers)
+        print("All provider API keys are already stored in the vault.")
+        return
+
+    print("Providers available to enable:")
+    for s in missing:
+        url = PROVIDER_URLS.get(s, "")
+        print(f"  {s}" + (f"  — {url}" if url else ""))
+    print()
+
+    enabled = []
+    for s in missing:
+        url = PROVIDER_URLS.get(s, "")
+        prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
+        try:
+            key = getpass.getpass(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if key.strip():
+            cache_set(_auth_provider(s, servers[s]), key.strip())
+            enabled.append(s)
+
+    if enabled:
+        _sync_mirrors()
+        state = _load_provider_state()
+        if state is None:
+            print("Provider state is invalid; keys were saved but enablement was not changed.", file=sys.stderr)
+            return
+        for name in enabled:
+            state.setdefault("providers", {}).setdefault(name, {})["enabled"] = True
+        save_json_atomic(STATE_PATH, state)
+        _sync_opencode_provider_statuses(servers)
+        print(f"\nSaved to vault (llm/) and mirrors")
+    else:
+        print("\nNo keys entered.")
+
+
+def cmd_ls():
+    servers = _load_servers()
+    if servers is None:
+        sys.exit(1)
+    cache = _load_cache()
+    print(f"providers configured: {len(servers)}")
+    for name, provider in servers.items():
+        auth_provider = _auth_provider(name, provider)
+        state = "enabled" if _provider_enabled(name, provider) else "disabled"
+        key_status = "key: ✓" if _get_key(auth_provider) else "key: ✗"
+        print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
+
+
+def cmd_enable():
+    _sync_cache_from_vault(_load_servers() or {})
+
+    script_path = os.path.abspath(sys.argv[0])
+    cfg_dir = os.path.dirname(STATE_PATH)
+    pathlib.Path(cfg_dir).mkdir(parents=True, exist_ok=True)
+
+    if _is_macos():
+        pathlib.Path(LAUNCHD_DIR).mkdir(parents=True, exist_ok=True)
+        plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{PLIST_NAME}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{script_path}</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/providers.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/providers.log</string>
+</dict>
+</plist>"""
+        with open(plist_path, "w") as f:
+            f.write(plist)
+        _uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
+                       capture_output=True)
+        r = subprocess.run(["launchctl", "bootstrap", f"gui/{_uid}", plist_path],
+                           capture_output=True)
+        if r.returncode == 0:
+            print("providers launchd agent enabled (hourly)")
+        else:
+            if r.returncode == 125:
+                print("no GUI session — log in on the Mac's screen first", file=sys.stderr)
+            else:
+                print(f"providers installed but launchd enable failed (rc={r.returncode})", file=sys.stderr)
+            if r.stderr:
+                print(r.stderr.decode().rstrip(), file=sys.stderr)
+    else:
+        pathlib.Path(SERVICE_DIR).mkdir(parents=True, exist_ok=True)
+        with open(os.path.join(SERVICE_DIR, "providers.service"), "w") as f:
+            f.write(SERVICE_UNIT % script_path)
+        with open(os.path.join(SERVICE_DIR, "providers.timer"), "w") as f:
+            f.write(TIMER_UNIT)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", "providers.timer"], check=True
+        )
+        print("providers timer enabled (hourly)")
+
+    # --- provider onboarding ---
+
+    servers = _load_servers()
+    if servers is None:
+        raise SystemExit(1)
+    _load_provider_state()
+    _sync_opencode_provider_statuses(servers)
+    enabled = [
+        name for name, provider in servers.items()
+        if _provider_enabled(name, provider)
+    ]
+    print(f"  Enabled providers: {', '.join(enabled) if enabled else 'none'}")
+    available = [
+        name for name, provider in servers.items()
+        if not _get_key(_auth_provider(name, provider))
+    ]
+    if available:
+        if sys.stdin.isatty():
+            print("\n  Configure optional providers; leave a key blank to keep it disabled.\n")
+            cmd_auth()
+        else:
+            state_home = os.environ.get(
+                "XDG_STATE_HOME", os.path.expanduser("~/.local/state")
+            )
+            marker = os.path.join(
+                state_home, "setup", "providers.needs-provider-setup"
+            )
+            pathlib.Path(os.path.dirname(marker)).mkdir(parents=True, exist_ok=True)
+            with open(marker, "w") as f:
+                f.write("\n".join(available) + "\n")
+
+
+def _valid_base_url(value):
+    parsed = urllib.parse.urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and not any(character.isspace() for character in value)
+    )
+
+
+def _validate_registry(data):
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError("registry version must be 1")
+    profiles = data.get("profiles")
+    if not isinstance(profiles, list) or not profiles:
+        raise ValueError("registry profiles must be a non-empty list")
+    providers = data.get("providers", {})
+    if providers and not isinstance(providers, dict):
+        raise ValueError("registry providers must be an object")
+    for provider_name, provider in providers.items():
+        if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
+            raise ValueError(f"invalid provider: {provider_name}")
+        if provider.get("provider_type") not in {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}:
+            raise ValueError(f"invalid provider_type for {provider_name}")
+        if not isinstance(provider.get("base_url"), str) or not _valid_base_url(provider["base_url"]):
+            raise ValueError(f"invalid base_url for {provider_name}")
+        auth = provider.get("auth")
+        if not isinstance(auth, dict):
+            raise ValueError(f"invalid auth descriptor for {provider_name}")
+        if provider["provider_type"] == "OpenAICompatible":
+            if auth.get("type") != "api-key" or auth.get("store") != "opencode":
+                raise ValueError(f"invalid API-key auth descriptor for {provider_name}")
+            if not NAME_RE.fullmatch(auth.get("key", "")):
+                raise ValueError(f"invalid API-key auth descriptor for {provider_name}")
+            if not isinstance(provider.get("enabled"), bool):
+                raise ValueError(f"enabled for {provider_name} must be a boolean")
+            if provider.get("api_format") not in FORMAT_HANDLERS:
+                raise ValueError(f"invalid api_format for {provider_name}")
+            if not isinstance(provider.get("npm"), str) or not provider["npm"]:
+                raise ValueError(f"invalid npm package for {provider_name}")
+        elif auth.get("type") != "oauth" or not isinstance(auth.get("provider"), str):
+            raise ValueError(f"invalid OAuth descriptor for {provider_name}")
+    seen = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise ValueError("each profile must be an object")
+        name = profile.get("name")
+        if not isinstance(name, str) or not NAME_RE.fullmatch(name) or name in seen:
+            raise ValueError(f"invalid or duplicate profile name: {name}")
+        seen.add(name)
+        provider_name = profile.get("provider")
+        if provider_name is not None and providers and provider_name not in providers:
+            raise ValueError(f"unknown provider for {name}: {provider_name}")
+        if provider_name in providers:
+            provider = providers[provider_name]
+            for field in ("provider_type", "base_url", "auth"):
+                if profile.get(field) != provider.get(field):
+                    raise ValueError(f"{field} for {name} disagrees with provider {provider_name}")
+        if profile.get("provider_type") not in {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}:
+            raise ValueError(f"invalid provider_type for {name}")
+        if not isinstance(profile.get("base_url"), str) or not _valid_base_url(profile["base_url"]):
+            raise ValueError(f"invalid base_url for {name}")
+        auth = profile.get("auth")
+        if not isinstance(auth, dict) or auth.get("type") not in {"api-key", "oauth"}:
+            raise ValueError(f"invalid auth descriptor for {name}")
+        if auth["type"] == "api-key" and (
+            auth.get("store") != "opencode" or not NAME_RE.fullmatch(auth.get("key", ""))
+        ):
+            raise ValueError(f"invalid API-key auth descriptor for {name}")
+        models = profile.get("models")
+        if not isinstance(models, dict) or set(models) != {"haiku", "sonnet", "opus"}:
+            raise ValueError(f"invalid model mapping for {name}")
+    return data
+
+
+def _choose(prompt, options):
+    if shutil.which("fzf") and sys.stdin.isatty():
+        proc = subprocess.run(
+            ["fzf", "--prompt", f"{prompt} > ", "--height=50%", "--reverse"],
+            input="\n".join(options) + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        return proc.stdout.rstrip("\n") if proc.returncode == 0 else None
+    if not sys.stdin.isatty():
+        raise ValueError("interactive provider creation requires a TTY")
+    print(prompt)
+    for index, option in enumerate(options, 1):
+        print(f"  {index}. {option}")
+    print("  0. Cancel")
+    while True:
+        raw = input("Select: ").strip()
+        if raw == "0":
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1]
+        print("Enter a listed number.", file=sys.stderr)
+
+
+def _run_git(args, cwd=None, capture=False):
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode:
+        raise ValueError(proc.stderr.strip() if proc.stderr else "git command failed")
+    return proc.stdout.rstrip("\r\n") if capture and proc.stdout else ""
+
+
+def _load_auth_strict():
+    if not os.path.exists(OLD_AUTH_PATH):
+        return {}
+    try:
+        data = load_json(OLD_AUTH_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read local auth store {OLD_AUTH_PATH}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"local auth store {OLD_AUTH_PATH} must contain a JSON object")
+    return data
+
+
+def _store_token(name, token):
+    """Legacy helper kept for parity: writes an api entry into opencode's
+    auth.json. The canonical write for providers is the vault; this remains
+    so the `provider add` flow can still store the new provider's token."""
+    data = _load_auth_strict()
+    if name in data:
+        raise ValueError(f"the local auth store already contains an entry named {name}")
+    data[name] = {"type": "api", "key": token}
+    pathlib.Path(os.path.dirname(OLD_AUTH_PATH)).mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".auth.", dir=os.path.dirname(OLD_AUTH_PATH))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_name, OLD_AUTH_PATH)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _provider_consumer_modules():
+    modules = ["providers"]
+    if os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK):
+        modules.insert(0, "opencodex")
+    if os.path.isfile(CLAUDEX_BIN) and os.access(CLAUDEX_BIN, os.X_OK):
+        modules.insert(0, "claudex")
+    return modules
+
+
+def _provision_provider(profile, token):
+    auth_data = _load_auth_strict()
+    if profile["name"] in auth_data:
+        raise ValueError(
+            f"the local auth store already contains an entry named {profile['name']}"
+        )
+    with tempfile.TemporaryDirectory(prefix="providers-provider-") as temp:
+        clone = pathlib.Path(temp) / "setup"
+        _run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
+        registry_path = clone / "files/claudex-profiles.json"
+        data = _validate_registry(load_json(registry_path))
+        if any(item["name"] == profile["name"] for item in data["profiles"]):
+            raise ValueError(f"provider {profile['name']} already exists in the setup repository")
+        if profile["name"] in data.get("providers", {}):
+            raise ValueError(f"provider {profile['name']} already exists in the setup repository")
+        data.setdefault("providers", {})[profile["name"]] = {
+            "provider_type": profile["provider_type"],
+            "base_url": profile["base_url"],
+            "api_format": "openai",
+            "npm": "@ai-sdk/openai-compatible",
+            "auth": profile["auth"],
+            "enabled": True,
+        }
+        data["profiles"].append(profile)
+        _validate_registry(data)
+        registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        changed = _run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
+        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
+            raise ValueError("temporary clone contains changes outside the provider registry")
+        _run_git(["diff", "--check"], cwd=clone)
+        _run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
+        _run_git(
+            [
+                "-c", "user.name=providers",
+                "-c", "user.email=providers@localhost",
+                "commit", "--quiet", "-m", f"Add provider {profile['name']}",
+            ],
+            cwd=clone,
+        )
+        _run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
+        commit = _run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
+    _store_token(profile["name"], token)
+    env = os.environ.copy()
+    env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
+    modules = _provider_consumer_modules()
+    proc = subprocess.run([SETUP_BIN, "update", *modules], env=env)
+    if proc.returncode:
+        raise ValueError(
+            "the provider was pushed and its token was stored, but setup provisioning failed; rerun setup update"
+        )
+
+
+def _add_provider():
+    registry = _validate_registry(load_json(REGISTRY_PATH))
+    existing = {profile["name"] for profile in registry["profiles"]}
+    existing.update(registry.get("providers", {}))
+    name = input("Provider name: ").strip()
+    if not NAME_RE.fullmatch(name) or name in existing:
+        raise ValueError("provider names must be unique lowercase letters, digits, or hyphens")
+    if name in _load_auth_strict():
+        raise ValueError("the local auth store already uses that name")
+    base_url = input("OpenAI-compatible API base URL: ").strip().rstrip("/")
+    if not _valid_base_url(base_url):
+        raise ValueError("the API base URL must be an HTTP(S) URL")
+    token = getpass.getpass("API token: ")
+    if not token:
+        raise ValueError("the API token cannot be empty")
+    payload = fetch_models(base_url, {"type": "bearer", "key": token})
+    rows = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
+    models = sorted({row.get("id") for row in rows if isinstance(row, dict) and row.get("id")})
+    if not models:
+        raise ValueError("the endpoint returned no model IDs")
+    mappings = {}
+    for alias in ("opus", "sonnet", "haiku"):
+        selected = _choose(f"Map {alias}", models)
+        if selected is None:
+            return
+        mappings[alias] = selected
+    profile = {
+        "name": name,
+        "provider": name,
+        "provider_type": "OpenAICompatible",
+        "base_url": base_url,
+        "auth": {"type": "api-key", "store": "opencode", "key": name},
+        "default_model": mappings["opus"],
+        "priority": max(0, 80 - len(existing)),
+        "enabled": True,
+        "strip_params": "Auto",
+        "models": {
+            "haiku": mappings["haiku"],
+            "sonnet": mappings["sonnet"],
+            "opus": mappings["opus"],
+        },
+    }
+    _validate_registry({"version": 1, "profiles": [profile]})
+    print("\nProvider to publish:")
+    print(f"  name: {name}")
+    print(f"  endpoint: {base_url}")
+    for alias in ("opus", "sonnet", "haiku"):
+        print(f"  {alias}: {mappings[alias]}")
+    print("  token: [stored locally]")
+    if input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
+        return
+    _provision_provider(profile, token)
+    print(f"providers: provider {name} added and provisioned")
+
+
+def cmd_provider():
+    if len(sys.argv) == 3 and sys.argv[2] == "add":
+        try:
+            _add_provider()
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"providers: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+    if len(sys.argv) != 4 or sys.argv[2] not in ("enable", "disable"):
+        print(
+            "Usage: providers provider add | [enable|disable] <provider>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not _set_provider_enabled(sys.argv[3], sys.argv[2] == "enable"):
+        sys.exit(1)
+
+
+def cmd_disable():
+    if _is_macos():
+        plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
+        if os.path.exists(plist_path):
+            _uid = os.getuid()
+            subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
+                           capture_output=True)
+            os.remove(plist_path)
+        print("providers launchd agent disabled")
+    else:
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", "providers.timer"],
+            capture_output=True,
+        )
+        for f in ["providers.service", "providers.timer"]:
+            p = os.path.join(SERVICE_DIR, f)
+            if os.path.exists(p):
+                os.remove(p)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+        print("providers timer disabled")
+
+
+def cmd_status():
+    if _is_macos():
+        plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
+        if os.path.exists(plist_path):
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{PLIST_NAME}"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print("timer: active (launchd hourly)")
+            else:
+                print("timer: not loaded")
+        else:
+            print("timer: not installed")
+    else:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "providers.timer"],
+            capture_output=True, text=True,
+        )
+        state = result.stdout.strip()
+        if state == "active":
+            next_run = subprocess.run(
+                ["systemctl", "--user", "show", "-p", "NextElapseUSecRealtime", "providers.timer"],
+                capture_output=True, text=True,
+            ).stdout.strip().split("=")[-1]
+            print(f"timer: active (next: {next_run})")
+        else:
+            print(f"timer: {state}")
+    servers = _load_servers() or {}
+    print(f"servers configured: {len(servers)}")
+    for name, provider in servers.items():
+        state = "enabled" if _provider_enabled(name, provider) else "disabled"
+        key_status = "key: ✓" if _get_key(_auth_provider(name, provider)) else "key: ✗"
+        print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
+
+
+def cmd_sync():
+    """vault -> cache -> opencode auth.json + .zshenv."""
+    servers = _load_servers()
+    if servers is None:
+        sys.exit(1)
+    _sync_cache_from_vault(servers)
+    _sync_mirrors()
+    _sync_opencode_provider_statuses(servers)
+    print("providers: synced vault -> cache -> auth.json -> .zshenv")
+
+
+def _conforming_item_name(name):
+    """C1 convention: {PROVIDER}_API_KEY, where PROVIDER is a lowercase
+    alphanumeric/hyphen provider name uppercased with '-' -> '_' (so the item
+    is uppercase letters/digits/underscores, ending in _API_KEY)."""
+    if not name.endswith("_API_KEY"):
+        return False
+    stem = name[: -len("_API_KEY")]
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*", stem))
+
+
+def cmd_audit():
+    """List vault llm items and flag names that violate C1."""
+    if not vault_available():
+        print("vault token unset; cannot audit", file=sys.stderr)
+        sys.exit(1)
+    try:
+        items = vault_list_items()
+    except VaultError as exc:
+        print(f"vault unreachable: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not items:
+        print("vault llm/ folder is empty")
+        return
+    print(f"vault llm/ ({len(items)} items):")
+    for item in items:
+        name = item["name"]
+        flag = "" if _conforming_item_name(name) else "  <- non-conforming"
+        print(f"  {name}{flag}")
+
+
+def cmd_rename():
+    """Enforce C1 on vault llm items. Default dry-run; --apply performs renames.
+
+    Only non-deleted, non-OAuth, non-conforming items are renamed. OAuth items
+    (*_OAUTH_TOKEN / *_REFRESH_TOKEN) are out of scope and never touched.
+    """
+    dry_run = "--apply" not in sys.argv
+    if not vault_available():
+        print("vault token unset; cannot rename", file=sys.stderr)
+        sys.exit(1)
+    try:
+        items = vault_list_items()
+    except VaultError as exc:
+        print(f"vault unreachable: {exc}", file=sys.stderr)
+        sys.exit(1)
+    plan = []
+    for item in items:
+        name = item["name"]
+        if item.get("deleted"):
+            continue
+        if _conforming_item_name(name):
+            continue
+        if name.endswith(("_OAUTH_TOKEN", "_REFRESH_TOKEN")):
+            continue
+        # map to a proper provider name: lowercase alnum/hyphen, then to env form
+        provider = re.sub(r"[^a-z0-9-]", "-", name.lower())
+        provider = re.sub(r"-+", "-", provider).strip("-")
+        env = provider.replace("-", "_").upper()
+        if not env.endswith("_API_KEY"):
+            env += "_API_KEY"
+        plan.append((item, name, env))
+    if not plan:
+        print("vault llm/ items all conform to C1")
+        return
+    print("C1 renames planned:")
+    for item, old, new in plan:
+        print(f"  {old} -> {new}")
+    if dry_run:
+        print("\n(dry run — pass --apply to perform)")
+        return
+    for item, old, new in plan:
+        vault_rename(old, new, item.get("item_id"))
+        print(f"  renamed {old} -> {new}")
+
+
+def main():
+    args = sys.argv[1:]
+
+    if args and args[0] == "__validate":
+        try:
+            _validate_registry(load_json(args[1]))
+        except (IndexError, OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"providers: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args and args[0] == "__migrate-state":
+        if _load_provider_state() is None:
+            sys.exit(1)
+        return
+
+    if not args:
+        _source_zsenv()
+        _sync_zsenv_to_cache()
+        _sync_mirrors()
+        servers = _load_servers()
+        if servers is None:
+            sys.exit(1)
+        _sync_cache_from_vault(servers)
+        _sync_mirrors()
+        _sync_opencode_provider_statuses(servers)
+        for name, srv_cfg in servers.items():
+            if not _provider_enabled(name, srv_cfg):
+                continue
+            refresh_server(name, srv_cfg)
+        return
+
+    cmd = args[0]
+
+    if cmd == "--list":
+        servers = _load_servers()
+        if servers is None:
+            sys.exit(1)
+        for name in servers:
+            print(name)
+        return
+
+    if cmd == "enable":
+        cmd_enable()
+        return
+
+    if cmd == "disable":
+        cmd_disable()
+        return
+
+    if cmd == "status":
+        cmd_status()
+        return
+
+    if cmd == "auth":
+        cmd_auth()
+        return
+
+    if cmd == "ls":
+        cmd_ls()
+        return
+
+    if cmd == "sync":
+        cmd_sync()
+        return
+
+    if cmd == "audit":
+        cmd_audit()
+        return
+
+    if cmd == "rename":
+        cmd_rename()
+        return
+
+    if cmd == "provider":
+        cmd_provider()
+        return
+
+    if cmd in ("--help", "-h", "help"):
+        print("providers — vault-owned provider API keys and model refresh")
+        print()
+        print("Usage:")
+        print("  providers                  Refresh all enabled providers")
+        print("  providers <provider>       Refresh a single enabled provider")
+        print("  providers --list           List configured provider names")
+        print("  providers auth             Interactive API key enrollment")
+        print("  providers auth <p> <k>     Write key directly (agent-friendly)")
+        print("  providers ls               List providers and key status")
+        print("  providers enable           Install systemd/launchd timer (hourly)")
+        print("  providers disable          Remove timer")
+        print("  providers status           Show timer state and next run")
+        print("  providers sync             vault -> cache -> auth.json -> .zshenv")
+        print("  providers audit            List vault llm items, flag non-conforming")
+        print("  providers rename [--apply] Enforce C1 naming on vault items")
+        print("  providers provider add          Add a shared provider")
+        print("  providers provider enable <p>   Enable a keyed provider")
+        print("  providers provider disable <p>  Disable a provider")
+        print("  providers --help           Show this message")
+        return
+
+    servers = _load_servers()
+    if servers is None:
+        sys.exit(1)
+    if cmd in servers:
+        if not _provider_enabled(cmd, servers[cmd]):
+            print(
+                f"{cmd} is disabled. Run: providers provider enable {cmd}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _sync_opencode_provider_statuses(servers)
+        refresh_server(cmd, servers[cmd])
+        return
+
+    print(f"Unknown: {cmd}", file=sys.stderr)
+    print(f"Usage: providers [enable|disable|status|auth|ls|sync|audit|rename|provider|--list|<provider>]", file=sys.stderr)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

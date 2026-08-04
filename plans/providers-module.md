@@ -1,0 +1,114 @@
+# Plan: `refresh-models` → `providers` (vault-owned credentials)
+
+**Status:** design approved; vault rename phase complete.
+
+## Goal
+Make a new `providers` module own the canonical provider API-key store (vaultwarden `llm/` folder), with a CLI+TUI for enrollment, and convert every consumer (opencodex, claudex, opencode, hermes, `.zshenv`) to read from it. This is the first step of the broader move away from opencode: opencode's `auth.json` stops being the source of truth and becomes one more mirror written by `providers`.
+
+**OAuth is out of scope.** OAuth entries (`openai`, `github-copilot`, anthropic) stay owned by their harnesses. `providers` only manages `api`-type keys. OAuth vault items (`OPENAI_REFRESH_TOKEN`, `GITHUB_COPILOT_OAUTH_TOKEN`) are left in place, named, but not enrolled/managed.
+
+## Decisions locked
+| # | Decision |
+|---|---|
+| D1 | Vault = source of truth; local 0600 cache for offline/headless |
+| D2 | OAuth excluded; harnesses own OAuth enrollments |
+| D3 | opencode keeps reading its native `auth.json` — `providers` becomes the writer (mirror) |
+| D4 | `.zshenv` block stays (same markers, same `{PROVIDER}_API_KEY` names) |
+| D5 | Hourly timer stays, renamed with module |
+| D6 | Vault audit + rename is Phase 1 of this plan (complete) |
+| D7 | `crofai_api_key_guest` deleted (revoked) |
+| D8 | Network optional: `providers sync`/timer fall back to the local cache silently when vault is unreachable (stderr note only); timers never fail on network loss. Keys rotate rarely, so staleness is acceptable. |
+| D9 | Vault transport = direct vaultwarden API using `VAULTWARDEN_MCP_TOKEN` / `VAULTWARDEN_SECRETS_TOKEN` (in env). No `bw` CLI, no MCP-server subprocess — the `providers` binary calls the vault HTTP API itself. |
+
+## Target shape
+```
+~/.config/providers/state.json        # enablement (exists; unchanged shape)
+~/.config/providers/credentials.json  # NEW local 0600 cache of vault keys (never hand-written)
+~/.zshenv                             # # BEGIN setup:api-keys block — export {PROVIDER}_API_KEY=… (unchanged markers)
+~/.local/share/opencode/auth.json     # opencode's native file — providers now writes it (mirror)
+vaultwarden: llm/{PROVIDER}_API_KEY   # source of truth
+```
+
+## Contracts
+
+### C1 — Secret naming (enforced, now holds in vault)
+`{PROVIDER}_API_KEY`, where `{PROVIDER}` = resolved provider name (`-`→`_`, uppercase).
+- Provider name comes from the registry's `auth.key` pointer (e.g. `auth.key: "opencode-go"` → `OPENCODE_GO_API_KEY`), not the registry key.
+- OAuth items keep `*_OAUTH_TOKEN` / `*_REFRESH_TOKEN` naming (out of scope).
+- `providers` refuses to load an item that doesn't match C1. Renames require explicit `--apply`.
+
+### C2 — Store JSON shape (the boundary)
+```json
+{ "version": 1,
+  "providers": {
+    "deepseek": { "auth": { "type": "api-key", "store": "vault", "item": "DEEPSEEK_API_KEY" } }
+  }
+}
+```
+The shared registry (`claudex-profiles.json`) keeps its current `auth: {type: api-key, store: opencode, key: …}` shape for now — opencodex validates it (`opencodex:138-141`) and the vault mapping is a `providers` read-time concern, not a registry change.
+
+## Consumers (read paths)
+
+| Consumer | Today reads | New read |
+|---|---|---|
+| opencodex launcher | `auth.json` (`load_auth`, `opencodex:172-179`) | Same file, written by providers. **No opencodex code change needed** — but its "no drift" path must tolerate providers as writer |
+| opencode (harness) | native `auth.json` | Unchanged — providers writes the same shape |
+| hermes / grimoire skill | `GRIMOIRE_API_KEY` via vaultwarden `get_secret` | Same item name, now enforced by C1 |
+| `.zshenv` block | written by refresh-models | written by providers, same names |
+| claudex | `auth.json` via `CLAUDEX_AUTH_JSON` | unchanged |
+
+## The `providers` CLI+TUI
+```
+providers auth <provider> <key>     # enroll → vault (via MCP), refresh cache, mirror opencode + .zshenv, enable
+providers auth                      # interactive: list missing keys, prompt per provider (like cmd_auth today)
+providers ls                        # providers + enrolled status (key presence only, never the key)
+providers enable|disable <p>        # today's set_provider_enabled path
+providers sync                      # vault → cache → opencode auth.json → .zshenv (also on timer)
+providers audit                     # list llm folder, flag non-conforming items (dry-run rename list)
+providers rename --dry-run|--apply  # enforce C1 on existing items (only with explicit apply)
+```
+TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
+
+## Phases
+
+### Phase 1 — Vault normalization ✅ COMPLETE
+- Renamed: `commandcode api key`→`COMMANDCODE_API_KEY`, `ollama_api_key`→`OLLAMA_CLOUD_API_KEY`, `Kimi Code API Key`→`KIMICODE_API_KEY`, `GITHUB_COPILOT_TOKEN`→`GITHUB_COPILOT_OAUTH_TOKEN`.
+- Deleted (soft): `crofai_api_key_guest` (revoked, `deleted:true`; purge with `empty_trash` if desired).
+- Verified: 13/13 remaining live items conform to C1.
+- Kept but unused: `ANTHROPIC_API_KEY` (user wants to keep it around), `VAST.ai` (no live provider; flagged in audit, not touched).
+
+### Phase 2 — Store contract + `providers` binary/module
+1. Add `files/providers` (Python CLI, derived from `refresh-models` — reuse `load_json_or_quarantine`, `save_json_atomic` (0600 default), `_read_env_block`, `_sync_zsenv_to_auth`, `_load_servers`, `cmd_auth`, `set_provider_enabled`).
+2. Vault read/write layer: direct vaultwarden HTTP API using `VAULTWARDEN_MCP_TOKEN` / `VAULTWARDEN_SECRETS_TOKEN` (already in env; the MCP server's wire). Folder `llm`, operations mirror the `vaultwarden_secrets` tool shape (`get_secret`/`add_secret`/`rename_secret`/`delete_secret`). Deterministic load = C1 names. **Network-optional (D8):** on vault unreachable, use the local cache and print a stderr note — never fail the timer.
+3. Local cache `credentials.json` (0600, atomic): vault → cache on `sync`/`auth`; read cache first for offline (timer/launchd), vault for freshness on `sync`. On vault unreachable (D8), serve from cache silently + stderr note.
+4. Mirror writers: opencode `auth.json` (native shape, api-type entries only) + `.zshenv` block (same names/markers).
+5. `files/providers.sh` module (setup-module: providers, script). Rename from `refresh-models.sh`: `install/update/status/uninstall`, `__validate`/`__migrate-state`/`__apply` surface, `record_script_state` "provider-registry" tag.
+6. Timer: keep systemd/launchd hourly unit, rename to `providers.{service,timer}` + `com.lost.plus.providers` plist. Same cadence, same `needs-provider-setup` marker path (`~/.local/state/setup/providers.needs-provider-setup`).
+
+### Phase 3 — Migration (order matters)
+1. Read current `~/.local/share/opencode/auth.json` api-type entries → enroll each into vault (matches existing conforming items; skips already-present).
+2. Build local cache from vault.
+3. Write opencode mirror + `.zshenv` from cache.
+4. `setup update providers` converges; state/enablement carried over from `~/.config/providers/state.json` (already the shared path).
+5. One-time: delete the now-redundant copy in `auth.json`? **No** — opencode still reads it; it becomes a mirror. Only `providers` writes it going forward.
+
+### Phase 4 — Consumers + retirement
+- `opencodex`/`claudex`: no code change (read auth.json as before). Verify `opencodex_config_status` blanking still hides keys (it does — `opencodex:572-574`).
+- `PROVIDER_CONSUMER_MODULES` in opencodex (`opencodex:61`, test `opencodex-launcher.sh:491`) → `("claudex", "opencodex", "providers")`.
+- Manifest (`manifest.tsv:11`), README (`README.md:88`), checksums: `refresh-models` → `providers`, retired row for old module (pattern: claudex's `retired` row).
+- Retire `refresh-models` binary/state cleanly (keep vault + auth.json untouched).
+
+### Phase 5 — Tests
+- Rename `refresh-models-{lifecycle,onboarding,providers}.sh` → `providers-*.sh`.
+- Update `process-boundaries.sh:25-27` marker path.
+- Update `opencodex-launcher.sh:491`, `claudex-lifecycle.sh:15,135`, `opencodex-lifecycle.sh:116,126,129`, `catalog-audience.sh:65` refs.
+- New tests: vault-cache read path (mock vault), naming-convention rejection, mirror-writer equivalence (opencode auth.json shape), timer rename.
+
+## Sequencing / fan-out
+**No fan-out.** Single coherent slice (the skill's "one slice" case): one shared boundary (the store), order-dependent migration, and consumers that mostly read the same file. After C1+C2 are fixed and Phase 2 lands, consumer adapters could parallelize — but they're trivial (mostly no-ops) and touching the same repo, so keep them sequential.
+
+## Open items
+1. `ANTHROPIC_API_KEY`: kept, unused — include as a `providers` preset (enrollable) but not in the shared registry.
+2. `VAST.ai`: no live provider — leave in vault, exclude from presets unless you want it.
+3. The 4 extra live `auth.json` providers (alibaba, ollama-cloud, opencode-go, openrouter): include as `providers` presets (they're enrolled in vault already), **not** added to shared `claudex-profiles.json` (would change opencodex's consumed set) unless you say so.
+4. `empty_trash` on `crofai_api_key_guest` — your call (soft-delete expires in 30 days anyway).

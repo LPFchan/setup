@@ -16,7 +16,7 @@ CORE="${CLAUDEX_CORE:-$HOME/.local/libexec/claudex-core}"
 GLOBAL_CONFIG="${CLAUDEX_CONFIG:-$HOME/.config/claudex/config.toml}"
 REGISTRY="${CLAUDEX_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
 AUTH_JSON="${CLAUDEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
-REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
+PROVIDERS_BIN="${PROVIDERS_BIN:-$HOME/.local/bin/providers}"
 FORK_REPO="LPFchan/claudex"
 CLAUDEX_RELEASE_TAG="${CLAUDEX_RELEASE_TAG:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
@@ -293,7 +293,7 @@ uninstall() {
             || echo "claudex: could not remove managed profiles from $GLOBAL_CONFIG" >&2
     fi
     rm -f "$BIN" "$CORE"
-    if [[ ! -x "$REFRESH_MODELS_BIN" ]]; then
+    if [[ ! -x "$PROVIDERS_BIN" ]]; then
         rm -f "$REGISTRY"
     fi
     remove_script_state "$MODULE"

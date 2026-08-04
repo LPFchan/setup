@@ -5,7 +5,7 @@
 # Installs a four-reel provider/model/effort/harness launcher at ~/.local/bin/opencodex, a
 # latest OpenCodex runtime, and a setup-managed provider registry snapshot.
 # Routing is provider-only; provider metadata is fleet state (shared with
-# claudex and refresh-models via files/claudex-profiles.json) while
+# claudex and providers via files/claudex-profiles.json) while
 # credentials remain machine-local.
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
