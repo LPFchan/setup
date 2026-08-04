@@ -1,6 +1,6 @@
 ---
 name: agent-to-agent
-description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, Hermes Agent, Grok Build, or Kimi Code CLI through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
+description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, Hermes Agent, Grok Build, Kimi Code CLI, or OpenCodex (routing a child onto another provider's model) through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
 ---
 
 # Agent to Agent
@@ -79,6 +79,11 @@ TaskStop cancels the child.
 - For Grok Build, read [references/grok.md](references/grok.md) and follow it.
 - For Kimi Code CLI, read [references/kimi.md](references/kimi.md) and follow
   it.
+- To run a child on a model its own harness cannot reach — a provider routed
+  through the local OpenCodex proxy — read
+  [references/opencodex.md](references/opencodex.md) and follow it. OpenCodex
+  is a wrapper that launches `claude`, `codex`, `grok`, or `kimi` against the
+  chosen route, so the leg's own reference still governs the conversation.
 
 Keep one child session per delegated task. Give the child the goal, working
 directory, relevant context, constraints, and expected result. Review its

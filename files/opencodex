@@ -1632,6 +1632,119 @@ def choose_launch(
     )
 
 
+LIST_USAGE = "usage: opencodex list [--provider NAME] [--json]"
+
+
+def parse_list_args(argv: list[str]) -> tuple[str | None, bool]:
+    """Flags for `list`: --provider NAME (or --provider=NAME) and --json."""
+    provider: str | None = None
+    as_json = False
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--json":
+            as_json = True
+        elif arg == "--provider":
+            if not rest:
+                raise UserError(f"--provider requires a value ({LIST_USAGE})")
+            provider = rest.pop(0)
+        elif arg.startswith("--provider="):
+            provider = arg.split("=", 1)[1]
+        else:
+            raise UserError(f"unknown argument: {arg} ({LIST_USAGE})")
+    if provider == "":
+        raise UserError(f"--provider requires a value ({LIST_USAGE})")
+    return provider, as_json
+
+
+def catalogue(
+    registry: dict[str, Any], provider_filter: str | None = None
+) -> dict[str, Any]:
+    """The four-reel picker's catalogue as plain data, for callers with no TTY.
+
+    Reads exactly the sources the picker reads — enabled_providers() for
+    disablement, merged_model_index() for models, model_efforts() for the
+    effort reel, available_harnesses() for the harness reel — but nothing
+    that can block, prompt, or start anything: no OAuth discovery, no proxy
+    launch. With the proxy down merged_model_index() narrows to the Codex
+    catalog, which is the right answer here rather than an error.
+
+    Model ids are routable verbatim (routed_model() is the identity on them:
+    routed providers already carry their prefix, bare-id ChatGPT OAuth takes
+    none), so each id can be passed straight to `run --model`.
+
+    The 'other' pseudo-provider is included because the picker offers it, but
+    it is not a registry provider and is flagged launchable=False — there is
+    no `opencodex run other`.
+    """
+    providers = enabled_providers(registry)
+    index = merged_model_index(registry)
+    names = list(providers)
+    if provider_model_options(OTHER_PROVIDER, registry, index):
+        names.append(OTHER_PROVIDER)
+    if provider_filter is not None:
+        if provider_filter not in names:
+            known = ", ".join(names) or "none"
+            if provider_filter in registry.get("providers", {}):
+                raise UserError(
+                    f"provider is disabled: {provider_filter} (enabled: {known})"
+                )
+            raise UserError(f"unknown provider: {provider_filter} (enabled: {known})")
+        names = [provider_filter]
+    entries: list[dict[str, Any]] = []
+    for name in names:
+        launchable = name != OTHER_PROVIDER
+        default_model = provider_default_model(registry, name) if launchable else None
+        entries.append(
+            {
+                "name": name,
+                "launchable": launchable,
+                "default_model": (
+                    routed_model(registry, name, default_model)
+                    if default_model
+                    else None
+                ),
+                "models": [
+                    {
+                        "id": model_id,
+                        "label": label,
+                        "efforts": model_efforts(index.get(model_id, {})),
+                        "support": index.get(model_id, {}).get("support"),
+                    }
+                    for label, model_id, _ in provider_model_options(
+                        name, registry, index
+                    )
+                ],
+            }
+        )
+    return {"providers": entries, "harnesses": available_harnesses()}
+
+
+def render_catalogue(data: dict[str, Any]) -> str:
+    """Tab-separated rows under '#' comment lines, for awk/cut/grep consumers.
+
+    Every non-'#' line is one (provider, model) pair, so `grep -v '^#'` yields
+    a clean table and column 4 tells a caller whether the row is launchable.
+    """
+    harnesses = ", ".join(data["harnesses"]) or "none"
+    lines = [
+        "# columns: provider\tmodel\tefforts\tstatus",
+        "# launch: opencodex run <provider> --model <model> [--effort <effort>] [<harness>]",
+        f"# harnesses: {harnesses}",
+    ]
+    if any(not entry["launchable"] for entry in data["providers"]):
+        lines.append(
+            "# status=unlaunchable: 'other' collects models no enabled provider"
+            " claims; there is no 'opencodex run other'"
+        )
+    for entry in data["providers"]:
+        status = "launchable" if entry["launchable"] else "unlaunchable"
+        for model in entry["models"]:
+            efforts = ",".join(model["efforts"])
+            lines.append(f"{entry['name']}\t{model['id']}\t{efforts}\t{status}")
+    return "\n".join(lines)
+
+
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1].startswith("__"):
         command = sys.argv[1]
@@ -1678,6 +1791,15 @@ def main() -> int:
                 )
         model = routed_model(registry, provider, model)
         return launch(provider, harness, args, model, effort)
+    if len(sys.argv) >= 2 and sys.argv[1] == "list":
+        provider_filter, as_json = parse_list_args(sys.argv[2:])
+        # Same emptiness check choose_launch() makes, so both entry points
+        # fail identically instead of one printing an empty catalogue.
+        if not enabled_providers(registry) and not catalog_model_index():
+            raise UserError("no enabled providers")
+        data = catalogue(registry, provider_filter)
+        print(json.dumps(data, indent=2) if as_json else render_catalogue(data))
+        return 0
     if len(sys.argv) > 1:
         if not OCX.is_file() or not os.access(OCX, os.X_OK):
             raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")

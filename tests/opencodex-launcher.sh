@@ -227,7 +227,59 @@ printf '{"version":1,"providers":{"commandcode":{"enabled":false}}}\n' > "$PROVI
     || fail "run accepted a locally disabled provider"
 grep -q 'provider is disabled: commandcode' "$TEST_TMP/disabled-provider-error" \
     || fail "a disabled provider did not produce a clear error"
+! "$ROOT/files/opencodex" list --provider commandcode </dev/null \
+    2>"$TEST_TMP/list-disabled-error" \
+    || fail "list accepted a locally disabled provider"
+grep -q 'provider is disabled: commandcode' "$TEST_TMP/list-disabled-error" \
+    || fail "list did not name the disabled provider"
+# A disabled provider must vanish from the catalogue entirely — neither under
+# its own name nor leaked into the 'other' bucket.
+"$ROOT/files/opencodex" list </dev/null > "$TEST_TMP/list-disabled" \
+    || fail "list failed while a provider was disabled"
+! grep -q 'commandcode' "$TEST_TMP/list-disabled" \
+    || fail "list surfaced a locally disabled provider's models"
+"$ROOT/files/opencodex" list --json </dev/null \
+    | jq -e '[.providers[].name] | index("commandcode") == null' >/dev/null \
+    || fail "list --json surfaced a locally disabled provider"
 rm "$PROVIDER_STATE_PATH"
+
+# The catalogue is a non-interactive view of the same four reels the picker
+# offers, so it must run with no TTY, start no proxy, and prompt for nothing.
+ocx_calls_before=$(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0)
+"$ROOT/files/opencodex" list </dev/null > "$TEST_TMP/list-out" \
+    || fail "list failed without a TTY"
+[[ $(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0) -eq $ocx_calls_before ]] \
+    || fail "list invoked the ocx binary (proxy start or login)"
+grep -qx "commandcode	$expected_model	low,medium,high	launchable" "$TEST_TMP/list-out" \
+    || fail "list did not print the commandcode default model with its efforts"
+grep -qx "commandcode	commandcode/$cc_opus	low,medium,high	launchable" "$TEST_TMP/list-out" \
+    || fail "list did not print every catalogued commandcode model"
+grep -q '^# harnesses: claude, codex, grok, kimi$' "$TEST_TMP/list-out" \
+    || fail "list did not report the available harnesses"
+[[ $(grep -vc '^#' "$TEST_TMP/list-out") -eq 3 ]] \
+    || fail "list printed rows beyond the three catalogued models"
+
+"$ROOT/files/opencodex" list --provider commandcode </dev/null \
+    | grep -v '^#' | cut -f1 | sort -u > "$TEST_TMP/list-filtered"
+[[ $(cat "$TEST_TMP/list-filtered") == commandcode ]] \
+    || fail "list --provider did not restrict output to one provider"
+
+"$ROOT/files/opencodex" list --json </dev/null > "$TEST_TMP/list-json" \
+    || fail "list --json failed"
+jq -e '(.harnesses | index("codex")) and ([.providers[] | select(.name == "commandcode")]
+    | first | .launchable and (.default_model == $model)
+    and ([.models[].id] | index($model))
+    and ([.models[] | select(.id == $model) | .efforts] | first == ["low","medium","high"]))' \
+    --arg model "$expected_model" "$TEST_TMP/list-json" >/dev/null \
+    || fail "list --json did not carry the expected catalogue shape"
+
+! "$ROOT/files/opencodex" list --provider bogus </dev/null \
+    2>"$TEST_TMP/list-unknown-error" \
+    || fail "list accepted an unknown provider"
+grep -q 'unknown provider: bogus' "$TEST_TMP/list-unknown-error" \
+    || fail "list did not produce a clear unknown-provider error"
+! "$ROOT/files/opencodex" list --bogus </dev/null 2>/dev/null \
+    || fail "list accepted an unknown flag"
 
 "$ROOT/files/opencodex" run commandcode grok
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
