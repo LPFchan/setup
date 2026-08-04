@@ -550,4 +550,81 @@ actual_kimi_args=$(cat "$TEST_TMP/kimi-args")
 [[ $(cat "$TEST_TMP/tmux-args") == $'rename-window\n--\nkimi' ]] \
     || { echo "FAIL: private Kimi path leaked into the tmux title" >&2; exit 1; }
 
+# OpenCode stores every session in one table, so programmatically summoned
+# `opencode run` sessions sit alongside interactive ones. They are marked by
+# the deny-all question/plan_enter/plan_exit triple that a non-interactive run
+# injects, and must stay out of the picker even when they vastly outnumber the
+# interactive sessions. A partial deny set (config-level rules) must not be
+# mistaken for that marker.
+mkdir -p "$HOME/.local/share/opencode" "$HOME/opencode-proj"
+python3 - "$HOME/.local/share/opencode/opencode.db" "$HOME/opencode-proj" <<'PYEOF'
+import json, sqlite3, sys
+
+db, cwd = sys.argv[1], sys.argv[2]
+headless = json.dumps([
+    {"permission": name, "pattern": "*", "action": "deny"}
+    for name in ("question", "plan_enter", "plan_exit")
+])
+partial = json.dumps([{"permission": "plan_enter", "pattern": "*", "action": "deny"}])
+
+conn = sqlite3.connect(db)
+conn.executescript("""
+CREATE TABLE session (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    directory TEXT,
+    title TEXT,
+    permission TEXT,
+    time_updated INTEGER NOT NULL
+);
+""")
+# Newer than everything else, so an unfiltered query would bury the rest.
+for index in range(150):
+    conn.execute(
+        "INSERT INTO session VALUES (?, NULL, ?, 'programmatic-run', ?, ?)",
+        (f"ses_headless{index:03d}", cwd, headless, 1720440000000 + index),
+    )
+conn.execute(
+    "INSERT INTO session VALUES (?, NULL, ?, ?, NULL, ?)",
+    ("ses_interactive", cwd, "Resume OpenCode work", 1720353600000),
+)
+conn.execute(
+    "INSERT INTO session VALUES (?, NULL, ?, ?, ?, ?)",
+    ("ses_partialdeny", cwd, "Config-restricted session", partial, 1720353500000),
+)
+conn.execute(
+    "INSERT INTO session VALUES (?, 'ses_interactive', ?, ?, NULL, ?)",
+    ("ses_child", cwd, "Subagent session", 1720353700000),
+)
+conn.commit()
+conn.close()
+PYEOF
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+[[ "$selection" != *"programmatic-run"* ]] || exit 2
+[[ "$selection" != *"Subagent session"* ]] || exit 3
+[[ "$selection" == *"Config-restricted session"* ]] || exit 4
+printf '%s\n' "$selection" | grep 'oc|ses_interactive|' | head -1
+EOF
+cat > "$FAKE_BIN/opencode" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$0" "$@" > "$TEST_TMP/opencode-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/opencode"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencode-stderr"
+
+expected_tmux_args=$'rename-window\n--\nopencode'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the OpenCode tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_opencode_args=$(printf '%s\n--session\nses_interactive' "$FAKE_BIN/opencode")
+actual_opencode_args=$(cat "$TEST_TMP/opencode-args")
+[[ "$actual_opencode_args" == "$expected_opencode_args" ]] \
+    || { echo "FAIL: resume did not dispatch the interactive OpenCode session: $actual_opencode_args" >&2; exit 1; }
+
 echo "resume format tests passed"

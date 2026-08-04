@@ -196,19 +196,57 @@ collect_sessions() {
         done || true
     fi
 
+    # OpenCode records no explicit headless flag, so programmatically summoned
+    # `opencode run` sessions land in the same table as interactive TUI ones and
+    # can bury the picker (heatmap's recap engine alone summons thousands). A
+    # non-interactive run cannot answer a question or drive plan mode, so
+    # `opencode run` injects deny-all rules for question/plan_enter/plan_exit
+    # into the session's permission ruleset; the TUI never does. That triple is
+    # the marker. Config-level permissions land in the same column, so require
+    # the whole triple rather than substring-matching any one rule.
     if [[ -f "$OC_DB" ]]; then
         python3 - "$OC_DB" "$HOME" << 'PYEOF'
-import sqlite3, sys
+import json, sqlite3, sys
+
 db, home = sys.argv[1], sys.argv[2]
-conn = sqlite3.connect(db)
-for sid, title, directory, ts_ms in conn.execute(
-    "SELECT id, title, directory, time_updated FROM session "
-    "WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT 100"
+HEADLESS_MARKER = {"question", "plan_enter", "plan_exit"}
+
+
+def is_headless(permission):
+    if not permission:
+        return False
+    try:
+        rules = json.loads(permission)
+    except Exception:
+        return False
+    if not isinstance(rules, list):
+        return False
+    denied = {
+        rule.get("permission")
+        for rule in rules
+        if isinstance(rule, dict)
+        and rule.get("action") == "deny"
+        and rule.get("pattern") == "*"
+    }
+    return HEADLESS_MARKER <= denied
+
+
+conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = []
+for sid, title, directory, ts_ms, permission in conn.execute(
+    "SELECT id, title, directory, time_updated, permission FROM session "
+    "WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT 2000"
 ):
-    ts = ts_ms // 1000
-    cwd = directory or home
-    print(f"{ts}|oc|{sid}|{cwd}|{title or ''}")
+    if is_headless(permission):
+        continue
+    rows.append((ts_ms // 1000, sid, directory or home, title or ""))
+    if len(rows) >= 100:
+        break
 conn.close()
+for ts, sid, cwd, title in rows:
+    clean_cwd = str(cwd).replace("|", "/").replace("\n", " ").replace("\r", " ")
+    clean_title = " ".join(str(title).replace("|", "/").split())
+    print(f"{ts}|oc|{sid}|{clean_cwd}|{clean_title}")
 PYEOF
     fi
 
