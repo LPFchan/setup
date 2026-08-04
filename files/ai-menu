@@ -420,7 +420,7 @@ ai() {
             ;;
         claudex) claudex ;;
         opencodex) opencodex ;;
-        opencode) OPENCODE_ENABLE_EXA=1 opencode ;;
+        opencode) OPENCODE_ENABLE_EXA=1 opencode --yolo ;;
         agy) agy --dangerously-skip-permissions ;;
         hermes) hermes ;;
         grok) grok ;;
