@@ -23,6 +23,7 @@ printf '%s\n' "$key" > "$HOME/.ssh/id_ed25519.pub"
     printf '# module\ttarget\tmode\tsource\taudience\tplatform\tstatus\n'
     printf 'live\t~/.local/bin/live\t0755\tbin/live\t\t\t\n'
     printf 'gone-script\t~/.local/bin/gone-script\tscript\tfiles/gone-script.sh\t\t\tretired\n'
+    printf 'gone-script-disk\t~/.local/bin/gone-script-disk\tscript\tfiles/gone-script-disk.sh\t\t\tretired\n'
     printf 'gone-file\t~/.local/bin/gone-file\t0755\tbin/gone-file\t\t\tretired\n'
 } > "$TEST_TMP/src/manifest.tsv"
 
@@ -40,7 +41,7 @@ uname() {
 # Fresh machine: retired entries are invisible.
 fresh=$(cmd_list)
 [[ "$fresh" == *live* ]] || { echo "retired filter dropped a live module" >&2; exit 1; }
-[[ "$fresh" != *gone-script* && "$fresh" != *gone-file* ]] || {
+[[ "$fresh" != *gone-script* && "$fresh" != *gone-script-disk* && "$fresh" != *gone-file* ]] || {
     echo "uninstalled machine saw retired modules" >&2
     exit 1
 }
@@ -48,6 +49,7 @@ fresh=$(cmd_list)
 # Machines that already run them keep seeing them, flagged as retired.
 printf 'gone-script\t~/.local/bin/gone-script\tabc1234\tabc1234\n' > "$STATE_DIR/script-state.tsv"
 : > "$HOME/.local/bin/gone-file"
+: > "$HOME/.local/bin/gone-script-disk"
 installed=$(cmd_list)
 [[ "$installed" == *gone-script*"(retired)"* ]] || {
     echo "installed script module lost its retired entry" >&2
@@ -55,6 +57,12 @@ installed=$(cmd_list)
 }
 [[ "$installed" == *gone-file*"(retired)"* ]] || {
     echo "installed file module lost its retired entry" >&2
+    exit 1
+}
+# A script module whose launcher is on disk but whose state registry is absent
+# (pre-registry install, wiped state) must still stay visible once retired.
+[[ "$installed" == *gone-script-disk*"(retired)"* ]] || {
+    echo "retired script module without state entry lost its retired entry" >&2
     exit 1
 }
 [[ "$installed" == *live* ]] || { echo "live module vanished" >&2; exit 1; }
@@ -72,9 +80,9 @@ while IFS=$'\t' read -r module target mode source extra; do
 done < "$MANIFEST_FILE"
 
 # Uninstalling a retired module removes it from the catalog again.
-rm -f "$STATE_DIR/script-state.tsv" "$HOME/.local/bin/gone-file"
+rm -f "$STATE_DIR/script-state.tsv" "$HOME/.local/bin/gone-file" "$HOME/.local/bin/gone-script-disk"
 after=$(cmd_list)
-[[ "$after" != *gone-script* && "$after" != *gone-file* ]] || {
+[[ "$after" != *gone-script* && "$after" != *gone-script-disk* && "$after" != *gone-file* ]] || {
     echo "retired modules survived uninstall" >&2
     exit 1
 }

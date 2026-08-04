@@ -189,14 +189,13 @@ expand_path() {
 # A retired module is one we no longer offer but have not deleted: its payload
 # stays fetchable so machines that already run it keep updating normally, while
 # the catalog hides it from everyone else. Installed state, not the manifest,
-# decides visibility — file modules by their target on disk, script modules by
-# their entry in script-state.tsv.
+# decides visibility — either the managed target on disk or, for script
+# modules, their entry in script-state.tsv.
 module_is_installed() {
     local module="$1" target_spec="$2" mode="$3"
-    if [[ "$mode" == "script" ]]; then
-        [[ -f "$SCRIPT_STATE_FILE" ]] || return 1
-        grep -q "^${module}"$'\t' "$SCRIPT_STATE_FILE"
-        return
+    if [[ "$mode" == "script" ]] && [[ -f "$SCRIPT_STATE_FILE" ]] \
+       && grep -q "^${module}"$'\t' "$SCRIPT_STATE_FILE"; then
+        return 0
     fi
     [[ "$target_spec" == "-" ]] && return 1
     [[ -e "$(expand_path "$target_spec")" ]]
