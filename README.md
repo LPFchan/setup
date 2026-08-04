@@ -28,7 +28,8 @@ Running `setup` without arguments opens an interactive terminal menu (powered by
 setup                     # Open interactive menu to pick and configure modules
 setup list                # List all available modules
 setup status              # Check installed versions and remote updates
-setup update              # Update all installed modules
+setup update              # Update all installed modules and AI harnesses
+setup update harnesses    # Update only the AI harnesses (claude, codex, opencode, ...)
 setup install <module>    # Install and enable a module (e.g., setup install resume)
 setup uninstall <module>  # Disable and remove a module
 setup enable <module>     # Enable a background service module (e.g., setup enable system-updates)
@@ -96,6 +97,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 - **`agents`**: Deploys standard AI instructions (`AGENTS.md`) and skills to `~/.agents/`, and symlinks them into Claude Code (`~/.claude/`), Codex (`~/.codex/`), Antigravity (`~/.gemini/`), OpenCode (`~/.config/opencode/`), and the home directory.
 - **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, and Kimi Code so you can jump right back into any session.
 - **`claudex` & `opencodex`**: Profile launchers that manage custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
+- **Harness updates**: `setup update` also self-updates every installed AI harness — Claude Code, Codex, OpenCode, Antigravity, Hermes, Grok, and Kimi. Each harness is a self-installing tool rather than a setup module, so setup just locates the binary and runs that tool's own updater (`claude update`, `opencode upgrade`, `hermes update --yes`, and so on). Harnesses missing from the machine are skipped, and because the daily `setup schedule` timer runs `setup update`, harness updates ride along with it for free.
 
 ---
 

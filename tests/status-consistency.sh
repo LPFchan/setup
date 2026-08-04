@@ -112,6 +112,9 @@ fetch_manifest() {
     cp "$TEST_TMP/manifest.tsv" "$MANIFEST_FILE"
 }
 fetch_checksums() { :; }
+# Harnesses resolve through the tester's real PATH; keep `setup update` from
+# self-updating this machine's AI harnesses. Covered by tests/harness-updates.sh.
+cmd_update_harnesses() { :; }
 managed_picker() { printf '%s\n' fzf-multicolumn; }
 printf '0\n' > "$TEST_TMP/status-picker-count"
 fzf-multicolumn() {

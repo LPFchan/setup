@@ -48,6 +48,8 @@ Commands:
   status [module...]   Show installed/current/outdated/modified state
   install [module...]  Install module files (copies to ~/.local/bin/)
   update [module...]   Update installed modules; reports new modules available
+                       No arguments also self-updates installed AI harnesses;
+                       'setup update harnesses' updates only those
   uninstall [module...] Remove managed files
   enable [module...]   Enable service modules (requires sudo)
   disable [module...]  Disable service modules (requires sudo)
@@ -1030,14 +1032,142 @@ cmd_install() {
     (( failures == 0 ))
 }
 
+# --- AI harness self-updates ----------------------------------------
+#
+# The coding harnesses are not manifest modules: each one installs itself
+# (npm global, vendor curl installer, git checkout + venv) and ships its own
+# updater. So `setup update` does not fetch anything for them — it locates the
+# binary and hands the work to that updater.
+#
+# Resolution cannot rely on PATH alone. The daily timer runs under systemd's
+# user manager, whose PATH holds neither the active node bin directory nor the
+# vendor install prefixes, so every harness carries explicit fallback paths.
+
+HARNESSES="claude codex opencode agy hermes grok kimi"
+
+harness_update_args() {
+    case "$1" in
+        opencode) echo "upgrade" ;;
+        hermes)   echo "update --yes" ;;   # the only harness that prompts by default
+        *)        echo "update" ;;
+    esac
+}
+
+# Node bin directories, newest version first. nvm keeps each release in its own
+# prefix and exports NVM_BIN only to interactive shells.
+_node_bin_dirs() {
+    [[ -n "${NVM_BIN:-}" && -d "${NVM_BIN:-}" ]] && printf '%s\n' "$NVM_BIN"
+    local dir
+    for dir in "$HOME"/.nvm/versions/node/*/bin(N/); do
+        printf '%s\n' "$dir"
+    done | sort -Vr
+}
+
+harness_candidates() {
+    local name="$1"
+    case "$name" in
+        claude)   printf '%s\n' "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" ;;
+        opencode) printf '%s\n' "$HOME/.opencode/bin/opencode" ;;
+        agy)      printf '%s\n' "$HOME/.local/bin/agy" ;;
+        hermes)   printf '%s\n' "$HOME/.local/bin/hermes" ;;
+        grok)     printf '%s\n' "$HOME/.local/bin/grok" "$HOME/.grok/bin/grok" ;;
+        kimi)     printf '%s\n' "${KIMI_CODE_HOME:-$HOME/.kimi-code}/bin/kimi" ;;
+    esac
+    case "$name" in
+        claude|codex)
+            local prefix dir
+            prefix=$(npm config get prefix 2>/dev/null || true)
+            [[ -n "$prefix" && "$prefix" != undefined ]] && printf '%s\n' "$prefix/bin/$name"
+            while IFS= read -r dir; do
+                [[ -n "$dir" ]] && printf '%s\n' "$dir/$name"
+            done < <(_node_bin_dirs)
+            ;;
+    esac
+}
+
+harness_resolve() {
+    local name="$1" candidate
+    candidate=$(command -v "$name" 2>/dev/null || true)
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    while IFS= read -r candidate; do
+        if [[ -n "$candidate" && -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done < <(harness_candidates "$name")
+    return 1
+}
+
+# The harness's own bin directory goes on PATH for the run: codex is a
+# `#!/usr/bin/env node` script that cannot start without the node binary
+# sitting next to it. stdin is closed so no updater can block the timer on a
+# prompt, and a timeout bounds a hung download.
+harness_update_one() {
+    local name="$1" bin="$2" dir
+    dir=$(dirname "$bin")
+    local -a argv
+    argv=("$bin" $(harness_update_args "$name"))
+    if command -v timeout >/dev/null 2>&1; then
+        PATH="$dir:$PATH" timeout "${SETUP_HARNESS_TIMEOUT:-900}" "${argv[@]}" </dev/null
+    else
+        PATH="$dir:$PATH" "${argv[@]}" </dev/null
+    fi
+}
+
+# Sets HARNESS_FAILED_NAMES for the caller's summary; returns nonzero if any
+# installed harness failed to update.
+cmd_update_harnesses() {
+    HARNESS_FAILED_NAMES=()
+    local name bin present=0
+    local -a missing
+    missing=()
+    for name in $HARNESSES; do
+        if ! bin=$(harness_resolve "$name"); then
+            missing+=("$name")
+            continue
+        fi
+        present=$((present + 1))
+        echo "Updating harness $name ($bin)"
+        if ! harness_update_one "$name" "$bin"; then
+            echo "Warning: $name self-update failed." >&2
+            HARNESS_FAILED_NAMES+=("$name")
+        fi
+    done
+    if ((present == 0)); then
+        echo "No AI harnesses installed."
+    elif ((${#missing[@]} > 0)); then
+        echo "Not installed, skipped: ${missing[*]}"
+    fi
+    (( ${#HARNESS_FAILED_NAMES[@]} == 0 ))
+}
+
 cmd_update() {
     configure_shell || true
-    fetch_manifest || return 1
     local new_count=0 new_names=() failure_count=0 failure_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
+    local want_modules=1 want_harnesses=0 manifest_input
+    # `setup update` covers everything; `setup update harnesses` narrows to the
+    # harnesses; any other module filter keeps harnesses out of the run.
     for target_module in "$@"; do
+        if [[ "$target_module" == harnesses ]]; then
+            want_harnesses=1
+            continue
+        fi
         filters+=("$target_module")
     done
+    if (($# == 0)); then
+        want_harnesses=1
+    elif ((want_harnesses == 1)) && ((${#filters[@]} == 0)); then
+        want_modules=0
+    fi
+    manifest_input=/dev/null
+    if ((want_modules == 1)); then
+        fetch_manifest || return 1
+        manifest_input="$MANIFEST_FILE"
+    fi
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if [[ ${#filters[@]} -gt 0 ]]; then
@@ -1112,28 +1242,39 @@ cmd_update() {
                 fi
             fi
         fi
-    done < "$MANIFEST_FILE"
-    # Update setup last — self-update exec restarts the process
-    if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
-        if ! install_one setup "$setup_target" "$setup_mode" "$setup_source"; then
-            echo "Warning: setup update failed." >&2
-            failure_count=$((failure_count + 1))
-            failure_names+=(setup)
+    done < "$manifest_input"
+    if ((want_modules == 1)); then
+        # Update setup last — self-update exec restarts the process
+        if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
+            if ! install_one setup "$setup_target" "$setup_mode" "$setup_source"; then
+                echo "Warning: setup update failed." >&2
+                failure_count=$((failure_count + 1))
+                failure_names+=(setup)
+            fi
+        fi
+        # All .zshrc blocks now exist (configure_shell + module loop); enforce order.
+        normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+        echo
+        if [[ "$new_count" -gt 0 ]]; then
+            echo "$new_count new module(s) available: ${new_names[*]}"
+            echo "Run 'setup' to select what to install."
+        fi
+        if [[ "$failure_count" -gt 0 ]]; then
+            echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
+        elif [[ "$new_count" -eq 0 ]]; then
+            echo "All modules up to date."
         fi
     fi
-    # All .zshrc blocks now exist (configure_shell + module loop); enforce order.
-    normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
-    echo
-    if [[ "$new_count" -gt 0 ]]; then
-        echo "$new_count new module(s) available: ${new_names[*]}"
-        echo "Run 'setup' to select what to install."
+
+    HARNESS_FAILED_NAMES=()
+    if ((want_harnesses == 1)); then
+        echo
+        cmd_update_harnesses || true
+        if ((${#HARNESS_FAILED_NAMES[@]} > 0)); then
+            echo "${#HARNESS_FAILED_NAMES[@]} harness(es) could not be updated: ${HARNESS_FAILED_NAMES[*]}" >&2
+        fi
     fi
-    if [[ "$failure_count" -gt 0 ]]; then
-        echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
-    elif [[ "$new_count" -eq 0 ]]; then
-        echo "All modules up to date."
-    fi
-    (( failure_count == 0 ))
+    (( failure_count == 0 && ${#HARNESS_FAILED_NAMES[@]} == 0 ))
 }
 
 cmd_uninstall() {
