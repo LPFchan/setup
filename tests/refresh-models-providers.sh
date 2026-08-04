@@ -28,7 +28,7 @@ m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/claudex-profiles.json'
-assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'kimicode'}
+assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode'}
 m.CLAUDEX_BIN = os.path.join('$TMP', 'claudex')
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.CLAUDEX_BIN, m.OPENCODEX_BIN):
