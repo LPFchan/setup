@@ -1,8 +1,8 @@
-# module	target	mode	source	audience	platform
+# module	target	mode	source	audience	platform	status
 setup	~/.local/bin/setup	0755	bin/setup
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
-claudex	~/.local/bin/claudex	script	files/claudex.sh
+claudex	~/.local/bin/claudex	script	files/claudex.sh			retired
 opencodex	~/.local/bin/opencodex	script	files/opencodex.sh
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux
 service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl	fleet	linux

@@ -11,6 +11,8 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/setup"
 MANIFEST_URL="$SOURCE_URL/manifest.tsv"
 MANIFEST_FILE="$STATE_DIR/manifest.tsv"
 HASH_FILE="$STATE_DIR/installed.tsv"
+SCRIPT_STATE_FILE="$STATE_DIR/script-state.tsv"
+RETIRED_FILE="$STATE_DIR/retired.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
@@ -184,9 +186,31 @@ expand_path() {
     esac
 }
 
+# A retired module is one we no longer offer but have not deleted: its payload
+# stays fetchable so machines that already run it keep updating normally, while
+# the catalog hides it from everyone else. Installed state, not the manifest,
+# decides visibility — file modules by their target on disk, script modules by
+# their entry in script-state.tsv.
+module_is_installed() {
+    local module="$1" target_spec="$2" mode="$3"
+    if [[ "$mode" == "script" ]]; then
+        [[ -f "$SCRIPT_STATE_FILE" ]] || return 1
+        grep -q "^${module}"$'\t' "$SCRIPT_STATE_FILE"
+        return
+    fi
+    [[ "$target_spec" == "-" ]] && return 1
+    [[ -e "$(expand_path "$target_spec")" ]]
+}
+
+module_is_retired() {
+    [[ -f "$RETIRED_FILE" ]] || return 1
+    grep -qx -- "$1" "$RETIRED_FILE"
+}
+
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    local trust_rc=0 tmp filtered platform
+    local trust_rc=0 tmp filtered retired platform
+    local module target mode source mod_status
     setup_machine_is_trusted || trust_rc=$?
     # Manifest platform column uses lowercase uname -s values (linux, darwin).
     # Empty/missing platform means the module is available on every OS.
@@ -195,27 +219,45 @@ fetch_manifest() {
     if fetch_source_url "$MANIFEST_URL" -o "$tmp" 2>/dev/null \
        && grep -q '^# module' "$tmp"; then
         filtered="${tmp}.visible"
+        retired="${tmp}.retired"
+        # Carry the status column through this pass; the loop below drops it so
+        # the cached manifest keeps its four-column shape.
         awk -F '\t' \
             -v include_fleet="$(( trust_rc == 0 ))" \
             -v platform="$platform" \
             'BEGIN { OFS="\t" }
-            /^#/ { print $1, $2, $3, $4; next }
+            /^#/ { print $1, $2, $3, $4, ""; next }
             NF && ($5 != "fleet" || include_fleet) && ($6 == "" || $6 == platform) {
-                print $1, $2, $3, $4
+                print $1, $2, $3, $4, $7
             }
         ' "$tmp" > "$filtered"
-        mv "$filtered" "$tmp" || {
-            rm -f "$tmp" "$filtered"
+        : > "$retired"
+        while IFS=$'\t' read -r module target mode source mod_status; do
+            if [[ -n "${module:-}" && "$module" != \#* && "$mod_status" == "retired" ]]; then
+                module_is_installed "$module" "$target" "$mode" || continue
+                printf '%s\n' "$module" >> "$retired"
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$module" "$target" "$mode" "$source"
+        done < "$filtered" > "${filtered}.trimmed"
+        mv "${filtered}.trimmed" "$tmp" || {
+            rm -f "$tmp" "$filtered" "${filtered}.trimmed" "$retired"
             echo "Failed to filter the fetched manifest" >&2
             return 1
         }
+        rm -f "$filtered"
         if (( trust_rc == 2 )); then
             echo "Warning: could not read the owner key list; fleet-only catalog entries are hidden." >&2
         fi
+        # The retired list only lands once the manifest it describes does, so a
+        # failed replacement leaves both caches at their previous state.
         if mv "$tmp" "$MANIFEST_FILE"; then
+            mv "$retired" "$RETIRED_FILE" || {
+                rm -f "$retired"
+                echo "Warning: could not record retired catalog entries" >&2
+            }
             return 0
         fi
-        rm -f "$tmp"
+        rm -f "$tmp" "$retired"
         echo "Failed to install fetched manifest at $MANIFEST_FILE" >&2
         return 1
     fi
@@ -973,7 +1015,11 @@ cmd_list() {
     fetch_manifest || return 1
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
-        printf '%-25s %s\n' "$module" "$target"
+        if module_is_retired "$module"; then
+            printf '%-25s %s (retired)\n' "$module" "$target"
+        else
+            printf '%-25s %s\n' "$module" "$target"
+        fi
     done < "$MANIFEST_FILE"
 }
 
@@ -1948,6 +1994,7 @@ cmd_reconfigure() {
                 IFS=$'\t' read -r target state status_label local_label remote_label installed extra \
                     < <(file_status_fields "$m" "$t" "$s")
             fi
+            module_is_retired "$m" && status_label="$status_label (retired)"
             svc=0; active=0
             if is_service_module "$m" && [[ "$(module_service_unit "$m")" != tool ]]; then
                 svc=1
