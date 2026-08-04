@@ -49,6 +49,12 @@ PROVIDER_STATE = Path(
 SESSIONS = Path(
     os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
 )
+RUNTIME_PORT = Path(
+    os.environ.get("OPENCODEX_RUNTIME_PORT", HOME / ".opencodex/runtime-port.json")
+)
+ADMIN_TOKEN = Path(
+    os.environ.get("OPENCODEX_ADMIN_TOKEN", HOME / ".opencodex/admin-api-token")
+)
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
 # Modules consuming the shared claudex-profiles.json registry.
@@ -362,6 +368,86 @@ def desired_opencodex_config(
     return config, managed
 
 
+def live_proxy_port() -> int | None:
+    """Port of a healthy running proxy, or None when nothing is serving."""
+    try:
+        port = json.loads(RUNTIME_PORT.read_text())["port"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    if not isinstance(port, int):
+        return None
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/healthz", headers={"Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1.0) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+    return port if isinstance(payload, dict) and payload.get("status") == "ok" else None
+
+
+def live_provider_disabled(port: int) -> dict[str, bool] | None:
+    """Provider -> disabled, as the RUNNING proxy sees it. None if unreadable."""
+    try:
+        token = ADMIN_TOKEN.read_text().strip()
+    except OSError:
+        return None
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/providers",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            # Model metadata the proxy echoes back can carry raw control
+            # characters, which strict JSON rejects.
+            payload = json.loads(response.read().decode("utf-8", "replace"), strict=False)
+    except (OSError, urllib.error.URLError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+    return {
+        row["name"]: row.get("disabled") is True
+        for row in payload
+        if isinstance(row, dict) and isinstance(row.get("name"), str)
+    }
+
+
+def converge_live_proxy(desired: dict[str, Any]) -> None:
+    """Restart a running proxy whose in-memory enablement is stale.
+
+    The server snapshots config.json at startup and never watches the file, so
+    a provider we enable on disk keeps failing every request with
+    `Provider is disabled: <name>` until the process restarts — while `ocx
+    sync` has already published its models to the Codex catalog. Comparing the
+    live view (not the disk diff) is what heals a proxy that went stale on an
+    earlier apply. `ocx restart` is stop + ensure; ensure waits for health and
+    resyncs the catalog.
+    """
+    port = live_proxy_port()
+    if port is None:
+        return
+    live = live_provider_disabled(port)
+    if live is None:
+        return
+    providers = desired.get("providers", {})
+    if all(
+        live[name] == (provider.get("disabled") is True)
+        for name, provider in providers.items()
+        if isinstance(provider, dict) and name in live
+    ):
+        return
+    if not (OCX.is_file() and os.access(OCX, os.X_OK)):
+        print(
+            "opencodex: provider enablement changed but ocx is missing; "
+            "restart the proxy to apply it",
+            file=sys.stderr,
+        )
+        return
+    if subprocess.run([str(OCX), "restart"]).returncode:
+        print("opencodex: proxy restart failed; run: ocx restart", file=sys.stderr)
+
+
 def apply_opencodex_registry(registry_path: Path) -> None:
     registry = load_registry(registry_path)
     original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
@@ -373,6 +459,7 @@ def apply_opencodex_registry(registry_path: Path) -> None:
         OPENCODEX_MANAGED, "managed provider record"
     ) != record:
         write_json_atomic(OPENCODEX_MANAGED, record, 0o600)
+    converge_live_proxy(desired)
 
 
 def opencodex_config_status(registry_path: Path) -> bool:

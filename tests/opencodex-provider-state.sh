@@ -91,6 +91,91 @@ except namespace["UserError"] as exc:
 else:
     raise AssertionError("direct run accepted a disabled provider")
 
+# A running proxy snapshots its config at startup, so applying enablement to
+# disk alone leaves it answering `Provider is disabled` forever. Convergence is
+# measured against the LIVE view, so a proxy that went stale on an earlier apply
+# still gets restarted.
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+live_disabled = {"commandcode": True}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/healthz":
+            body = json.dumps({"status": "ok"}).encode()
+        elif self.path == "/api/providers":
+            if self.headers.get("Authorization") != "Bearer test-token":
+                self.send_response(401)
+                self.end_headers()
+                return
+            body = json.dumps(
+                # A raw control character in echoed model metadata must not
+                # break the read; strict JSON would reject it.
+                [{"name": name, "disabled": flag, "note": "a\nb"}
+                 for name, flag in live_disabled.items()]
+            ).encode().replace(b"\\n", b"\n")
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+home = Path(globals_["HOME"])
+port_file = home / "runtime-port.json"
+port_file.parent.mkdir(parents=True, exist_ok=True)
+port_file.write_text(json.dumps({"pid": 1, "port": server.server_address[1]}))
+token_file = home / "admin-api-token"
+token_file.write_text("test-token\n")
+globals_["RUNTIME_PORT"] = port_file
+globals_["ADMIN_TOKEN"] = token_file
+ocx = home / "ocx"
+ocx.write_text("#!/bin/sh\n")
+ocx.chmod(0o700)
+globals_["OCX"] = ocx
+
+restarts = []
+
+
+class FakeRun:
+    def __init__(self):
+        self.returncode = 0
+
+
+globals_["subprocess"].run = lambda argv, *a, **k: restarts.append(argv) or FakeRun()
+
+# Live view stale (disabled) against a desired enable -> restart.
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [[str(ocx), "restart"]], restarts
+
+# Live view already matches -> no restart.
+restarts.clear()
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": True}}})
+assert restarts == [], restarts
+
+# No healthy proxy -> nothing to converge.
+port_file.write_text(json.dumps({"pid": 1, "port": 1}))
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [], restarts
+
+# An unreadable live view never triggers a blind restart.
+port_file.write_text(json.dumps({"pid": 1, "port": server.server_address[1]}))
+token_file.write_text("wrong-token\n")
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [], restarts
+server.shutdown()
+
 for malformed in (
     [],
     {"version": 99, "providers": {}},
