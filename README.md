@@ -107,8 +107,8 @@ Setup manages your `~/.zshrc` using guarded blocks. Block order is automatically
 
 1. `tmux-autostart` — Automatically launches or attaches to a main tmux session on interactive terminals
 2. `tmux-title` — Updates window titles with active commands and SSH destinations
-3. `ssh-reconnect` — Wraps `ssh` so a suspended laptop reattaches instead of leaving a dead terminal
-4. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
+3. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
+4. `ssh-reconnect` — Wraps `ssh` so a suspended laptop reattaches instead of leaving a dead terminal (owned by the `tmux` module)
 5. `starship` — Initializes the Starship prompt
 6. `zsh-autocomplete` — Sets up tab completion and history search
 7. `zsh-syntax-highlighting` — Enables syntax highlighting
