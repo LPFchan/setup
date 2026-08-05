@@ -368,14 +368,8 @@ def desired_opencodex_config(
     return config, managed
 
 
-def live_proxy_port() -> int | None:
-    """Port of a healthy running proxy, or None when nothing is serving."""
-    try:
-        port = json.loads(RUNTIME_PORT.read_text())["port"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        return None
-    if not isinstance(port, int):
-        return None
+def proxy_health(port: int) -> dict[str, Any] | None:
+    """/healthz payload of the proxy on `port`, or None when it is unreachable."""
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/healthz", headers={"Accept": "application/json"}
     )
@@ -384,7 +378,57 @@ def live_proxy_port() -> int | None:
             payload = json.load(response)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return None
-    return port if isinstance(payload, dict) and payload.get("status") == "ok" else None
+    return payload if isinstance(payload, dict) else None
+
+
+def live_proxy_port() -> int | None:
+    """Port of a healthy running proxy, or None when nothing is serving."""
+    try:
+        port = json.loads(RUNTIME_PORT.read_text())["port"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    if not isinstance(port, int):
+        return None
+    payload = proxy_health(port)
+    return port if payload is not None and payload.get("status") == "ok" else None
+
+
+def live_proxy_version(port: int) -> str | None:
+    """Version the RUNNING proxy reports, or None when it does not report one."""
+    payload = proxy_health(port) or {}
+    version = payload.get("version")
+    return version if isinstance(version, str) and version else None
+
+
+def installed_ocx_version() -> str | None:
+    """Version of the ocx build on disk, or None when it cannot be read.
+
+    Taken from the package manifest beside the resolved binary: `ocx --version`
+    pays a node startup on a path that runs before every launch. The manifest
+    is only missing for a non-npm install, which falls back to the CLI.
+    """
+    try:
+        resolved = OCX.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    for parent in list(resolved.parents)[:4]:
+        try:
+            manifest = json.loads((parent / "package.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        version = manifest.get("version") if isinstance(manifest, dict) else None
+        if isinstance(version, str) and version:
+            return version
+    try:
+        proc = subprocess.run(
+            [str(OCX), "--version"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode:
+        return None
+    fields = (proc.stdout or "").split()
+    return fields[-1] if fields else None
 
 
 def live_provider_view(port: int) -> dict[str, dict[str, Any]] | None:
@@ -498,47 +542,68 @@ def provider_config_diff(
     return reasons
 
 
-def proxy_restart_status() -> tuple[bool, int | None, list[str]]:
-    """(running, port, reasons) — is the live proxy serving stale routing config?
+def proxy_version_drift(port: int) -> list[str]:
+    """Reason the RUNNING proxy predates the ocx build on disk, else [].
 
-    A healthy but unreadable live view reports no reasons, so callers never
-    blind-restart; only a readable view is diffed against the stored config.
+    An update swaps the runtime root out from under the running process — the
+    old code keeps serving until it is restarted — so a version mismatch is
+    stale exactly like a config mismatch. Either side reporting no version
+    (an older proxy, a manifest-less install) is never treated as drift.
     """
+    running = live_proxy_version(port)
+    installed = installed_ocx_version()
+    if not running or not installed or running == installed:
+        return []
+    return [f"proxy is running ocx {running} but {installed} is installed"]
+
+
+def proxy_stale_reasons(port: int, desired_providers: dict[str, Any]) -> list[str]:
+    """Human-readable reasons the proxy on `port` must restart to be current.
+
+    A healthy but unreadable provider view contributes no reasons, so callers
+    never blind-restart on routing; version drift is read from /healthz and
+    stands on its own.
+    """
+    reasons = proxy_version_drift(port)
+    live = live_provider_view(port)
+    if live is not None:
+        reasons.extend(provider_config_diff(desired_providers, live))
+    return reasons
+
+
+def proxy_restart_status() -> tuple[bool, int | None, list[str]]:
+    """(running, port, reasons) — is the live proxy stale against disk?"""
     port = live_proxy_port()
     if port is None:
         return False, None, []
-    live = live_provider_view(port)
-    if live is None:
-        return True, port, []
     stored = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
     providers = stored.get("providers", {})
     if not isinstance(providers, dict):
         providers = {}
-    return True, port, provider_config_diff(providers, live)
+    return True, port, proxy_stale_reasons(port, providers)
 
 
 def converge_live_proxy(desired: dict[str, Any]) -> None:
-    """Restart a running proxy whose in-memory provider routing is stale.
+    """Restart a running proxy left stale by the apply that just ran.
 
     The server snapshots config.json at startup and never watches the file, so
     a provider we enable on disk keeps failing every request with
     `Provider is disabled: <name>` — or stays entirely absent from
     /api/providers (the reported deepseek case) — until the process restarts.
-    Comparing the live view (not the disk diff) is what heals a proxy that
-    went stale on an earlier apply. `ocx restart` is stop + ensure; ensure
-    waits for health and resyncs the catalog.
+    An `_ensure_runtime` upgrade is the same shape: the new build is on disk
+    while the old one keeps serving. Comparing the live view (not the disk
+    diff) is what heals a proxy that went stale on an earlier apply.
+    `ocx restart` is stop + ensure; ensure waits for health and resyncs the
+    catalog.
     """
     port = live_proxy_port()
     if port is None:
         return
-    live = live_provider_view(port)
-    if live is None:
-        return
-    if not provider_config_diff(desired.get("providers", {}), live):
+    if not proxy_stale_reasons(port, desired.get("providers", {})):
         return
     if not (OCX.is_file() and os.access(OCX, os.X_OK)):
         print(
-            "opencodex: provider enablement changed but ocx is missing; "
+            "opencodex: the running proxy is stale but ocx is missing; "
             "restart the proxy to apply it",
             file=sys.stderr,
         )
@@ -1025,21 +1090,23 @@ def launch(
 ) -> int:
     running, port, reasons = proxy_restart_status()
     if running and reasons:
-        # The proxy snapshots config.json at startup and never reloads it, so
-        # a stale live view would serve the old routing to every harness the
-        # moment it launches. `ocx restart` is stop + ensure, so the plain
-        # ensure below is skipped (restart covers it and resyncs the catalog).
+        # The proxy snapshots config.json at startup, never reloads it, and
+        # keeps running the build that was on disk when it started, so a stale
+        # process would serve old routing — or an old runtime — to every
+        # harness the moment it launches. `ocx restart` is stop + ensure, so
+        # the plain ensure below is skipped (restart covers it and resyncs the
+        # catalog).
         print(
-            "opencodex: proxy config changed since it started; "
-            "running `ocx restart` to apply it",
+            "opencodex: the running proxy is stale; "
+            "running `ocx restart` to refresh it",
             file=sys.stderr,
         )
         for reason in reasons:
             print(f"  - {reason}", file=sys.stderr)
         if not (OCX.is_file() and os.access(OCX, os.X_OK)):
             print(
-                "opencodex: config changed but ocx is missing; "
-                "restart the proxy to apply it",
+                "opencodex: the running proxy is stale but ocx is missing; "
+                "restart the proxy to refresh it",
                 file=sys.stderr,
             )
         elif subprocess.run([str(OCX), "restart"]).returncode:
@@ -1538,6 +1605,29 @@ def handle_mouse(
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⦠⦯⦿"
 
 
+def picker_header(
+    proxy: tuple[bool, int | None, list[str], str | None] | None,
+) -> tuple[str, str]:
+    """(text, style) for the picker's single title/status line.
+
+    Title, runtime version and proxy state read as one banner —
+    'opencodex · 2.10.1 · :10100 running' — rather than a stacked pair.
+    `proxy` is None while the background probe is still in flight.
+    """
+    if proxy is None:
+        return "opencodex · …", "dim"
+    running, port, reasons, version = proxy
+    parts = ["opencodex"]
+    if version:
+        parts.append(version)
+    if not running:
+        return " · ".join(parts + ["proxy stopped"]), "dim"
+    parts.append(f":{port} running" if port else "running")
+    if reasons:
+        return " · ".join(parts + ["restart on launch"]), "warn"
+    return " · ".join(parts), "title"
+
+
 def run_reel_picker(
     providers: list[str], registry: dict[str, Any], harnesses: list[str]
 ) -> tuple[str, str, str | None, str | None] | str | None:
@@ -1554,7 +1644,9 @@ def run_reel_picker(
 
     def fetch() -> None:
         try:
-            fetched["proxy"] = proxy_restart_status()
+            running, port, reasons = proxy_restart_status()
+            live = live_proxy_version(port) if running and port else None
+            fetched["proxy"] = (running, port, reasons, live or installed_ocx_version())
         except Exception:
             fetched["proxy"] = None
         try:
@@ -1628,22 +1720,8 @@ def run_reel_picker(
             draw(stdscr, rows // 2, 0, cols, message.center(cols - 1), attrs["dim"])
             stdscr.refresh()
             return
-        draw(stdscr, 0, 0, cols, " opencodex ".center(cols - 1), attrs["title"])
-        proxy = fetched.get("proxy")
-        if proxy is None:
-            indicator, style = "ocx …", "dim"
-        else:
-            proxy_running, proxy_port, proxy_reasons = proxy
-            if proxy_running and proxy_reasons:
-                indicator = f"● ocx :{proxy_port} running · restart on launch"
-                style = "warn"
-            elif proxy_running:
-                indicator = f"● ocx :{proxy_port} running"
-                style = "normal"
-            else:
-                indicator = "○ ocx stopped"
-                style = "dim"
-        draw(stdscr, 1, 0, cols, indicator.center(cols - 1), attrs[style])
+        banner, style = picker_header(fetched.get("proxy"))
+        draw(stdscr, 0, 0, cols, f" {banner} ".center(cols - 1), attrs[style])
         width, gap, header_y, center_y, body, _ = picker_layout(rows, cols)
         for reel in range(4):
             render_reel(
@@ -1892,7 +1970,7 @@ def render_catalogue(data: dict[str, Any]) -> str:
         lines.append(f"# proxy: running on {proxy.get('port')}")
         if proxy.get("restart_pending"):
             lines.append(
-                "# warning: opencodex config changed since proxy start; "
+                "# warning: the running proxy is stale; "
                 "invoking opencodex will run: ocx restart"
             )
             for reason in proxy.get("reasons", []):

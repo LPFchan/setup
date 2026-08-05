@@ -151,9 +151,15 @@ restarts = []
 class FakeRun:
     def __init__(self):
         self.returncode = 0
+        self.stdout = ""
+        self.stderr = ""
 
 
 globals_["subprocess"].run = lambda argv, *a, **k: restarts.append(argv) or FakeRun()
+# Version drift is exercised on its own below; until then both sides agree so
+# only routing convergence is under test.
+globals_["installed_ocx_version"] = lambda: "2.0.0"
+globals_["live_proxy_version"] = lambda port: "2.0.0"
 
 # Live view stale (disabled) against a desired enable -> restart.
 namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
@@ -221,6 +227,34 @@ namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
 assert [str(ocx), "restart"] not in restarts, restarts
 assert [str(ocx), "ensure"] in restarts, restarts
 
+# An update swaps the runtime out from under the running proxy, which keeps
+# serving the old build until it restarts. Routing agrees on both sides here,
+# so the version is the only thing that can force the restart.
+globals_["live_proxy_version"] = lambda port: "2.0.0"
+globals_["installed_ocx_version"] = lambda: "2.1.0"
+assert namespace["proxy_version_drift"](1) == [
+    "proxy is running ocx 2.0.0 but 2.1.0 is installed"
+]
+restarts.clear()
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": True}}})
+assert restarts == [[str(ocx), "restart"]], restarts
+restarts.clear()
+namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
+assert [str(ocx), "restart"] in restarts, restarts
+assert [str(ocx), "ensure"] not in restarts, restarts
+
+# A proxy or an install that reports no version is never drift, and matching
+# versions leave a converged proxy alone.
+for running, installed in (("2.0.0", None), (None, "2.1.0"), ("2.1.0", "2.1.0")):
+    globals_["live_proxy_version"] = lambda port, v=running: v
+    globals_["installed_ocx_version"] = lambda v=installed: v
+    assert namespace["proxy_version_drift"](1) == [], (running, installed)
+    restarts.clear()
+    namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": True}}})
+    assert restarts == [], (running, installed, restarts)
+globals_["live_proxy_version"] = lambda port: "2.0.0"
+globals_["installed_ocx_version"] = lambda: "2.0.0"
+
 # Pure comparison logic: absent providers flag, per-field diffs flag, and
 # live-only / live-row-absent-field rows do not.
 diff = namespace["provider_config_diff"]
@@ -276,6 +310,15 @@ try:
     )
     globals_["live_provider_view"] = lambda port: None
     assert namespace["proxy_restart_status"]() == (True, 10100, [])
+    # An unreadable live view still surfaces version drift: it is read from
+    # /healthz, not from the provider view.
+    globals_["installed_ocx_version"] = lambda: "2.1.0"
+    assert namespace["proxy_restart_status"]() == (
+        True,
+        10100,
+        ["proxy is running ocx 2.0.0 but 2.1.0 is installed"],
+    )
+    globals_["installed_ocx_version"] = lambda: "2.0.0"
     globals_["live_proxy_port"] = lambda: None
     assert namespace["proxy_restart_status"]() == (False, None, [])
 finally:

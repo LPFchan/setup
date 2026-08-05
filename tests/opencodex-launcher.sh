@@ -765,6 +765,17 @@ if click is not None:
     namespace["handle_key"](state, "left")  # ...to the provider reel
 assert state.focus == 0
 
+# Title, runtime version and proxy state share one banner line.
+header = namespace["picker_header"]
+assert header((True, 10100, [], "2.10.1")) == ("opencodex · 2.10.1 · :10100 running", "title")
+assert header((True, 10100, ["stale"], "2.10.0")) == (
+    "opencodex · 2.10.0 · :10100 running · restart on launch",
+    "warn",
+)
+assert header((False, None, [], "2.10.1")) == ("opencodex · 2.10.1 · proxy stopped", "dim")
+assert header((True, 10100, [], None)) == ("opencodex · :10100 running", "title")
+assert header(None) == ("opencodex · …", "dim")
+
 # The reel body uses all rows between the header and the hint line.
 _, _, header_y, center_y, body, first_row = namespace["picker_layout"](rows, cols)
 assert body >= rows - header_y - 4  # no artificial 15-row cap
