@@ -74,6 +74,101 @@ AUTOSTART_BLOCK_CONTENT='if [[ -o interactive && -t 0 && -z $TMUX ]] && command 
   exec tmux new-session -A -s main -c ~
 fi'
 
+# This module turns on tmux mouse mode and autostarts the shared "main" session,
+# which is exactly why the reconnect wrapper belongs here. A link that dies
+# mid-session leaves the local terminal in the modes the remote tmux set, and a
+# reattach is only lossless because every machine autostarts the same session.
+RECONNECT_BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]]; then
+  zmodload zsh/datetime 2>/dev/null
+
+  # A dead link leaves the local terminal in whatever modes the remote tmux
+  # set. Mouse reporting is the painful one: until it is disabled, every mouse
+  # movement types an SGR escape sequence at the local prompt.
+  _ssh_restore_terminal() {
+      printf "\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l\033[?2004l\033[?1049l\033[?25h\033[0m"
+      [[ -n ${_ssh_tty_state-} ]] && stty "$_ssh_tty_state" 2>/dev/null
+      return 0
+  }
+
+  # Echo the destination only for a plain interactive login: exactly one
+  # non-option operand and no remote command, so "ssh host cmd", forwarding-only
+  # sessions, and anything piped keep stock behavior.
+  _ssh_login_target() {
+      local arg needs_value=0
+      local -a operands
+      for arg in "$@"; do
+          if (( needs_value )); then needs_value=0; continue; fi
+          case $arg in
+              -[bcDEeFIiJLlmOopQRSWw]) needs_value=1 ;;
+              -*) ;;
+              *) operands+=("$arg") ;;
+          esac
+      done
+      (( ${#operands} == 1 )) && printf "%s" "${operands[1]}"
+      return 0
+  }
+
+  # System sleep freezes every process, so a jump in wall-clock time across a
+  # two-second tick is a reliable wake signal that costs nothing while asleep.
+  # Hanging up the stale client the moment the lid opens is what makes the
+  # resume immediate: left alone, the session sits frozen until ServerAlive
+  # finally gives up on a connection that sleep already killed.
+  _ssh_wake_watcher() {
+      local shell_pid=$1 last=$EPOCHSECONDS now
+      while sleep 2; do
+          kill -0 $shell_pid 2>/dev/null || return 0
+          now=$EPOCHSECONDS
+          (( now - last > 20 )) && pkill -HUP -P $shell_pid -x ssh 2>/dev/null
+          last=$now
+      done
+  }
+
+  ssh() {
+      local target
+      target=$(_ssh_login_target "$@")
+      # Re-check the terminal at call time: the restore sequences and the
+      # progress notes must never land in a redirected stdout.
+      if [[ -z $target || ! -t 0 || ! -t 1 ]]; then
+          command ssh "$@"
+          return
+      fi
+      setopt local_options no_notify no_monitor
+      local _ssh_tty_state rc start watcher tries=0 established=0
+      _ssh_tty_state=$(stty -g 2>/dev/null)
+      _ssh_wake_watcher $$ &!
+      watcher=$!
+      while true; do
+          start=$EPOCHSECONDS
+          command ssh "$@"
+          rc=$?
+          _ssh_restore_terminal
+          # 255 is ssh reporting its own transport failure (broken pipe,
+          # timeout, no route); 129 is the wake watcher hanging up a client
+          # still blocked on a connection that sleep killed. Anything else is
+          # the remote side exiting on purpose.
+          (( rc != 255 && rc != 129 )) && break
+          if (( EPOCHSECONDS - start >= 10 )); then
+              established=1; tries=0
+          fi
+          # Never retry a session that never came up, so an unreachable host
+          # still fails immediately instead of looping.
+          (( established )) || break
+          (( tries += 1 ))
+          # Retry at a flat one-second cadence rather than backing off: the
+          # network is either back the instant the lid opens or it is not, and
+          # a growing delay only adds dead time to the common case.
+          if (( tries > 120 )); then
+              print -u2 -- "ssh: $target still unreachable, giving up"
+              break
+          fi
+          print -u2 -- "ssh: reconnecting to $target (^C to stop)"
+          sleep 1 || break
+      done
+      kill $watcher 2>/dev/null
+      return $rc
+  }
+fi'
+
 # Name a tmux window from the command as entered at the interactive zsh prompt,
 # before launchers can exec architecture-, version-, or interpreter-named
 # binaries. The command table is deliberately generic; only SSH needs protocol
@@ -273,6 +368,7 @@ _upsert_blocks() {
     manage_block "$TMUX_CONF" "tmux" "$BLOCK_CONTENT" "upsert" "append"
     manage_block "$ZSHRC" "tmux-autostart" "$AUTOSTART_BLOCK_CONTENT" "upsert" "prepend"
     manage_block "$ZSHRC" "tmux-title" "$TITLE_BLOCK_CONTENT" "upsert" "prepend"
+    manage_block "$ZSHRC" "ssh-reconnect" "$RECONNECT_BLOCK_CONTENT" "upsert" "append"
 }
 
 # If a tmux server is already running, reload the config so the new block takes
@@ -291,26 +387,29 @@ _reload() {
 # Combined hash over the .tmux.conf block, zsh integration blocks, and installed
 # helper, so drift in any owned surface is detected.
 _state_hash() {
-    local block autostart title helper
+    local block autostart title reconnect helper
     block=""
     autostart=""
     title=""
+    reconnect=""
     [[ -f "$TMUX_CONF" ]] && block=$(awk '/^# >>> setup:tmux >>>/{f=1;next}/^# <<< setup:tmux <<</{f=0}f' "$TMUX_CONF")
     [[ -f "$ZSHRC" ]] && autostart=$(awk '/^# >>> setup:tmux-autostart >>>/{f=1;next}/^# <<< setup:tmux-autostart <<</{f=0}f' "$ZSHRC")
     [[ -f "$ZSHRC" ]] && title=$(awk '/^# >>> setup:tmux-title >>>/{f=1;next}/^# <<< setup:tmux-title <<</{f=0}f' "$ZSHRC")
+    [[ -f "$ZSHRC" ]] && reconnect=$(awk '/^# >>> setup:ssh-reconnect >>>/{f=1;next}/^# <<< setup:ssh-reconnect <<</{f=0}f' "$ZSHRC")
     helper=$([[ -f "$HELPER" ]] && cat "$HELPER")
-    printf '%s\n%s\n%s\n%s' "$block" "$autostart" "$title" "$helper" | setup_sha256_string
+    printf '%s\n%s\n%s\n%s\n%s' "$block" "$autostart" "$title" "$reconnect" "$helper" | setup_sha256_string
 }
 
 # Combined hash over all desired module-owned content, so status() detects drift
 # between source and any installed surface.
 _desired_hash() {
-    local block autostart title helper
+    local block autostart title reconnect helper
     block=$(setup_managed_block_body "$BLOCK_CONTENT")
     autostart=$(setup_managed_block_body "$AUTOSTART_BLOCK_CONTENT")
     title=$(setup_managed_block_body "$TITLE_BLOCK_CONTENT")
+    reconnect=$(setup_managed_block_body "$RECONNECT_BLOCK_CONTENT")
     helper=$(_helper_content)
-    printf '%s\n%s\n%s\n%s' "$block" "$autostart" "$title" "$helper" | setup_sha256_string
+    printf '%s\n%s\n%s\n%s\n%s' "$block" "$autostart" "$title" "$reconnect" "$helper" | setup_sha256_string
 }
 
 _record_state() {
@@ -357,6 +456,7 @@ uninstall() {
     manage_block "$TMUX_CONF" "tmux" "" "remove"
     manage_block "$ZSHRC" "tmux-autostart" "" "remove"
     manage_block "$ZSHRC" "tmux-title" "" "remove"
+    manage_block "$ZSHRC" "ssh-reconnect" "" "remove"
     rm -f "$HELPER"
     remove_script_state "$MODULE"
 }

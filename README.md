@@ -81,12 +81,12 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
 | `agents` | AI agent instructions and skills (`~/.agents/`, linked to all installed AI harnesses) | `files/agents.sh` |
-| `ssh-aliases` | Manages outbound host shortcuts and keepalives in `~/.ssh/config`, plus the interactive `ssh` reconnect wrapper | `files/ssh-aliases.sh` |
+| `ssh-aliases` | Manages outbound host shortcuts and keepalives in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu) | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
 | `providers` | Vault-owned provider API keys: enrollment, local cache, and mirrors into opencode `auth.json` and `.zshenv` (`~/.local/bin/providers`) | `files/providers.sh` |
-| `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, and title hooks | `files/tmux.sh` |
+| `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 ---
 
@@ -107,8 +107,8 @@ Setup manages your `~/.zshrc` using guarded blocks. Block order is automatically
 
 1. `tmux-autostart` — Automatically launches or attaches to a main tmux session on interactive terminals
 2. `tmux-title` — Updates window titles with active commands and SSH destinations
-3. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
-4. `ssh-reconnect` — Wraps `ssh` so a suspended laptop reattaches instead of leaving a dead terminal
+3. `ssh-reconnect` — Wraps `ssh` so a suspended laptop reattaches instead of leaving a dead terminal
+4. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
 5. `starship` — Initializes the Starship prompt
 6. `zsh-autocomplete` — Sets up tab completion and history search
 7. `zsh-syntax-highlighting` — Enables syntax highlighting
@@ -118,13 +118,18 @@ Setup manages your `~/.zshrc` using guarded blocks. Block order is automatically
 
 ---
 
-### Surviving a Laptop Suspend (`ssh-aliases` module)
+### Surviving a Laptop Suspend (`tmux` module)
 
 Closing the lid strands the TCP session of every open SSH login. Two things then
 go wrong: the client waits out the full TCP timeout before admitting the link is
 dead, and the terminal is left in whatever modes the remote tmux had set — with
 SGR mouse reporting still enabled, every mouse movement types an escape sequence
 at the local prompt, so the window has to be thrown away.
+
+This lives in the `tmux` module rather than `ssh-aliases`: this module is what
+turns mouse mode on, so it owns undoing it, and the reattach is only lossless
+because the same module installs `tmux-autostart` on every machine. The `Host`
+stanza options below stay in `ssh-aliases`, which owns `~/.ssh/config`.
 
 - The `ssh-reconnect` block wraps `ssh` in interactive shells. It restores the
   local terminal on every return, and reconnects on a dropped link — landing
