@@ -102,7 +102,12 @@ cat > "$TEST_TMP/bin/agy" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$@" > "$AI_MENU_AGY_ARGS"
 EOF
-chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/setup" "$TEST_TMP/bin/agy"
+cat > "$TEST_TMP/bin/muse" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" > "$AI_MENU_MUSE_ARGS"
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn" "$TEST_TMP/bin/setup" "$TEST_TMP/bin/agy" \
+    "$TEST_TMP/bin/muse"
 rm -f "$TEST_TMP/launches"
 AI_MENU_TEST_LOG="$TEST_TMP/launches" AI_MENU_GRID_INPUT="$TEST_TMP/grid-input" \
 AI_MENU_GRID_ARGS="$TEST_TMP/grid-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
@@ -113,6 +118,23 @@ grep -q -- '--grid=3' "$TEST_TMP/grid-args" || fail "ai-menu did not request a t
 grep -q -- '--grid-span-prefix=@@' "$TEST_TMP/grid-args" || fail "ai-menu omitted span prefix"
 grep -q 'setup-dispatched' "$TEST_TMP/launches" || fail "typed setup metadata was not stripped for dispatch"
 grep -q $'tool\037agy\037agy' "$TEST_TMP/grid-input" || fail "Antigravity CLI was absent from ai-menu"
+grep -q $'tool\037muse\037muse' "$TEST_TMP/grid-input" || fail "Muse Code was absent from ai-menu"
+
+# Muse dispatch uses its explicit autonomous launch flag: approval prompts and
+# the OS sandbox are both on by default.
+cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'
+#!/bin/sh
+case "$1" in
+    --help) echo '--grid-span-prefix=STR'; exit ;;
+esac
+cat >/dev/null
+printf 'tool\037muse\037muse\n'
+EOF
+chmod +x "$HOME/.local/bin/fzf-multicolumn"
+AI_MENU_MUSE_ARGS="$TEST_TMP/muse-args" PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+    "$zsh_bin" -f -c 'source "$1"; ai' zsh "$PAYLOAD_TARGET" >/dev/null 2>&1
+[[ "$(cat "$TEST_TMP/muse-args")" == "--yolo" ]] \
+    || fail "ai-menu launched Muse without autonomous permissions"
 
 # Antigravity dispatch uses its explicit autonomous launch flag.
 cat > "$HOME/.local/bin/fzf-multicolumn" <<'EOF'

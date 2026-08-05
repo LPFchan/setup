@@ -10,8 +10,8 @@ usage() {
 Usage: resume [--help]
 
   Interactively pick and resume a Claude Code, Codex, OpenCode,
-  Antigravity CLI, ForgeCode, Hermes, Grok Build, or Kimi Code
-  session via fzf.
+  Antigravity CLI, ForgeCode, Hermes, Grok Build, Kimi Code, or
+  Muse Code session via fzf.
 
   Without arguments, opens an fzf picker of recent sessions. Selecting
   a session resumes it with the appropriate tool.
@@ -33,6 +33,7 @@ FG_DB="$HOME/.forge/.forge.db"
 HERMES_DB="$HOME/.hermes/state.db"
 GROK_DIR="$HOME/.grok/sessions"
 KIMI_DIR="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
+MUSE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/muse"
 MAX_SESSIONS=100
 # Only the newest SCAN_LIMIT files per source get the expensive per-file jq
 # extraction; the merged list is then trimmed to MAX_SESSIONS. Without this the
@@ -524,6 +525,65 @@ for ts, sid, cwd, title in rows[:limit]:
     print(f"{ts}|km|{sid}|{cwd}|{title}")
 PYEOF
     fi
+
+    # Muse Code appends one event log per session at
+    # sessions/YYYY/MM/DD/<session-uuid>/session.jsonl. There is no summary
+    # sidecar, so the workspace and the title come out of the log's own opening
+    # records: `metadata` carries workspace_root, and the first `run` event
+    # carries the prompt that started the session. The log is append-only, so
+    # its mtime is the last-active time — which means recency needs no parse at
+    # all, and each log is read only until both fields are in hand. Sessions
+    # that never got a prompt are omitted so the picker stays useful.
+    if [[ -d "$MUSE_DIR/sessions" ]]; then
+        python3 - "$MUSE_DIR" "$HOME" "$SCAN_LIMIT" << 'PYEOF'
+import json, sys
+from pathlib import Path
+
+root, home, limit = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+
+logs = []
+for log in root.glob("sessions/*/*/*/*/session.jsonl"):
+    try:
+        logs.append((int(log.stat().st_mtime), log))
+    except OSError:
+        continue
+logs.sort(key=lambda r: r[0], reverse=True)
+
+rows = []
+for ts, log in logs[:limit]:
+    cwd = title = ""
+    try:
+        with log.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    payload = (json.loads(line).get("payload") or {})
+                except Exception:
+                    continue
+                kind = payload.get("kind")
+                if kind in ("metadata", "route_facts"):
+                    if not cwd:
+                        record = payload.get("record") or {}
+                        cwd = record.get("workspace_root") or record.get("cwd") or ""
+                elif kind == "run":
+                    event = payload.get("event") or {}
+                    if event.get("kind") == "started" and not title:
+                        title = (event.get("prompt") or "").strip()
+                if cwd and title:
+                    break
+    except OSError:
+        continue
+    if not title:
+        continue
+    clean_cwd = str(cwd or home).replace("|", "/").replace("\n", " ").replace("\r", " ")
+    clean_title = " ".join(title.replace("|", "/").split())
+    rows.append((ts, log.parent.name, clean_cwd, clean_title))
+
+for ts, sid, cwd, title in rows:
+    print(f"{ts}|ms|{sid}|{cwd}|{title}")
+PYEOF
+    fi
 }
 
 format_for_fzf() {
@@ -545,6 +605,7 @@ format_for_fzf() {
             hm) label="hermes" ;;
             gk) label="grok" ;;
             km) label="kimi" ;;
+            ms) label="muse" ;;
         esac
         display_cwd=$(echo "$cwd" | sed "s|^$HOME|~|")
         printf "%s  %-10s  %-22s  %s\t%s|%s|%s\n" \
@@ -606,6 +667,7 @@ case "$tool" in
     hm) harness=hermes; resume_args=(chat --resume "$id") ;;
     gk) harness=grok; resume_args=(--resume "$id") ;;
     km) harness=kimi; resume_args=(--session "$id") ;;
+    ms) harness=muse; resume_args=(resume "$id") ;;
     *) exit 0 ;;
 esac
 

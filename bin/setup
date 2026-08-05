@@ -1027,13 +1027,27 @@ cmd_install() {
 # user manager, whose PATH holds neither the active node bin directory nor the
 # vendor install prefixes, so every harness carries explicit fallback paths.
 
-HARNESSES="claude codex opencode agy hermes grok kimi"
+HARNESSES="claude codex opencode agy hermes grok kimi muse"
 
 harness_update_args() {
     case "$1" in
         opencode) echo "upgrade" ;;
         hermes)   echo "update --yes" ;;   # the only harness that prompts by default
+        # muse has no update subcommand. ~/.local/bin/muse is a launcher that
+        # refreshes itself and the versioned binary beside it, in the background
+        # and at most hourly. harness_update_env forces that check to run now,
+        # in the foreground; --version is the cheapest command that lets the
+        # launcher reach the handoff and exit.
+        muse)     echo "--version" ;;
         *)        echo "update" ;;
+    esac
+}
+
+# Environment an updater needs, as NAME=VALUE words. Empty for harnesses whose
+# updater is a plain subcommand.
+harness_update_env() {
+    case "$1" in
+        muse) echo "MUSE_SYNC_UPDATE=1" ;;
     esac
 }
 
@@ -1056,6 +1070,7 @@ harness_candidates() {
         hermes)   printf '%s\n' "$HOME/.local/bin/hermes" ;;
         grok)     printf '%s\n' "$HOME/.local/bin/grok" "$HOME/.grok/bin/grok" ;;
         kimi)     printf '%s\n' "${KIMI_CODE_HOME:-$HOME/.kimi-code}/bin/kimi" ;;
+        muse)     printf '%s\n' "$HOME/.local/bin/muse" ;;
     esac
     case "$name" in
         claude|codex)
@@ -1093,7 +1108,10 @@ harness_update_one() {
     local name="$1" bin="$2" dir
     dir=$(dirname "$bin")
     local -a argv
+    local envwords
     argv=("$bin" $(harness_update_args "$name"))
+    envwords=$(harness_update_env "$name")
+    [[ -z "$envwords" ]] || argv=(env $envwords "${argv[@]}")
     if command -v timeout >/dev/null 2>&1; then
         PATH="$dir:$PATH" timeout "${SETUP_HARNESS_TIMEOUT:-900}" "${argv[@]}" </dev/null
     else

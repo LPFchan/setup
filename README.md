@@ -60,7 +60,7 @@ Simple modules that copy a managed script or executable to your machine.
 | Module | Target Path | Description |
 |--------|-------------|-------------|
 | `setup` | `~/.local/bin/setup` | Main setup CLI tool |
-| `resume` | `~/.local/bin/resume` | Quick interactive session selector for AI coding tools (Claude, Codex, OpenCode, Antigravity, Grok, Kimi, etc.) |
+| `resume` | `~/.local/bin/resume` | Quick interactive session selector for AI coding tools (Claude, Codex, OpenCode, Antigravity, Grok, Kimi, Muse, etc.) |
 | `kernel-simmer` | `~/.local/bin/kernel-simmer` | Fleet-only kernel performance tuning tool |
 | `service-ctl` | `~/.local/bin/service-ctl` | Fleet-only system service controller |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | GPU fan speed control script |
@@ -94,10 +94,10 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 
 ### AI Tools Integration
 
-- **`agents`**: Deploys standard AI instructions (`AGENTS.md`) and skills to `~/.agents/`, and symlinks them into Claude Code (`~/.claude/`), Codex (`~/.codex/`), Antigravity (`~/.gemini/`), OpenCode (`~/.config/opencode/`), and the home directory.
-- **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, and Kimi Code so you can jump right back into any session.
+- **`agents`**: Deploys standard AI instructions (`AGENTS.md`) and skills to `~/.agents/`, and symlinks them into Claude Code (`~/.claude/`), Codex (`~/.codex/`), Antigravity (`~/.gemini/`), OpenCode (`~/.config/opencode/`), Muse Code (`~/.config/muse/`), and the home directory.
+- **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, Kimi Code, and Muse Code so you can jump right back into any session.
 - **`claudex` & `opencodex`**: Profile launchers that manage custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
-- **Harness updates**: `setup update` also self-updates every installed AI harness — Claude Code, Codex, OpenCode, Antigravity, Hermes, Grok, and Kimi. Each harness is a self-installing tool rather than a setup module, so setup just locates the binary and runs that tool's own updater (`claude update`, `opencode upgrade`, `hermes update --yes`, and so on). Harnesses missing from the machine are skipped, and because the daily `setup schedule` timer runs `setup update`, harness updates ride along with it for free.
+- **Harness updates**: `setup update` also self-updates every installed AI harness — Claude Code, Codex, OpenCode, Antigravity, Hermes, Grok, Kimi, and Muse. Each harness is a self-installing tool rather than a setup module, so setup just locates the binary and runs that tool's own updater (`claude update`, `opencode upgrade`, `hermes update --yes`, and so on). Muse is the exception: it has no update subcommand, so setup forces its launcher to run its own refresh in the foreground (`MUSE_SYNC_UPDATE=1 muse --version`) instead of leaving it to the hourly background check. Harnesses missing from the machine are skipped, and because the daily `setup schedule` timer runs `setup update`, harness updates ride along with it for free.
 
 ---
 

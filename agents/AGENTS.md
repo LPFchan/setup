@@ -1,9 +1,10 @@
 # AGENTS
 
 Canonical agent instructions for the fleet. `~/.claude/CLAUDE.md`,
-`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, and `~/AGENTS.md` symlink to this
-file. Managed by the `agents` module in LPFchan/setup — edit it there and run
-`setup update` to sync every machine.
+`~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.config/opencode/AGENTS.md`,
+`~/.config/muse/AGENTS.md`, and `~/AGENTS.md` symlink to this file. Managed by
+the `agents` module in LPFchan/setup — edit it there and run `setup update` to
+sync every machine.
 
 Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/SKILL.md).
 
@@ -20,6 +21,11 @@ Fleet topology (machines, hosts, roles): see `fleet` skill (agents/skills/fleet/
       echo $!   # PID for monitoring
 - **antigravity (`agy`)**: use persistent background terminal tasks for
   long-running commands and monitor them with the task manager.
+- **muse**: run long tasks through managed bash and let the runtime background
+  them — a command that outlives the foreground budget becomes a background
+  task terminal on its own, and its result arrives as runtime context after the
+  turn ends. Never `nohup` or `&`; unmanaged shell backgrounding is rejected.
+  Don't poll a backgrounded command for completion. `/tasks` lists them.
 - **codex**: Lead with the verdict. One or two sentences stating the conclusion, 
   then the explain it as a coherent narrative that supports it. Prioritize the 
   few distinctions that drive the recommendation; omit supporting details that 

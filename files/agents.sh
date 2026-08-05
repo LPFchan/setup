@@ -22,12 +22,14 @@ AGENTS_LINKS=(
     "$HOME/.gemini/GEMINI.md"
     "$HOME/AGENTS.md"
     "$HOME/.config/opencode/AGENTS.md"
+    "$HOME/.config/muse/AGENTS.md"
 )
 # Harness skills dirs — global skills are symlinked in per-skill (non-destructive)
 SKILLS_LINK_DIRS=(
     "$HOME/.claude/skills"
     "$HOME/.codex/skills"
     "$HOME/.gemini/config/skills"
+    "$HOME/.config/muse/skills"
 )
 
 _sync_src() {

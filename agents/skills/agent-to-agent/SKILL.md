@@ -1,6 +1,6 @@
 ---
 name: agent-to-agent
-description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, Hermes Agent, Grok Build, Kimi Code CLI, or OpenCodex (routing a child onto another provider's model) through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
+description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, Hermes Agent, Grok Build, Kimi Code CLI, Muse Code, or OpenCodex (routing a child onto another provider's model) through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
 ---
 
 # Agent to Agent
@@ -65,6 +65,17 @@ persists across turns, and a completion notification arrives automatically
 when the process exits. Output can be read mid-run with TaskOutput, and
 TaskStop cancels the child.
 
+### Muse Code
+
+When Muse Code is the orchestrator, run the child through managed bash and let
+the runtime background it: a command that outlives the foreground budget
+becomes a background task terminal on its own, and its final result is
+delivered as runtime context after the turn ends. Never background it yourself
+with `nohup` or `&` — unmanaged shell backgrounding is rejected. Do not poll a
+backgrounded command for completion; retain the bash session id and use it only
+to feed input to a live process, or when a runtime overdue notice names that
+session. `/tasks` lists running tasks and terminals.
+
 ## Select the target
 
 - For Codex, read [references/codex.md](references/codex.md) and follow it.
@@ -79,6 +90,7 @@ TaskStop cancels the child.
 - For Grok Build, read [references/grok.md](references/grok.md) and follow it.
 - For Kimi Code CLI, read [references/kimi.md](references/kimi.md) and follow
   it.
+- For Muse Code, read [references/muse.md](references/muse.md) and follow it.
 - To run a child on a model its own harness cannot reach — a provider routed
   through the local OpenCodex proxy — read
   [references/opencodex.md](references/opencodex.md) and follow it. OpenCodex

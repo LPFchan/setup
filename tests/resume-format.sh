@@ -6,6 +6,10 @@ TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT
 
 export HOME="$TEST_TMP/home"
+# Pinned, not inherited: resume resolves the Muse session store below
+# XDG_DATA_HOME, so a developer's real value would pull real sessions into the
+# picker input these assertions read.
+export XDG_DATA_HOME="$HOME/.local/share"
 export TEST_TMP
 FAKE_BIN="$TEST_TMP/bin"
 mkdir -p "$HOME/.codex/sessions" "$FAKE_BIN"
@@ -549,6 +553,53 @@ actual_kimi_args=$(cat "$TEST_TMP/kimi-args")
     || { echo "FAIL: resume did not dispatch private Kimi: $actual_kimi_args" >&2; exit 1; }
 [[ $(cat "$TEST_TMP/tmux-args") == $'rename-window\n--\nkimi' ]] \
     || { echo "FAIL: private Kimi path leaked into the tmux title" >&2; exit 1; }
+
+# Muse Code appends one event log per session below
+# ~/.local/share/muse/sessions/YYYY/MM/DD/<id>/. The workspace comes from the
+# metadata record and the title from the first started run event, so a session
+# that never got a prompt must stay out of the picker; real sessions resume via
+# `muse resume <id>`.
+msid="7e6d5c4b-3a29-4180-9f7e-6d5c4b3a2918"
+mscwd="$HOME/muse-proj"
+msdir="$XDG_DATA_HOME/muse/sessions/2024/07/09/$msid"
+msempty="$XDG_DATA_HOME/muse/sessions/2024/07/09/00000000-0000-4000-8000-000000000000"
+mkdir -p "$mscwd" "$msdir" "$msempty"
+{
+    printf '{"payload_type":"runtime.session.metadata","payload":{"kind":"metadata","record":{"workspace_root":"%s"}}}\n' "$mscwd"
+    printf '{"payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"started","prompt":"Resume Muse work"}}}\n'
+    printf '{"payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"started","prompt":"A later turn must not retitle the row"}}}\n'
+} > "$msdir/session.jsonl"
+# Opened, never prompted: metadata only, no started run.
+printf '{"payload_type":"runtime.session.metadata","payload":{"kind":"metadata","record":{"workspace_root":"%s"}}}\n' \
+    "$HOME/muse-empty" > "$msempty/session.jsonl"
+touch -t 202407091200.00 "$msdir/session.jsonl"
+touch -t 202407091300.00 "$msempty/session.jsonl"
+
+cat > "$FAKE_BIN/fzf" <<'EOF'
+#!/usr/bin/env bash
+selection=$(cat)
+[[ "$selection" != *"00000000-0000-4000-8000-000000000000"* ]] || exit 2
+[[ "$selection" != *"A later turn must not retitle the row"* ]] || exit 3
+printf '%s\n' "$selection" | grep 'ms|' | head -1
+EOF
+cat > "$FAKE_BIN/muse" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$PWD" "$0" "$@" > "$TEST_TMP/muse-args"
+EOF
+chmod +x "$FAKE_BIN/fzf" "$FAKE_BIN/muse"
+rm -f "$TEST_TMP/tmux-args"
+
+TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/muse-stderr"
+
+expected_tmux_args=$'rename-window\n--\nmuse'
+actual_tmux_args=$(cat "$TEST_TMP/tmux-args")
+[[ "$actual_tmux_args" == "$expected_tmux_args" ]] \
+    || { echo "FAIL: resume did not set the Muse tmux title: $actual_tmux_args" >&2; exit 1; }
+
+expected_muse_args=$(printf '%s\n%s\nresume\n%s' "$mscwd" "$FAKE_BIN/muse" "$msid")
+actual_muse_args=$(cat "$TEST_TMP/muse-args")
+[[ "$actual_muse_args" == "$expected_muse_args" ]] \
+    || { echo "FAIL: resume did not dispatch Muse in its workspace: $actual_muse_args" >&2; exit 1; }
 
 # OpenCode stores every session in one table, so programmatically summoned
 # `opencode run` sessions sit alongside interactive ones. They are marked by

@@ -11,9 +11,13 @@ source "$ROOT/bin/setup"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 CALLS="$TMP/calls"
+ENVCALLS="$TMP/envcalls"
 : > "$CALLS"
+: > "$ENVCALLS"
 
 # A harness stub records how it was invoked. $2 is the exit code it reports.
+# Environment an updater depends on is recorded separately, so the argv
+# assertions stay uniform across harnesses that need it and ones that don't.
 # Not `local path=` — that name is tied to zsh's PATH.
 make_harness() {
     local bin="$1" rc="${2:-0}"
@@ -21,6 +25,9 @@ make_harness() {
     cat > "$bin" <<EOF
 #!/usr/bin/env zsh
 printf '%s %s\n' "\${0:t}" "\$*" >> "$CALLS"
+if [[ -n "\${MUSE_SYNC_UPDATE:-}" ]]; then
+    printf '%s MUSE_SYNC_UPDATE=%s\n' "\${0:t}" "\$MUSE_SYNC_UPDATE" >> "$ENVCALLS"
+fi
 exit $rc
 EOF
     chmod +x "$bin"
@@ -34,6 +41,9 @@ make_harness "$HOME/.local/bin/agy"
 make_harness "$HOME/.local/bin/hermes"
 make_harness "$HOME/.grok/bin/grok"
 make_harness "$HOME/.kimi-code/bin/kimi"
+# muse ships no update subcommand: its launcher refreshes the binary beside it,
+# and only when MUSE_SYNC_UPDATE forces that check into the foreground.
+make_harness "$HOME/.local/bin/muse"
 
 # codex is an npm global inside an nvm prefix, and is a node script: it cannot
 # run unless node — which lives beside it, off PATH — is reachable.
@@ -62,11 +72,20 @@ for expected in \
     'agy update' \
     'hermes update --yes' \
     'grok update' \
-    'kimi update'
+    'kimi update' \
+    'muse --version'
 do
     grep -qx "$expected" "$CALLS" || fail "missing invocation: $expected (got: $(tr '\n' '; ' < "$CALLS"))"
 done
-(( $(wc -l < "$CALLS") == 7 )) || fail "unexpected extra invocations: $(tr '\n' '; ' < "$CALLS")"
+(( $(wc -l < "$CALLS") == 8 )) || fail "unexpected extra invocations: $(tr '\n' '; ' < "$CALLS")"
+
+# Without the forced sync the muse launcher would defer to its hourly
+# background check and `setup update` would report success having updated
+# nothing.
+grep -qx 'muse MUSE_SYNC_UPDATE=1' "$ENVCALLS" \
+    || fail "muse was not forced to update synchronously: $(tr '\n' '; ' < "$ENVCALLS")"
+(( $(wc -l < "$ENVCALLS") == 1 )) \
+    || fail "MUSE_SYNC_UPDATE leaked into another harness: $(tr '\n' '; ' < "$ENVCALLS")"
 
 # A harness that is not installed is skipped, not an error.
 rm "$HOME/.grok/bin/grok" "$HOME/.kimi-code/bin/kimi"
@@ -75,7 +94,7 @@ PATH=/usr/bin:/bin cmd_update_harnesses > "$TMP/out" 2>&1 \
     || fail "run with missing harnesses reported failure: $(cat "$TMP/out")"
 grep -q 'Not installed, skipped: grok kimi' "$TMP/out" \
     || fail "missing harnesses were not reported as skipped: $(cat "$TMP/out")"
-(( $(wc -l < "$CALLS") == 5 )) || fail "skipped harnesses were still invoked"
+(( $(wc -l < "$CALLS") == 6 )) || fail "skipped harnesses were still invoked"
 
 # A failing updater is reported by name and does not stop the others.
 make_harness "$HOME/.local/bin/agy" 1
@@ -88,7 +107,7 @@ grep -qx 'hermes update --yes' "$CALLS" || fail "a failing harness aborted the r
 
 # No harnesses at all is a clean no-op.
 rm -rf "$HOME/.local/bin/claude" "$HOME/.local/bin/agy" "$HOME/.local/bin/hermes" \
-       "$HOME/.opencode" "$HOME/.nvm"
+       "$HOME/.local/bin/muse" "$HOME/.opencode" "$HOME/.nvm"
 : > "$CALLS"
 PATH=/usr/bin:/bin cmd_update_harnesses > "$TMP/out" 2>&1 \
     || fail "empty machine reported failure: $(cat "$TMP/out")"
