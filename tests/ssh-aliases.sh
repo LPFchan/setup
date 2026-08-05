@@ -44,4 +44,28 @@ self_block=$(SSH_ALIASES_SELF=bingus _build_block)
 [[ "$self_block" != *'Host bingus'* ]] \
     || fail "current host was not omitted"
 
+[[ "$grimoire_block" == *'ServerAliveInterval 15'* \
+   && "$grimoire_block" == *'ServerAliveCountMax 3'* ]] \
+    || fail "keepalives are missing, so a suspended laptop hangs until the TCP timeout"
+
+# The reconnect wrapper ships as shell source; a syntax error would break every
+# interactive login on every machine at once.
+zsh -n -c "$RECONNECT_BLOCK" || fail "reconnect block is not valid zsh"
+
+# Drop the interactive/TTY guard so the helpers can be exercised from a
+# non-interactive test shell, which the guard deliberately excludes.
+body=${${RECONNECT_BLOCK#*then}%fi}
+eval "$body"
+(( ${+functions[_ssh_login_target]} )) \
+    || fail "reconnect block did not define its helpers"
+
+[[ $(_ssh_login_target grimoire) == grimoire ]] \
+    || fail "a plain login was not recognized"
+[[ $(_ssh_login_target -t -p 2222 grimoire) == grimoire ]] \
+    || fail "option values were counted as operands"
+[[ -z $(_ssh_login_target grimoire uptime) ]] \
+    || fail "a remote command was wrapped in the reconnect loop"
+[[ -z $(_ssh_login_target) ]] \
+    || fail "an argument-less invocation was wrapped"
+
 echo "ssh aliases tests passed"

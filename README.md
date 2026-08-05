@@ -81,7 +81,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
 | `agents` | AI agent instructions and skills (`~/.agents/`, linked to all installed AI harnesses) | `files/agents.sh` |
-| `ssh-aliases` | Manages outbound host shortcuts in `~/.ssh/config` | `files/ssh-aliases.sh` |
+| `ssh-aliases` | Manages outbound host shortcuts and keepalives in `~/.ssh/config`, plus the interactive `ssh` reconnect wrapper | `files/ssh-aliases.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu) | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
@@ -108,14 +108,34 @@ Setup manages your `~/.zshrc` using guarded blocks. Block order is automatically
 1. `tmux-autostart` — Automatically launches or attaches to a main tmux session on interactive terminals
 2. `tmux-title` — Updates window titles with active commands and SSH destinations
 3. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
-4. `starship` — Initializes the Starship prompt
-5. `zsh-autocomplete` — Sets up tab completion and history search
-6. `zsh-syntax-highlighting` — Enables syntax highlighting
-7. `ai-menu` — Enables the `ai` menu command and autolaunch hook
+4. `ssh-reconnect` — Wraps `ssh` so a suspended laptop reattaches instead of leaving a dead terminal
+5. `starship` — Initializes the Starship prompt
+6. `zsh-autocomplete` — Sets up tab completion and history search
+7. `zsh-syntax-highlighting` — Enables syntax highlighting
+8. `ai-menu` — Enables the `ai` menu command and autolaunch hook
 
 > ⚠️ **Warning:** Do not edit inside managed blocks marked `# >>> setup:<name> >>>`. Any changes inside these blocks will be overwritten when running `setup update`. Add custom shell configs outside these blocks or in `~/.zshenv`.
 
 ---
+
+### Surviving a Laptop Suspend (`ssh-aliases` module)
+
+Closing the lid strands the TCP session of every open SSH login. Two things then
+go wrong: the client waits out the full TCP timeout before admitting the link is
+dead, and the terminal is left in whatever modes the remote tmux had set — with
+SGR mouse reporting still enabled, every mouse movement types an escape sequence
+at the local prompt, so the window has to be thrown away.
+
+- Generated `Host` stanzas carry `ServerAliveInterval 15` and
+  `ServerAliveCountMax 3`, so a dead link is detected in about 45 seconds.
+- The `ssh-reconnect` block wraps `ssh` in interactive shells. It restores the
+  local terminal on every return, and on ssh's own transport failure (exit 255)
+  reconnects with 1→16 s backoff — landing back in the shared `main` tmux
+  session with scrollback and running jobs intact.
+- It engages only on a plain login: exactly one non-option operand, no remote
+  command, and a TTY on both stdin and stdout. `ssh host cmd`, forwarding-only
+  sessions, scripts, and agent invocations keep stock behavior. A session that
+  never came up is never retried, so an unreachable host still fails at once.
 
 ### Unique Machine Color Scheme
 
