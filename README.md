@@ -126,12 +126,20 @@ dead, and the terminal is left in whatever modes the remote tmux had set — wit
 SGR mouse reporting still enabled, every mouse movement types an escape sequence
 at the local prompt, so the window has to be thrown away.
 
-- Generated `Host` stanzas carry `ServerAliveInterval 15` and
-  `ServerAliveCountMax 3`, so a dead link is detected in about 45 seconds.
 - The `ssh-reconnect` block wraps `ssh` in interactive shells. It restores the
-  local terminal on every return, and on ssh's own transport failure (exit 255)
-  reconnects with 1→16 s backoff — landing back in the shared `main` tmux
-  session with scrollback and running jobs intact.
+  local terminal on every return, and reconnects on a dropped link — landing
+  back in the shared `main` tmux session with scrollback and jobs intact.
+- Resume is immediate rather than timeout-driven. Sleep freezes every process,
+  so a jump in wall-clock time across a two-second tick is a free and reliable
+  wake signal; a watcher hangs up the stale client the moment the lid opens
+  instead of letting it wait out its keepalives. Nothing polls while asleep.
+- Reconnects retry at a flat one-second cadence, not exponential backoff: the
+  network is either back when the lid opens or it is not, and a growing delay
+  only adds dead time to the common case. `ConnectTimeout 5` keeps an attempt
+  made before Wi-Fi reassociates from stalling.
+- Generated `Host` stanzas still carry `ServerAliveInterval 15` /
+  `ServerAliveCountMax 3`, which covers drops with no sleep involved — walking
+  out of Wi-Fi range — where there is no clock jump to detect.
 - It engages only on a plain login: exactly one non-option operand, no remote
   command, and a TTY on both stdin and stdout. `ssh host cmd`, forwarding-only
   sessions, scripts, and agent invocations keep stock behavior. A session that
