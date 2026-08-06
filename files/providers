@@ -685,6 +685,8 @@ PROVIDER_URLS = {
     "crofai": "https://crof.ai",
     "commandcode": "https://commandcode.ai/studio → Settings → API Keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
+    # META_API_KEY is the same Model API key muse reads for headless runs.
+    "meta": "https://dev.meta.ai",
 }
 
 

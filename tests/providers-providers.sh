@@ -35,7 +35,7 @@ m._sync_opencodex_provider_statuses = lambda: None
 
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/claudex-profiles.json'
-assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode'}
+assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
 m.CLAUDEX_BIN = os.path.join('$TMP', 'claudex')
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.CLAUDEX_BIN, m.OPENCODEX_BIN):

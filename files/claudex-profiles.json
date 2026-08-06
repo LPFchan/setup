@@ -82,6 +82,19 @@
       },
       "enabled": true,
       "default_model": "k3"
+    },
+    "meta": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.meta.ai/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "meta"
+      },
+      "enabled": true,
+      "default_model": "muse-spark-1.2"
     }
   },
   "profiles": [
