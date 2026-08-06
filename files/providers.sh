@@ -10,13 +10,17 @@
 
 MODULE="providers"
 BIN="${PROVIDERS_BIN:-$HOME/.local/bin/providers}"
-REGISTRY="${CLAUDEX_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
+REGISTRY="${PROVIDERS_REGISTRY:-$HOME/.config/providers/registry.json}"
+# The registry used to be a single copy shared with claudex; each module now
+# installs its own. Only claudex and refresh-models still own the old path.
+LEGACY_REGISTRY="${PROVIDERS_LEGACY_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
 CLAUDEX_BIN="${CLAUDEX_BIN:-$HOME/.local/bin/claudex}"
 CLAUDEX_CONFIG="${CLAUDEX_CONFIG:-$HOME/.config/claudex/config.toml}"
-CLAUDEX_AUTH_JSON="${CLAUDEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
+REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
+PROVIDERS_AUTH_JSON="${PROVIDERS_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${PROVIDERS_SOURCE:-$SOURCE_BASE/files/providers}"
-REGISTRY_SOURCE="${CLAUDEX_REGISTRY_SOURCE:-$SOURCE_BASE/files/claudex-profiles.json}"
+REGISTRY_SOURCE="${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}"
 
 _fetch_file() {
     local source="$1" destination="$2"
@@ -32,16 +36,16 @@ _fetch_file() {
 _stage_assets() {
     local directory="$1"
     _fetch_file "$BIN_SOURCE" "$directory/providers" || return 1
-    _fetch_file "$REGISTRY_SOURCE" "$directory/claudex-profiles.json" || return 1
+    _fetch_file "$REGISTRY_SOURCE" "$directory/provider-registry.json" || return 1
     chmod +x "$directory/providers"
-    python3 "$directory/providers" __validate "$directory/claudex-profiles.json"
+    python3 "$directory/providers" __validate "$directory/provider-registry.json"
 }
 
 _desired_hash_from() {
     local staged="$1"
     {
         cat "$staged/providers"
-        cat "$staged/claudex-profiles.json"
+        cat "$staged/provider-registry.json"
     } | setup_sha256_string
 }
 
@@ -50,30 +54,41 @@ _recorded_hash() {
     IFS=$'\t' read -r rt lr rr < <(script_state_for "$MODULE" 2>/dev/null) && printf '%s' "$lr"
 }
 
+# Reclaim the registry copy providers used to share with claudex. Only move it
+# when no module that still owns that path is installed, so a co-installed
+# claudex is not left without its registry until its own next update.
+_migrate_legacy_registry() {
+    [[ "$REGISTRY" != "$LEGACY_REGISTRY" ]] || return 0
+    [[ -f "$LEGACY_REGISTRY" && ! -e "$REGISTRY" ]] || return 0
+    [[ ! -x "$CLAUDEX_BIN" && ! -x "$REFRESH_MODELS_BIN" ]] || return 0
+    mv "$LEGACY_REGISTRY" "$REGISTRY"
+}
+
 _apply() {
     local action="$1" staged hash bin_tmp registry_tmp
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
     hash=$(_desired_hash_from "$staged")
     mkdir -p "$(dirname "$BIN")" "$(dirname "$REGISTRY")"
+    _migrate_legacy_registry
     bin_tmp="${BIN}.tmp.$$"
     registry_tmp="${REGISTRY}.tmp.$$"
     cp "$staged/providers" "$bin_tmp" || { rm -rf "$staged"; return 1; }
     chmod +x "$bin_tmp"
-    cp "$staged/claudex-profiles.json" "$registry_tmp" || {
+    cp "$staged/provider-registry.json" "$registry_tmp" || {
         rm -f "$bin_tmp"
         rm -rf "$staged"
         return 1
     }
-    CLAUDEX_REGISTRY="$staged/claudex-profiles.json" \
+    PROVIDERS_REGISTRY="$staged/provider-registry.json" \
         python3 "$staged/providers" __migrate-state || {
             rm -f "$bin_tmp" "$registry_tmp"
             rm -rf "$staged"
             return 1
         }
     if [[ -x "$CLAUDEX_BIN" ]]; then
-        CLAUDEX_AUTH_JSON="$CLAUDEX_AUTH_JSON" \
-            python3 "$CLAUDEX_BIN" __apply "$staged/claudex-profiles.json" "$CLAUDEX_CONFIG" || {
+        CLAUDEX_AUTH_JSON="$PROVIDERS_AUTH_JSON" \
+            python3 "$CLAUDEX_BIN" __apply "$staged/provider-registry.json" "$CLAUDEX_CONFIG" || {
                 rm -f "$bin_tmp" "$registry_tmp"
                 rm -rf "$staged"
                 return 1
@@ -107,7 +122,7 @@ status() {
     [[ -x "$BIN" && -f "$REGISTRY" ]] || drift=1
     if (( drift == 0 )); then
         cmp -s "$staged/providers" "$BIN" || drift=1
-        cmp -s "$staged/claudex-profiles.json" "$REGISTRY" || drift=1
+        cmp -s "$staged/provider-registry.json" "$REGISTRY" || drift=1
     fi
     rm -rf "$staged"
     if (( drift == 1 )); then
@@ -122,10 +137,7 @@ status() {
 }
 
 uninstall() {
-    rm -f "$BIN"
-    if [[ ! -x "$CLAUDEX_BIN" ]]; then
-        rm -f "$REGISTRY"
-    fi
+    rm -f "$BIN" "$REGISTRY"
     remove_script_state "$MODULE"
     echo "providers: uninstalled launcher"
 }

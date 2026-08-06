@@ -21,7 +21,7 @@ Commands:
   sync                         vault -> cache -> opencode auth.json -> .zshenv
   audit                        List vault llm items, flag non-conforming names
   rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
-  provider add                 Add a provider through the shared Claudex registry
+  provider add                 Add a provider through the shared provider registry
   provider enable <provider>   Enable a provider that has an API key
   provider disable <provider>  Disable a provider without deleting its key
 """
@@ -41,8 +41,8 @@ LEGACY_STATE_PATH = os.path.expanduser(
 )
 LEGACY_CONFIG_PATH = os.path.expanduser("~/.config/opencode/refresh-models.json")
 REGISTRY_PATH = os.environ.get(
-    "CLAUDEX_REGISTRY",
-    os.path.expanduser("~/.config/claudex/managed-profiles.json"),
+    "PROVIDERS_REGISTRY",
+    os.path.expanduser("~/.config/providers/registry.json"),
 )
 CLAUDEX_BIN = os.environ.get("CLAUDEX_BIN", os.path.expanduser("~/.local/bin/claudex"))
 OPENCODEX_BIN = os.environ.get(
@@ -691,13 +691,15 @@ PROVIDER_URLS = {
 
 
 def _load_servers():
-    """Load OpenAI-compatible providers from the canonical Claudex registry."""
+    """Load OpenAI-compatible providers from the canonical provider registry."""
     try:
         registry = _validate_registry(load_json(REGISTRY_PATH))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"Cannot read provider registry {REGISTRY_PATH}: {exc}", file=sys.stderr)
         return None
     profiles = registry.get("profiles") if isinstance(registry, dict) else None
+    if profiles is None:
+        profiles = []
     if not isinstance(registry, dict) or registry.get("version") != 1 or not isinstance(profiles, list):
         print(f"Invalid provider registry: {REGISTRY_PATH}", file=sys.stderr)
         return None
@@ -1140,9 +1142,14 @@ def _valid_base_url(value):
 def _validate_registry(data):
     if not isinstance(data, dict) or data.get("version") != 1:
         raise ValueError("registry version must be 1")
+    # The profile array is claudex's view of the registry: absent for every
+    # other consumer. Routing is by `providers`; validate profiles only when
+    # the file still carries them.
     profiles = data.get("profiles")
-    if not isinstance(profiles, list) or not profiles:
-        raise ValueError("registry profiles must be a non-empty list")
+    if profiles is None:
+        profiles = []
+    if not isinstance(profiles, list):
+        raise ValueError("registry profiles must be a list")
     providers = data.get("providers", {})
     if providers and not isinstance(providers, dict):
         raise ValueError("registry providers must be an object")
@@ -1292,9 +1299,9 @@ def _provision_provider(profile, token):
     with tempfile.TemporaryDirectory(prefix="providers-provider-") as temp:
         clone = pathlib.Path(temp) / "setup"
         _run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
-        registry_path = clone / "files/claudex-profiles.json"
+        registry_path = clone / "files/provider-registry.json"
         data = _validate_registry(load_json(registry_path))
-        if any(item["name"] == profile["name"] for item in data["profiles"]):
+        if any(item["name"] == profile["name"] for item in data.get("profiles") or []):
             raise ValueError(f"provider {profile['name']} already exists in the setup repository")
         if profile["name"] in data.get("providers", {}):
             raise ValueError(f"provider {profile['name']} already exists in the setup repository")
@@ -1306,14 +1313,14 @@ def _provision_provider(profile, token):
             "auth": profile["auth"],
             "enabled": True,
         }
-        data["profiles"].append(profile)
+        data.setdefault("profiles", []).append(profile)
         _validate_registry(data)
         registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         changed = _run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
-        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
+        if not changed or any(line[3:] != "files/provider-registry.json" for line in changed):
             raise ValueError("temporary clone contains changes outside the provider registry")
         _run_git(["diff", "--check"], cwd=clone)
-        _run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
+        _run_git(["add", "--", "files/provider-registry.json"], cwd=clone)
         _run_git(
             [
                 "-c", "user.name=providers",
@@ -1337,7 +1344,7 @@ def _provision_provider(profile, token):
 
 def _add_provider():
     registry = _validate_registry(load_json(REGISTRY_PATH))
-    existing = {profile["name"] for profile in registry["profiles"]}
+    existing = {profile["name"] for profile in registry.get("profiles") or []}
     existing.update(registry.get("providers", {}))
     name = input("Provider name: ").strip()
     if not NAME_RE.fullmatch(name) or name in existing:

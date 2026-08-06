@@ -17,11 +17,12 @@ GLOBAL_CONFIG="${CLAUDEX_CONFIG:-$HOME/.config/claudex/config.toml}"
 REGISTRY="${CLAUDEX_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
 AUTH_JSON="${CLAUDEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
 PROVIDERS_BIN="${PROVIDERS_BIN:-$HOME/.local/bin/providers}"
+REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
 FORK_REPO="LPFchan/claudex"
 CLAUDEX_RELEASE_TAG="${CLAUDEX_RELEASE_TAG:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${CLAUDEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/claudex}"
-REGISTRY_SOURCE="${CLAUDEX_REGISTRY_SOURCE:-$SOURCE_BASE/files/claudex-profiles.json}"
+REGISTRY_SOURCE="${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}"
 
 _detect_target() {
     local os arch libc
@@ -112,12 +113,12 @@ _stage_assets() {
         echo "claudex: could not fetch launcher from $LAUNCHER_SOURCE" >&2
         return 1
     }
-    _fetch_file "$REGISTRY_SOURCE" "$directory/claudex-profiles.json" || {
+    _fetch_file "$REGISTRY_SOURCE" "$directory/provider-registry.json" || {
         echo "claudex: could not fetch registry from $REGISTRY_SOURCE" >&2
         return 1
     }
     chmod +x "$directory/claudex"
-    CLAUDEX_AUTH_JSON="$AUTH_JSON" python3 "$directory/claudex" __validate "$directory/claudex-profiles.json" || return 1
+    CLAUDEX_AUTH_JSON="$AUTH_JSON" python3 "$directory/claudex" __validate "$directory/provider-registry.json" || return 1
 }
 
 _install_fork_core() {
@@ -167,7 +168,7 @@ _install_assets() {
     registry_tmp="${REGISTRY}.tmp.$$"
     cp "$staged/claudex" "$bin_tmp" || return 1
     chmod +x "$bin_tmp"
-    cp "$staged/claudex-profiles.json" "$registry_tmp" || { rm -f "$bin_tmp"; return 1; }
+    cp "$staged/provider-registry.json" "$registry_tmp" || { rm -f "$bin_tmp"; return 1; }
     mv "$registry_tmp" "$REGISTRY"
     mv "$bin_tmp" "$BIN"
 }
@@ -189,7 +190,7 @@ _desired_hash_from() {
     {
         printf '%s\n' "$tag"
         cat "$staged/claudex"
-        cat "$staged/claudex-profiles.json"
+        cat "$staged/provider-registry.json"
     } | setup_sha256_string
 }
 
@@ -206,7 +207,7 @@ _desired_hash() {
 _assets_current_from() {
     local staged="$1" rc=0
     cmp -s "$staged/claudex" "$BIN" || rc=1
-    cmp -s "$staged/claudex-profiles.json" "$REGISTRY" || rc=1
+    cmp -s "$staged/provider-registry.json" "$REGISTRY" || rc=1
     return $rc
 }
 
@@ -293,7 +294,9 @@ uninstall() {
             || echo "claudex: could not remove managed profiles from $GLOBAL_CONFIG" >&2
     fi
     rm -f "$BIN" "$CORE"
-    if [[ ! -x "$PROVIDERS_BIN" ]]; then
+    # providers keeps its own copy under ~/.config/providers now, so it is no
+    # longer a co-owner of this path; refresh-models is the last one left.
+    if [[ ! -x "$REFRESH_MODELS_BIN" ]]; then
         rm -f "$REGISTRY"
     fi
     remove_script_state "$MODULE"

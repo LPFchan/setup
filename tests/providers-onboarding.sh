@@ -5,8 +5,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/custom-state"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/bin" "$HOME/.local/share/opencode"
-export CLAUDEX_REGISTRY="$TMP/registry.json"
-cat > "$CLAUDEX_REGISTRY" <<'EOF'
+export PROVIDERS_REGISTRY="$TMP/registry.json"
+cat > "$PROVIDERS_REGISTRY" <<'EOF'
 {"version":1,"profiles":[
   {"name":"demo","provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}}
 ]}

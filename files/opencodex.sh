@@ -5,7 +5,7 @@
 # Installs a four-reel provider/model/effort/harness launcher at ~/.local/bin/opencodex, a
 # latest OpenCodex runtime, and a setup-managed provider registry snapshot.
 # Routing is provider-only; provider metadata is fleet state (shared with
-# claudex and providers via files/claudex-profiles.json) while
+# claudex and providers via files/provider-registry.json) while
 # credentials remain machine-local.
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
@@ -13,7 +13,7 @@
 MODULE="opencodex"
 BIN="${OPENCODEX_LAUNCHER:-$HOME/.local/bin/opencodex}"
 REGISTRY="${OPENCODEX_REGISTRY:-$HOME/.config/opencodex/managed-profiles.json}"
-AUTH_JSON="${OPENCODEX_AUTH_JSON:-${CLAUDEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}}"
+AUTH_JSON="${OPENCODEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
 OPENCODEX_ROOT="${OPENCODEX_ROOT:-$HOME/.local/libexec/opencodex}"
 OPENCODEX_BIN="${OPENCODEX_BIN:-$HOME/.local/bin/ocx}"
 OPENCODEX_CONFIG="${OPENCODEX_CONFIG:-$HOME/.opencodex/config.json}"
@@ -22,7 +22,7 @@ OPENCODEX_PACKAGE_NAME="@bitkyc08/opencodex"
 OPENCODEX_RELEASE_VERSION="${OPENCODEX_RELEASE_VERSION:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${OPENCODEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/opencodex}"
-REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${CLAUDEX_REGISTRY_SOURCE:-$SOURCE_BASE/files/claudex-profiles.json}}"
+REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}}"
 
 _installed_version() {
     "$OPENCODEX_BIN" --version 2>/dev/null | awk '{print $NF; exit}'
@@ -79,12 +79,12 @@ _stage_assets() {
         echo "opencodex: could not fetch launcher from $LAUNCHER_SOURCE" >&2
         return 1
     }
-    _fetch_file "$REGISTRY_SOURCE" "$directory/claudex-profiles.json" || {
+    _fetch_file "$REGISTRY_SOURCE" "$directory/provider-registry.json" || {
         echo "opencodex: could not fetch registry from $REGISTRY_SOURCE" >&2
         return 1
     }
     chmod +x "$directory/opencodex"
-    OPENCODEX_AUTH_JSON="$AUTH_JSON" python3 "$directory/opencodex" __validate "$directory/claudex-profiles.json" || return 1
+    OPENCODEX_AUTH_JSON="$AUTH_JSON" python3 "$directory/opencodex" __validate "$directory/provider-registry.json" || return 1
 }
 
 _ensure_runtime() {
@@ -133,7 +133,7 @@ _install_assets() {
     registry_tmp="${REGISTRY}.tmp.$$"
     cp "$staged/opencodex" "$bin_tmp" || return 1
     chmod +x "$bin_tmp"
-    cp "$staged/claudex-profiles.json" "$registry_tmp" || { rm -f "$bin_tmp"; return 1; }
+    cp "$staged/provider-registry.json" "$registry_tmp" || { rm -f "$bin_tmp"; return 1; }
     mv "$registry_tmp" "$REGISTRY"
     mv "$bin_tmp" "$BIN"
 }
@@ -155,7 +155,7 @@ _desired_hash_from() {
     {
         printf '%s\n' "$version"
         cat "$staged/opencodex"
-        cat "$staged/claudex-profiles.json"
+        cat "$staged/provider-registry.json"
     } | setup_sha256_string
 }
 
@@ -172,7 +172,7 @@ _desired_hash() {
 _assets_current_from() {
     local staged="$1" rc=0
     cmp -s "$staged/opencodex" "$BIN" || rc=1
-    cmp -s "$staged/claudex-profiles.json" "$REGISTRY" || rc=1
+    cmp -s "$staged/provider-registry.json" "$REGISTRY" || rc=1
     return $rc
 }
 

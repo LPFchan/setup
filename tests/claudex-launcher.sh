@@ -7,7 +7,7 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 export HOME="$TEST_TMP/home"
 export CLAUDEX_CORE="$TEST_TMP/core"
 export CLAUDEX_CONFIG="$HOME/.config/claudex/config.toml"
-export CLAUDEX_REGISTRY="$ROOT/files/claudex-profiles.json"
+export CLAUDEX_REGISTRY="$ROOT/files/provider-registry.json"
 export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export CLAUDEX_SESSIONS="$HOME/.config/claudex/sessions.tsv"
 export TEST_TMP
@@ -46,7 +46,7 @@ expected=$(printf 'run\ncommandcode\n--dangerously-skip-permissions\n--config=%s
 [[ $(cat "$TEST_TMP/core-args") == "$expected" ]] \
     || fail "--config=PATH caused a duplicate global config"
 
-python3 - "$ROOT/files/claudex" "$ROOT/files/claudex-profiles.json" <<'PY'
+python3 - "$ROOT/files/claudex" "$ROOT/files/provider-registry.json" <<'PY'
 import copy, importlib.machinery, importlib.util, json, sys
 launcher, registry_path = sys.argv[1:]
 loader = importlib.machinery.SourceFileLoader("claudex_provider_validation", launcher)
@@ -69,7 +69,7 @@ PY
 git init --bare -q --initial-branch=main "$TEST_TMP/remote.git"
 git clone -q "$TEST_TMP/remote.git" "$TEST_TMP/seed"
 cp -R "$ROOT/files" "$TEST_TMP/seed/files"
-git -C "$TEST_TMP/seed" add files/claudex-profiles.json
+git -C "$TEST_TMP/seed" add files/provider-registry.json
 git -C "$TEST_TMP/seed" -c user.name=test -c user.email=test@example.invalid commit -qm seed
 git -C "$TEST_TMP/seed" push -q origin main
 cat > "$TEST_TMP/setup" <<'EOF'

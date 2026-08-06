@@ -9,11 +9,12 @@ export HOME="$TEST_TMP/home"
 export XDG_STATE_HOME="$TEST_TMP/state"
 export PROVIDERS_BIN="$HOME/.local/bin/providers"
 export CLAUDEX_BIN="$HOME/.local/bin/claudex"
-export CLAUDEX_REGISTRY="$HOME/.config/claudex/managed-profiles.json"
+export PROVIDERS_REGISTRY="$HOME/.config/providers/registry.json"
+export PROVIDERS_LEGACY_REGISTRY="$HOME/.config/claudex/managed-profiles.json"
 export CLAUDEX_CONFIG="$HOME/.config/claudex/config.toml"
-export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
+export PROVIDERS_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export PROVIDERS_SOURCE="$ROOT/files/providers"
-export CLAUDEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
+export PROVIDER_REGISTRY_SOURCE="$ROOT/files/provider-registry.json"
 mkdir -p "$XDG_STATE_HOME"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -36,9 +37,13 @@ expect_status 1 outdated
 mkdir -p "$HOME/.config/opencode"
 print '{"servers":{"commandcode":{"enabled":false}}}' \
     > "$HOME/.config/opencode/refresh-models.json"
+# A machine upgrading from the shared claudex copy hands it over to providers.
+mkdir -p "${LEGACY_REGISTRY:h}"
+cp "$ROOT/files/provider-registry.json" "$LEGACY_REGISTRY"
 install
 [[ -x "$BIN" ]] || fail "standalone install omitted the launcher"
-[[ -f "$REGISTRY" ]] || fail "standalone install omitted the shared registry"
+[[ -f "$REGISTRY" ]] || fail "standalone install omitted the provider registry"
+[[ ! -e "$LEGACY_REGISTRY" ]] || fail "install left the superseded shared registry behind"
 [[ -f "$HOME/.config/providers/state.json" ]] \
     || fail "install did not migrate provider enablement state"
 [[ ! -e "$HOME/.config/opencode/refresh-models.json" ]] \
@@ -57,7 +62,9 @@ expect_status 0 current
 mkdir -p "${CLAUDEX_BIN:h}"
 cp "$ROOT/files/claudex" "$CLAUDEX_BIN"
 chmod +x "$CLAUDEX_BIN"
+cp "$ROOT/files/provider-registry.json" "$LEGACY_REGISTRY"
 update
+[[ -f "$LEGACY_REGISTRY" ]] || fail "providers took over a registry copy claudex still owns"
 grep -q 'name = "commandcode"' "$CLAUDEX_CONFIG" \
     || fail "providers did not apply the shared registry to co-installed Claudex"
 grep -q 'name = "codex"' "$CLAUDEX_CONFIG" \
@@ -78,11 +85,13 @@ assert 'provider_type = "DirectAnthropic"' in body
 assert 'oauth_provider = "claude"' in body
 PY
 uninstall
-[[ -f "$REGISTRY" ]] || fail "providers removed a registry still used by Claudex"
+[[ ! -e "$REGISTRY" ]] || fail "uninstall left the provider registry behind"
+[[ -f "$LEGACY_REGISTRY" ]] || fail "providers uninstall removed the registry claudex owns"
 
 rm -f "$CLAUDEX_BIN"
 install
+[[ ! -e "$LEGACY_REGISTRY" ]] || fail "install left the superseded shared registry behind"
 uninstall
-[[ ! -e "$REGISTRY" ]] || fail "last registry consumer left an orphaned registry"
+[[ ! -e "$REGISTRY" ]] || fail "uninstall left the provider registry behind"
 
 echo "providers lifecycle tests passed"

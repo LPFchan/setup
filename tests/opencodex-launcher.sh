@@ -30,7 +30,7 @@ export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
 # the only source of reasoning metadata in this offline environment.
 export OPENCODEX_CAPABILITY_PROBE=0
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
-cp "$ROOT/files/claudex-profiles.json" "$OPENCODEX_REGISTRY"
+cp "$ROOT/files/provider-registry.json" "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
 # Minimal codex catalog so the picker lists commandcode models in this offline env.
 python3 - "$OPENCODEX_REGISTRY" "$CODEX_HOME/opencodex-catalog.json" <<'PY'

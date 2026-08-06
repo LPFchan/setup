@@ -4,13 +4,13 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
-export CLAUDEX_REGISTRY="$TMP/registry.json"
+export PROVIDERS_REGISTRY="$TMP/registry.json"
 export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
 export PROVIDERS_CACHE_PATH="$HOME/.config/providers/credentials.json"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"provider":{"foreign":{}},"disabled_providers":["foreign-disabled"]}\n' > "$HOME/.config/opencode/opencode.json"
 printf '{"demo":{"type":"api","key":"demo-key"}}\n' > "$HOME/.local/share/opencode/auth.json"
-cat > "$CLAUDEX_REGISTRY" <<'EOF'
+cat > "$PROVIDERS_REGISTRY" <<'EOF'
 {"version":1,"profiles":[
   {"name":"codex","provider_type":"OpenAIResponses","base_url":"https://codex.invalid","auth":{"type":"oauth","provider":"chatgpt"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}},
   {"name":"demo","provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}},
@@ -34,7 +34,7 @@ m.vault_available = lambda: False
 m._sync_opencodex_provider_statuses = lambda: None
 
 fixture_registry = m.REGISTRY_PATH
-m.REGISTRY_PATH = '$ROOT/files/claudex-profiles.json'
+m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
 m.CLAUDEX_BIN = os.path.join('$TMP', 'claudex')
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
@@ -80,7 +80,17 @@ assert m._load_provider_state() == {'version': 1, 'providers': {}}
 assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 m.save_json_atomic(m.STATE_PATH, state)
 
-malformed_registry = copy.deepcopy(m.load_json('$ROOT/files/claudex-profiles.json'))
+# The profile array is claudex's alone: providers routes by provider and must
+# accept a registry that no longer carries one.
+profileless = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
+del profileless['profiles']
+m._validate_registry(profileless)
+m.save_json(m.REGISTRY_PATH + '.profileless', profileless)
+profile_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.profileless'
+assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
+m.REGISTRY_PATH = profile_registry
+
+malformed_registry = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
 del malformed_registry['providers']['grimoire']['auth']['key']
 try:
     m._validate_registry(malformed_registry)
@@ -128,7 +138,7 @@ assert seen[-1] == 'unused'
 
 import builtins
 builtins.input = lambda prompt='': 'grimoire'
-m.REGISTRY_PATH = '$ROOT/files/claudex-profiles.json'
+m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 try:
     m._add_provider()
 except ValueError as exc:

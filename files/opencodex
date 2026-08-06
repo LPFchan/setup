@@ -37,10 +37,7 @@ REGISTRY = Path(
     )
 )
 AUTH_JSON = Path(
-    os.environ.get(
-        "OPENCODEX_AUTH_JSON",
-        os.environ.get("CLAUDEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json"),
-    )
+    os.environ.get("OPENCODEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json")
 )
 PROVIDER_STATE_VERSION = 1
 PROVIDER_STATE = Path(
@@ -57,7 +54,7 @@ ADMIN_TOKEN = Path(
 )
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
-# Modules consuming the shared claudex-profiles.json registry.
+# Modules consuming the shared provider registry.
 PROVIDER_CONSUMER_MODULES = ("claudex", "opencodex", "providers")
 # OAuth provider presets are reconciled and persisted by OpenCodex at runtime.
 # They are not setup-owned desired state and must not make status report drift.

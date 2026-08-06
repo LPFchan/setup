@@ -8,7 +8,7 @@ export HOME="$TMP/home"
 export PROVIDER_STATE_PATH="$TMP/providers/state.json"
 mkdir -p "$(dirname "$PROVIDER_STATE_PATH")"
 
-python3 - "$ROOT/files/opencodex" "$ROOT/files/claudex-profiles.json" <<'PY'
+python3 - "$ROOT/files/opencodex" "$ROOT/files/provider-registry.json" <<'PY'
 import copy
 import json
 import runpy

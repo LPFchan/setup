@@ -15,7 +15,7 @@ export OPENCODEX_MANAGED="$HOME/.opencodex/setup-managed-providers.json"
 export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_LAUNCHER_SOURCE="$ROOT/files/opencodex"
-export OPENCODEX_REGISTRY_SOURCE="$ROOT/files/claudex-profiles.json"
+export OPENCODEX_REGISTRY_SOURCE="$ROOT/files/provider-registry.json"
 export OPENCODEX_RELEASE_VERSION="2.7.42"
 mkdir -p "${OPENCODEX_LAUNCHER:h}" "${OPENCODEX_REGISTRY:h}" "$XDG_STATE_HOME"
 
@@ -55,7 +55,7 @@ rm -rf "$OPENCODEX_ROOT"
 install_surfaces() {
     cp "$ROOT/files/opencodex" "$BIN"
     chmod +x "$BIN"
-    cp "$ROOT/files/claudex-profiles.json" "$REGISTRY"
+    cp "$ROOT/files/provider-registry.json" "$REGISTRY"
     cat > "$OPENCODEX_BIN" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then echo 'opencodex 2.7.42'; fi
@@ -110,7 +110,7 @@ install_surfaces
 
 shared_registry="$HOME/.config/claudex/managed-profiles.json"
 mkdir -p "${shared_registry:h}"
-cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
+cp "$ROOT/files/provider-registry.json" "$shared_registry"
 (
     export CLAUDEX_REGISTRY="$shared_registry"
     export PROVIDERS_BIN="$HOME/.local/bin/missing-providers"
@@ -119,14 +119,16 @@ cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
 )
 [[ -f "$REGISTRY" ]] || fail "claudex uninstall removed opencodex's independent snapshot"
 
-cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
+providers_registry="$HOME/.config/providers/registry.json"
+mkdir -p "${providers_registry:h}"
+cp "$ROOT/files/provider-registry.json" "$providers_registry"
 (
-    export CLAUDEX_REGISTRY="$shared_registry"
-    export CLAUDEX_BIN="$HOME/.local/bin/missing-claudex"
+    export PROVIDERS_REGISTRY="$providers_registry"
     source "$ROOT/files/providers.sh"
     uninstall >/dev/null
 )
 [[ -f "$REGISTRY" ]] || fail "providers uninstall removed opencodex's independent snapshot"
+[[ ! -e "$providers_registry" ]] || fail "providers uninstall left its own snapshot"
 
 uninstall
 [[ ! -e "$REGISTRY" ]] || fail "opencodex uninstall left its provider snapshot"
