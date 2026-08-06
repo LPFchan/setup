@@ -19,6 +19,7 @@ import uuid
 
 
 HOME = Path.home()
+CLAUDE_PROJECTS = HOME / ".claude/projects"
 KIMI_HOME = Path(os.environ.get("KIMI_CODE_HOME", HOME / ".kimi-code")).expanduser()
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex")).expanduser().resolve()
 CODEX_CATALOG = CODEX_HOME / "opencodex-catalog.json"
@@ -684,16 +685,51 @@ def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | 
 
 
 def session_files() -> dict[Path, int]:
-    root = HOME / ".claude/projects"
-    if not root.exists():
+    if not CLAUDE_PROJECTS.exists():
         return {}
     result: dict[Path, int] = {}
-    for path in root.glob("*/*.jsonl"):
+    for path in CLAUDE_PROJECTS.glob("*/*.jsonl"):
         try:
             result[path] = path.stat().st_mtime_ns
         except OSError:
             pass
     return result
+
+
+def session_model(sid: str) -> str | None:
+    """The model a recorded claude session last answered on.
+
+    Transcripts reach tens of megabytes, so they are streamed a line at a time
+    and only the lines that could carry a model are decoded. A transcript a
+    crash left half-written is common enough that no single bad line may sink
+    the read.
+    """
+    for path in sorted(CLAUDE_PROJECTS.glob(f"*/{sid}.jsonl")):
+        found: str | None = None
+        try:
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if '"model"' not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    message = entry.get("message") if isinstance(entry, dict) else None
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("role") != "assistant":
+                        continue
+                    model = message.get("model")
+                    # "<synthetic>" marks turns claude fabricated locally for
+                    # interrupts and errors; no model ever served them.
+                    if isinstance(model, str) and model and model != "<synthetic>":
+                        found = model
+        except OSError:
+            continue
+        if found is not None:
+            return found
+    return None
 
 
 def write_session_mapping(provider: str, sid: str) -> None:
@@ -762,6 +798,30 @@ def routed_model(registry: dict[str, Any], provider: str, model: str) -> str:
     if model.startswith(f"{provider}/"):
         return model
     return f"{provider}/{model}"
+
+
+def resumed_model(
+    registry: dict[str, Any], provider: str, harness: str, args: list[str]
+) -> str | None:
+    """The model a resumed claude session already ran, when this provider owns it.
+
+    Reaching for the provider default instead would swap models mid-conversation
+    without saying so, and the multi-model aggregators carry no default at all,
+    so resuming one of their sessions could not launch. Only claude writes the
+    transcripts this reads.
+    """
+    if harness != "claude":
+        return None
+    sid = session_id_from_args(args)
+    if sid is None:
+        return None
+    model = session_model(sid)
+    # A transcript records the routed name its launch used, so anything that is
+    # not already this provider's routed form was served by someone else — a
+    # different provider, or native claude — and must not be re-prefixed here.
+    if model is None or routed_model(registry, provider, model) != model:
+        return None
+    return model
 
 
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -2026,7 +2086,9 @@ def main() -> int:
         if args and args[0] in HARNESSES:
             harness, args = args[0], args[1:]
         if model is None:
-            model = provider_default_model(registry, provider)
+            model = resumed_model(
+                registry, provider, harness, args
+            ) or provider_default_model(registry, provider)
             if model is None:
                 raise UserError(
                     f"provider {provider} has no default model; pass --model"

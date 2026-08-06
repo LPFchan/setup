@@ -377,6 +377,37 @@ grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
 ! grep -Evq $'\tcommandcode$' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "a session recorded under something other than its provider"
 
+# A resume lands back on the model the session itself ran. The trailing
+# synthetic turn and the torn last line stand in for what a real transcript
+# looks like after an interrupt.
+transcript_dir="$HOME/.claude/projects/-test-proj"
+mkdir -p "$transcript_dir"
+transcript_id="66666666-7777-4888-8999-aaaaaaaaaaaa"
+session_model="commandcode/MiniMaxAI/MiniMax-M3"
+{
+    printf '{"type":"user","message":{"role":"user","content":"turn"}}\n'
+    printf '{"type":"assistant","message":{"role":"assistant","model":"%s"}}\n' "$session_model"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"<synthetic>"}}\n'
+    printf '{"type":"assistant","message":{"role":"assist\n'
+} > "$transcript_dir/$transcript_id.jsonl"
+"$ROOT/files/opencodex" run commandcode claude --resume "$transcript_id"
+grep -Fqx "ANTHROPIC_MODEL=$session_model" "$TEST_TMP/claude-env" \
+    || fail "resume did not relaunch on the model the session ran"
+
+# An explicit --model still outranks the transcript.
+"$ROOT/files/opencodex" run commandcode --model "$cc_opus" claude --resume "$transcript_id"
+grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
+    || fail "an explicit model was overridden by the session's own model"
+
+# Another provider's route is not re-prefixed onto this one; the launch falls
+# back to the provider default instead.
+foreign_id="77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+printf '{"type":"assistant","message":{"role":"assistant","model":"crofai/deepseek-v4-flash-0731"}}\n' \
+    > "$transcript_dir/$foreign_id.jsonl"
+"$ROOT/files/opencodex" run commandcode claude --resume "$foreign_id"
+grep -Fqx "ANTHROPIC_MODEL=$expected_model" "$TEST_TMP/claude-env" \
+    || fail "a foreign provider's transcript model was not rejected"
+
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
 # Codex Desktop resume-history sync is a macOS behaviour, so the rendered flag
 # tracks the host platform rather than a fixed value.
