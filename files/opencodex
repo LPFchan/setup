@@ -124,8 +124,6 @@ def validate_registry(data: Any) -> dict[str, Any]:
             raise UserError(f"invalid provider: {provider_name}")
         if provider.get("provider_type") not in PROVIDER_TYPES:
             raise UserError(f"invalid provider_type for {provider_name}")
-        if provider.get("default_model") is not None:
-            _string(provider["default_model"], f"default_model for {provider_name}")
         base_url = _string(provider.get("base_url"), f"base_url for {provider_name}")
         if not valid_base_url(base_url):
             raise UserError(f"invalid base_url for {provider_name}")
@@ -275,24 +273,6 @@ def opencodex_seed() -> dict[str, Any]:
     }
 
 
-def provider_default_model(registry: dict[str, Any], provider_name: str) -> str | None:
-    """The provider's default model from its registry descriptor.
-
-    The shared registry file still carries a profiles array for claudex and
-    providers, which remain profile-based; a same-named entry there is
-    honored as a one-release fallback only.
-    """
-    provider = registry.get("providers", {}).get(provider_name, {})
-    if provider.get("default_model"):
-        return provider["default_model"]
-    for profile in registry.get("profiles") or []:
-        if isinstance(profile, dict) and profile.get("name") == provider_name:
-            default = profile.get("default_model")
-            if isinstance(default, str) and default:
-                return default
-    return None
-
-
 def desired_opencodex_config(
     registry: dict[str, Any], original: dict[str, Any], auth_data: dict[str, Any]
 ) -> tuple[dict[str, Any], set[str]]:
@@ -319,7 +299,6 @@ def desired_opencodex_config(
 
     for name in sorted(managed):
         descriptor = registry["providers"][name]
-        default_model = provider_default_model(registry, name)
         current = providers.get(name, {})
         provider = dict(current) if isinstance(current, dict) else {}
         if descriptor["provider_type"] == "DirectAnthropic":
@@ -352,12 +331,11 @@ def desired_opencodex_config(
                     "liveModels": True,
                 }
             )
-        if default_model:
-            provider["defaultModel"] = default_model
-        else:
-            provider.pop("defaultModel", None)
-        # Never pin models/selectedModels: with liveModels the proxy serves
-        # each provider's full rotating fleet, not a profile-mapped subset.
+        # Never pin a model: a launch names the one it wants, and with
+        # liveModels the proxy serves each provider's full rotating fleet
+        # rather than a profile-mapped subset. Popping rather than merely
+        # not writing is what retires a pin an older release left behind.
+        provider.pop("defaultModel", None)
         provider.pop("models", None)
         provider.pop("selectedModels", None)
         providers[name] = provider
@@ -501,7 +479,7 @@ def provider_config_diff(
         if not isinstance(live, dict):
             reasons.append(f"provider '{name}' is not loaded by the running proxy")
             continue
-        for field in ("adapter", "authMode", "defaultModel"):
+        for field in ("adapter", "authMode"):
             if field in live and desired.get(field) is not None and desired[field] != live[field]:
                 reasons.append(
                     f"provider '{name}' {field} differs "
@@ -805,10 +783,10 @@ def resumed_model(
 ) -> str | None:
     """The model a resumed claude session already ran, when this provider owns it.
 
-    Reaching for the provider default instead would swap models mid-conversation
-    without saying so, and the multi-model aggregators carry no default at all,
-    so resuming one of their sessions could not launch. Only claude writes the
-    transcripts this reads.
+    Continuing a conversation on anything else would swap models mid-thread
+    without saying so, so the transcript is the only answer worth inferring;
+    a resume that cannot be read from one asks for --model instead. Only
+    claude writes the transcripts this reads.
     """
     if harness != "claude":
         return None
@@ -1974,16 +1952,10 @@ def catalogue(
     entries: list[dict[str, Any]] = []
     for name in names:
         launchable = name != OTHER_PROVIDER
-        default_model = provider_default_model(registry, name) if launchable else None
         entries.append(
             {
                 "name": name,
                 "launchable": launchable,
-                "default_model": (
-                    routed_model(registry, name, default_model)
-                    if default_model
-                    else None
-                ),
                 "models": [
                     {
                         "id": model_id,
@@ -2086,12 +2058,11 @@ def main() -> int:
         if args and args[0] in HARNESSES:
             harness, args = args[0], args[1:]
         if model is None:
-            model = resumed_model(
-                registry, provider, harness, args
-            ) or provider_default_model(registry, provider)
+            model = resumed_model(registry, provider, harness, args)
             if model is None:
                 raise UserError(
-                    f"provider {provider} has no default model; pass --model"
+                    f"pass --model to launch {provider} "
+                    f"(models: opencodex list --provider {provider})"
                 )
         model = routed_model(registry, provider, model)
         return launch(provider, harness, args, model, effort)

@@ -331,32 +331,49 @@ expected_ocxp_args=$(printf '%s\nrun\ncodex\nclaude\n--resume\n%s' "$FAKE_BIN/op
 [[ $(cat "$TEST_TMP/opencodex-args") == "$expected_ocxp_args" ]] \
     || { echo "FAIL: resume did not dispatch a provider-named OpenCodex session through its provider" >&2; exit 1; }
 
-# A uniquely matching non-Claude provider default recovers an active session
-# whose sidecar row is not yet durable.
+# The launcher routes as <provider>/<model>, so the transcript's own model
+# names its provider and recovers an active session whose sidecar row is not
+# yet durable.
 ocxactiveid="aaaaaaaa-bbbb-cccc-dddd-333333333333"
 ocxactivecwd="$HOME/opencodex-active-proj"
 mkdir -p "$ocxactivecwd" "$HOME/.claude/projects/-home-opencodex-active-proj"
 ocxactivesession="$HOME/.claude/projects/-home-opencodex-active-proj/$ocxactiveid.jsonl"
 {
     printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Active OpenCodex session"}}\n' "$ocxactivecwd"
-    printf '{"type":"assistant","message":{"role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}]}}\n'
+    printf '{"type":"assistant","message":{"role":"assistant","model":"crofai/deepseek-v4-flash-0731","content":[{"type":"text","text":"ok"}]}}\n'
 } > "$ocxactivesession"
-printf '{"providers":{"codex":{"default_model":"gpt-5.6-sol"},"other":{"default_model":"other-model"}}}\n' \
+# A prefixless model claims no provider, however many are configured, so this
+# one stays a plain Claude session rather than being guessed onto a route.
+ocxbareid="aaaaaaaa-bbbb-cccc-dddd-444444444444"
+ocxbarecwd="$HOME/opencodex-bare-proj"
+mkdir -p "$ocxbarecwd" "$HOME/.claude/projects/-home-opencodex-bare-proj"
+ocxbaresession="$HOME/.claude/projects/-home-opencodex-bare-proj/$ocxbareid.jsonl"
+{
+    printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Bare model session"}}\n' "$ocxbarecwd"
+    printf '{"type":"assistant","message":{"role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}]}}\n'
+} > "$ocxbaresession"
+printf '{"providers":{"codex":{},"crofai":{}}}\n' \
     > "$HOME/.config/opencodex/managed-profiles.json"
 touch -t 202407061400.00 "$ocxactivesession"
+touch -t 202407061350.00 "$ocxbaresession"
 
 cat > "$FAKE_BIN/fzf" <<EOF
 #!/usr/bin/env bash
 selection=\$(cat)
+printf '%s\n' "\$selection" > "\$TEST_TMP/active-listing"
 printf '%s\n' "\$selection" | grep 'ocx|' | grep '$ocxactiveid' | head -1
 EOF
 chmod +x "$FAKE_BIN/fzf"
 
 TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencodex-active-stderr"
 
-expected_ocxactive_args=$(printf '%s\nrun\ncodex\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxactiveid")
+expected_ocxactive_args=$(printf '%s\nrun\ncrofai\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxactiveid")
 [[ $(cat "$TEST_TMP/opencodex-args") == "$expected_ocxactive_args" ]] \
     || { echo "FAIL: resume did not recover an active unmapped OpenCodex session" >&2; exit 1; }
+grep -F "$ocxbareid" "$TEST_TMP/active-listing" | grep -Fq "cc|$ocxbareid" \
+    || { echo "FAIL: a bare unmapped model was not left as a plain Claude session" >&2; exit 1; }
+! grep -F "$ocxbareid" "$TEST_TMP/active-listing" | grep -Fq "ocx|" \
+    || { echo "FAIL: a bare unmapped model was inferred onto an OpenCodex provider" >&2; exit 1; }
 
 # Hermes persists sessions in ~/.hermes/state.db. Only top-level interactive
 # CLI sessions belong in the human resume picker; tool and child sessions must

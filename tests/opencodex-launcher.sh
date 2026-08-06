@@ -32,14 +32,16 @@ export OPENCODEX_CAPABILITY_PROBE=0
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
 cp "$ROOT/files/provider-registry.json" "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
+# The two commandcode models the assertions below launch and compare against.
+# Nothing in the registry ranks a provider's models, so the test names its own.
+cc_model="xiaomi/mimo-v2.5-pro"
+cc_opus="moonshotai/Kimi-K3"
 # Minimal codex catalog so the picker lists commandcode models in this offline env.
-python3 - "$OPENCODEX_REGISTRY" "$CODEX_HOME/opencodex-catalog.json" <<'PY'
+python3 - "$CODEX_HOME/opencodex-catalog.json" "$cc_model" "$cc_opus" MiniMaxAI/MiniMax-M3 <<'PY'
 import json
 import sys
 
-registry = json.load(open(sys.argv[1]))
-provider = registry["providers"]["commandcode"]
-models = sorted({provider["default_model"], "moonshotai/Kimi-K3", "MiniMaxAI/MiniMax-M3"})
+models = sorted(set(sys.argv[2:]))
 catalog = {
     "models": [
         {
@@ -55,7 +57,7 @@ catalog = {
         for model in models
     ]
 }
-json.dump(catalog, open(sys.argv[2], "w"))
+json.dump(catalog, open(sys.argv[1], "w"))
 PY
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -132,20 +134,18 @@ chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" 
 PATH="$TEST_TMP:$PATH"
 export PATH
 
-cc_default="$(jq -r '.providers.commandcode.default_model' "$OPENCODEX_REGISTRY")"
-cc_opus="moonshotai/Kimi-K3"
 # The fallback prompt lists display labels (routing prefix stripped), so the
 # canned answers use the stripped form too.
-printf '%s\n' commandcode "$cc_default" high codex > "$TEST_TMP/fzf-responses"
+printf '%s\n' commandcode "$cc_model" high codex > "$TEST_TMP/fzf-responses"
 "$ROOT/files/opencodex"
 [[ $(cat "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
     -c "$(python3 -c 'import json,sys; print("model_catalog_json=" + json.dumps(sys.argv[1]))' "$CODEX_HOME/opencodex-catalog.json")" \
     -c "$(python3 -c 'import json; print("model_reasoning_effort=" + json.dumps("high"))')" \
-    -m "commandcode/$cc_default")" ]] \
+    -m "commandcode/$cc_model")" ]] \
     || fail "fallback picker did not launch codex with the chosen model and effort"
 grep -c -- '--prompt' "$TEST_TMP/fzf-args" | grep -q '^4$' \
     || fail "fallback picker did not prompt for provider, model, effort, and harness"
-jq -e --arg model "commandcode/$cc_default" '
+jq -e --arg model "commandcode/$cc_model" '
     .version == 1 and .provider == "commandcode" and .harness == "codex"
     and .models.commandcode == $model and .efforts[$model] == "high"
 ' "$OPENCODEX_PICKER_STATE" >/dev/null \
@@ -176,14 +176,14 @@ jq -e --arg model "commandcode/$cc_opus" '
 ' "$OPENCODEX_PICKER_STATE" >/dev/null \
     || fail "launch did not update model, effort, and harness memory"
 
-expected_model="commandcode/$(jq -r '.providers.commandcode.default_model' "$OPENCODEX_REGISTRY")"
+expected_model="commandcode/$cc_model"
 expected_catalog_override=$(python3 - "$CODEX_HOME/opencodex-catalog.json" <<'PY'
 import json
 import sys
 print("model_catalog_json=" + json.dumps(sys.argv[1], ensure_ascii=False))
 PY
 )
-"$ROOT/files/opencodex" run commandcode codex --sandbox read-only
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" codex --sandbox read-only
 [[ $(cat "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
     -c "$expected_catalog_override" -m "$expected_model" --sandbox read-only)" ]] \
     || fail "Codex did not receive the configured catalog, routed model, and forwarded arguments"
@@ -205,16 +205,26 @@ override_model="$cc_opus"
     -c "$expected_catalog_override" -c "$(python3 -c 'import json; print("model_reasoning_effort=" + json.dumps("ultra"))')" \
     -m "commandcode/$override_model")" ]] \
     || fail "run --effort did not add the reasoning effort override"
-"$ROOT/files/opencodex" run commandcode codex --model kept --effort low
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" codex --model kept --effort low
 grep -Fqx -- '--model' "$TEST_TMP/codex-args" && grep -Fqx 'kept' "$TEST_TMP/codex-args" \
     || fail "run swallowed a --model placed after the harness"
 [[ $(head -4 "$TEST_TMP/codex-args") == "$(printf '%s\n%s\n%s\n%s' \
     -c "$expected_catalog_override" -m "$expected_model")" ]] \
     || fail "a --model after the harness changed the launched model"
-! "$ROOT/files/opencodex" run commandcode --effort bogus codex 2>"$TEST_TMP/effort-error" \
+! "$ROOT/files/opencodex" run commandcode --effort bogus --model "$cc_model" codex \
+    2>"$TEST_TMP/effort-error" \
     || fail "run accepted an invalid effort"
 grep -q 'unknown reasoning effort: bogus' "$TEST_TMP/effort-error" \
     || fail "invalid effort did not produce a clear error"
+
+# Nothing supplies a model on its own any more: a non-resume launch that names
+# none is refused, and told where to find the ones the provider serves.
+! "$ROOT/files/opencodex" run commandcode codex 2>"$TEST_TMP/no-model-error" \
+    || fail "run launched a provider with no model"
+grep -q 'pass --model to launch commandcode' "$TEST_TMP/no-model-error" \
+    || fail "a launch with no resolvable model did not ask for --model"
+grep -q 'opencodex list --provider commandcode' "$TEST_TMP/no-model-error" \
+    || fail "the no-model error did not point at the provider's model listing"
 
 ! "$ROOT/files/opencodex" run bogus codex 2>"$TEST_TMP/provider-error" \
     || fail "run accepted an unknown provider"
@@ -251,7 +261,7 @@ ocx_calls_before=$(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0)
 [[ $(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0) -eq $ocx_calls_before ]] \
     || fail "list invoked the ocx binary (proxy start or login)"
 grep -qx "commandcode	$expected_model	low,medium,high	launchable" "$TEST_TMP/list-out" \
-    || fail "list did not print the commandcode default model with its efforts"
+    || fail "list did not print a catalogued commandcode model with its efforts"
 grep -qx "commandcode	commandcode/$cc_opus	low,medium,high	launchable" "$TEST_TMP/list-out" \
     || fail "list did not print every catalogued commandcode model"
 grep -q '^# harnesses: claude, codex, grok, kimi$' "$TEST_TMP/list-out" \
@@ -269,11 +279,13 @@ grep -qx '# proxy: stopped' "$TEST_TMP/list-out" \
 "$ROOT/files/opencodex" list --json </dev/null > "$TEST_TMP/list-json" \
     || fail "list --json failed"
 jq -e '(.harnesses | index("codex")) and ([.providers[] | select(.name == "commandcode")]
-    | first | .launchable and (.default_model == $model)
+    | first | .launchable
     and ([.models[].id] | index($model))
     and ([.models[] | select(.id == $model) | .efforts] | first == ["low","medium","high"]))' \
     --arg model "$expected_model" "$TEST_TMP/list-json" >/dev/null \
     || fail "list --json did not carry the expected catalogue shape"
+jq -e '[.providers[] | has("default_model")] | any | not' "$TEST_TMP/list-json" >/dev/null \
+    || fail "list --json still advertises a per-provider default model"
 jq -e '.proxy.running == false and .proxy.restart_pending == false
     and .proxy.reasons == [] and .proxy.port == null' "$TEST_TMP/list-json" >/dev/null \
     || fail "list --json did not report the offline proxy state"
@@ -286,16 +298,16 @@ grep -q 'unknown provider: bogus' "$TEST_TMP/list-unknown-error" \
 ! "$ROOT/files/opencodex" list --bogus </dev/null 2>/dev/null \
     || fail "list accepted an unknown flag"
 
-"$ROOT/files/opencodex" run commandcode grok
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" grok
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
-    || fail "grok harness did not receive the routed default model via -m"
+    || fail "grok harness did not receive the routed model via -m"
 "$ROOT/files/opencodex" run commandcode --model "$override_model" grok
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "grok harness did not receive the routed override model via -m"
 
-"$ROOT/files/opencodex" run commandcode kimi
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" kimi
 [[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
-    || fail "kimi harness did not receive the routed default model via -m"
+    || fail "kimi harness did not receive the routed model via -m"
 "$ROOT/files/opencodex" run commandcode --model "$override_model" kimi
 [[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "kimi harness did not receive the routed override model via -m"
@@ -305,39 +317,39 @@ grep -q 'unknown provider: bogus' "$TEST_TMP/list-unknown-error" \
 mkdir -p "$HOME/.kimi-code/bin"
 mv "$TEST_TMP/kimi" "$HOME/.kimi-code/bin/kimi"
 rm -f "$TEST_TMP/kimi-args"
-PATH="$TEST_TMP:/usr/bin:/bin" "$ROOT/files/opencodex" run commandcode kimi
+PATH="$TEST_TMP:/usr/bin:/bin" "$ROOT/files/opencodex" run commandcode --model "$cc_model" kimi
 [[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
     || fail "opencodex did not dispatch private Kimi with the routed model"
 
-anthropic_default=$(jq -r '.providers.anthropic.default_model' "$OPENCODEX_REGISTRY")
-"$ROOT/files/opencodex" run anthropic codex
-[[ $(tail -2 "$TEST_TMP/codex-args") == "$(printf '%s\n%s' -m "anthropic/$anthropic_default")" ]] \
-    || fail "Anthropic OAuth profile did not route its default model"
+anthropic_model="claude-sonnet-5"
+"$ROOT/files/opencodex" run anthropic --model "$anthropic_model" codex
+[[ $(tail -2 "$TEST_TMP/codex-args") == "$(printf '%s\n%s' -m "anthropic/$anthropic_model")" ]] \
+    || fail "Anthropic OAuth provider did not route its model"
 [[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
     || fail "healthy Anthropic account repeated the pre-discovery login"
 [[ $(grep -c '^sync$' "$TEST_TMP/ocx-calls") == 1 ]] \
     || fail "healthy Anthropic account repeated sync"
-"$ROOT/files/opencodex" run anthropic codex
+"$ROOT/files/opencodex" run anthropic --model "$anthropic_model" codex
 [[ $(grep -c '^login anthropic$' "$TEST_TMP/ocx-calls") == 1 ]] \
     || fail "authenticated Anthropic launch repeated OAuth login"
 [[ $(grep -c '^sync$' "$TEST_TMP/ocx-calls") == 1 ]] \
     || fail "authenticated Anthropic launch repeated sync"
 
-"$ROOT/files/opencodex" run commandcode --effort default claude
+"$ROOT/files/opencodex" run commandcode --effort default --model "$cc_model" claude
 ! grep -q '^MAX_THINKING_TOKENS=' "$TEST_TMP/claude-env" \
     || fail "'default' effort should not set MAX_THINKING_TOKENS"
 
 resume_id="11111111-2222-4333-8444-555555555555"
-"$ROOT/files/opencodex" run commandcode claude --resume "$resume_id"
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" claude --resume "$resume_id"
 grep -q '^claude$' "$TEST_TMP/claude-args" || fail "Claude was not launched through ocx"
 grep -q '^--resume$' "$TEST_TMP/claude-args" || fail "Claude arguments were not forwarded"
 grep -Fqx "ANTHROPIC_MODEL=$expected_model" "$TEST_TMP/claude-env" \
-    || fail "Claude default model was not routed"
+    || fail "Claude model was not routed"
 grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "Claude resume mapping did not use the explicit session id"
 
 short_resume_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-"$ROOT/files/opencodex" run commandcode claude -r "$short_resume_id"
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" claude -r "$short_resume_id"
 grep -Fqx -- '-r' "$TEST_TMP/claude-args" || fail "Claude's short resume flag was not forwarded"
 grep -Fqx -- "$short_resume_id" "$TEST_TMP/claude-args" || fail "Claude's short resume id was not forwarded"
 ! grep -Fqx -- '--session-id' "$TEST_TMP/claude-args" \
@@ -345,7 +357,7 @@ grep -Fqx -- "$short_resume_id" "$TEST_TMP/claude-args" || fail "Claude's short 
 grep -Fqx "$short_resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
     || fail "short resume mapping did not preserve the requested session id"
 
-EXPECT_PRECLAIM=1 "$ROOT/files/opencodex" run commandcode claude
+EXPECT_PRECLAIM=1 "$ROOT/files/opencodex" run commandcode --model "$cc_model" claude
 generated_id=$(awk 'previous == "--session-id" { print; exit } { previous = $0 }' "$TEST_TMP/claude-args")
 python3 - "$generated_id" <<'PY'
 import sys
@@ -359,7 +371,7 @@ grep -Fqx "$generated_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv"
 
 # A resume under the same provider refreshes the row instead of duplicating
 # or clobbering it: the sidecar still holds exactly one line for the sid.
-"$ROOT/files/opencodex" run commandcode claude --resume "$resume_id"
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" claude --resume "$resume_id"
 [[ $(grep -c "^$resume_id"$'\t' "$HOME/.config/opencodex/sessions.tsv") == 1 ]] \
     || fail "resume duplicated the session mapping"
 grep -Fqx "$resume_id"$'\tcommandcode' "$HOME/.config/opencodex/sessions.tsv" \
@@ -399,14 +411,18 @@ grep -Fqx "ANTHROPIC_MODEL=$session_model" "$TEST_TMP/claude-env" \
 grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
     || fail "an explicit model was overridden by the session's own model"
 
-# Another provider's route is not re-prefixed onto this one; the launch falls
-# back to the provider default instead.
+# Another provider's route is not re-prefixed onto this one. With nothing left
+# to fall back to, the resume is refused rather than quietly rerouted.
 foreign_id="77777777-8888-4999-8aaa-bbbbbbbbbbbb"
 printf '{"type":"assistant","message":{"role":"assistant","model":"crofai/deepseek-v4-flash-0731"}}\n' \
     > "$transcript_dir/$foreign_id.jsonl"
-"$ROOT/files/opencodex" run commandcode claude --resume "$foreign_id"
-grep -Fqx "ANTHROPIC_MODEL=$expected_model" "$TEST_TMP/claude-env" \
+! "$ROOT/files/opencodex" run commandcode claude --resume "$foreign_id" \
+    2>"$TEST_TMP/foreign-resume-error" \
     || fail "a foreign provider's transcript model was not rejected"
+grep -q 'pass --model to launch commandcode' "$TEST_TMP/foreign-resume-error" \
+    || fail "a rejected foreign transcript model did not ask for --model"
+! grep -Fq 'deepseek-v4-flash-0731' "$TEST_TMP/claude-env" \
+    || fail "a foreign provider's transcript model reached the harness"
 
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
 # Codex Desktop resume-history sync is a macOS behaviour, so the rendered flag
@@ -417,13 +433,31 @@ jq -e --argjson want "$expected_sync" '.syncResumeHistory == $want' "$OPENCODEX_
 jq -e '.providers.anthropic.adapter == "anthropic"
     and .providers.anthropic.authMode == "oauth"
     and .providers.anthropic.baseUrl == "https://api.anthropic.com"
-    and .providers.anthropic.defaultModel == "claude-sonnet-5"
+    and (.providers.anthropic | has("defaultModel") | not)
     and (.providers.anthropic | has("apiKey") | not)' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "Anthropic subscription OAuth provider was not rendered"
 jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "OpenCodex provider credentials were not rendered"
 "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
     || fail "freshly applied OpenCodex config was not current"
+
+# A machine whose config still carries a pin from an older release converges on
+# the next apply; leaving it would silently outrank what a launch asks for.
+python3 - "$OPENCODEX_CONFIG" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as stream:
+    config = json.load(stream)
+for name in ("anthropic", "commandcode"):
+    config["providers"][name]["defaultModel"] = "stale-pin"
+with open(path, "w") as stream:
+    json.dump(config, stream)
+PY
+"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
+jq -e '[.providers[] | has("defaultModel")] | any | not' "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "apply kept a stale defaultModel pin in the OpenCodex config"
 
 # OpenCodex persists OAuth preset metadata while reconciling providers at
 # service startup. Those runtime-owned fields must not create setup drift.
@@ -657,9 +691,19 @@ finally:
 original = namespace["sys"].platform
 namespace["sys"].platform = "darwin"
 try:
+    # The stale pin in the incoming config stands in for a machine still
+    # carrying what an older release wrote; reconciling must retire it.
     config, managed = namespace["desired_opencodex_config"](
         registry,
-        {"providers": {"anthropic": {"authMode": "key", "apiKey": "old-key"}}},
+        {
+            "providers": {
+                "anthropic": {
+                    "authMode": "key",
+                    "apiKey": "old-key",
+                    "defaultModel": "stale-pin",
+                }
+            }
+        },
         {},
     )
 finally:
@@ -670,13 +714,12 @@ assert config["providers"]["anthropic"] == {
     "adapter": "anthropic",
     "authMode": "oauth",
     "baseUrl": "https://api.anthropic.com",
-    "defaultModel": "claude-sonnet-5",
 }
-assert config["providers"]["commandcode"]["defaultModel"] == "xiaomi/mimo-v2.5-pro"
-assert config["providers"]["kimicode"]["defaultModel"] == "k3"
+assert "defaultModel" not in config["providers"]["commandcode"]
+assert "defaultModel" not in config["providers"]["kimicode"]
 
-# A provider-only entry (no same-named profile anywhere) still supplies its
-# defaultModel from the provider descriptor's default_model.
+# A provider-only entry (no same-named profile anywhere) is still rendered,
+# and it pins no model either.
 solo_registry = copy.deepcopy(registry)
 solo_registry["profiles"] = []
 solo_registry["providers"]["soloroute"] = {
@@ -686,26 +729,24 @@ solo_registry["providers"]["soloroute"] = {
     "npm": "@ai-sdk/openai-compatible",
     "auth": {"type": "api-key", "store": "opencode", "key": "soloroute"},
     "enabled": True,
-    "default_model": "solo-model",
 }
 namespace["validate_registry"](solo_registry)
 config, _ = namespace["desired_opencodex_config"](solo_registry, {}, {"soloroute": {"key": "k"}})
-assert config["providers"]["soloroute"]["defaultModel"] == "solo-model"
+assert config["providers"]["soloroute"]["baseUrl"] == "https://solo.example/v1"
+assert "defaultModel" not in config["providers"]["soloroute"]
 
 # The validator no longer requires a profiles array...
 namespace["validate_registry"]({"version": 1, "providers": registry["providers"]})
 bare = copy.deepcopy(registry)
 del bare["profiles"]
 namespace["validate_registry"](bare)
-# ...but a malformed provider default_model is still rejected.
-broken = copy.deepcopy(registry)
-broken["providers"]["commandcode"]["default_model"] = ""
-try:
-    namespace["validate_registry"](broken)
-except namespace["UserError"]:
-    pass
-else:
-    raise AssertionError("an empty provider default_model was accepted")
+# ...and a registry a rollback left carrying a provider default_model is
+# tolerated and ignored rather than refused.
+stale = copy.deepcopy(registry)
+stale["providers"]["commandcode"]["default_model"] = "xiaomi/mimo-v2.5-pro"
+namespace["validate_registry"](stale)
+config, _ = namespace["desired_opencodex_config"](stale, {}, {"commandcode": {"key": "k"}})
+assert "defaultModel" not in config["providers"]["commandcode"]
 
 index = {
     "gpt-5.6-sol": {"id": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "default_effort": "low"},

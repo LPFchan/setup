@@ -129,9 +129,11 @@ _opencodex_provider_for() {
         fi
     fi
 
-    # A running or interrupted session can lack a durable sidecar row. Recover
-    # non-Claude models only when one configured provider has that exact
-    # default; native Claude model names are deliberately never inferred.
+    # A running or interrupted session can lack a durable sidecar row. The
+    # launcher routes through the proxy as <provider>/<model>, so a transcript
+    # names its own provider in the model it recorded. A prefixless name —
+    # every native Claude model among them — claims no provider and is
+    # deliberately never guessed at.
     local registry="$HOME/.config/opencodex/managed-profiles.json"
     [[ -f "$registry" ]] || return
     if [[ -z "$session_file" ]]; then
@@ -142,13 +144,9 @@ _opencodex_provider_for() {
     model=$(jq -r 'select(.type == "assistant" and .message.role == "assistant")
                    | .message.model // empty
                    | select(. != "<synthetic>")' "$session_file" 2>/dev/null | tail -1)
-    [[ -n "$model" && "$model" != claude-* ]] || return
-    provider=$(jq -r --arg model "$model" '
-        .providers | to_entries[]
-        | select(.value.default_model == $model)
-        | .key
-    ' "$registry" 2>/dev/null | head -2)
-    [[ -n "$provider" && "$provider" != *$'\n'* ]] || return
+    [[ "$model" == */* ]] || return
+    provider="${model%%/*}"
+    jq -e --arg name "$provider" '.providers | has($name)' "$registry" >/dev/null 2>&1 || return
     echo "$provider"
 }
 

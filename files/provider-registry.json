@@ -7,8 +7,7 @@
       "auth": {
         "type": "oauth",
         "provider": "chatgpt"
-      },
-      "default_model": "gpt-5.6-sol"
+      }
     },
     "anthropic": {
       "provider_type": "DirectAnthropic",
@@ -17,8 +16,7 @@
         "type": "oauth",
         "provider": "anthropic",
         "claudex_provider": "claude"
-      },
-      "default_model": "claude-sonnet-5"
+      }
     },
     "grimoire": {
       "provider_type": "OpenAICompatible",
@@ -54,8 +52,7 @@
         "store": "opencode",
         "key": "commandcode"
       },
-      "enabled": true,
-      "default_model": "xiaomi/mimo-v2.5-pro"
+      "enabled": true
     },
     "deepseek": {
       "provider_type": "OpenAICompatible",
@@ -67,8 +64,7 @@
         "store": "opencode",
         "key": "deepseek"
       },
-      "enabled": true,
-      "default_model": "deepseek-chat"
+      "enabled": true
     },
     "kimicode": {
       "provider_type": "OpenAICompatible",
@@ -80,8 +76,7 @@
         "store": "opencode",
         "key": "kimicode"
       },
-      "enabled": true,
-      "default_model": "k3"
+      "enabled": true
     },
     "meta": {
       "provider_type": "OpenAICompatible",
@@ -93,8 +88,7 @@
         "store": "opencode",
         "key": "meta"
       },
-      "enabled": true,
-      "default_model": "muse-spark-1.2"
+      "enabled": true
     }
   },
   "profiles": [

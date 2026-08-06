@@ -53,8 +53,8 @@ opencodex list --json | jq -r '.providers[] | select(.launchable)
 ```
 
 The `--json` form is a single object with `providers` (each `name`,
-`launchable`, `default_model`, and `models` of `id`/`label`/`efforts`/`support`)
-and `harnesses`. Pass a row's `model` column straight to `--model`; it is
+`launchable`, and `models` of `id`/`label`/`efforts`/`support`) and
+`harnesses`. Pass a row's `model` column straight to `--model`; it is
 already in routable form.
 
 Notes on the listing:

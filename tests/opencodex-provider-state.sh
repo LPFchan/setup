@@ -202,7 +202,6 @@ namespace["converge_live_proxy"]({
             "adapter": "openai-chat",
             "authMode": "key",
             "liveModels": True,
-            "defaultModel": "some-model",
             "baseUrl": "https://example.com/v1",
             "apiKey": "secret",
         }
