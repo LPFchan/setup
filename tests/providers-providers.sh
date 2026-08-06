@@ -90,6 +90,20 @@ profile_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.profile
 assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
 m.REGISTRY_PATH = profile_registry
 
+# The registry is fetched unverified, so validation is the only gate: a copy
+# that routes nothing must be refused rather than silently unmanaging every
+# provider. Both populated shapes stay valid.
+for empty in ({'version': 1}, {'version': 1, 'providers': {}}, {'version': 1, 'profiles': []}):
+    try:
+        m._validate_registry(copy.deepcopy(empty))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'content-free registry passed validation: {empty}')
+m._validate_registry(m.load_json('$ROOT/files/provider-registry.json'))
+m._validate_registry(copy.deepcopy(profileless))
+m._validate_registry(m.load_json(fixture_registry))
+
 malformed_registry = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
 del malformed_registry['providers']['grimoire']['auth']['key']
 try:

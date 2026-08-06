@@ -1153,6 +1153,12 @@ def _validate_registry(data):
     providers = data.get("providers", {})
     if providers and not isinstance(providers, dict):
         raise ValueError("registry providers must be an object")
+    # A registry that routes nothing is a truncated or empty fetch, not a valid
+    # one: installing it would silently drop every managed provider. Either
+    # source counts, since `providers` is canonical but the legacy profile array
+    # is still a supported shape.
+    if not providers and not profiles:
+        raise ValueError("registry defines no providers")
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise ValueError(f"invalid provider: {provider_name}")

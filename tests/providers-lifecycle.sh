@@ -84,13 +84,45 @@ body = match.group("body")
 assert 'provider_type = "DirectAnthropic"' in body
 assert 'oauth_provider = "claude"' in body
 PY
+
+# Claudex is retired: providers still hands it the registry, but a failure in
+# unmaintained claudex code must not veto a maintained module's own update.
+print '#!/usr/bin/env python3\nraise SystemExit(3)' > "$CLAUDEX_BIN"
+chmod +x "$CLAUDEX_BIN"
+print '# drift' >> "$BIN"
+expect_status 1 outdated
+update 2>"$TEST_TMP/claudex.err" \
+    || fail "a failing retired claudex aborted the providers update"
+expect_status 0 current
+grep -q claudex "$TEST_TMP/claudex.err" \
+    || fail "a failing claudex __apply was reported to nobody"
+cp "$ROOT/files/claudex" "$CLAUDEX_BIN"
+chmod +x "$CLAUDEX_BIN"
+
 uninstall
 [[ ! -e "$REGISTRY" ]] || fail "uninstall left the provider registry behind"
 [[ -f "$LEGACY_REGISTRY" ]] || fail "providers uninstall removed the registry claudex owns"
 
+# A failure between staging and the atomic swap leaves the old launcher
+# installed, and the old launcher reads the legacy registry: it must survive.
 rm -f "$CLAUDEX_BIN"
+print '{truncated' > "$HOME/.config/providers/state.json"
+rc=0
+install >/dev/null 2>&1 || rc=$?
+(( rc != 0 )) || fail "install reported success despite a failed state migration"
+[[ -f "$LEGACY_REGISTRY" ]] \
+    || fail "a failed install destroyed the registry the installed launcher reads"
+rm -f "$HOME/.config/providers/state.json"
+
 install
 [[ ! -e "$LEGACY_REGISTRY" ]] || fail "install left the superseded shared registry behind"
+
+# A legacy copy stranded on a machine that later loses claudex is reclaimed on
+# the next update, not orphaned forever behind a first-install-only migration.
+cp "$ROOT/files/provider-registry.json" "$LEGACY_REGISTRY"
+update
+[[ ! -e "$LEGACY_REGISTRY" ]] || fail "update orphaned a superseded shared registry"
+
 uninstall
 [[ ! -e "$REGISTRY" ]] || fail "uninstall left the provider registry behind"
 
