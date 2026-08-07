@@ -16,8 +16,9 @@ main, purge the worktree.
    base tip. Keep it out of the repo, or it shows up in everyone's `git status`.
    Tracked files only — recreate `.venv` and friends in the worktree.
 3. Do everything there. Never write to the shared checkout or its index.
-4. Rebase onto the base tip — it moved while you worked — then land it with
-   `git merge --ff-only` in the shared checkout, and push.
+4. Rebase onto the base tip. If main moved while you worked, resolve the
+   conflict the correct way — in your tree, where it costs nobody else. Then
+   land it with `git merge --ff-only` in the shared checkout, and push.
 5. `git worktree remove`, `git branch -d`, `git worktree prune`. Confirm with
    `git worktree list`.
 
