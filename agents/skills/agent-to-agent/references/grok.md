@@ -8,6 +8,33 @@ under `~/.grok/sessions/` carries the conversation across turns.
 cannot block on a permission prompt. It grants the child the invoking user's
 privileges; delegate only work the operator authorizes.
 
+## Live control with ACP
+
+Start Grok's ACP server with `grok agent --always-approve stdio`. Send
+`initialize`, then `session/new` (or `session/load`/`session/resume`) and retain
+the returned session ID.
+
+- **OBSERVE (native):** consume `session/update` notifications for streamed
+  messages and tool activity. The outstanding `session/prompt` response is the
+  terminal turn signal.
+- **STEER (broker):** ACP `session/prompt` starts a turn; it is not native
+  input injection into a turn already running. Queue normal guidance, or use
+  `session/cancel`, wait for termination, and prompt again for an urgent
+  redirect. Mark displaced pending broker records `superseded` before
+  promoting the redirect.
+- **QUEUE (broker):** persist stable message IDs and FIFO order, deduplicate
+  retries, track `pending`, `in_flight`, `applied`, and `unknown`, and keep only
+  one outstanding `session/prompt` per session. Never replay `unknown`
+  automatically.
+- **INTERRUPT (native):** send `session/cancel` with the explicit `sessionId`
+  and wait for the outstanding prompt response to report its terminal
+  `stopReason` before sending another prompt.
+
+The protocol methods are `initialize`, `session/new`, `session/load`,
+`session/resume`, `session/prompt`, `session/update`, and `session/cancel`.
+Grok's `streaming-json` CLI recipe below remains the one-shot observe plus
+process-stop/resume fallback.
+
 ## Choose the model
 
 Use Grok's configured default model unless the operator explicitly requests a
@@ -72,7 +99,7 @@ exit "$run_status"
 
 In `streaming-json` mode each stdout line is a JSON object: `thought` deltas
 during reasoning, `text` deltas of the assistant reply, and a terminal
-`{"type":"end","stopReason":"EndTurn","sessionId":"...","usage":{...}}` event
+`{"type":"end","stopReason":"end_turn","sessionId":"...","usage":{...}}` event
 that carries the resumable session ID and token usage. The default
 `--output-format plain` prints only the reply text and exposes no session ID —
 always use `streaming-json` for delegation.

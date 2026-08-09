@@ -9,6 +9,61 @@ passes the same `--session-id` on every turn. Nothing has to be scraped out of
 the first turn's output to make follow-ups possible, and a turn that dies
 before emitting anything still leaves a resumable session.
 
+## Parent control fallback
+
+Muse currently exposes no documented machine-readable live-input RPC for an
+active `muse exec` turn. Use managed bash plus a durable per-session broker
+queue:
+
+- **OBSERVE (native task/events):** use `/tasks` for process liveness and read
+  `task.lifecycle.*`, `run.output.delta`, and `run.terminal.completed` records
+  from the current JSONL output. A quiet live task is not proof of progress.
+- **STEER (fallback):** there is no live steer operation. Persist guidance for
+  the next turn. For an urgent redirect, queue a superseding instruction, stop
+  the managed task, confirm exit, then start the next `muse exec` with the
+  same `--session-id`. Under the broker lock, mark displaced pending records
+  `superseded` before promoting the redirect.
+- **QUEUE (broker):** use a transactional private per-session store, not an
+  unsynced append-only file. Track `pending`, `in_flight`, `applied`, and
+  `unknown` states. Commit `pending -> in_flight` before submission; on
+  recovery, transactionally convert any `in_flight` row without terminal
+  evidence to `unknown` before draining, and never replay `unknown`
+  automatically. For an urgent redirect, one transaction must mark displaced
+  pending rows `superseded` and insert/promote the redirect before interrupting
+  or acknowledging it. Acknowledge application only after the next turn
+  consumes the record. A single serialized controller preserves FIFO order.
+- **INTERRUPT (native task facility):** stop the exact managed bash task and
+  wait for terminal confirmation before resuming. Do not use shell `kill`,
+  `nohup`, or `&` to bypass Muse's task manager.
+
+```bash
+umask 077
+queue_db="$run_dir/control.queue.sqlite3"
+message_id="$(uuidgen)"
+python3 - "$queue_db" "$message_id" <<'PY'
+import sqlite3
+import sys
+
+db, message_id = sys.argv[1:]
+conn = sqlite3.connect(db, isolation_level=None)
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA synchronous=FULL")
+conn.execute("CREATE TABLE IF NOT EXISTS queue (seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT UNIQUE NOT NULL, instruction TEXT NOT NULL, state TEXT NOT NULL)")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("INSERT INTO queue(message_id, instruction, state) VALUES (?, ?, 'pending')", (message_id, "NEXT INSTRUCTION"))
+conn.execute("COMMIT")
+conn.close()
+PY
+# A zero exit is the acknowledgement; recover only complete committed rows.
+```
+
+SQLite recovery exposes only committed rows. If an older JSONL queue is being
+migrated, quarantine a truncated final line for operator review rather than
+silently replaying or discarding it.
+
+Completed tools and side effects survive interruption. Reassess the workspace
+before draining the queue.
+
 ## Choose the model
 
 Use the configured default unless the operator explicitly requests a

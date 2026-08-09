@@ -9,7 +9,38 @@ Delegate through OpenCodex when the child must run on a model the plain harness
 cannot reach: a routed provider (`crofai`, `grimoire`, `kimicode`, …) driven by
 Codex's or Claude Code's agent loop. The delegation protocol is the leg's, not
 OpenCodex's — the thread and session semantics in
-[codex.md](codex.md) and [claude-code.md](claude-code.md) apply unchanged.
+[codex.md](codex.md), [claude-code.md](claude-code.md), [grok.md](grok.md), and
+[kimi.md](kimi.md) apply unchanged.
+
+## Control inheritance matrix
+
+OpenCodex does not add a control endpoint or queue. A controlled delegation
+inherits the selected leg only when the wrapper invocation deliberately keeps
+that leg's live process and stdin/stdout or server endpoint available.
+
+| Leg | Native live path | Current recipes in this file | Control result |
+| --- | --- | --- | --- |
+| Codex | `codex app-server`: `turn/steer`, `turn/interrupt`, streamed `turn/*` and `item/*` | `codex exec` / `exec resume` | One-shot observe plus process interrupt/resume unless app-server is explicitly launched through the wrapper. |
+| Claude | Bidirectional stream-json plus Agent SDK `interrupt()` | `claude -p` / `--resume` | One-shot fallback unless the wrapper retains bidirectional stdin and the control client. |
+| Grok | `grok agent stdio` ACP | Wrapper forwards the selected leg's arguments | ACP observe/cancel only when the long-lived stdio process is retained; otherwise use Grok's CLI fallback. |
+| Kimi | `kimi acp` | Wrapper forwards the selected leg's arguments | ACP observe/cancel only when the long-lived stdio process is retained; otherwise use Kimi's CLI fallback. |
+
+- **OBSERVE:** parse the selected leg's events after filtering OpenCodex's
+  stdout banners. Liveness and progress retain the leg's meanings.
+- **STEER:** route only to a native leg operation actually exposed by the live
+  invocation. ACP `session/prompt` and OpenCodex's wrapper process are not
+  themselves live-steer guarantees. For an urgent redirect, mark displaced
+  pending records `superseded` under the broker lock before promoting it.
+- **QUEUE:** persist and drain a broker-owned FIFO keyed by provider, model,
+  effort, leg, and child session ID. Track `pending`, `in_flight`, `applied`,
+  and `unknown`; never replay `unknown` automatically. OpenCodex supplies
+  neither durability nor deduplication.
+- **INTERRUPT:** use the leg's native interrupt/cancel when its endpoint is
+  retained and wait for that leg's terminal event. Otherwise stop the exact
+  wrapper task, confirm process-tree exit, and resume through the same route.
+
+Never switch provider, model, effort, or leg while draining queued messages
+unless the redirect explicitly changes the route.
 
 ## Command shape
 
@@ -320,7 +351,7 @@ Treat process exit without a terminal event as an interruption.
 
 ## Interrupting and redirecting
 
-A live turn accepts no follow-up input. Interrupt it by sending SIGINT to the
+The one-shot recipes above accept no follow-up input. Interrupt one by sending SIGINT to the
 background task's foreground process through the orchestrator's native facility;
 the signal reaches the harness, which shuts the turn down. Confirm the process
 tree exited before resuming. If graceful interruption does not finish, force-stop

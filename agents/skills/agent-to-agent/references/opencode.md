@@ -4,6 +4,54 @@ Use `opencode run` for the first turn and `opencode run --session` for every
 follow-up. Each command may run in a separate Bash tool call; the persisted
 session carries the conversation.
 
+## Live control with the headless server
+
+Run a persistent server and retain its base URL and explicit session ID.
+`opencode attach http://127.0.0.1:4096` can attach an interactive client; a
+broker uses the HTTP endpoints directly:
+
+```bash
+opencode serve --hostname 127.0.0.1 --port 4096
+curl -N http://127.0.0.1:4096/event
+```
+
+- **OBSERVE (native):** keep `GET /event` open as an SSE stream and correlate
+  events by session ID. Server/process state proves liveness; a new event
+  proves progress, and an event for a completed tool is not a scheduling
+  barrier.
+- **STEER (broker policy):** `POST /session/:id/prompt_async` submits a prompt
+  asynchronously; it is not a documented injection into the active turn. For
+  an urgent redirect, atomically mark displaced pending broker records
+  `superseded`, abort the active session turn, observe its terminal/idle state,
+  then submit the superseding prompt.
+- **QUEUE (broker):** persist message IDs and FIFO order, deduplicate retries,
+  track `pending`, `in_flight`, `applied`, and `unknown` delivery states, and
+  call `prompt_async` for only one queued message after the prior turn is
+  terminal. Never replay `unknown` automatically. The server does not provide
+  that durable queue contract.
+- **INTERRUPT (native):** call `POST /session/:id/abort`, then wait for the SSE
+  terminal/idle signal before submitting another prompt.
+
+```bash
+base=http://127.0.0.1:4096
+session_id=RETAINED_SESSION_ID
+curl -sS -X POST "$base/session/$session_id/prompt_async" \
+  -H 'content-type: application/json' \
+  -d '{"parts":[{"type":"text","text":"NEXT INSTRUCTION"}]}'
+curl -sS -X POST "$base/session/$session_id/abort"
+```
+
+If the server emits a permission request, the broker must answer it through
+OpenCode's permission-reply API using an operator-authorized policy; do not
+leave a tool call waiting for an absent interactive client. For a deliberately
+unattended run, `opencode run --auto` auto-approves permissions that are not
+explicitly denied; it is dangerous and does not override explicit denies.
+
+OpenCode also exposes ACP for protocol clients; its `session/update`,
+`session/prompt`, and `session/cancel` semantics follow the same rule: observe
+and cancellation are native, while durable FIFO queueing and redirect policy
+belong to the broker.
+
 ## Available Models
 
 List models from all configured providers:
@@ -50,7 +98,7 @@ cd "$workdir" || exit 1
 
 printf '%s' "$prompt" |
   opencode run --format json \
-    --dangerously-skip-permissions \
+    --auto \
     -m "$model" \
     >"$events_file" \
     2>"$stderr_file" &
@@ -103,7 +151,7 @@ cd "$workdir" || exit 1
 printf '%s' "$prompt" |
   opencode run --format json \
     --session "$session_id" \
-    --dangerously-skip-permissions \
+    --auto \
     -m "$model" \
     >"$events_file" \
     2>"$stderr_file" &
@@ -177,7 +225,7 @@ and recover as described in Interrupting and Redirecting.
 
 ## Interrupting and Redirecting
 
-A live `opencode run` turn accepts no follow-up input. To interrupt it, use the
+A live `opencode run` fallback turn accepts no follow-up input. To interrupt it, use the
 orchestrator's native background-terminal facility to send SIGTERM to the
 process. OpenCode honors it within seconds.
 
@@ -214,12 +262,12 @@ reassess the workspace before continuing.
 - Always pass `--format json`; without it OpenCode writes formatted text that is
   hard to parse reliably.
 - Headless runs cannot answer permission prompts — a tool call that would
-  prompt is simply denied. `--dangerously-skip-permissions` removes the gates;
-  it also grants the child the invoking user's full privileges, so delegate only
-  work the operator would run directly. To keep a host gated instead, omit the
-  flag from the blocks above and accept that gated tool calls will be denied,
-  completing with degraded capability. Treat a nonzero exit that follows a
-  denied tool call as a degraded run, not a failure.
+  prompt is simply denied. `--auto` auto-approves permissions that are not
+  explicitly denied; it is dangerous, so delegate only work the operator would
+  run directly. To keep a host gated instead, omit the flag from the blocks
+  above and have a policy-bearing broker answer the server's permission-reply
+  endpoint. Treat a nonzero exit that follows a denied tool call as a degraded
+  run, not a failure.
 - The tool set is configuration-dependent: core tools (bash, read, write,
   edit, glob, grep, webfetch, websearch) plus whatever skills, plugins, and
   MCP servers the operator has configured. Do not assume an optional tool

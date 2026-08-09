@@ -8,6 +8,39 @@ Do not use `hermes -z`. Its oneshot path declares a stateless channel and does
 not expose or resume the persisted child conversation required by this
 workflow.
 
+## Live control with ACP
+
+Start `hermes acp` as a long-lived stdio JSON-RPC process. Send `initialize`,
+then `session/new` (or the advertised load/resume method) and retain the
+returned session ID. Hermes persists ACP sessions in `~/.hermes/state.db`: keep
+the ACP process alive for live control, but after a restart recover the explicit
+session with `session/load` or `session/resume` when advertised; do not confuse
+process lifetime with session durability.
+
+- **OBSERVE (native):** consume `session/update` notifications for agent
+  messages, tool calls, tool results, and permission requests. The outstanding
+  `session/prompt` response supplies the turn's terminal `stopReason`.
+- **STEER (broker):** ACP has no standard mid-turn steer method. Record
+  best-effort guidance for the next turn; for an urgent redirect, send
+  `session/cancel`, wait for the prompt to settle, then issue a new
+  `session/prompt`. Under the broker lock, mark displaced pending records
+  `superseded` before promoting the redirect.
+- **QUEUE (broker):** persist stable message IDs in FIFO order and allow only
+  one outstanding `session/prompt` per session. Track `pending`, `in_flight`,
+  `applied`, and `unknown`; drain the next record only after the prior prompt
+  response is terminal, and never replay `unknown` automatically.
+- **INTERRUPT (native):** send the `session/cancel` notification with the
+  explicit `sessionId`. Cancellation is confirmed by the outstanding prompt's
+  terminal response/`stopReason`, not by successful delivery of the
+  notification.
+
+Core ACP methods are `initialize`, `session/new`, `session/load`,
+`session/resume`, `session/prompt`, `session/update`, and `session/cancel`;
+queue persistence and deduplication are not supplied by the adapter. Hermes
+may send `session/request_permission`; the ACP client must answer it with an
+operator-authorized policy, because `hermes acp` has no general `--yolo` flag
+that replaces the client's permission handling.
+
 ## Choose the model and provider
 
 Use the active Hermes profile's configured default provider and model unless
@@ -167,9 +200,8 @@ inspect the current files for data already flushed, but do not interpret a
 quiet or unchanged file as a stall. The child may be reasoning, waiting on a
 model response, or running a long tool command.
 
-When structured streaming events are a hard requirement, the Hermes TUI
-gateway JSON-RPC interface is an advanced integration alternative. It is not
-the default command-line recipe and requires a dedicated protocol client.
+When structured streaming events or live cancellation are required, use the
+ACP mode above. The quiet CLI remains the simpler interrupt/resume fallback.
 
 ## Interrupting and redirecting
 

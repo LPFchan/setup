@@ -4,6 +4,52 @@ Use `claude -p` for the first turn and `claude -p --resume` for every
 follow-up. Each turn is one process whose `stream-json` log is a live progress
 feed; the persisted session carries the conversation across turns.
 
+## Live control with streaming input
+
+For a long-lived bidirectional child, keep stdin open and use streaming JSON
+for both directions:
+
+```bash
+claude -p \
+  --input-format stream-json \
+  --output-format stream-json \
+  --include-partial-messages \
+  --dangerously-skip-permissions \
+  --verbose
+```
+
+Send each user message as one JSONL record:
+
+```json
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"DELEGATED TASK"}]}}
+```
+
+- **OBSERVE (native):** consume `system`, `assistant`, `user`, `stream_event`,
+  and terminal `result` records. Partial-message events show generation
+  progress; process state remains the liveness signal during silent tools.
+- **STEER (native, best effort):** write another user-message record while the
+  streaming-input process is live. Claude queues ordinary input for its
+  conversation loop; acceptance does not identify an exact tool boundary.
+- **QUEUE (broker):** persist each message and FIFO position before writing it
+  to stdin. Track `pending`, `in_flight`, `applied`, and `unknown`; Claude's
+  streaming-input buffer is not durable across a process crash, so acknowledge
+  application only after the corresponding turn is observed and never replay
+  `unknown` automatically. For an urgent redirect, mark displaced pending
+  records `superseded` under the broker lock before interrupting.
+- **INTERRUPT (SDK/control client):** use the live Claude Agent SDK client's
+  `interrupt()` operation. Do not invent a stream-json interrupt message. A
+  raw CLI controller without the SDK must stop the process, confirm exit, and
+  use the existing `--resume` recipe with the superseding instruction. The
+  interrupt does not roll back completed tool calls or external side effects.
+
+The live example uses `--dangerously-skip-permissions` so a tool call cannot
+hang waiting for a human; it grants the child the invoking user's privileges.
+For a gated client, answer permission callbacks with an operator-authorized
+policy instead. Exact pre-tool gating requires Agent SDK hooks or permission
+callbacks.
+Ordinary queued input and partial-message observation are not scheduling
+barriers.
+
 ## Available Models
 
 The aliases `fable`, `opus`, `sonnet`, and `haiku` route to the latest
@@ -176,7 +222,7 @@ described in Interrupting and Redirecting.
 
 ## Interrupting and Redirecting
 
-A live `-p` turn accepts no input, so interrupting means terminating: stop the
+A one-shot live `-p` turn accepts no input, so interrupting means terminating: stop the
 child, confirm it exited, then `--resume` the session with the next
 instruction. The session file is append-only at message-completion
 granularity, so prior turns and the current turn's completed messages and

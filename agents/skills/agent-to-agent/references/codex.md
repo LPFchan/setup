@@ -1,8 +1,53 @@
 # Codex
 
-Use `codex exec` for the first turn and `codex exec resume` for every follow-up.
-Each command may run in a separate Bash tool call; the saved thread carries the
-conversation.
+Use `codex app-server` when the parent needs live control. Use `codex exec` for
+the first turn and `codex exec resume` for follow-ups when one-shot execution
+is sufficient; each command may run in a separate Bash tool call and the saved
+thread carries the conversation.
+
+## Live control with app-server
+
+Start `codex app-server` as one long-lived child process and speak JSON-RPC
+over its stdin/stdout. Initialize the connection before creating or resuming a
+thread, then start a turn:
+
+```jsonl
+{"method":"initialize","id":1,"params":{"clientInfo":{"name":"a2a-broker","version":"1.0.0"}}}
+{"method":"initialized","params":{}}
+{"method":"thread/start","id":2,"params":{"cwd":"/absolute/path/to/workspace","approvalPolicy":"never","sandbox":"workspace-write"}}
+{"method":"turn/start","id":3,"params":{"threadId":"THREAD_ID","input":[{"type":"text","text":"DELEGATED TASK"}]}}
+```
+
+For an existing conversation, send `thread/resume` with its explicit
+`threadId` in place of `thread/start`. Keep the server process, connection,
+`threadId`, and active `turnId` together in parent state.
+
+- **OBSERVE (native):** consume `thread/started`, `turn/started`,
+  `item/started`, item-specific delta notifications, `item/completed`, and
+  `turn/completed`. Use the process state for liveness and event arrival for
+  progress. Only `turn/completed` is a turn boundary.
+- **STEER (native, best effort):** send `turn/steer` with `threadId`, the exact
+  active `expectedTurnId`, and `input`. The response confirms acceptance by
+  that turn; it does not prove when the model applied the guidance and does
+  not emit another `turn/started`.
+- **QUEUE (broker):** persist messages with stable IDs in FIFO order and track
+  `pending`, `in_flight`, `applied`, and `unknown` delivery states. Send them
+  with `turn/start` only after `turn/completed`; never replay `unknown`
+  automatically and do not use concurrent `turn/start` calls as a queue. For
+  an urgent redirect, mark displaced pending records `superseded` under the
+  broker lock before interrupting and promoting the redirect.
+- **INTERRUPT (native):** send `turn/interrupt` with `threadId` and `turnId`,
+  then wait for `turn/completed` whose turn status is `interrupted` before
+  starting another turn.
+
+```jsonl
+{"method":"turn/steer","id":4,"params":{"threadId":"THREAD_ID","expectedTurnId":"TURN_ID","input":[{"type":"text","text":"STEERING INSTRUCTION"}]}}
+{"method":"turn/interrupt","id":5,"params":{"threadId":"THREAD_ID","turnId":"TURN_ID"}}
+```
+
+An `item/completed` notification is not an exact between-tool checkpoint. If
+the parent must gate the next tool, design the child prompt to stop at an
+explicit checkpoint and wait for a later turn.
 
 ## Available Models
 
@@ -193,7 +238,7 @@ as described in Interrupting and Redirecting.
 
 ## Interrupting and Redirecting
 
-A live `codex exec` turn accepts no follow-up input. To interrupt it gracefully,
+A live `codex exec` fallback turn accepts no follow-up input. To interrupt it gracefully,
 use the orchestrator's native background-terminal facility to send Ctrl-C or
 SIGINT to the foreground process. Codex translates SIGINT into an internal
 `turn/interrupt` request and waits for the interrupted turn to shut down.

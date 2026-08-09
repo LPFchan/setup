@@ -8,6 +8,50 @@ description: Agent-to-agent (a2a) delegation invokes another coding-agent harnes
 Delegate a bounded task from one agent harness to another while retaining the
 child harness's session identifier for follow-up turns.
 
+## Parent control contract
+
+Every delegation exposes the same four parent operations, even when the
+target harness implements some of them only through a broker or an
+interrupt/resume fallback:
+
+- **OBSERVE** — consume live events and terminal state. Process liveness means
+  only that the child still exists; a new event is evidence of progress.
+- **STEER** — deliver best-effort guidance to the active turn. A successful
+  write or RPC means accepted, not applied. If the harness has no live-input
+  path, record the instruction and use interrupt/resume for urgent redirects.
+- **QUEUE** — persist next-turn messages in FIFO order before acknowledging
+  them. Drain one message at a time only after the active turn reaches a
+  terminal state. A harness's in-memory input buffer is not a durable queue.
+- **INTERRUPT** — cancel the exact active turn or process, wait for terminal
+  confirmation, then optionally resume with a queued or superseding
+  instruction. Completed tool calls and external side effects are not rolled
+  back.
+
+Keep one logical mutating controller per child session. Retain explicit child,
+thread, turn, process, and message IDs; serialize all mutations; and never
+start or resume two turns for the same session concurrently. Treat an
+`item/completed`, tool-result, or similar event as observation, not as a
+scheduling barrier: the child may already have started its next action. Each
+target reference labels which controls are native and which are broker
+responsibilities.
+
+For broker-owned records, use the states `pending -> in_flight -> applied`.
+Durably commit `pending -> in_flight` before submitting a message. On recovery,
+transactionally convert every recovered `in_flight` row without terminal
+evidence to `unknown` before draining anything; do not automatically replay an
+`unknown` record because the child may already have applied side effects.
+Resolve an `unknown` record by inspection or operator decision. For an urgent
+redirect, one committed transaction must mark every displaced `pending` record
+`superseded` and insert or promote the redirect before the controller
+interrupts the child or acknowledges the redirect. Never silently jump over
+older pending records. A redirect does not undo side effects from an
+interrupted turn.
+
+Permission requests are control events, not progress or terminal state. A
+headless broker must answer each reverse permission request with an
+operator-authorized policy (or deliberately use the harness's documented
+unattended mode); never leave a tool call waiting for an interactive client.
+
 ## Run children asynchronously
 
 Start potentially long-running children with the orchestrator's native

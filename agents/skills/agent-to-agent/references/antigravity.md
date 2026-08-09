@@ -3,6 +3,61 @@
 Use `agy --print` for the first turn and `agy --conversation` for every
 follow-up. Run every turn from the same explicit absolute workspace.
 
+## Parent control fallback
+
+Antigravity currently exposes no documented machine-readable live-input RPC.
+Use its native background task plus a durable per-conversation broker queue:
+
+- **OBSERVE (native task/logs):** inspect the task manager for process
+  liveness and tail the current stdout, stderr, and `--log-file` outputs for
+  progress. Unchanged files prove neither progress nor a stall.
+- **STEER (fallback):** there is no live steer operation. Persist ordinary
+  guidance for the next turn. For an urgent redirect, queue the superseding
+  instruction, stop the live task, confirm exit, then resume with
+  `--conversation "$conversation_id"`. Under the broker lock, mark displaced
+  pending records `superseded` before promoting the redirect.
+- **QUEUE (broker):** use a transactional private per-session store, not an
+  unsynced append-only file. Track `pending`, `in_flight`, `applied`, and
+  `unknown` states. Commit `pending -> in_flight` before submission; on
+  recovery, transactionally convert any `in_flight` row without terminal
+  evidence to `unknown` before draining, and never replay `unknown`
+  automatically. For an urgent redirect, one transaction must mark displaced
+  pending rows `superseded` and insert/promote the redirect before interrupting
+  or acknowledging it. Mark a record `applied` only after the resumed turn
+  consumes it. A single logical controller serializes writes and preserves FIFO
+  order.
+- **INTERRUPT (native task facility):** stop the exact persistent background
+  task through Antigravity's task manager and wait for its terminal state.
+  Process-stop acceptance is not terminal confirmation.
+
+```bash
+umask 077
+queue_db="$run_dir/control.queue.sqlite3"
+message_id="$(uuidgen)"
+python3 - "$queue_db" "$message_id" <<'PY'
+import sqlite3
+import sys
+
+db, message_id = sys.argv[1:]
+conn = sqlite3.connect(db, isolation_level=None)
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA synchronous=FULL")
+conn.execute("CREATE TABLE IF NOT EXISTS queue (seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT UNIQUE NOT NULL, instruction TEXT NOT NULL, state TEXT NOT NULL)")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("INSERT INTO queue(message_id, instruction, state) VALUES (?, ?, 'pending')", (message_id, "NEXT INSTRUCTION"))
+conn.execute("COMMIT")
+conn.close()
+PY
+# A zero exit is the acknowledgement; recover only complete committed rows.
+```
+
+SQLite recovery exposes only committed rows. If an older JSONL queue is being
+migrated, quarantine a truncated final line for operator review rather than
+silently replaying or discarding it.
+
+Completed commands or edits remain in effect after interruption. Reassess the
+workspace before draining the next queued instruction.
+
 ## Choose the model and effort
 
 Probe the installed catalog before launching:

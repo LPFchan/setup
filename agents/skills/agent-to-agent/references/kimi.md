@@ -8,6 +8,35 @@ Prompt mode never asks for approval or questions: regular tool calls run under
 the auto permission policy while static deny rules stay in effect. `--prompt`
 cannot be combined with `--yolo`, `--auto`, or `--plan` — do not add them.
 
+## Live control with ACP
+
+Start Kimi's multi-session ACP server with `kimi acp`. Send `initialize`, then
+`session/new` or `session/load`, and retain the returned session ID.
+
+- **OBSERVE (native):** consume `session/update` notifications for streamed
+  messages and tool activity. The outstanding `session/prompt` response marks
+  the turn terminal.
+- **STEER (broker):** ACP does not standardize live guidance injection.
+  `session/prompt` is a turn request, not a steer call. Queue normal guidance;
+  for urgent redirection, cancel, wait for the prompt response, and prompt
+  again. Mark displaced pending broker records `superseded` before promoting
+  the redirect.
+- **QUEUE (broker):** persist stable message IDs in FIFO order and keep only
+  one outstanding `session/prompt` per session. Track `pending`, `in_flight`,
+  `applied`, and `unknown`; drain after terminal confirmation and never replay
+  `unknown` automatically. Do not rely on process memory as the durable queue.
+- **INTERRUPT (native):** send `session/cancel` with `sessionId`, then wait for
+  the active prompt's terminal response/`stopReason` before starting the next
+  turn.
+
+The protocol methods are `initialize`, `session/new`, `session/load`,
+`session/prompt`, `session/update`, and `session/cancel`. The `stream-json`
+prompt recipe below remains the one-shot observe plus task-stop/resume
+fallback. Kimi ACP may send `session/request_permission`; the ACP client must
+answer it with an operator-authorized policy so a tool call cannot hang. The
+prompt-mode auto policy described above applies to `kimi -p`, not necessarily
+to an ACP client.
+
 ## Choose the model
 
 Use the configured `default_model` from `~/.kimi-code/config.toml` unless the
