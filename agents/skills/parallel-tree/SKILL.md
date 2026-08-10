@@ -15,6 +15,10 @@ main, purge the worktree.
 2. `git worktree add -b pt/<slug> "$(mktemp -d)/…" <base>`, branching from the
    base tip. Keep it out of the repo, or it shows up in everyone's `git status`.
    Tracked files only — recreate `.venv` and friends in the worktree.
+   Handing the tree to another agent instead of working in it yourself? Open
+   its prompt with `<worktree-parent>/absolute/path/to/repo</worktree-parent>`
+   — absolute, no trailing slash. Step 5 deletes the tree, and that line is
+   then the only surviving record of which repo the work belonged to.
 3. Do everything there. Never write to the shared checkout or its index.
 4. Rebase onto the base tip. If main moved while you worked, resolve the
    conflict the correct way — in your tree, where it costs nobody else. Then
