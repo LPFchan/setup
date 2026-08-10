@@ -10,6 +10,28 @@ export PROVIDERS_CACHE_PATH="$HOME/.config/providers/credentials.json"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"provider":{"foreign":{}},"disabled_providers":["foreign-disabled"]}\n' > "$HOME/.config/opencode/opencode.json"
 printf '{"demo":{"type":"api","key":"demo-key"}}\n' > "$HOME/.local/share/opencode/auth.json"
+export HERMES_CONFIG="$HOME/.hermes/config.yaml"
+mkdir -p "$HOME/.hermes"
+cat > "$HERMES_CONFIG" <<'EOF'
+custom_providers:
+  - name: demo
+    base_url: http://old-demo
+    api_key: old-key
+    model: old-model
+    models:
+      - stale-1
+      - stale-2
+  - name: foreign
+    base_url: http://foreign
+    api_key: foreign-key
+    models:
+      - foreign-model
+  - name: unused
+    base_url: http://old-unused
+    api_key: unused-key
+    models:
+      - stale-3
+EOF
 cat > "$PROVIDERS_REGISTRY" <<'EOF'
 {"version":1,"profiles":[
   {"name":"codex","provider_type":"OpenAIResponses","base_url":"https://codex.invalid","auth":{"type":"oauth","provider":"chatgpt"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}},
@@ -119,13 +141,106 @@ assert opencode['disabled_providers'] == ['foreign-disabled', 'unused']
 assert 'foreign' in opencode['provider']
 
 # Refresh: only enabled providers with a key are refreshed.
+real_refresh_server = m.refresh_server  # restored for the mirror assertions
 seen = []
 m.refresh_server = lambda name, cfg: seen.append(name) or True
 sys.argv = [path]
 m.main()
 assert seen == ['demo'], seen
 
-# Enabling without a key is refused (key comes from vault or cache).
+# The Hermes mirror runs off the refreshed list, never the registry: fetch
+# two live ids (one stale) and confirm the matching entry was rewritten
+# atomically (same inode as the previous file), the key came from the local
+# cache, unrelated entries were left untouched, and no provider was created
+# or deleted.
+m.refresh_server = real_refresh_server
+import os as _os
+
+
+def _load_yaml(path):
+    """Parse a YAML file for assertions (mirrors are written by the
+    module's own _sync_hermes_mirror, which requires PyYAML to be present;
+    the test suite runs where PyYAML is available)."""
+    import yaml
+    with open(path) as handle:
+        return yaml.safe_load(handle)
+
+
+before_inode = _os.stat(m.HERMES_CONFIG).st_ino
+m.cache_set('demo', 'demo-key')
+m.fetch_models = lambda base, auth: {
+    'data': [{'id': 'fresh-1'}, {'id': 'fresh-2'}, {'id': 'stale-1'}]
+}
+assert m.refresh_server('demo', servers['demo'])
+assert m.load_json(m.OPENCODE_PATH)['provider']['demo']['models'] == {
+    'fresh-1': {'limit': {'context': 32768, 'output': 16384},
+                'cost': {'input': 0, 'output': 0, 'cache_read': 0}},
+    'fresh-2': {'limit': {'context': 32768, 'output': 16384},
+                'cost': {'input': 0, 'output': 0, 'cache_read': 0}},
+    'stale-1': {'limit': {'context': 32768, 'output': 16384},
+                'cost': {'input': 0, 'output': 0, 'cache_read': 0}},
+}
+mirrored = _load_yaml(m.HERMES_CONFIG)
+assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'foreign', 'unused']
+entry = mirrored['custom_providers'][0]
+assert entry['models'] == ['fresh-1', 'fresh-2', 'stale-1'], entry
+assert entry['base_url'] == 'http://demo', entry
+assert entry['api_key'] == 'demo-key', entry
+assert entry['model'] == 'old-model'  # unrelated fields preserved
+assert mirrored['custom_providers'][1] == {
+    'name': 'foreign',
+    'base_url': 'http://foreign',
+    'api_key': 'foreign-key',
+    'models': ['foreign-model'],
+}
+assert mirrored['custom_providers'][2]['models'] == ['stale-3']
+assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
+
+# Idempotent: an unchanged mirror rewrites nothing.
+before_mtime = _os.stat(m.HERMES_CONFIG).st_mtime
+m.refresh_server('demo', servers['demo'])
+assert _os.stat(m.HERMES_CONFIG).st_mtime == before_mtime
+
+# A refreshed list without models leaves the entry untouched.
+m.cache_remove('demo')
+m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
+m.cache_set('demo', 'demo-key')
+m._sync_hermes_mirror('demo', 'http://demo', {})
+assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
+    'fresh-1', 'fresh-2', 'stale-1'
+]
+
+# Missing PyYAML skips silently instead of crashing the refresh.
+m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
+m.cache_set('demo', 'demo-key')
+import builtins
+real_import = __import__
+def fake_import(name, *args, **kwargs):
+    if name == 'yaml':
+        raise ImportError('no PyYAML')
+    return real_import(name, *args, **kwargs)
+builtins.__dict__['__import__'] = fake_import
+assert m.refresh_server('demo', servers['demo'])  # mirror skipped, refresh ok
+builtins.__dict__['__import__'] = real_import
+# The file content is still the previous mirrored list (mirror skipped).
+assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
+    'fresh-1', 'fresh-2', 'stale-1'
+]
+
+# An unparseable Hermes config skips silently and is never overwritten.
+with open(m.HERMES_CONFIG, 'w') as handle:
+    handle.write('custom_providers: [broken\n')
+m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
+assert m.refresh_server('demo', servers['demo'])
+assert open(m.HERMES_CONFIG).read() == 'custom_providers: [broken\n'
+with open(m.HERMES_CONFIG, 'w') as handle:
+    handle.write('custom_providers:\n  - name: demo\n    models:\n      - stale-1\n')
+
+# A provider with no matching entry is never created.
+m._sync_hermes_mirror('ghost', 'http://ghost', {'a': {}})
+assert 'ghost' not in [e['name'] for e in _load_yaml(m.HERMES_CONFIG)['custom_providers']]
+
+# Enablement without a key is refused (key comes from vault or cache).
 assert not m._set_provider_enabled('demo', False) is False  # no-op sanity
 assert m._set_provider_enabled('demo', False)
 assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is False
