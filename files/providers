@@ -488,16 +488,21 @@ def _hermes_models(refreshed_models):
     return [value for value in ids if value] or None
 
 
-def _sync_hermes_mirror(name, base_url, refreshed_models):
-    """Update one provider's entry in Hermes config (~/.hermes/config.yaml).
+def _sync_hermes_mirror(servers, refreshed):
+    """Reconcile Hermes config (~/.hermes/config.yaml) custom_providers[]
+    against provider enablement.
 
-    Mirrors the model list, base_url and api_key (from the local credential
-    cache via _get_key) into the matching custom_providers[] entry, so the
-    registry stays the source of provider routing while live /v1/models
-    fetches stay the source of model availability. Only touches entries that
-    already exist; never creates or deletes providers. Network-optional:
-    missing PyYAML or an unreadable config skips silently, so a mirror
-    failure can never crash the hourly timer.
+    Enabled providers with a refreshed model list get an entry upserted
+    (created when missing, updated with the live models, base_url and
+    api_key from the local credential cache via _get_key); disabled
+    providers get their entry removed. Enabled providers without
+    refreshed data this run (offline, fetch failure) are left untouched —
+    never removed, never clobbered with a stale list. Unknown providers
+    (not in the registry) are never touched. The registry stays the
+    source of provider routing while live /v1/models fetches stay the
+    source of model availability. Network-optional: missing PyYAML or an
+    unreadable config skips silently, so a mirror failure can never crash
+    the hourly timer.
     """
     try:
         import yaml  # PyYAML is optional: skip silently when absent.
@@ -515,24 +520,46 @@ def _sync_hermes_mirror(name, base_url, refreshed_models):
     custom = config.get("custom_providers")
     if not isinstance(custom, list):
         return
-    entry = next(
-        (item for item in custom if isinstance(item, dict) and item.get("name") == name),
-        None,
-    )
-    if entry is None:
-        return
     changed = False
-    models = _hermes_models(refreshed_models)
-    if models:
-        if entry.get("models") != models:
-            entry["models"] = models
-            changed = True
-        if entry.get("base_url") != base_url:
-            entry["base_url"] = base_url
-            changed = True
-        key = _get_key(name)
-        if key and entry.get("api_key") != key:
-            entry["api_key"] = key
+    for name, cfg in servers.items():
+        if _provider_enabled(name, cfg):
+            if name in refreshed:
+                entry = next(
+                    (
+                        item
+                        for item in custom
+                        if isinstance(item, dict) and item.get("name") == name
+                    ),
+                    None,
+                )
+                if entry is None:
+                    entry = {"name": name}
+                    custom.append(entry)
+                    changed = True
+                models = _hermes_models(refreshed[name])
+                if models:
+                    if entry.get("models") != models:
+                        entry["models"] = models
+                        changed = True
+                    base_url = cfg["baseURL"]
+                    if entry.get("base_url") != base_url:
+                        entry["base_url"] = base_url
+                        changed = True
+                    key = _get_key(name)
+                    if key and entry.get("api_key") != key:
+                        entry["api_key"] = key
+                        changed = True
+                continue
+            # Enabled but no refreshed data this run: leave the entry as-is.
+            continue
+        # Disabled: remove the entry if present.
+        before = len(custom)
+        custom[:] = [
+            item
+            for item in custom
+            if not (isinstance(item, dict) and item.get("name") == name)
+        ]
+        if len(custom) != before:
             changed = True
     if not changed:
         return
@@ -550,7 +577,27 @@ def _sync_hermes_mirror(name, base_url, refreshed_models):
             os.unlink(tmp_name)
         except FileNotFoundError:
             pass
-    print(f"  hermes: {name}: {len(models)} models mirrored", file=sys.stderr)
+    upserted = [
+        name
+        for name in servers
+        if name in refreshed and _provider_enabled(name, servers[name])
+    ]
+    removed = [
+        name
+        for name in servers
+        if not _provider_enabled(name, servers[name])
+        and any(
+            isinstance(item, dict) and item.get("name") == name
+            for item in config.get("custom_providers", [])
+        )
+    ]
+    for name in upserted:
+        print(
+            f"  hermes: {name}: {len(_hermes_models(refreshed[name]))} models mirrored",
+            file=sys.stderr,
+        )
+    for name in removed:
+        print(f"  hermes: {name}: entry removed (disabled)", file=sys.stderr)
 
 
 def _fallback_auth_json(provider):
@@ -741,8 +788,7 @@ def refresh_server(name, cfg):
         os.remove(jsonc_path)
         print(f"  Removed stale {os.path.basename(jsonc_path)}", file=sys.stderr)
     print(f"  {name}: {len(models)} models updated", file=sys.stderr)
-    _sync_hermes_mirror(name, base_url, models)
-    return True
+    return models
 
 
 # --- systemd / launchd management --------------------------------------
@@ -773,12 +819,20 @@ def _load_servers():
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"Cannot read provider registry {REGISTRY_PATH}: {exc}", file=sys.stderr)
         return None
+    servers = _servers_from_registry(registry)
+    return servers or None
+
+
+def _servers_from_registry(registry):
+    """Extract OpenAI-compatible api-key servers from a validated registry.
+
+    Split out so the fixture registry can be consulted without touching
+    the real one (REGISTRY_PATH is env-overridable, so _load_servers can
+    only ever see one registry per process).
+    """
     profiles = registry.get("profiles") if isinstance(registry, dict) else None
     if profiles is None:
         profiles = []
-    if not isinstance(registry, dict) or registry.get("version") != 1 or not isinstance(profiles, list):
-        print(f"Invalid provider registry: {REGISTRY_PATH}", file=sys.stderr)
-        return None
     providers = registry.get("providers")
     entries = providers.items() if isinstance(providers, dict) else (
         (profile.get("name"), profile) for profile in profiles if isinstance(profile, dict)
@@ -1667,10 +1721,14 @@ def main():
         _sync_cache_from_vault(servers)
         _sync_mirrors()
         _sync_opencode_provider_statuses(servers)
+        refreshed = {}
         for name, srv_cfg in servers.items():
             if not _provider_enabled(name, srv_cfg):
                 continue
-            refresh_server(name, srv_cfg)
+            models = refresh_server(name, srv_cfg)
+            if isinstance(models, dict):
+                refreshed[name] = models
+        _sync_hermes_mirror(servers, refreshed)
         return
 
     cmd = args[0]
@@ -1752,7 +1810,9 @@ def main():
             )
             sys.exit(1)
         _sync_opencode_provider_statuses(servers)
-        refresh_server(cmd, servers[cmd])
+        models = refresh_server(cmd, servers[cmd])
+        if isinstance(models, dict):
+            _sync_hermes_mirror(servers, {cmd: models})
         return
 
     print(f"Unknown: {cmd}", file=sys.stderr)

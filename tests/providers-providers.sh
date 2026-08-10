@@ -31,6 +31,11 @@ custom_providers:
     api_key: unused-key
     models:
       - stale-3
+  - name: ghost
+    base_url: http://ghost
+    api_key: ghost-key
+    models:
+      - ghost-model
 EOF
 cat > "$PROVIDERS_REGISTRY" <<'EOF'
 {"version":1,"profiles":[
@@ -171,7 +176,8 @@ m.cache_set('demo', 'demo-key')
 m.fetch_models = lambda base, auth: {
     'data': [{'id': 'fresh-1'}, {'id': 'fresh-2'}, {'id': 'stale-1'}]
 }
-assert m.refresh_server('demo', servers['demo'])
+models = m.refresh_server('demo', servers['demo'])
+assert models
 assert m.load_json(m.OPENCODE_PATH)['provider']['demo']['models'] == {
     'fresh-1': {'limit': {'context': 32768, 'output': 16384},
                 'cost': {'input': 0, 'output': 0, 'cache_read': 0}},
@@ -180,8 +186,12 @@ assert m.load_json(m.OPENCODE_PATH)['provider']['demo']['models'] == {
     'stale-1': {'limit': {'context': 32768, 'output': 16384},
                 'cost': {'input': 0, 'output': 0, 'cache_read': 0}},
 }
+# The single-provider refresh path in main() mirrors after the fetch.
+m._sync_hermes_mirror(servers, {'demo': models})
 mirrored = _load_yaml(m.HERMES_CONFIG)
-assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'foreign', 'unused']
+# unused (disabled) is removed by the status-reflecting mirror; ghost (unknown
+# to the registry) is never touched; foreign likewise.
+assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'foreign', 'ghost'], [e['name'] for e in mirrored['custom_providers']]
 entry = mirrored['custom_providers'][0]
 assert entry['models'] == ['fresh-1', 'fresh-2', 'stale-1'], entry
 assert entry['base_url'] == 'http://demo', entry
@@ -193,24 +203,30 @@ assert mirrored['custom_providers'][1] == {
     'api_key': 'foreign-key',
     'models': ['foreign-model'],
 }
-assert mirrored['custom_providers'][2]['models'] == ['stale-3']
+assert mirrored['custom_providers'][2] == {
+    'name': 'ghost',
+    'base_url': 'http://ghost',
+    'api_key': 'ghost-key',
+    'models': ['ghost-model'],
+}
 assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
 
 # Idempotent: an unchanged mirror rewrites nothing.
 before_mtime = _os.stat(m.HERMES_CONFIG).st_mtime
-m.refresh_server('demo', servers['demo'])
+m._sync_hermes_mirror(servers, {'demo': {'fresh-1': {}, 'fresh-2': {}, 'stale-1': {}}})
 assert _os.stat(m.HERMES_CONFIG).st_mtime == before_mtime
 
-# A refreshed list without models leaves the entry untouched.
+# A refreshed list without models leaves the entry untouched: demo is enabled
+# but has no refreshed data this run — the entry keeps its previous models
+# (offline tolerance; never clobbered, never removed).
 m.cache_remove('demo')
 m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
 m.cache_set('demo', 'demo-key')
-m._sync_hermes_mirror('demo', 'http://demo', {})
+m._sync_hermes_mirror(servers, {})
 assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
     'fresh-1', 'fresh-2', 'stale-1'
 ]
-
-# Missing PyYAML skips silently instead of crashing the refresh.
+# Missing PyYAML skips silently instead of crashing the mirror.
 m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
 m.cache_set('demo', 'demo-key')
 import builtins
@@ -220,7 +236,7 @@ def fake_import(name, *args, **kwargs):
         raise ImportError('no PyYAML')
     return real_import(name, *args, **kwargs)
 builtins.__dict__['__import__'] = fake_import
-assert m.refresh_server('demo', servers['demo'])  # mirror skipped, refresh ok
+m._sync_hermes_mirror(servers, {'demo': {'fresh-3': {}}})  # mirror skipped
 builtins.__dict__['__import__'] = real_import
 # The file content is still the previous mirrored list (mirror skipped).
 assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
@@ -230,15 +246,10 @@ assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
 # An unparseable Hermes config skips silently and is never overwritten.
 with open(m.HERMES_CONFIG, 'w') as handle:
     handle.write('custom_providers: [broken\n')
-m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
-assert m.refresh_server('demo', servers['demo'])
+m._sync_hermes_mirror(servers, {'demo': {'fresh-3': {}}})
 assert open(m.HERMES_CONFIG).read() == 'custom_providers: [broken\n'
 with open(m.HERMES_CONFIG, 'w') as handle:
     handle.write('custom_providers:\n  - name: demo\n    models:\n      - stale-1\n')
-
-# A provider with no matching entry is never created.
-m._sync_hermes_mirror('ghost', 'http://ghost', {'a': {}})
-assert 'ghost' not in [e['name'] for e in _load_yaml(m.HERMES_CONFIG)['custom_providers']]
 
 # Enablement without a key is refused (key comes from vault or cache).
 assert not m._set_provider_enabled('demo', False) is False  # no-op sanity
@@ -299,6 +310,80 @@ with open(m.LEGACY_STATE_PATH, 'w') as handle:
     handle.write('{truncated')
 assert m._load_provider_state() is None
 assert os.path.exists(m.LEGACY_STATE_PATH)
+
+# Status reflection: the mirror reconciles Hermes custom_providers against
+# enablement. Re-seed a controlled fixture, then assert:
+#   - enabled + refreshed      -> entry upserted (created when missing)
+#   - disabled                 -> entry removed
+#   - enabled + no refresh     -> entry left untouched (offline tolerance)
+#   - unknown (not in servers) -> never touched
+with open(m.HERMES_CONFIG, 'w') as handle:
+    handle.write('custom_providers:\n'
+                 '  - name: demo\n'
+                 '    base_url: http://old-demo\n'
+                 '    api_key: old-key\n'
+                 '    model: old-model\n'
+                 '    models: [stale-1, stale-2]\n'
+                 '  - name: unused\n'
+                 '    base_url: http://old-unused\n'
+                 '    api_key: unused-key\n'
+                 '    models: [stale-3]\n'
+                 '  - name: ghost\n'
+                 '    base_url: http://ghost\n'
+                 '    api_key: ghost-key\n'
+                 '    models: [ghost-model]\n')
+# The mirror needs the full managed set: the fixture registry's demo+unused
+# merged onto the real registry's providers (demo enabled, unused disabled).
+fixture_profiles = m.load_json(fixture_registry).get('profiles', [])
+full_registry = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
+for profile in fixture_profiles:
+    full_registry.setdefault('providers', {})[profile['name']] = profile
+full_servers = m._servers_from_registry(full_registry)
+assert set(full_servers) >= {'demo', 'unused', 'grimoire', 'crofai'}
+# Ensure enablement state for the fixture providers: demo enabled, unused disabled.
+m.save_json_atomic(m.STATE_PATH, {'version': 1, 'providers': {}})
+state = m.load_json(m.STATE_PATH)
+state['providers']['demo'] = {'enabled': True}
+state['providers']['unused'] = {'enabled': False}
+m.save_json_atomic(m.STATE_PATH, state)
+m.cache_set('demo', 'demo-key')
+m.cache_set('unused', 'unused-key')
+
+# Enabled + refreshed -> demo entry updated (models/base_url/api_key),
+# unused (disabled) removed, ghost (unknown) untouched.
+m._sync_hermes_mirror(full_servers, {'demo': {'fresh-1': {}, 'fresh-2': {}}})
+mirrored = _load_yaml(m.HERMES_CONFIG)
+names = [e['name'] for e in mirrored['custom_providers']]
+assert names == ['demo', 'ghost'], names
+demo = mirrored['custom_providers'][0]
+assert demo['models'] == ['fresh-1', 'fresh-2'], demo
+assert demo['base_url'] == 'http://demo', demo
+assert demo['api_key'] == 'demo-key', demo
+assert demo['model'] == 'old-model'  # unrelated fields preserved
+assert mirrored['custom_providers'][1]['name'] == 'ghost'
+assert mirrored['custom_providers'][1]['models'] == ['ghost-model']
+
+# Enabled + no refreshed data this run: the entry is left untouched (the
+# provider may simply be offline), not removed and not clobbered.
+m._sync_hermes_mirror(full_servers, {})
+mirrored = _load_yaml(m.HERMES_CONFIG)
+assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'ghost']
+assert mirrored['custom_providers'][0]['models'] == ['fresh-1', 'fresh-2']
+
+# An enabled provider with NO existing entry is created (mirror-all-enabled).
+m._sync_hermes_mirror(full_servers, {'unused': {'u1': {}}})
+# ... but unused is disabled, so it is removed, not created. Re-enable it:
+state = m.load_json(m.STATE_PATH)
+state['providers']['unused'] = {'enabled': True}
+m.save_json_atomic(m.STATE_PATH, state)
+m._sync_hermes_mirror(full_servers, {'unused': {'u1': {}}})
+mirrored = _load_yaml(m.HERMES_CONFIG)
+names = [e['name'] for e in mirrored['custom_providers']]
+assert 'unused' in names, names
+unused = next(e for e in mirrored['custom_providers'] if e['name'] == 'unused')
+assert unused['models'] == ['u1'], unused
+assert unused['base_url'] == 'http://unused', unused
+assert unused['api_key'] == 'unused-key', unused
 
 # Naming convention: only {PROVIDER}_API_KEY items are conforming.
 assert m._conforming_item_name('DEEPSEEK_API_KEY')

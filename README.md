@@ -85,7 +85,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu) | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
-| `providers` | Vault-owned provider API keys: enrollment, local cache, and mirrors into opencode `auth.json`, `.zshenv`, and Hermes `~/.hermes/config.yaml` model lists (`~/.local/bin/providers`) | `files/providers.sh` |
+| `providers` | Vault-owned provider API keys: enrollment, local cache, and mirrors into opencode `auth.json`, `.zshenv`, and Hermes `~/.hermes/config.yaml` (model lists mirrored per enablement — entries created/updated for enabled providers, removed for disabled ones) (`~/.local/bin/providers`) | `files/providers.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 ---
