@@ -301,18 +301,16 @@ ai() {
 
     local delim=$'\x1f'
     if (( mc_capable )); then
-        # Semantic 3-column body: tools, SSH hosts, and recent directories.
-        # setup/resume/neither are 2-track span rows below the body, so the
-        # folder column keeps running beside them for the menu's full height.
+        # Semantic 3-column body: tools/actions, SSH hosts, and recent
+        # directories. Actions participate in the first column like tools, so
+        # a longer host column cannot leave padding above them.
         local host_icon=$'' folder_icon=$''
-        local -a cand_dest cand_base cand_parent body_tools
-        body_tools=("${(@)tools:#(setup|resume|neither)}")
-        # Folders may fill every physical row: the interleaved body rows
-        # (tallest of tools/hosts) plus the three action rows, clamped to 10
-        # so a long host list can't bloat the menu.
-        local -i body_rows=$#body_tools
-        (( $#ssh_hosts > body_rows )) && body_rows=$#ssh_hosts
-        local folder_max=$(( body_rows + 3 ))
+        local -a cand_dest cand_base cand_parent
+        # Folders may fill every physical row, clamped to 10 so a long tool or
+        # host list cannot bloat the menu.
+        local -i rows=$#tools
+        (( $#ssh_hosts > rows )) && rows=$#ssh_hosts
+        local folder_max=$rows
         (( folder_max > 10 )) && folder_max=10
         local d
         cand_dest=( ${(f)"$(_ai_recent_dirs $folder_max)"} )
@@ -333,23 +331,13 @@ ai() {
             folders+=("$disp")
             folder_paths[$key]=$cand_dest[ci]
         done
-        local -i i rows=body_rows
+        (( $#folders > rows )) && rows=$#folders
+        local -i i
         for (( i = 1; i <= rows; i++ )); do
             options+=(
-                "tool${delim}${body_tools[i]:- }${delim}${body_tools[i]:- }"
+                "tool${delim}${tools[i]:- }${delim}${tools[i]:- }"
                 "host${delim}${ssh_hosts[i]:- }${delim}${ssh_hosts[i]:+$host_icon }${ssh_hosts[i]:- }"
                 "folder${delim}${folders[i]:- }${delim}${folders[i]:+$folder_icon }${folders[i]:- }"
-            )
-        done
-        # Action rows span tracks 1-2 (tools + hosts); track 3 carries the
-        # folder overflow so the folder column reaches the menu's last row.
-        local -a actions=(setup resume neither)
-        local -i oi
-        for (( i = 1; i <= $#actions; i++ )); do
-            oi=$(( rows + i ))
-            options+=(
-                "@@2@@action${delim}${actions[i]}${delim}${actions[i]}"
-                "folder${delim}${folders[oi]:- }${delim}${folders[oi]:+$folder_icon }${folders[oi]:- }"
             )
         done
         local -a picker
