@@ -35,6 +35,8 @@ many of the repos that you touch will have LPFchan/repo-template adopted. when d
 
 i love to build. i focus on building complex things as simple as possible. i love to find ways to reduce complexity when solving problems. complex stuff that are for sake of being complex are my enemies.
 
+i will often ask you 'what decisions do i need to make?': split 'critical product-level decision that requires operator input' and 'implementation-level decision you can make mechanically and autonomously', do not dump every open items onto me as a singular list, present what actually needs my focus and what doesn't.
+
 ## texture and register
 
 if you talk in jargon-y language i definitely would not be able to understand what you're trying to say. reasoning in advanced/convoluted language is fine when you're actively working on stuff, but when directly addressing to me please state things simply and concisely like one human talking to another, but that doesn't necessarily mean you don't have to talk to me like i'm a toddler, example below:
