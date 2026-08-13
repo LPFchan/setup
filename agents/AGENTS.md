@@ -1,10 +1,11 @@
 # AGENTS
 
-hi, i'm yeowool (github: LPFchan). nice to meet you! i'm a neurodivergent AuDHD fox-therian musician/designer/engineer girl who's terminally interested in everything that interests me and chronically loves building everything that intrigues me. 
+hi, i'm yeowool (github: LPFchan). nice to meet you! i'm a neurodivergent trans fox-therian musician/designer/engineer girl who's terminally interested in everything that interests me and chronically loves building everything that intrigues me. 
 
-though to be very frank, despite having been adjacent to social circles of software developers my entire life, i'm not very knowledgeable when it comes to software engineering. so i'm thrilled that you, someone who's way more knowledgeable and better at coding/programming is here to help me. 
+though to be very frank, despite having been adjacent to social circles of software developers my entire life, i'm not very knowledgeable when it comes to software engineering. so i'm thrilled that you, someone who's way more knowledgeable and better at coding/programming is here to help me!
 
 ## fleet
+
 this document is symlinked to all of these places:
 - `~/AGENTS.md`
 - `~/.claude/CLAUDE.md`
@@ -29,7 +30,9 @@ always assume other agents are working in the checkout concurrently. treat the w
 
 since i don't have a SWE background and generally my software has an audience of (at most) five to ten, i tend to just rawdog pushing to main over making ephemeral feature branches, and have a new diff reviewed by a subagent over filing and reviewing a formal pull request. hence that's why i've authored skills such as `mutual-agreement` or `sharpen-the-tip` for this type of workflow. note that this only applies to repos of my own, not when i'm contributing to other open source projects.
 
-i have AuDHD and WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions.
+as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions.
+
+same goes with maintaining documentation on an ongoing basis; you're encouraged to update the docs and repo records on your own: see `repo-template` and `proactive-docs` skills for more.
 
 many of the repos that you touch will have LPFchan/repo-template adopted. when dealing with commits, DEC, RSH, IBX etc, refer to repo's `records/` and `skills/`.
 
@@ -39,20 +42,34 @@ i will often ask you 'what decisions do i need to make?': split 'critical produc
 
 ## texture and register
 
-if you talk in jargon-y language i definitely would not be able to understand what you're trying to say. reasoning in advanced/convoluted language is fine when you're actively working on stuff, but when directly addressing to me please state things simply and concisely like one human talking to another, but that doesn't necessarily mean you don't have to talk to me like i'm a toddler, example below:
+when directly addressing to me, please state things simply and concisely like one human talking to another. but that doesn't necessarily mean you don't have to talk to me like i'm a toddler, examples below:
+
+> BAD:
+> "the stored epoch column is currently vestigial — ordering rides on line position, not a numeric sort."
+
+> GOOD:
+> "The store keeps a timestamp next to each folder, but nothing actually uses it right now; the order comes from where each line sits in the file (newest on top), not from reading the times."
+
+another example:
 
 > BAD (too jargony):
 > “Build the loss-mask/assembly/split pipeline with the review snapshot bound as the admission input.”
 
 > BAD (swung too hard in the other direction):
-> “Stitch the little thoughts to their chats, then make a training pile and a ‘don’t cheat’ pile.”
+> “Stitch the little thoughts to their chats, then make a 'learn from this' pile and a ‘don’t cheat’ pile.”
 
 > GOOD (just right):
-> “Join each accepted trace to its conversation, mark what the model should learn from, and create separate training and evaluation sets.”
+> “Associate accepted reasoning traces to its conversation, mark what the model should learn from, and create separate training and evaluation sets.”
 
-also, "It's not X, it's Y" corrective frame as a rhetorical device is soooo corny, just state Y directly.
+last example:
 
-this guidance 
+> BAD:
+> Thinned checkpoints were substantially better on the capability probe. Unthinned checkpoints are substantially better at producing the operator’s speaker-specific rituals. That is direct evidence for the predicted capability-versus-representation tradeoff.
+
+> GOOD:
+> The thinned models are better at reasoning and following instructions. The unthinned models are much better at sounding like you and remembering how you respond to specific people. So thinning removed too much of your conversational personality. The decision to stop using that thinning method was correct.
+
+this is very crucial and this section is probably the most important and meaningful out of this entire document. some people go to great lengths to prevent their agents from generating bad  "neuralese" texts such as making them use ASD-STE100, or invoking a separate local LLM call to "translate" it into simpler language, etc ... this is my way of combating that. we shall see how it goes.
 
 ## problem-solving
 
@@ -74,7 +91,7 @@ for long-running terminal tasks (such as builds, file downloads, training, data 
 - **opencode**: `nohup <command> > /tmp/<task>.log 2>&1` + `echo $PID` for monitoring
 - **codex**, **claude code**, **antigravity (`agy`)**, **muse**: you guys know what to do already. don't bother with `nohup` or `&`.
 
-if you're a hermes agent, please make extra sure the responses are short and concise, as i will be attending to you on a narrow-width telegram chat interface on a mobile phone. word dumps are genuinely hard for me to read over there.
+if you're a hermes agent, please make extra sure the responses are short and concise, as i will be attending to you on a narrow-width telegram chat interface on a mobile phone. word dumps are genuinely hard for me to read over there. make it under 280 char at a time.
 
 ## and last,
 
