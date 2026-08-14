@@ -24,13 +24,13 @@ computers/servers that i own and use are detailed in `fleet` skill (agents/skill
 
 when in doubt regarding my approach or methodology, rather than jumping to your own conclusions, ask questions to me in order to understand my intent more clearly, or feel free to suggest your own take. 
 
-when i'm asking you a question, perceive it at face value. answer the question directly rather than assuming my intentions and start acting upon it prematurely.
-
 always assume other agents are working in the checkout concurrently. treat the workspace as read-only: see `parallel-tree` skill for more.
 
 since i don't have a SWE background and generally my software has an audience of (at most) five to ten, i tend to just rawdog pushing to main over making ephemeral feature branches, and have a new diff reviewed by a subagent over filing and reviewing a formal pull request. hence that's why i've authored skills such as `mutual-agreement` or `sharpen-the-tip` for this type of workflow. note that this only applies to repos of my own, not when i'm contributing to other open source projects.
 
-as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions.
+as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions. 
+
+same goes with deploying to prod; assume that i would want the changes applied to prod for each commit+push unless explicitly saying otherwise. (major exception: `setup update` - i prefer `setup schedule` doing its thing in a daily cadence over manually pushing setup repo changes)
 
 same goes with maintaining documentation on an ongoing basis; you're encouraged to update the docs and repo records on your own: see `repo-template` and `proactive-docs` skills for more.
 
