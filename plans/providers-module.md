@@ -16,7 +16,7 @@ Make a new `providers` module own the canonical provider API-key store (vaultwar
 | D4 | `.zshenv` block stays (same markers, same `{PROVIDER}_API_KEY` names) |
 | D5 | Hourly timer stays, renamed with module |
 | D6 | Vault audit + rename is Phase 1 of this plan (complete) |
-| D7 | `crofai_api_key_guest` deleted (revoked) |
+| D7 | `crofai_api_key_guest` and `ANTHROPIC_API_KEY` deleted (revoked or unused) |
 | D8 | Network optional: `providers sync`/timer fall back to the local cache silently when vault is unreachable (stderr note only); timers never fail on network loss. Keys rotate rarely, so staleness is acceptable. |
 | D9 | Vault transport = direct vaultwarden API using `VAULTWARDEN_MCP_TOKEN` / `VAULTWARDEN_SECRETS_TOKEN` (in env). No `bw` CLI, no MCP-server subprocess — the `providers` binary calls the vault HTTP API itself. |
 
@@ -73,9 +73,9 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 
 ### Phase 1 — Vault normalization ✅ COMPLETE
 - Renamed: `commandcode api key`→`COMMANDCODE_API_KEY`, `ollama_api_key`→`OLLAMA_CLOUD_API_KEY`, `Kimi Code API Key`→`KIMICODE_API_KEY`, `GITHUB_COPILOT_TOKEN`→`GITHUB_COPILOT_OAUTH_TOKEN`.
-- Deleted (soft): `crofai_api_key_guest` (revoked, `deleted:true`; purge with `empty_trash` if desired).
+- Deleted (soft): `crofai_api_key_guest` (revoked) and `ANTHROPIC_API_KEY` (unused), both with `deleted:true`; purge with `empty_trash` if desired.
 - Verified: 13/13 remaining live items conform to C1.
-- Kept but unused: `ANTHROPIC_API_KEY` (user wants to keep it around), `VAST.ai` (no live provider; flagged in audit, not touched).
+- Kept but unused: `VAST.ai` (no live provider; flagged in audit, not touched).
 
 ### Phase 2 — Store contract + `providers` binary/module
 1. Add `files/providers` (Python CLI, derived from `refresh-models` — reuse `load_json_or_quarantine`, `save_json_atomic` (0600 default), `_read_env_block`, `_sync_zsenv_to_auth`, `_load_servers`, `cmd_auth`, `set_provider_enabled`).
@@ -108,7 +108,6 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 **No fan-out.** Single coherent slice (the skill's "one slice" case): one shared boundary (the store), order-dependent migration, and consumers that mostly read the same file. After C1+C2 are fixed and Phase 2 lands, consumer adapters could parallelize — but they're trivial (mostly no-ops) and touching the same repo, so keep them sequential.
 
 ## Open items
-1. `ANTHROPIC_API_KEY`: kept, unused — include as a `providers` preset (enrollable) but not in the shared registry.
-2. `VAST.ai`: no live provider — leave in vault, exclude from presets unless you want it.
-3. The 4 extra live `auth.json` providers (alibaba, ollama-cloud, opencode-go, openrouter): include as `providers` presets (they're enrolled in vault already), **not** added to shared `claudex-profiles.json` (would change opencodex's consumed set) unless you say so.
-4. `empty_trash` on `crofai_api_key_guest` — your call (soft-delete expires in 30 days anyway).
+1. `VAST.ai`: no live provider — leave in vault, exclude from presets unless you want it.
+2. The 4 extra live `auth.json` providers (alibaba, ollama-cloud, opencode-go, openrouter): include as `providers` presets (they're enrolled in vault already), **not** added to shared `claudex-profiles.json` (would change opencodex's consumed set) unless you say so.
+3. `empty_trash` on `crofai_api_key_guest` and `ANTHROPIC_API_KEY` — your call (soft-deleted items expire in 30 days anyway).
