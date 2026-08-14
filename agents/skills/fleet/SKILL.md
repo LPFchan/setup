@@ -20,7 +20,7 @@ separate tmux session. This allows the operator to see and interact with the
 terminal, such as entering an admin password manually.
 
 ## yeowoolair — daily-driver MacBook Air
-- yeowool-air.tailaa113.ts.net (no static IP) · user yeowool
+- yeowool-air.tail4754f6.ts.net (no static IP) · user yeowool
 - active repos in ~/Documents/
 
 ## bingus — Synology DS923+ NAS (DSM 7)
