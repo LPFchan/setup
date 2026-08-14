@@ -24,6 +24,8 @@ computers/servers that i own and use are detailed in `fleet` skill (agents/skill
 
 when in doubt regarding my approach or methodology, rather than jumping to your own conclusions, ask questions to me in order to understand my intent more clearly, or feel free to suggest your own take. 
 
+if i tag a message with `(read-only)`, just answer me and change nothing: no edits, no commits, no deploys, nothing that touches state. untagged messages are fair game to act on.
+
 always assume other agents are working in the checkout concurrently. treat the workspace as read-only: see `parallel-tree` skill for more.
 
 since i don't have a SWE background and generally my software has an audience of (at most) five to ten, i tend to just rawdog pushing to main over making ephemeral feature branches, and have a new diff reviewed by a subagent over filing and reviewing a formal pull request. hence that's why i've authored skills such as `mutual-agreement` or `sharpen-the-tip` for this type of workflow. note that this only applies to repos of my own, not when i'm contributing to other open source projects.
