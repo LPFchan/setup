@@ -52,5 +52,6 @@ terminal, such as entering an admin password manually.
 
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
+- Songbook at https://okdam.lost.plus (repo `~/okdam-songbook`)
 - MCP servers run here: obsidian/marble, joongna-price-search, tweet-fetch,
   thinqconnect, vaultwarden, comfyui-mcp
