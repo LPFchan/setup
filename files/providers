@@ -22,7 +22,8 @@ Commands:
   audit                        List vault llm items, flag non-conforming names
   rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
   add                          Add a provider interactively
-  add <provider> <url> <key>   Add a provider directly (agent-friendly)
+  add <provider> <url> <key> [model]
+                               Add directly; model is required without /models
   enable <provider>            Enable a provider that has an API key
   disable <provider>           Disable a provider without deleting its key
 """
@@ -757,10 +758,12 @@ def refresh_server(name, cfg):
     handler = FORMAT_HANDLERS.get(fmt, FORMAT_HANDLERS["openai"])
     npm = cfg.get("npm", "@ai-sdk/openai-compatible")
     print(f"  {name} ({base_url}) ...", file=sys.stderr)
-    resp = fetch_models(base_url, cfg.get("auth"))
-    if resp is None:
-        return False
-    models_list = resp.get("data", resp.get("models", []))
+    models_list = cfg.get("models", [])
+    if not models_list:
+        resp = fetch_models(base_url, cfg.get("auth"))
+        if resp is None:
+            return False
+        models_list = resp.get("data", resp.get("models", []))
     if not models_list:
         print(f"  Warning: no models returned for {name}", file=sys.stderr)
         return False
@@ -850,6 +853,7 @@ def _servers_from_registry(registry):
             "npm": provider.get("npm", "@ai-sdk/openai-compatible"),
             "auth": {"type": "auth_json", "provider": auth_key},
             "registry_enabled": provider.get("enabled") is True,
+            "models": provider.get("models", []),
         }
     return servers
 
@@ -1292,6 +1296,20 @@ def _validate_registry(data):
                 raise ValueError(f"invalid api_format for {provider_name}")
             if not isinstance(provider.get("npm"), str) or not provider["npm"]:
                 raise ValueError(f"invalid npm package for {provider_name}")
+            models = provider.get("models", [])
+            if not isinstance(models, list):
+                raise ValueError(f"models for {provider_name} must be a list")
+            model_ids = []
+            for model in models:
+                if (
+                    not isinstance(model, dict)
+                    or not isinstance(model.get("id"), str)
+                    or not model["id"]
+                ):
+                    raise ValueError(f"invalid static model for {provider_name}")
+                model_ids.append(model["id"])
+            if len(model_ids) != len(set(model_ids)):
+                raise ValueError(f"duplicate static model for {provider_name}")
         elif auth.get("type") != "oauth" or not isinstance(auth.get("provider"), str):
             raise ValueError(f"invalid OAuth descriptor for {provider_name}")
     return data
@@ -1373,6 +1391,8 @@ def _provision_provider(provider, token):
             "auth": provider["auth"],
             "enabled": True,
         }
+        if provider.get("models"):
+            data["providers"][provider["name"]]["models"] = provider["models"]
         _validate_registry(data)
         registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         changed = _run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
@@ -1410,7 +1430,7 @@ def _validate_new_provider_name(name):
         raise ValueError("the local auth store already uses that name")
 
 
-def _prepare_provider(name, base_url, token):
+def _prepare_provider(name, base_url, token, fallback_model=None):
     base_url = base_url.strip().rstrip("/")
     if not _valid_base_url(base_url):
         raise ValueError("the API base URL must be an HTTP(S) URL")
@@ -1419,8 +1439,13 @@ def _prepare_provider(name, base_url, token):
     payload = fetch_models(base_url, {"type": "bearer", "key": token})
     rows = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
     models = sorted({row.get("id") for row in rows if isinstance(row, dict) and row.get("id")})
+    static_models = []
     if not models:
-        raise ValueError("the endpoint returned no model IDs")
+        model_id = (fallback_model or "").strip()
+        if not model_id or any(ord(character) < 32 for character in model_id):
+            raise ValueError("the endpoint returned no model IDs; supply an explicit model ID")
+        static_models = [{"id": model_id}]
+        models = [model_id]
     provider = {
         "name": name,
         "provider_type": "OpenAICompatible",
@@ -1430,19 +1455,27 @@ def _prepare_provider(name, base_url, token):
     }
     provider["api_format"] = "openai"
     provider["npm"] = "@ai-sdk/openai-compatible"
+    if static_models:
+        provider["models"] = static_models
     _validate_registry({"version": 1, "providers": {name: provider}})
     return provider, len(models)
 
 
-def _add_provider(name=None, base_url=None, token=None):
-    interactive = name is None and base_url is None and token is None
+def _add_provider(name=None, base_url=None, token=None, fallback_model=None):
+    interactive = name is None and base_url is None and token is None and fallback_model is None
     if interactive:
         name = input("Provider name: ").strip()
     _validate_new_provider_name(name)
     if interactive:
         base_url = input("OpenAI-compatible API base URL: ")
         token = getpass.getpass("API token: ")
-    provider, model_count = _prepare_provider(name, base_url, token)
+    try:
+        provider, model_count = _prepare_provider(name, base_url, token, fallback_model)
+    except ValueError as exc:
+        if not interactive or "supply an explicit model ID" not in str(exc):
+            raise
+        fallback_model = input("Model ID (the endpoint does not expose /models): ")
+        provider, model_count = _prepare_provider(name, base_url, token, fallback_model)
     print("\nProvider to publish:")
     print(f"  name: {name}")
     print(f"  endpoint: {provider['base_url']}")
@@ -1637,8 +1670,8 @@ def main():
         return
 
     if cmd == "add":
-        if len(args) not in (1, 4):
-            print("Usage: providers add [<provider> <base-url> <key>]", file=sys.stderr)
+        if len(args) not in (1, 4, 5):
+            print("Usage: providers add [<provider> <base-url> <key> [model]]", file=sys.stderr)
             sys.exit(1)
         try:
             _add_provider(*args[1:])
@@ -1693,7 +1726,8 @@ def main():
         print("  providers auth <p> <k>     Write key directly (agent-friendly)")
         print("  providers ls               List providers and key status")
         print("  providers add                   Add a provider interactively")
-        print("  providers add <p> <url> <key>   Add directly (agent-friendly)")
+        print("  providers add <p> <url> <key> [model]")
+        print("                                  Add directly; model is required without /models")
         print("  providers enable <p>       Enable a provider that has an API key")
         print("  providers disable <p>      Disable a provider without deleting its key")
         print("  providers timer enable     Install systemd/launchd timer (hourly)")

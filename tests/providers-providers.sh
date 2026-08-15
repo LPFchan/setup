@@ -72,6 +72,7 @@ m.REGISTRY_PATH = fixture_registry
 servers = m._load_servers()
 assert set(servers) == {'demo', 'unused'}
 assert servers['demo']['baseURL'] == 'http://demo'
+assert servers['demo']['models'] == []
 state = m._load_provider_state()
 assert state == {'version': 1, 'providers': {'demo': {'enabled': True}, 'unused': {'enabled': False}}}
 assert os.path.exists(m.STATE_PATH)
@@ -189,6 +190,17 @@ assert m.load_json(m.OPENCODE_PATH)['provider']['demo']['models'] == {
     'stale-1': {'limit': {'context': 32768, 'output': 16384},
                 'cost': {'input': 0, 'output': 0, 'cache_read': 0}},
 }
+
+# Some OpenAI-compatible endpoints do not implement GET /models. A provider's
+# registry-owned list is authoritative in that case and uses the same mirrors.
+static = copy.deepcopy(servers['demo'])
+static['models'] = [{'id': '@vendor/model'}]
+m.fetch_models = lambda *_: (_ for _ in ()).throw(
+    AssertionError('static provider fetched /models')
+)
+static_models = m.refresh_server('demo', static)
+assert list(static_models) == ['@vendor/model']
+assert '@vendor/model' in m.load_json(m.OPENCODE_PATH)['provider']['demo']['models']
 # The single-provider refresh path in main() mirrors after the fetch.
 m._sync_hermes_mirror(servers, {'demo': models})
 mirrored = _load_yaml(m.HERMES_CONFIG)
@@ -305,9 +317,19 @@ assert captured['token'] == 'secret-token'
 
 # Agents can add a provider directly without any prompts. The endpoint is
 # normalized before it is published, and the token is never printed.
+answers = iter(['static', 'https://static.invalid/v1', '@vendor/static', 'y'])
+builtins.input = lambda prompt='': next(answers)
+m.fetch_models = lambda base, auth: None
+captured = {}
+m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
+m._add_provider()
+assert captured['provider']['models'] == [{'id': '@vendor/static'}]
+assert captured['token'] == 'secret-token'
+
 import contextlib, io
 builtins.input = lambda prompt='': (_ for _ in ()).throw(AssertionError(f'unexpected prompt: {prompt}'))
 m.getpass.getpass = builtins.input
+m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
 captured.clear()
 sys.argv = [path, 'add', 'agent-added', 'https://agent-added.invalid/v1/', 'agent-token']
 add_output = io.StringIO()
@@ -317,6 +339,20 @@ assert captured['provider']['name'] == 'agent-added'
 assert captured['provider']['base_url'] == 'https://agent-added.invalid/v1'
 assert captured['token'] == 'agent-token'
 assert 'agent-token' not in add_output.getvalue()
+
+m.fetch_models = lambda base, auth: None
+captured.clear()
+sys.argv = [
+    path,
+    'add',
+    'agent-static',
+    'https://agent-static.invalid/v1',
+    'agent-token',
+    '@vendor/static',
+]
+with contextlib.redirect_stdout(add_output):
+    m.main()
+assert captured['provider']['models'] == [{'id': '@vendor/static'}]
 
 timer_output = io.StringIO()
 m._is_macos = lambda: True
