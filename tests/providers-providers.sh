@@ -61,7 +61,9 @@ m._sync_opencodex_provider_statuses = lambda: None
 
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
-assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
+assert set(m._load_servers()) == {
+    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta', 'cloudflare'
+}
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
     with open(executable, 'w') as handle:
@@ -118,7 +120,9 @@ assert isinstance(retired.get('profiles'), list) and retired['profiles']
 m._validate_registry(canonical)
 m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
-assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
+assert set(m._load_servers()) == {
+    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta', 'cloudflare'
+}
 m.REGISTRY_PATH = original_registry
 
 # The registry is fetched unverified, so validation is the only gate: missing
