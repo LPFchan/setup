@@ -88,6 +88,23 @@
         "key": "meta"
       },
       "enabled": true
+    },
+    "cloudflare": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.cloudflare.com/client/v4/accounts/f6f0cfde81175292c71fa85240e910dc/ai/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "cloudflare"
+      },
+      "enabled": true,
+      "models": [
+        {
+          "id": "@cf/deepseek-ai/deepseek-v4-flash-0731"
+        }
+      ]
     }
   }
 }
