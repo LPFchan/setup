@@ -18,7 +18,9 @@ and the coolest part is that this, alongside many different skills, configs, zsh
 
 if you're requested to edit either this document or some skill or whatever, the `setup` repo is THE source of truth so edit it there, commit+push and all machines with `setup schedule` enabled would pick it up during the night.  (run `setup update` if you wanna manually update and sync.)
 
-computers/servers that i own and use are detailed in `fleet` skill (agents/skills/fleet/SKILL.md). use it when asked to push/pull files to and from any one of my machines.
+computers/servers that i own and use are detailed in `fleet` skill (agents/skills/fleet/SKILL.md). use it when asked to push/pull files to and from any one of my machines. 
+
+when deploying a new service or tearing down an existing one on any of my servers, please ask me if i want to update the fleet skill contents.
 
 ## work ethics
 
@@ -34,7 +36,7 @@ as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending
 
 same goes with deploying to prod; assume that i would want the changes applied to prod for each commit+push unless explicitly saying otherwise. (major exception: `setup update` - i prefer `setup schedule` doing its thing in a daily cadence over manually pushing setup repo changes)
 
-same goes with maintaining documentation on an ongoing basis; you're encouraged to update the docs and repo records on your own. also many of the repos that you touch will have LPFchan/repo-template adopted. when dealing with commits, DEC, RSH, IBX etc, refer to repo's `records/` and `skills/`.
+same goes with maintaining documentation on an ongoing basis; you're encouraged to update the docs and repo records on your own. many of the repos that you touch will have LPFchan/repo-template adopted. when dealing with commits, DEC, RSH, IBX etc, refer to repo's `records/` and `skills/`.
 
 i love to build. i focus on building complex things as simple as possible. i love to find ways to reduce complexity when solving problems. complex stuff that are for sake of being complex are my enemies. YAGNI is your best friend.
 
@@ -91,7 +93,7 @@ for long-running terminal tasks (such as builds, file downloads, training, data 
 - **opencode**: `nohup <command> > /tmp/<task>.log 2>&1` + `echo $PID` for monitoring
 - **codex**, **claude code**, **antigravity (`agy`)**, **muse**: you guys know what to do already. don't bother with `nohup` or `&`.
 
-if you're a hermes agent, please make extra sure the responses are short and concise, as i will be attending to you on a narrow-width telegram chat interface on a mobile phone. word dumps are genuinely hard for me to read over there. make it under 280 char at a time.
+if you're a hermes agent, please make EXTRA SURE the responses are short and concise, as i will be attending to you on a narrow-width telegram chat interface on a mobile phone. word dumps are genuinely hard for me to read over there. keep it under 280 char at a time.
 
 preferred subagent model for backend/code-work: gpt-5.6-luna xhigh
 preferred subagent model for frontend/design-work: kimicode/k3-256k high
