@@ -21,7 +21,8 @@ Commands:
   sync                         vault -> cache -> opencode auth.json -> .zshenv
   audit                        List vault llm items, flag non-conforming names
   rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
-  add                          Add a provider through the canonical provider registry
+  add                          Add a provider interactively
+  add <provider> <url> <key>   Add a provider directly (agent-friendly)
   enable <provider>            Enable a provider that has an API key
   disable <provider>           Disable a provider without deleting its key
 """
@@ -1400,18 +1401,19 @@ def _provision_provider(provider, token):
         )
 
 
-def _add_provider():
+def _validate_new_provider_name(name):
     registry = _validate_registry(load_json(REGISTRY_PATH))
     existing = set(registry["providers"])
-    name = input("Provider name: ").strip()
     if not NAME_RE.fullmatch(name) or name in existing:
         raise ValueError("provider names must be unique lowercase letters, digits, or hyphens")
     if name in _load_auth_strict():
         raise ValueError("the local auth store already uses that name")
-    base_url = input("OpenAI-compatible API base URL: ").strip().rstrip("/")
+
+
+def _prepare_provider(name, base_url, token):
+    base_url = base_url.strip().rstrip("/")
     if not _valid_base_url(base_url):
         raise ValueError("the API base URL must be an HTTP(S) URL")
-    token = getpass.getpass("API token: ")
     if not token:
         raise ValueError("the API token cannot be empty")
     payload = fetch_models(base_url, {"type": "bearer", "key": token})
@@ -1429,12 +1431,24 @@ def _add_provider():
     provider["api_format"] = "openai"
     provider["npm"] = "@ai-sdk/openai-compatible"
     _validate_registry({"version": 1, "providers": {name: provider}})
+    return provider, len(models)
+
+
+def _add_provider(name=None, base_url=None, token=None):
+    interactive = name is None and base_url is None and token is None
+    if interactive:
+        name = input("Provider name: ").strip()
+    _validate_new_provider_name(name)
+    if interactive:
+        base_url = input("OpenAI-compatible API base URL: ")
+        token = getpass.getpass("API token: ")
+    provider, model_count = _prepare_provider(name, base_url, token)
     print("\nProvider to publish:")
     print(f"  name: {name}")
-    print(f"  endpoint: {base_url}")
-    print(f"  models: {len(models)} available")
+    print(f"  endpoint: {provider['base_url']}")
+    print(f"  models: {model_count} available")
     print("  token: [stored locally]")
-    if input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
+    if interactive and input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
         return
     _provision_provider(provider, token)
     print(f"providers: provisioned {name}")
@@ -1623,11 +1637,11 @@ def main():
         return
 
     if cmd == "add":
-        if len(args) != 1:
-            print("Usage: providers add", file=sys.stderr)
+        if len(args) not in (1, 4):
+            print("Usage: providers add [<provider> <base-url> <key>]", file=sys.stderr)
             sys.exit(1)
         try:
-            _add_provider()
+            _add_provider(*args[1:])
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             print(f"providers: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1678,7 +1692,8 @@ def main():
         print("  providers auth             Interactive API key enrollment")
         print("  providers auth <p> <k>     Write key directly (agent-friendly)")
         print("  providers ls               List providers and key status")
-        print("  providers add              Add a provider through the canonical provider registry")
+        print("  providers add                   Add a provider interactively")
+        print("  providers add <p> <url> <key>   Add directly (agent-friendly)")
         print("  providers enable <p>       Enable a provider that has an API key")
         print("  providers disable <p>      Disable a provider without deleting its key")
         print("  providers timer enable     Install systemd/launchd timer (hourly)")

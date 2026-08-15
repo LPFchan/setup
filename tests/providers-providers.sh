@@ -303,7 +303,21 @@ assert set(captured['provider']) == {
 }
 assert captured['token'] == 'secret-token'
 
+# Agents can add a provider directly without any prompts. The endpoint is
+# normalized before it is published, and the token is never printed.
 import contextlib, io
+builtins.input = lambda prompt='': (_ for _ in ()).throw(AssertionError(f'unexpected prompt: {prompt}'))
+m.getpass.getpass = builtins.input
+captured.clear()
+sys.argv = [path, 'add', 'agent-added', 'https://agent-added.invalid/v1/', 'agent-token']
+add_output = io.StringIO()
+with contextlib.redirect_stdout(add_output):
+    m.main()
+assert captured['provider']['name'] == 'agent-added'
+assert captured['provider']['base_url'] == 'https://agent-added.invalid/v1'
+assert captured['token'] == 'agent-token'
+assert 'agent-token' not in add_output.getvalue()
+
 timer_output = io.StringIO()
 m._is_macos = lambda: True
 with contextlib.redirect_stdout(timer_output):
@@ -327,7 +341,7 @@ assert dispatch == [
     ('demo', True), ('demo', False), ('timer', 'enable'),
     ('timer', 'disable'), ('timer', 'status')
 ]
-for argv in ([path, 'provider', 'add'], [path, 'enable'],
+for argv in ([path, 'provider', 'add'], [path, 'add', 'only-name'], [path, 'enable'],
              [path, 'disable'], [path, 'status']):
     sys.argv = argv
     try:
