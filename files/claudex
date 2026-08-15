@@ -409,28 +409,18 @@ def provision_profile(profile: dict[str, Any], token: str) -> None:
     with tempfile.TemporaryDirectory(prefix="claudex-profile-") as temp:
         clone = Path(temp) / "setup"
         run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
-        registry_path = clone / "files/provider-registry.json"
+        registry_path = clone / "files/claudex-profiles.json"
         data = load_registry(registry_path)
         if any(item["name"] == profile["name"] for item in data["profiles"]):
             raise UserError(f"profile {profile['name']} already exists in the setup repository")
-        if profile["name"] in data.get("providers", {}):
-            raise UserError(f"provider {profile['name']} already exists in the setup repository")
-        data.setdefault("providers", {})[profile["name"]] = {
-            "provider_type": profile["provider_type"],
-            "base_url": profile["base_url"],
-            "api_format": "openai",
-            "npm": "@ai-sdk/openai-compatible",
-            "auth": profile["auth"],
-            "enabled": True,
-        }
         data["profiles"].append(profile)
         validate_registry(data)
         registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         changed = run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
-        if not changed or any(line[3:] != "files/provider-registry.json" for line in changed):
+        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
             raise UserError("temporary clone contains changes outside the profile registry")
         run_git(["diff", "--check"], cwd=clone)
-        run_git(["add", "--", "files/provider-registry.json"], cwd=clone)
+        run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
         run_git(
             [
                 "-c", "user.name=claudex launcher",

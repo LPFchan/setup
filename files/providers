@@ -15,15 +15,15 @@ Commands:
   auth                         Interactive API key enrollment (prompts per provider)
   auth <provider> <key>        Write key directly (agent-friendly)
   ls                           List providers and enrollment status (never the key)
-  enable                       Install the hourly systemd/launchd timer
-  disable                      Remove the timer
-  status                       Show timer, provider, and credential status
+  timer enable                 Install the hourly systemd/launchd timer
+  timer disable                Remove the hourly timer
+  timer status                 Show timer state and next run
   sync                         vault -> cache -> opencode auth.json -> .zshenv
   audit                        List vault llm items, flag non-conforming names
   rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
-  provider add                 Add a provider through the shared provider registry
-  provider enable <provider>   Enable a provider that has an API key
-  provider disable <provider>  Disable a provider without deleting its key
+  add                          Add a provider through the canonical provider registry
+  enable <provider>            Enable a provider that has an API key
+  disable <provider>           Disable a provider without deleting its key
 """
 
 import getpass, json, os, pathlib, re, shutil, subprocess, sys, tempfile
@@ -44,7 +44,6 @@ REGISTRY_PATH = os.environ.get(
     "PROVIDERS_REGISTRY",
     os.path.expanduser("~/.config/providers/registry.json"),
 )
-CLAUDEX_BIN = os.environ.get("CLAUDEX_BIN", os.path.expanduser("~/.local/bin/claudex"))
 OPENCODEX_BIN = os.environ.get(
     "OPENCODEX_LAUNCHER", os.path.expanduser("~/.local/bin/opencodex")
 )
@@ -299,7 +298,7 @@ def _sync_cache_from_vault(servers):
     registry-listed servers: the vault is canonical, so every conforming
     {PROVIDER}_API_KEY item becomes a cached provider (the 4 extra live
     providers, e.g. alibaba/ollama-cloud, are enrolled in vault but absent
-    from the shared registry).
+    from the canonical provider registry).
     Network-optional: on vault unreachable, keep the cache and note it."""
     if not vault_available():
         print("  vault token unset; using local cache", file=sys.stderr)
@@ -830,32 +829,26 @@ def _servers_from_registry(registry):
     the real one (REGISTRY_PATH is env-overridable, so _load_servers can
     only ever see one registry per process).
     """
-    profiles = registry.get("profiles") if isinstance(registry, dict) else None
-    if profiles is None:
-        profiles = []
     providers = registry.get("providers")
-    entries = providers.items() if isinstance(providers, dict) else (
-        (profile.get("name"), profile) for profile in profiles if isinstance(profile, dict)
-    )
     servers = {}
-    for name, profile in entries:
-        if not isinstance(profile, dict):
+    for name, provider in providers.items():
+        if not isinstance(provider, dict):
             continue
-        auth = profile.get("auth", {})
-        if profile.get("provider_type") != "OpenAICompatible":
+        auth = provider.get("auth", {})
+        if provider.get("provider_type") != "OpenAICompatible":
             continue
         if not isinstance(auth, dict) or auth.get("type") != "api-key":
             continue
-        base_url = profile.get("base_url")
+        base_url = provider.get("base_url")
         auth_key = auth.get("key")
         if not all(isinstance(value, str) and value for value in (name, base_url, auth_key)):
             continue
         servers[name] = {
             "baseURL": base_url,
-            "api_format": profile.get("api_format", "openai"),
-            "npm": profile.get("npm", "@ai-sdk/openai-compatible"),
+            "api_format": provider.get("api_format", "openai"),
+            "npm": provider.get("npm", "@ai-sdk/openai-compatible"),
             "auth": {"type": "auth_json", "provider": auth_key},
-            "registry_enabled": profile.get("enabled") is True,
+            "registry_enabled": provider.get("enabled") is True,
         }
     return servers
 
@@ -1166,7 +1159,7 @@ def cmd_ls():
         print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
 
 
-def cmd_enable():
+def cmd_timer_enable():
     _sync_cache_from_vault(_load_servers() or {})
 
     script_path = os.path.abspath(sys.argv[0])
@@ -1272,23 +1265,11 @@ def _valid_base_url(value):
 def _validate_registry(data):
     if not isinstance(data, dict) or data.get("version") != 1:
         raise ValueError("registry version must be 1")
-    # The profile array is claudex's view of the registry: absent for every
-    # other consumer. Routing is by `providers`; validate profiles only when
-    # the file still carries them.
-    profiles = data.get("profiles")
-    if profiles is None:
-        profiles = []
-    if not isinstance(profiles, list):
-        raise ValueError("registry profiles must be a list")
-    providers = data.get("providers", {})
-    if providers and not isinstance(providers, dict):
-        raise ValueError("registry providers must be an object")
-    # A registry that routes nothing is a truncated or empty fetch, not a valid
-    # one: installing it would silently drop every managed provider. Either
-    # source counts, since `providers` is canonical but the legacy profile array
-    # is still a supported shape.
-    if not providers and not profiles:
-        raise ValueError("registry defines no providers")
+    if set(data) != {"version", "providers"}:
+        raise ValueError("registry must contain only version and providers")
+    providers = data.get("providers")
+    if not isinstance(providers, dict) or not providers:
+        raise ValueError("registry providers must be a non-empty object")
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise ValueError(f"invalid provider: {provider_name}")
@@ -1312,61 +1293,7 @@ def _validate_registry(data):
                 raise ValueError(f"invalid npm package for {provider_name}")
         elif auth.get("type") != "oauth" or not isinstance(auth.get("provider"), str):
             raise ValueError(f"invalid OAuth descriptor for {provider_name}")
-    seen = set()
-    for profile in profiles:
-        if not isinstance(profile, dict):
-            raise ValueError("each profile must be an object")
-        name = profile.get("name")
-        if not isinstance(name, str) or not NAME_RE.fullmatch(name) or name in seen:
-            raise ValueError(f"invalid or duplicate profile name: {name}")
-        seen.add(name)
-        provider_name = profile.get("provider")
-        if provider_name is not None and providers and provider_name not in providers:
-            raise ValueError(f"unknown provider for {name}: {provider_name}")
-        if provider_name in providers:
-            provider = providers[provider_name]
-            for field in ("provider_type", "base_url", "auth"):
-                if profile.get(field) != provider.get(field):
-                    raise ValueError(f"{field} for {name} disagrees with provider {provider_name}")
-        if profile.get("provider_type") not in {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}:
-            raise ValueError(f"invalid provider_type for {name}")
-        if not isinstance(profile.get("base_url"), str) or not _valid_base_url(profile["base_url"]):
-            raise ValueError(f"invalid base_url for {name}")
-        auth = profile.get("auth")
-        if not isinstance(auth, dict) or auth.get("type") not in {"api-key", "oauth"}:
-            raise ValueError(f"invalid auth descriptor for {name}")
-        if auth["type"] == "api-key" and (
-            auth.get("store") != "opencode" or not NAME_RE.fullmatch(auth.get("key", ""))
-        ):
-            raise ValueError(f"invalid API-key auth descriptor for {name}")
-        models = profile.get("models")
-        if not isinstance(models, dict) or set(models) != {"haiku", "sonnet", "opus"}:
-            raise ValueError(f"invalid model mapping for {name}")
     return data
-
-
-def _choose(prompt, options):
-    if shutil.which("fzf") and sys.stdin.isatty():
-        proc = subprocess.run(
-            ["fzf", "--prompt", f"{prompt} > ", "--height=50%", "--reverse"],
-            input="\n".join(options) + "\n",
-            text=True,
-            stdout=subprocess.PIPE,
-        )
-        return proc.stdout.rstrip("\n") if proc.returncode == 0 else None
-    if not sys.stdin.isatty():
-        raise ValueError("interactive provider creation requires a TTY")
-    print(prompt)
-    for index, option in enumerate(options, 1):
-        print(f"  {index}. {option}")
-    print("  0. Cancel")
-    while True:
-        raw = input("Select: ").strip()
-        if raw == "0":
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            return options[int(raw) - 1]
-        print("Enter a listed number.", file=sys.stderr)
 
 
 def _run_git(args, cwd=None, capture=False):
@@ -1421,35 +1348,30 @@ def _provider_consumer_modules():
     modules = ["providers"]
     if os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK):
         modules.insert(0, "opencodex")
-    if os.path.isfile(CLAUDEX_BIN) and os.access(CLAUDEX_BIN, os.X_OK):
-        modules.insert(0, "claudex")
     return modules
 
 
-def _provision_provider(profile, token):
+def _provision_provider(provider, token):
     auth_data = _load_auth_strict()
-    if profile["name"] in auth_data:
+    if provider["name"] in auth_data:
         raise ValueError(
-            f"the local auth store already contains an entry named {profile['name']}"
+            f"the local auth store already contains an entry named {provider['name']}"
         )
     with tempfile.TemporaryDirectory(prefix="providers-provider-") as temp:
         clone = pathlib.Path(temp) / "setup"
         _run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
         registry_path = clone / "files/provider-registry.json"
         data = _validate_registry(load_json(registry_path))
-        if any(item["name"] == profile["name"] for item in data.get("profiles") or []):
-            raise ValueError(f"provider {profile['name']} already exists in the setup repository")
-        if profile["name"] in data.get("providers", {}):
-            raise ValueError(f"provider {profile['name']} already exists in the setup repository")
-        data.setdefault("providers", {})[profile["name"]] = {
-            "provider_type": profile["provider_type"],
-            "base_url": profile["base_url"],
+        if provider["name"] in data["providers"]:
+            raise ValueError(f"provider {provider['name']} already exists in the setup repository")
+        data["providers"][provider["name"]] = {
+            "provider_type": provider["provider_type"],
+            "base_url": provider["base_url"],
             "api_format": "openai",
             "npm": "@ai-sdk/openai-compatible",
-            "auth": profile["auth"],
+            "auth": provider["auth"],
             "enabled": True,
         }
-        data.setdefault("profiles", []).append(profile)
         _validate_registry(data)
         registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         changed = _run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
@@ -1461,13 +1383,13 @@ def _provision_provider(profile, token):
             [
                 "-c", "user.name=providers",
                 "-c", "user.email=providers@localhost",
-                "commit", "--quiet", "-m", f"Add provider {profile['name']}",
+                "commit", "--quiet", "-m", f"Add provider {provider['name']}",
             ],
             cwd=clone,
         )
         _run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
         commit = _run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
-    _store_token(profile["name"], token)
+    _store_token(provider["name"], token)
     env = os.environ.copy()
     env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
     modules = _provider_consumer_modules()
@@ -1480,8 +1402,7 @@ def _provision_provider(profile, token):
 
 def _add_provider():
     registry = _validate_registry(load_json(REGISTRY_PATH))
-    existing = {profile["name"] for profile in registry.get("profiles") or []}
-    existing.update(registry.get("providers", {}))
+    existing = set(registry["providers"])
     name = input("Provider name: ").strip()
     if not NAME_RE.fullmatch(name) or name in existing:
         raise ValueError("provider names must be unique lowercase letters, digits, or hyphens")
@@ -1498,60 +1419,28 @@ def _add_provider():
     models = sorted({row.get("id") for row in rows if isinstance(row, dict) and row.get("id")})
     if not models:
         raise ValueError("the endpoint returned no model IDs")
-    mappings = {}
-    for alias in ("opus", "sonnet", "haiku"):
-        selected = _choose(f"Map {alias}", models)
-        if selected is None:
-            return
-        mappings[alias] = selected
-    profile = {
+    provider = {
         "name": name,
-        "provider": name,
         "provider_type": "OpenAICompatible",
         "base_url": base_url,
         "auth": {"type": "api-key", "store": "opencode", "key": name},
-        "default_model": mappings["opus"],
-        "priority": max(0, 80 - len(existing)),
         "enabled": True,
-        "strip_params": "Auto",
-        "models": {
-            "haiku": mappings["haiku"],
-            "sonnet": mappings["sonnet"],
-            "opus": mappings["opus"],
-        },
     }
-    _validate_registry({"version": 1, "profiles": [profile]})
+    provider["api_format"] = "openai"
+    provider["npm"] = "@ai-sdk/openai-compatible"
+    _validate_registry({"version": 1, "providers": {name: provider}})
     print("\nProvider to publish:")
     print(f"  name: {name}")
     print(f"  endpoint: {base_url}")
-    for alias in ("opus", "sonnet", "haiku"):
-        print(f"  {alias}: {mappings[alias]}")
+    print(f"  models: {len(models)} available")
     print("  token: [stored locally]")
     if input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
         return
-    _provision_provider(profile, token)
-    print(f"providers: provider {name} added and provisioned")
+    _provision_provider(provider, token)
+    print(f"providers: provisioned {name}")
 
 
-def cmd_provider():
-    if len(sys.argv) == 3 and sys.argv[2] == "add":
-        try:
-            _add_provider()
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"providers: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-    if len(sys.argv) != 4 or sys.argv[2] not in ("enable", "disable"):
-        print(
-            "Usage: providers provider add | [enable|disable] <provider>",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if not _set_provider_enabled(sys.argv[3], sys.argv[2] == "enable"):
-        sys.exit(1)
-
-
-def cmd_disable():
+def cmd_timer_disable():
     if _is_macos():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
@@ -1573,7 +1462,7 @@ def cmd_disable():
         print("providers timer disabled")
 
 
-def cmd_status():
+def cmd_timer_status():
     if _is_macos():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
@@ -1601,14 +1490,6 @@ def cmd_status():
             print(f"timer: active (next: {next_run})")
         else:
             print(f"timer: {state}")
-    servers = _load_servers() or {}
-    print(f"servers configured: {len(servers)}")
-    for name, provider in servers.items():
-        state = "enabled" if _provider_enabled(name, provider) else "disabled"
-        key_status = "key: ✓" if _get_key(_auth_provider(name, provider)) else "key: ✗"
-        print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
-
-
 def cmd_sync():
     """vault -> cache -> opencode auth.json + .zshenv."""
     servers = _load_servers()
@@ -1741,16 +1622,30 @@ def main():
             print(name)
         return
 
-    if cmd == "enable":
-        cmd_enable()
+    if cmd == "add":
+        if len(args) != 1:
+            print("Usage: providers add", file=sys.stderr)
+            sys.exit(1)
+        try:
+            _add_provider()
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"providers: {exc}", file=sys.stderr)
+            sys.exit(1)
         return
 
-    if cmd == "disable":
-        cmd_disable()
+    if cmd in ("enable", "disable"):
+        if len(args) != 2:
+            print(f"Usage: providers {cmd} <provider>", file=sys.stderr)
+            sys.exit(1)
+        if not _set_provider_enabled(args[1], cmd == "enable"):
+            sys.exit(1)
         return
 
-    if cmd == "status":
-        cmd_status()
+    if cmd == "timer":
+        if len(args) != 2 or args[1] not in ("enable", "disable", "status"):
+            print("Usage: providers timer <enable|disable|status>", file=sys.stderr)
+            sys.exit(1)
+        {"enable": cmd_timer_enable, "disable": cmd_timer_disable, "status": cmd_timer_status}[args[1]]()
         return
 
     if cmd == "auth":
@@ -1773,10 +1668,6 @@ def main():
         cmd_rename()
         return
 
-    if cmd == "provider":
-        cmd_provider()
-        return
-
     if cmd in ("--help", "-h", "help"):
         print("providers — vault-owned provider API keys and model refresh")
         print()
@@ -1787,15 +1678,15 @@ def main():
         print("  providers auth             Interactive API key enrollment")
         print("  providers auth <p> <k>     Write key directly (agent-friendly)")
         print("  providers ls               List providers and key status")
-        print("  providers enable           Install systemd/launchd timer (hourly)")
-        print("  providers disable          Remove timer")
-        print("  providers status           Show timer state and next run")
+        print("  providers add              Add a provider through the canonical provider registry")
+        print("  providers enable <p>       Enable a provider that has an API key")
+        print("  providers disable <p>      Disable a provider without deleting its key")
+        print("  providers timer enable     Install systemd/launchd timer (hourly)")
+        print("  providers timer disable    Remove timer")
+        print("  providers timer status     Show timer state and next run")
         print("  providers sync             vault -> cache -> auth.json -> .zshenv")
         print("  providers audit            List vault llm items, flag non-conforming")
         print("  providers rename [--apply] Enforce C1 naming on vault items")
-        print("  providers provider add          Add a shared provider")
-        print("  providers provider enable <p>   Enable a keyed provider")
-        print("  providers provider disable <p>  Disable a provider")
         print("  providers --help           Show this message")
         return
 
@@ -1805,7 +1696,7 @@ def main():
     if cmd in servers:
         if not _provider_enabled(cmd, servers[cmd]):
             print(
-                f"{cmd} is disabled. Run: providers provider enable {cmd}",
+                f"{cmd} is disabled. Run: providers enable {cmd}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1816,7 +1707,7 @@ def main():
         return
 
     print(f"Unknown: {cmd}", file=sys.stderr)
-    print(f"Usage: providers [enable|disable|status|auth|ls|sync|audit|rename|provider|--list|<provider>]", file=sys.stderr)
+    print(f"Usage: providers [add|enable|disable|timer|auth|ls|sync|audit|rename|--list|<provider>]", file=sys.stderr)
     sys.exit(1)
 
 

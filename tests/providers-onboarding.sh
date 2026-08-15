@@ -7,9 +7,7 @@ export HOME="$TMP/home" XDG_STATE_HOME="$TMP/custom-state"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/bin" "$HOME/.local/share/opencode"
 export PROVIDERS_REGISTRY="$TMP/registry.json"
 cat > "$PROVIDERS_REGISTRY" <<'EOF'
-{"version":1,"profiles":[
-  {"name":"demo","provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}}
-]}
+{"version":1,"providers":{"demo":{"provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"api_format":"openai","npm":"@ai-sdk/openai-compatible","enabled":true}}}
 EOF
 
 python3 - <<PY
@@ -22,8 +20,8 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 m._is_macos = lambda: False
 m.subprocess.run = lambda *a, **k: type('R', (), {'returncode': 0, 'stderr': b''})()
-sys.argv = [path, 'enable']
-m.cmd_enable()
+sys.argv = [path, 'timer', 'enable']
+m.cmd_timer_enable()
 service_path = os.path.join(m.SERVICE_DIR, 'providers.service')
 with open(service_path) as f:
     service_unit = f.read()

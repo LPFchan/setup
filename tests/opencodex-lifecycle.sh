@@ -110,7 +110,7 @@ install_surfaces
 
 shared_registry="$HOME/.config/claudex/managed-profiles.json"
 mkdir -p "${shared_registry:h}"
-cp "$ROOT/files/provider-registry.json" "$shared_registry"
+cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
 (
     export CLAUDEX_REGISTRY="$shared_registry"
     export PROVIDERS_BIN="$HOME/.local/bin/missing-providers"

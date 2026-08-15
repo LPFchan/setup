@@ -718,10 +718,8 @@ assert config["providers"]["anthropic"] == {
 assert "defaultModel" not in config["providers"]["commandcode"]
 assert "defaultModel" not in config["providers"]["kimicode"]
 
-# A provider-only entry (no same-named profile anywhere) is still rendered,
-# and it pins no model either.
+# A provider-only entry is rendered, and it pins no model either.
 solo_registry = copy.deepcopy(registry)
-solo_registry["profiles"] = []
 solo_registry["providers"]["soloroute"] = {
     "provider_type": "OpenAICompatible",
     "base_url": "https://solo.example/v1",
@@ -735,13 +733,17 @@ config, _ = namespace["desired_opencodex_config"](solo_registry, {}, {"soloroute
 assert config["providers"]["soloroute"]["baseUrl"] == "https://solo.example/v1"
 assert "defaultModel" not in config["providers"]["soloroute"]
 
-# The validator no longer requires a profiles array...
+# The validator requires the canonical top-level shape.
 namespace["validate_registry"]({"version": 1, "providers": registry["providers"]})
-bare = copy.deepcopy(registry)
-del bare["profiles"]
-namespace["validate_registry"](bare)
-# ...and a registry a rollback left carrying a provider default_model is
-# tolerated and ignored rather than refused.
+legacy = copy.deepcopy(registry)
+legacy["profiles"] = []
+try:
+    namespace["validate_registry"](legacy)
+except namespace["UserError"]:
+    pass
+else:
+    raise AssertionError("legacy profile-bearing registry was accepted")
+# A provider default_model is ignored rather than used for routing.
 stale = copy.deepcopy(registry)
 stale["providers"]["commandcode"]["default_model"] = "xiaomi/mimo-v2.5-pro"
 namespace["validate_registry"](stale)

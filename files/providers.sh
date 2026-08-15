@@ -11,13 +11,9 @@
 MODULE="providers"
 BIN="${PROVIDERS_BIN:-$HOME/.local/bin/providers}"
 REGISTRY="${PROVIDERS_REGISTRY:-$HOME/.config/providers/registry.json}"
-# The registry used to be a single copy shared with claudex; each module now
-# installs its own. Only claudex and refresh-models still own the old path.
 LEGACY_REGISTRY="${PROVIDERS_LEGACY_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
 CLAUDEX_BIN="${CLAUDEX_BIN:-$HOME/.local/bin/claudex}"
-CLAUDEX_CONFIG="${CLAUDEX_CONFIG:-$HOME/.config/claudex/config.toml}"
 REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
-PROVIDERS_AUTH_JSON="${PROVIDERS_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${PROVIDERS_SOURCE:-$SOURCE_BASE/files/providers}"
 REGISTRY_SOURCE="${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}"
@@ -54,12 +50,7 @@ _recorded_hash() {
     IFS=$'\t' read -r rt lr rr < <(script_state_for "$MODULE" 2>/dev/null) && printf '%s' "$lr"
 }
 
-# Drop the registry copy providers used to share with claudex. The new registry
-# is written from the staged fetch, so the old copy carries nothing worth
-# keeping. Only drop it when no module that still owns that path is installed,
-# so a co-installed claudex is not left without its registry until its own next
-# update. Runs after the swap: until the new launcher is in place the old one is
-# still reading this file, and a failure earlier in the apply must not strand it.
+# Remove an obsolete registry path once no retired module still owns it.
 _reclaim_legacy_registry() {
     [[ "$REGISTRY" != "$LEGACY_REGISTRY" ]] || return 0
     [[ -f "$LEGACY_REGISTRY" ]] || return 0
@@ -88,13 +79,6 @@ _apply() {
             rm -rf "$staged"
             return 1
         }
-    # claudex is retired: hand it the registry while it is still installed, but
-    # never let unmaintained code veto a maintained module's own install.
-    if [[ -x "$CLAUDEX_BIN" ]]; then
-        CLAUDEX_AUTH_JSON="$PROVIDERS_AUTH_JSON" \
-            python3 "$CLAUDEX_BIN" __apply "$staged/provider-registry.json" "$CLAUDEX_CONFIG" \
-            || echo "providers: claudex __apply failed; its config was left untouched" >&2
-    fi
     mv "$registry_tmp" "$REGISTRY"
     mv "$bin_tmp" "$BIN"
     _reclaim_legacy_registry

@@ -108,14 +108,8 @@ def _string(value: Any, field: str) -> str:
 def validate_registry(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("version") != 1:
         raise UserError("registry version must be 1")
-    # The registry file is shared with claudex and providers, which
-    # remain profile-based; opencodex routes by provider alone and only
-    # loosely tolerates the array when present.
-    profiles = data.get("profiles")
-    if profiles is None:
-        profiles = []
-    if not isinstance(profiles, list):
-        raise UserError("registry profiles must be a list")
+    if set(data) != {"version", "providers"}:
+        raise UserError("registry must contain only version and providers")
     providers = data.get("providers")
     if not isinstance(providers, dict) or not providers:
         raise UserError("registry providers must be a non-empty object")
@@ -144,17 +138,6 @@ def validate_registry(data: Any) -> dict[str, Any]:
             raise UserError(f"invalid OAuth descriptor for {provider_name}")
         else:
             _string(auth.get("provider"), f"oauth provider for {provider_name}")
-    seen: set[str] = set()
-    for entry in profiles:
-        if not isinstance(entry, dict):
-            raise UserError("each entry in the registry's profile array must be an object")
-        name = _string(entry.get("name"), "profile name")
-        if not NAME_RE.fullmatch(name) or name in seen:
-            raise UserError(f"invalid or duplicate profile name: {name}")
-        seen.add(name)
-        provider_name = entry.get("provider")
-        if provider_name is not None and provider_name not in providers:
-            raise UserError(f"unknown provider for {name}: {provider_name}")
     return data
 
 

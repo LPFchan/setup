@@ -45,7 +45,7 @@ vaultwarden: llm/{PROVIDER}_API_KEY   # source of truth
   }
 }
 ```
-The shared registry (`claudex-profiles.json`) keeps its current `auth: {type: api-key, store: opencode, key: …}` shape for now — opencodex validates it (`opencodex:138-141`) and the vault mapping is a `providers` read-time concern, not a registry change.
+The retired Claudex registry (`claudex-profiles.json`) keeps its legacy profile shape. Maintained providers and OpenCodex consume the canonical provider registry, whose descriptors retain `auth: {type: api-key, store: opencode, key: …}`; the vault mapping is a `providers` read-time concern, not a registry change.
 
 ## Consumers (read paths)
 
@@ -109,5 +109,5 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 
 ## Open items
 1. `VAST.ai`: no live provider — leave in vault, exclude from presets unless you want it.
-2. The 4 extra live `auth.json` providers (alibaba, ollama-cloud, opencode-go, openrouter): include as `providers` presets (they're enrolled in vault already), **not** added to shared `claudex-profiles.json` (would change opencodex's consumed set) unless you say so.
+2. The 4 extra live `auth.json` providers (alibaba, ollama-cloud, opencode-go, openrouter): include as `providers` presets (they're enrolled in vault already), **not** added to the retired `claudex-profiles.json` asset unless you say so.
 3. `empty_trash` on `crofai_api_key_guest` and `ANTHROPIC_API_KEY` — your call (soft-deleted items expire in 30 days anyway).

@@ -1092,28 +1092,18 @@ def _provision_provider(profile, token):
     with tempfile.TemporaryDirectory(prefix="refresh-models-provider-") as temp:
         clone = pathlib.Path(temp) / "setup"
         _run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
-        registry_path = clone / "files/provider-registry.json"
+        registry_path = clone / "files/claudex-profiles.json"
         data = _validate_registry(load_json(registry_path))
         if any(item["name"] == profile["name"] for item in data["profiles"]):
             raise ValueError(f"provider {profile['name']} already exists in the setup repository")
-        if profile["name"] in data.get("providers", {}):
-            raise ValueError(f"provider {profile['name']} already exists in the setup repository")
-        data.setdefault("providers", {})[profile["name"]] = {
-            "provider_type": profile["provider_type"],
-            "base_url": profile["base_url"],
-            "api_format": "openai",
-            "npm": "@ai-sdk/openai-compatible",
-            "auth": profile["auth"],
-            "enabled": True,
-        }
         data["profiles"].append(profile)
         _validate_registry(data)
         registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         changed = _run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
-        if not changed or any(line[3:] != "files/provider-registry.json" for line in changed):
+        if not changed or any(line[3:] != "files/claudex-profiles.json" for line in changed):
             raise ValueError("temporary clone contains changes outside the provider registry")
         _run_git(["diff", "--check"], cwd=clone)
-        _run_git(["add", "--", "files/provider-registry.json"], cwd=clone)
+        _run_git(["add", "--", "files/claudex-profiles.json"], cwd=clone)
         _run_git(
             [
                 "-c", "user.name=refresh-models",

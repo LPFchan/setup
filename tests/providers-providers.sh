@@ -38,11 +38,10 @@ custom_providers:
       - ghost-model
 EOF
 cat > "$PROVIDERS_REGISTRY" <<'EOF'
-{"version":1,"profiles":[
-  {"name":"codex","provider_type":"OpenAIResponses","base_url":"https://codex.invalid","auth":{"type":"oauth","provider":"chatgpt"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}},
-  {"name":"demo","provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}},
-  {"name":"unused","provider_type":"OpenAICompatible","base_url":"http://unused","auth":{"type":"api-key","store":"opencode","key":"unused"},"enabled":true,"models":{"haiku":"h","sonnet":"s","opus":"o"}}
-]}
+{"version":1,"providers":{
+  "demo":{"provider_type":"OpenAICompatible","base_url":"http://demo","api_format":"openai","npm":"@ai-sdk/openai-compatible","auth":{"type":"api-key","store":"opencode","key":"demo"},"enabled":true},
+  "unused":{"provider_type":"OpenAICompatible","base_url":"http://unused","api_format":"openai","npm":"@ai-sdk/openai-compatible","auth":{"type":"api-key","store":"opencode","key":"unused"},"enabled":true}
+}}
 EOF
 printf '{"servers":{"demo":{"baseURL":"http://old-demo","enabled":true},"unused":{"baseURL":"http://old-unused","enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models.json"
 printf '{"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models-state.json"
@@ -63,13 +62,12 @@ m._sync_opencodex_provider_statuses = lambda: None
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
-m.CLAUDEX_BIN = os.path.join('$TMP', 'claudex')
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
-for executable in (m.CLAUDEX_BIN, m.OPENCODEX_BIN):
+for executable in (m.OPENCODEX_BIN,):
     with open(executable, 'w') as handle:
         handle.write('#!/bin/sh\n')
     os.chmod(executable, 0o700)
-assert m._provider_consumer_modules() == ['claudex', 'opencodex', 'providers']
+assert m._provider_consumer_modules() == ['opencodex', 'providers']
 m.REGISTRY_PATH = fixture_registry
 servers = m._load_servers()
 assert set(servers) == {'demo', 'unused'}
@@ -107,20 +105,25 @@ assert m._load_provider_state() == {'version': 1, 'providers': {}}
 assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 m.save_json_atomic(m.STATE_PATH, state)
 
-# The profile array is claudex's alone: providers routes by provider and must
-# accept a registry that no longer carries one.
-profileless = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
-del profileless['profiles']
-m._validate_registry(profileless)
-m.save_json(m.REGISTRY_PATH + '.profileless', profileless)
-profile_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.profileless'
+# The canonical registry routes only through its provider object.
+canonical = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
+assert 'profiles' not in canonical
+serialized = json.dumps(canonical).lower()
+for legacy_field in ('default_model', 'haiku', 'sonnet', 'opus'):
+    assert legacy_field not in serialized
+retired = m.load_json('$ROOT/files/claudex-profiles.json')
+assert 'providers' not in retired
+assert isinstance(retired.get('profiles'), list) and retired['profiles']
+m._validate_registry(canonical)
+m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
+original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta'}
-m.REGISTRY_PATH = profile_registry
+m.REGISTRY_PATH = original_registry
 
-# The registry is fetched unverified, so validation is the only gate: a copy
-# that routes nothing must be refused rather than silently unmanaging every
-# provider. Both populated shapes stay valid.
-for empty in ({'version': 1}, {'version': 1, 'providers': {}}, {'version': 1, 'profiles': []}):
+# The registry is fetched unverified, so validation is the only gate: missing
+# providers and legacy profile-only shapes must be refused.
+for empty in ({'version': 1}, {'version': 1, 'providers': {}}, {'version': 1, 'profiles': []},
+              {'version': 1, 'profiles': [{'name': 'demo'}]}):
     try:
         m._validate_registry(copy.deepcopy(empty))
     except ValueError:
@@ -128,7 +131,7 @@ for empty in ({'version': 1}, {'version': 1, 'providers': {}}, {'version': 1, 'p
     else:
         raise AssertionError(f'content-free registry passed validation: {empty}')
 m._validate_registry(m.load_json('$ROOT/files/provider-registry.json'))
-m._validate_registry(copy.deepcopy(profileless))
+m._validate_registry(copy.deepcopy(canonical))
 m._validate_registry(m.load_json(fixture_registry))
 
 malformed_registry = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
@@ -291,14 +294,48 @@ answers = iter(['added', 'https://added.invalid/v1', 'y'])
 builtins.input = lambda prompt='': next(answers)
 m.getpass.getpass = lambda prompt='': 'secret-token'
 m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
-selections = iter(['large', 'large', 'small'])
-m._choose = lambda prompt, options: next(selections)
 captured = {}
-m._provision_provider = lambda profile, token: captured.update(profile=profile, token=token)
+m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
 m._add_provider()
-assert captured['profile']['name'] == 'added'
-assert captured['profile']['models'] == {'haiku': 'small', 'sonnet': 'large', 'opus': 'large'}
+assert captured['provider']['name'] == 'added'
+assert set(captured['provider']) == {
+    'name', 'provider_type', 'base_url', 'auth', 'enabled', 'api_format', 'npm'
+}
 assert captured['token'] == 'secret-token'
+
+import contextlib, io
+timer_output = io.StringIO()
+m._is_macos = lambda: True
+with contextlib.redirect_stdout(timer_output):
+    m.cmd_timer_status()
+assert timer_output.getvalue().strip() == 'timer: not installed'
+
+# The command tree is explicit: provider state and timer control are separate
+# branches, and the former nested namespace plus argument-less timer commands
+# are rejected.
+dispatch = []
+m._set_provider_enabled = lambda name, enabled: dispatch.append((name, enabled)) or True
+m.cmd_timer_enable = lambda: dispatch.append(('timer', 'enable'))
+m.cmd_timer_disable = lambda: dispatch.append(('timer', 'disable'))
+m.cmd_timer_status = lambda: dispatch.append(('timer', 'status'))
+for argv in ([path, 'enable', 'demo'], [path, 'disable', 'demo'],
+             [path, 'timer', 'enable'], [path, 'timer', 'disable'],
+             [path, 'timer', 'status']):
+    sys.argv = argv
+    m.main()
+assert dispatch == [
+    ('demo', True), ('demo', False), ('timer', 'enable'),
+    ('timer', 'disable'), ('timer', 'status')
+]
+for argv in ([path, 'provider', 'add'], [path, 'enable'],
+             [path, 'disable'], [path, 'status']):
+    sys.argv = argv
+    try:
+        m.main()
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError(f'removed command form was accepted: {argv}')
 
 with open(m.STATE_PATH, 'w') as handle:
     handle.write('{truncated')
@@ -334,10 +371,9 @@ with open(m.HERMES_CONFIG, 'w') as handle:
                  '    models: [ghost-model]\n')
 # The mirror needs the full managed set: the fixture registry's demo+unused
 # merged onto the real registry's providers (demo enabled, unused disabled).
-fixture_profiles = m.load_json(fixture_registry).get('profiles', [])
+fixture_providers = m.load_json(fixture_registry)['providers']
 full_registry = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
-for profile in fixture_profiles:
-    full_registry.setdefault('providers', {})[profile['name']] = profile
+full_registry.setdefault('providers', {}).update(fixture_providers)
 full_servers = m._servers_from_registry(full_registry)
 assert set(full_servers) >= {'demo', 'unused', 'grimoire', 'crofai'}
 # Ensure enablement state for the fixture providers: demo enabled, unused disabled.
@@ -393,4 +429,4 @@ assert not m._conforming_item_name('GITHUB_COPILOT_OAUTH_TOKEN')
 assert not m._conforming_item_name('deepseek_api_key')
 PY
 
-echo "providers provider tests passed"
+echo "providers tests passed"

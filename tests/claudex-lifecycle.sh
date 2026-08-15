@@ -15,7 +15,7 @@ export CLAUDEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export PROVIDERS_BIN="$HOME/.local/bin/providers"
 export REFRESH_MODELS_BIN="$HOME/.local/bin/refresh-models"
 export CLAUDEX_LAUNCHER_SOURCE="$ROOT/files/claudex"
-export PROVIDER_REGISTRY_SOURCE="$ROOT/files/provider-registry.json"
+export CLAUDEX_PROFILES_SOURCE="$ROOT/files/claudex-profiles.json"
 export CLAUDEX_RELEASE_TAG="v0.2.4-fork.5"
 mkdir -p "${CLAUDEX_BIN:h}" "${CLAUDEX_CORE:h}" "${CLAUDEX_REGISTRY:h}" "$XDG_STATE_HOME"
 
@@ -66,7 +66,7 @@ unfunction curl
 install_surfaces() {
     cp "$ROOT/files/claudex" "$BIN"
     chmod +x "$BIN"
-    cp "$ROOT/files/provider-registry.json" "$REGISTRY"
+    cp "$ROOT/files/claudex-profiles.json" "$REGISTRY"
     cat > "$CORE" <<'EOF'
 #!/bin/sh
 echo 'claudex 0.2.4-fork.5'
@@ -112,7 +112,7 @@ chmod +x "$BIN"
 
 print ' ' >> "$REGISTRY"
 expect_status 1 outdated
-cp "$ROOT/files/provider-registry.json" "$REGISTRY"
+cp "$ROOT/files/claudex-profiles.json" "$REGISTRY"
 
 rm -f "$CORE"
 expect_status 1 outdated

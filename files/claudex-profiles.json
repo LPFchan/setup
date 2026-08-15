@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "name": "codex",
+      "provider": "codex",
+      "provider_type": "OpenAIResponses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "auth": {
+        "type": "oauth",
+        "provider": "chatgpt"
+      },
+      "default_model": "gpt-5.6-sol",
+      "priority": 100,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "gpt-5.6-luna",
+        "sonnet": "gpt-5.6-terra",
+        "opus": "gpt-5.6-sol"
+      }
+    },
+    {
+      "name": "anthropic",
+      "provider": "anthropic",
+      "provider_type": "DirectAnthropic",
+      "base_url": "https://api.anthropic.com",
+      "auth": {
+        "type": "oauth",
+        "provider": "anthropic",
+        "claudex_provider": "claude"
+      },
+      "default_model": "claude-sonnet-5",
+      "priority": 99,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "claude-haiku-4-5",
+        "sonnet": "claude-sonnet-5",
+        "opus": "claude-opus-5"
+      }
+    },
+    {
+      "name": "commandcode",
+      "provider": "commandcode",
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.commandcode.ai/provider/v1",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "commandcode"
+      },
+      "default_model": "xiaomi/mimo-v2.5-pro",
+      "priority": 90,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "MiniMaxAI/MiniMax-M3",
+        "sonnet": "xiaomi/mimo-v2.5-pro",
+        "opus": "moonshotai/Kimi-K3"
+      }
+    },
+    {
+      "name": "kimicode",
+      "provider": "kimicode",
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "kimicode"
+      },
+      "default_model": "k3",
+      "priority": 76,
+      "enabled": true,
+      "strip_params": "Auto",
+      "models": {
+        "haiku": "kimi-for-coding",
+        "sonnet": "k3-256k",
+        "opus": "k3"
+      }
+    }
+  ]
+}
