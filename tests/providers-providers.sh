@@ -11,6 +11,7 @@ mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"provider":{"foreign":{}},"disabled_providers":["foreign-disabled"]}\n' > "$HOME/.config/opencode/opencode.json"
 printf '{"demo":{"type":"api","key":"demo-key"}}\n' > "$HOME/.local/share/opencode/auth.json"
 export HERMES_CONFIG="$HOME/.hermes/config.yaml"
+export PI_MODELS_PATH="$HOME/.pi/agent/models.json"
 mkdir -p "$HOME/.hermes"
 cat > "$HERMES_CONFIG" <<'EOF'
 custom_providers:
@@ -229,6 +230,43 @@ assert mirrored['custom_providers'][2] == {
     'models': ['ghost-model'],
 }
 assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
+
+# Miniharness/Pi receives the same successful live inventory. Unrelated
+# providers and provider-owned defaults/tiers survive the projection.
+os.makedirs(os.path.dirname(m.PI_MODELS_PATH), exist_ok=True)
+m.save_json(m.PI_MODELS_PATH, {
+    '_comment': 'preserve me',
+    'providers': {
+        'demo': {'default_model': 'fresh-1', 'tiers': {'haiku': 'fresh-1'}, 'models': []},
+        'foreign': {'base_url': 'http://foreign', 'models': [{'id': 'foreign-model'}]},
+    },
+})
+m._sync_pi_models_mirror(servers, {'demo': models})
+pi_models = m.load_json(m.PI_MODELS_PATH)
+assert pi_models['_comment'] == 'preserve me'
+assert pi_models['providers']['foreign'] == {
+    'base_url': 'http://foreign', 'models': [{'id': 'foreign-model'}]
+}
+pi_demo = pi_models['providers']['demo']
+assert pi_demo['default_model'] == 'fresh-1'
+assert pi_demo['tiers'] == {'haiku': 'fresh-1'}
+assert pi_demo['base_url'] == 'http://demo'
+assert pi_demo['provider_type'] == 'OpenAICompatible'
+assert pi_demo['models'] == [
+    {
+        'id': model_id,
+        'name': model_id,
+        'contextWindow': 32768,
+        'maxTokens': 16384,
+        'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+    }
+    for model_id in ('fresh-1', 'fresh-2', 'stale-1')
+]
+pi_before = open(m.PI_MODELS_PATH, 'rb').read()
+m._sync_pi_models_mirror(servers, {'demo': models})
+assert open(m.PI_MODELS_PATH, 'rb').read() == pi_before
+m._sync_pi_models_mirror(servers, {})
+assert open(m.PI_MODELS_PATH, 'rb').read() == pi_before
 
 # Idempotent: an unchanged mirror rewrites nothing.
 before_mtime = _os.stat(m.HERMES_CONFIG).st_mtime

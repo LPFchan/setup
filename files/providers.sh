@@ -4,7 +4,8 @@
 #
 # Installs the providers launcher at ~/.local/bin/providers: vault-owned
 # provider API keys (llm/{PROVIDER}_API_KEY) with a local cache and mirrors
-# into opencode's auth.json and ~/.zshenv, plus hourly model refresh.
+# into opencode's auth.json and ~/.zshenv, plus hourly model refresh for
+# OpenCode, Hermes, and Pi-based tools such as Miniharness.
 
 (( ${+functions[fetch_source_url]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 

@@ -5,8 +5,9 @@
 
 Canonical credentials live in vaultwarden (folder llm, items named
 {PROVIDER}_API_KEY per the C1 convention). A local 0600 cache serves
-offline/headless contexts; opencode's native auth.json and ~/.zshenv are
-mirrors written by this tool so existing consumers keep working.
+offline/headless contexts. This tool also maintains the OpenCode and shell
+credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi-based
+tools such as Miniharness.
 
 Commands:
   (no args)                    Refresh model lists for all enabled providers
@@ -58,6 +59,9 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 OPENCODE_PATH = os.path.expanduser("~/.config/opencode/opencode.json")
 HERMES_CONFIG = os.path.expanduser(
     os.environ.get("HERMES_CONFIG", "~/.hermes/config.yaml")
+)
+PI_MODELS_PATH = os.path.expanduser(
+    os.environ.get("PI_MODELS_PATH", "~/.pi/agent/models.json")
 )
 ZSENV_PATH = os.path.expanduser("~/.zshenv")
 SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
@@ -599,6 +603,67 @@ def _sync_hermes_mirror(servers, refreshed):
         )
     for name in removed:
         print(f"  hermes: {name}: entry removed (disabled)", file=sys.stderr)
+
+
+def _pi_model_entry(model_id, config):
+    """Project one refreshed OpenCode model record into Pi's model shape."""
+    limit = config.get("limit", {}) if isinstance(config, dict) else {}
+    cost = config.get("cost", {}) if isinstance(config, dict) else {}
+    return {
+        "id": model_id,
+        "name": model_id,
+        "contextWindow": as_int(limit.get("context"), 32768),
+        "maxTokens": as_int(limit.get("output"), 16384),
+        "cost": {
+            "input": as_number(cost.get("input")),
+            "output": as_number(cost.get("output")),
+            "cacheRead": as_number(cost.get("cache_read")),
+            "cacheWrite": 0,
+        },
+    }
+
+
+def _sync_pi_models_mirror(servers, refreshed):
+    """Upsert successful live refreshes into Miniharness/Pi models.json.
+
+    Existing defaults, tiers, and unrelated providers are preserved. A failed
+    or empty refresh never replaces the last known model inventory.
+    """
+    config = load_json_or_quarantine(PI_MODELS_PATH)
+    if not isinstance(config, dict):
+        config = {}
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+    changed = False
+    for name, models in refreshed.items():
+        server = servers.get(name)
+        if not isinstance(server, dict) or not isinstance(models, dict) or not models:
+            continue
+        existing = providers.get(name)
+        if not isinstance(existing, dict):
+            existing = {}
+        projected = dict(existing)
+        projected["base_url"] = server["baseURL"]
+        projected["provider_type"] = "OpenAICompatible"
+        projected["models"] = [
+            _pi_model_entry(model_id, model_config)
+            for model_id, model_config in models.items()
+            if model_id
+        ]
+        if providers.get(name) != projected:
+            providers[name] = projected
+            changed = True
+    if not changed:
+        return
+    config["providers"] = providers
+    save_json_atomic(PI_MODELS_PATH, config)
+    for name in refreshed:
+        if name in servers and isinstance(refreshed[name], dict) and refreshed[name]:
+            print(
+                f"  pi: {name}: {len(refreshed[name])} models mirrored",
+                file=sys.stderr,
+            )
 
 
 def _fallback_auth_json(provider):
@@ -1657,6 +1722,7 @@ def main():
             if isinstance(models, dict):
                 refreshed[name] = models
         _sync_hermes_mirror(servers, refreshed)
+        _sync_pi_models_mirror(servers, refreshed)
         return
 
     cmd = args[0]
@@ -1753,6 +1819,7 @@ def main():
         models = refresh_server(cmd, servers[cmd])
         if isinstance(models, dict):
             _sync_hermes_mirror(servers, {cmd: models})
+            _sync_pi_models_mirror(servers, {cmd: models})
         return
 
     print(f"Unknown: {cmd}", file=sys.stderr)
