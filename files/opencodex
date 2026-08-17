@@ -250,7 +250,7 @@ def opencodex_seed() -> dict[str, Any]:
             }
         },
         "defaultProvider": "openai",
-        "websockets": False,
+        "websockets": True,
         "codexAutoStart": True,
         "codexShimAutoRestore": True,
     }
