@@ -59,6 +59,12 @@ chmod +x "$node_bin/codex"
 printf '#!/usr/bin/env zsh\nexit 0\n' > "$node_bin/node"
 chmod +x "$node_bin/node"
 
+# T3 Code is updated through npx, but only when its background service is
+# already installed. The update command would otherwise install it.
+mkdir -p "$HOME/.config/systemd/user"
+: > "$HOME/.config/systemd/user/t3code.service"
+make_harness "$node_bin/npx"
+
 # A minimal PATH holding neither the vendor prefixes nor the node prefix proves
 # resolution never depends on PATH — and would find the tester's own harnesses
 # if it did.
@@ -73,11 +79,12 @@ for expected in \
     'hermes update --yes' \
     'grok update' \
     'kimi update' \
-    'muse --version'
+    'muse --version' \
+    'npx --yes t3@latest service update'
 do
     grep -qx "$expected" "$CALLS" || fail "missing invocation: $expected (got: $(tr '\n' '; ' < "$CALLS"))"
 done
-(( $(wc -l < "$CALLS") == 8 )) || fail "unexpected extra invocations: $(tr '\n' '; ' < "$CALLS")"
+(( $(wc -l < "$CALLS") == 9 )) || fail "unexpected extra invocations: $(tr '\n' '; ' < "$CALLS")"
 
 # Without the forced sync the muse launcher would defer to its hourly
 # background check and `setup update` would report success having updated
@@ -87,6 +94,16 @@ grep -qx 'muse MUSE_SYNC_UPDATE=1' "$ENVCALLS" \
 (( $(wc -l < "$ENVCALLS") == 1 )) \
     || fail "MUSE_SYNC_UPDATE leaked into another harness: $(tr '\n' '; ' < "$ENVCALLS")"
 
+# Having npx alone must not make setup install T3 Code on another machine.
+rm "$HOME/.config/systemd/user/t3code.service"
+: > "$CALLS"
+PATH=/usr/bin:/bin cmd_update_harnesses > "$TMP/out" 2>&1 \
+    || fail "run without the T3 service reported failure: $(cat "$TMP/out")"
+grep -q 'Not installed, skipped: t3' "$TMP/out" \
+    || fail "absent T3 service was not skipped: $(cat "$TMP/out")"
+if grep -q '^npx ' "$CALLS"; then fail "T3 was updated without an installed service"; fi
+: > "$HOME/.config/systemd/user/t3code.service"
+
 # A harness that is not installed is skipped, not an error.
 rm "$HOME/.grok/bin/grok" "$HOME/.kimi-code/bin/kimi"
 : > "$CALLS"
@@ -94,7 +111,7 @@ PATH=/usr/bin:/bin cmd_update_harnesses > "$TMP/out" 2>&1 \
     || fail "run with missing harnesses reported failure: $(cat "$TMP/out")"
 grep -q 'Not installed, skipped: grok kimi' "$TMP/out" \
     || fail "missing harnesses were not reported as skipped: $(cat "$TMP/out")"
-(( $(wc -l < "$CALLS") == 6 )) || fail "skipped harnesses were still invoked"
+(( $(wc -l < "$CALLS") == 7 )) || fail "skipped harnesses were still invoked"
 
 # A failing updater is reported by name and does not stop the others.
 make_harness "$HOME/.local/bin/agy" 1
@@ -108,6 +125,7 @@ grep -qx 'hermes update --yes' "$CALLS" || fail "a failing harness aborted the r
 # No harnesses at all is a clean no-op.
 rm -rf "$HOME/.local/bin/claude" "$HOME/.local/bin/agy" "$HOME/.local/bin/hermes" \
        "$HOME/.local/bin/muse" "$HOME/.opencode" "$HOME/.nvm"
+rm "$HOME/.config/systemd/user/t3code.service"
 : > "$CALLS"
 PATH=/usr/bin:/bin cmd_update_harnesses > "$TMP/out" 2>&1 \
     || fail "empty machine reported failure: $(cat "$TMP/out")"

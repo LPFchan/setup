@@ -36,7 +36,7 @@ setup enable <module>     # Enable a background service module (e.g., setup enab
 setup disable <module>    # Disable a background service module
 setup diff <module>       # Show differences between local setup and remote repository
 setup doctor              # Check for required tools (like git)
-setup schedule            # Set up the daily automatic update timer
+setup schedule            # Set up the daily 06:00 automatic update timer
 setup schedule status     # Check if the auto-update timer is active
 ```
 
@@ -97,7 +97,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 - **`agents`**: Deploys standard AI instructions (`AGENTS.md`) and skills to `~/.agents/`, and symlinks them into Claude Code (`~/.claude/`), Codex (`~/.codex/`), Antigravity (`~/.gemini/`), OpenCode (`~/.config/opencode/`), Muse Code (`~/.config/muse/`), and the home directory.
 - **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, Kimi Code, and Muse Code so you can jump right back into any session.
 - **`claudex` & `opencodex`**: Profile launchers that manage custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
-- **Harness updates**: `setup update` also self-updates every installed AI harness — Claude Code, Codex, OpenCode, Antigravity, Hermes, Grok, Kimi, and Muse. Each harness is a self-installing tool rather than a setup module, so setup just locates the binary and runs that tool's own updater (`claude update`, `opencode upgrade`, `hermes update --yes`, and so on). Muse is the exception: it has no update subcommand, so setup forces its launcher to run its own refresh in the foreground (`MUSE_SYNC_UPDATE=1 muse --version`) instead of leaving it to the hourly background check. Harnesses missing from the machine are skipped, and because the daily `setup schedule` timer runs `setup update`, harness updates ride along with it for free.
+- **Harness updates**: `setup update` also self-updates every installed AI harness — Claude Code, Codex, OpenCode, Antigravity, Hermes, Grok, Kimi, Muse, and T3 Code. Each harness is a self-installing tool rather than a setup module, so setup locates it and runs its own updater (`claude update`, `opencode upgrade`, `hermes update --yes`, and so on). Muse has no update subcommand, so setup forces its launcher to refresh synchronously with `MUSE_SYNC_UPDATE=1 muse --version`. T3 Code is updated with `npx --yes t3@latest service update` only when its Linux background service is already installed; a real update briefly restarts that service. Harnesses missing from the machine are skipped, and the daily `setup schedule` timer runs the full update at 06:00.
 
 ---
 

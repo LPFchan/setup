@@ -1027,7 +1027,7 @@ cmd_install() {
 # user manager, whose PATH holds neither the active node bin directory nor the
 # vendor install prefixes, so every harness carries explicit fallback paths.
 
-HARNESSES="claude codex opencode agy hermes grok kimi muse"
+HARNESSES="claude codex opencode agy hermes grok kimi muse t3"
 
 harness_update_args() {
     case "$1" in
@@ -1039,6 +1039,7 @@ harness_update_args() {
         # in the foreground; --version is the cheapest command that lets the
         # launcher reach the handoff and exit.
         muse)     echo "--version" ;;
+        t3)       echo "--yes t3@latest service update" ;;
         *)        echo "update" ;;
     esac
 }
@@ -1086,6 +1087,25 @@ harness_candidates() {
 
 harness_resolve() {
     local name="$1" candidate
+    # `t3 service update` installs the service when it is absent, so only
+    # resolve its npx runner for an existing T3 Code background service.
+    if [[ "$name" == t3 ]]; then
+        [[ -f "$HOME/.config/systemd/user/t3code.service" ]] || return 1
+        local dir
+        while IFS= read -r dir; do
+            candidate="$dir/npx"
+            if [[ -x "$candidate" ]]; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done < <(_node_bin_dirs)
+        candidate=$(command -v npx 2>/dev/null || true)
+        if [[ -n "$candidate" && -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        return 1
+    fi
     candidate=$(command -v "$name" 2>/dev/null || true)
     if [[ -n "$candidate" && -x "$candidate" ]]; then
         printf '%s\n' "$candidate"
@@ -1392,7 +1412,7 @@ AUTOUPDATE_TIMER_UNIT="[Unit]
 Description=Daily setup update
 
 [Timer]
-OnCalendar=daily
+OnCalendar=*-*-* 06:00:00
 Persistent=true
 
 [Install]
@@ -1428,7 +1448,7 @@ cmd_schedule() {
     </array>
     <key>StartCalendarInterval</key>
     <dict>
-        <key>Hour</key><integer>3</integer>
+        <key>Hour</key><integer>6</integer>
         <key>Minute</key><integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
@@ -1441,7 +1461,7 @@ PLIST
         local _uid; _uid=$(id -u)
         launchctl bootout "gui/$_uid/com.lost.plus.setup-update" 2>/dev/null || true
         launchctl bootstrap "gui/$_uid" "$plist" 2>/dev/null || true
-        echo "setup auto-update scheduled daily at 03:00 (launchd)"
+        echo "setup auto-update scheduled daily at 06:00 (launchd)"
     else
         local dir="$HOME/.config/systemd/user"
         mkdir -p "$dir"
@@ -1449,7 +1469,7 @@ PLIST
         echo "$AUTOUPDATE_TIMER_UNIT" > "$dir/setup-update.timer"
         systemctl --user daemon-reload
         systemctl --user enable --now setup-update.timer
-        echo "setup auto-update scheduled daily (systemd)"
+        echo "setup auto-update scheduled daily at 06:00 (systemd)"
     fi
 }
 
@@ -1463,7 +1483,7 @@ cmd_schedule_status() {
             return 1
         fi
         if launchctl print "gui/$_uid/$label" >/dev/null 2>&1; then
-            echo "setup auto-update scheduled daily at 03:00 (launchd, loaded)"
+            echo "setup auto-update scheduled daily at 06:00 (launchd, loaded)"
             return 0
         fi
         echo "setup auto-update configured but not loaded (launchd)"
@@ -1479,7 +1499,7 @@ cmd_schedule_status() {
     systemctl --user is-enabled --quiet setup-update.timer 2>/dev/null && enabled="yes"
     systemctl --user is-active --quiet setup-update.timer 2>/dev/null && active="yes"
     if [[ "$enabled" == "yes" && "$active" == "yes" ]]; then
-        echo "setup auto-update scheduled daily (systemd, enabled and active)"
+        echo "setup auto-update scheduled daily at 06:00 (systemd, enabled and active)"
         return 0
     fi
     echo "setup auto-update configured but inactive (systemd, enabled=$enabled active=$active)"
