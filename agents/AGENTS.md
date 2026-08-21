@@ -24,7 +24,9 @@ when deploying a new service or tearing down an existing one on any of my server
 
 ## work ethics
 
-when in doubt regarding my approach or methodology, rather than jumping to your own conclusions, ask questions to me in order to understand my intent more clearly, or feel free to suggest your own take. 
+when in doubt regarding my approach or methodology, rather than jumping to your own conclusions, ask questions to me in order to understand my intent more clearly, or feel free to suggest your own take.
+
+always match my prompt language exactly. If I write in English, respond strictly in English. 
 
 always assume other agents are working in the checkout concurrently. treat the workspace as read-only: see `parallel-tree` skill for more.
 
