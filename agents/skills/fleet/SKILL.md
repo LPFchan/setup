@@ -10,7 +10,7 @@ audience: fleet
 
 Run `hostname` to see which machine you're on. All machines reach each other
 over SSH without a password (keys via `ssh-import-id gh:LPFchan`). Topology:
-Cloudflare DNS → 10.0.0.0/24 → Tailscale subnet. Every machine runs
+Cloudflare DNS → 10.0.0.0/24 → Tailscale subnet. Run `sudo tailscale switch --list` to list and check what tailnet you're currently on. `lost.plus` is the default tailnet for the fleet. If you find yourself on a different tailnet and in need of connecting to any of the machines in the fleet, switch to `lost.plus` temporarily, finish the task and make sure to switch back to the initial tailnet you've started with. Every machine runs
 LPFchan/setup (`setup`, `ai-menu`, `resume`, `backup`, …) with config synced.
 All machines except `bingus` auto-launch tmux and ai-menu by default. Press Esc
 to dismiss ai-menu.
