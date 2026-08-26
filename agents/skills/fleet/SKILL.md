@@ -55,3 +55,4 @@ terminal, such as entering an admin password manually.
 - Songbook at https://okdam.lost.plus (repo `~/okdam-songbook`)
 - MCP servers run here: obsidian/marble, joongna-price-search, tweet-fetch,
   thinqconnect, vaultwarden, comfyui-mcp
+- gswtools at https://gsw.lost.plus (repo `~/gswtools`)
