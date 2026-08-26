@@ -111,3 +111,26 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 1. `VAST.ai`: no live provider — leave in vault, exclude from presets unless you want it.
 2. The extra live `auth.json` providers `alibaba`, `ollama-cloud`, and `opencode-go` remain to be considered as `providers` presets. OpenRouter is enrolled in the canonical provider registry, enabled by default, with live model discovery. The extra providers are not added to the retired `claudex-profiles.json` asset unless you say so.
 3. `empty_trash` on `crofai_api_key_guest` and `ANTHROPIC_API_KEY` — your call (soft-deleted items expire in 30 days anyway).
+
+## Capability cache contract
+
+`providers` owns the host-generated `~/.config/providers/capabilities.json`
+snapshot (override with `PROVIDERS_CAPABILITIES_PATH` in tests). The file is
+versioned, written atomically with mode `0600`, and only replaced by a
+successful non-empty model refresh. A malformed snapshot is quarantined as
+`capabilities.json.corrupt`; a failed or empty refresh leaves the previous
+last-known-good provider snapshot intact.
+
+Each normalized model record includes its provider and model id, exact
+advertised input modalities and supported parameters, reasoning support and
+native effort labels, context/output/cost metadata, a credential-free `/models`
+endpoint, fetch time, raw response SHA-256, metadata fingerprint, and evidence
+source. Missing capability metadata is represented as `unknown`; malformed
+capability fields are retained as unknown with an error while the model remains
+in the inventory. The source is provider `/models` metadata only; it does not
+claim a live semantic canary.
+
+Machine consumers use `providers capabilities show [--provider NAME]
+[--model ID] --json` for cache-only reads, or `providers capabilities refresh
+[--provider NAME] [--model ID] --json` for one provider refresh followed by a
+normalized view. JSON is emitted on stdout; diagnostics are emitted on stderr.

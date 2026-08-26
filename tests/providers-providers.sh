@@ -7,6 +7,7 @@ export HOME="$TMP/home"
 export PROVIDERS_REGISTRY="$TMP/registry.json"
 export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
 export PROVIDERS_CACHE_PATH="$HOME/.config/providers/credentials.json"
+export PROVIDERS_CAPABILITIES_PATH="$HOME/.config/providers/capabilities.json"
 mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
 printf '{"provider":{"foreign":{}},"disabled_providers":["foreign-disabled"]}\n' > "$HOME/.config/opencode/opencode.json"
 printf '{"demo":{"type":"api","key":"demo-key"}}\n' > "$HOME/.local/share/opencode/auth.json"
@@ -172,6 +173,218 @@ assert m.load_json(m.OPENCODE_PATH)['provider']['openrouter']['models'] == {
         'cost': {'input': 0, 'output': 0, 'cache_read': 0},
     }
 }
+
+# Capability snapshots retain exact native OpenRouter metadata while making
+# unknown and malformed advertisements explicit.  The endpoint is sanitized
+# before durable state is written, and the fingerprint ignores source JSON
+# key order and volatile provenance fields.
+openrouter_row = {
+    'id': 'openrouter/native-reasoning',
+    'architecture': {'input_modalities': ['text', 'image']},
+    'supported_parameters': ['temperature', 'reasoning'],
+    'reasoning': {
+        'mandatory': False,
+        'default_enabled': True,
+        'supported_efforts': ['low', 'medium', 'high'],
+        'default_effort': 'medium',
+    },
+    'context_length': 131072,
+    'max_completion_tokens': 8192,
+    'pricing': {'prompt': '1.0', 'completion': '2.0'},
+}
+snapshot = m._capability_snapshot(
+    'openrouter',
+    {'baseURL': 'https://token:secret@example.invalid/api/v1'},
+    payload={'data': [openrouter_row]},
+    rows=[openrouter_row],
+)
+record = snapshot['models']['openrouter/native-reasoning']
+assert record['provider'] == 'openrouter'
+assert record['id'] == 'openrouter/native-reasoning'
+assert record['input_modalities'] == {'state': 'known', 'values': ['image', 'text']}
+assert record['supported_parameters'] == {
+    'state': 'known', 'values': ['reasoning', 'temperature']
+}
+assert record['reasoning'] == {
+    'support': 'full',
+    'supported_efforts': ['low', 'medium', 'high'],
+    'default_effort': 'medium',
+    'default_enabled': True,
+    'mandatory': False,
+}
+assert record['context'] == 131072 and record['output'] == 8192
+assert record['cost'] == {'input': 1.0, 'output': 2.0, 'cache_read': None}
+assert record['source_endpoint'] == 'https://example.invalid/api/v1/models'
+assert record['evidence_source'] == 'provider_models_endpoint'
+assert 'secret' not in json.dumps(snapshot)
+m._update_capability_cache('openrouter', snapshot)
+before_capabilities = open('$HOME/.config/providers/capabilities.json', 'rb').read()
+assert not m._update_capability_cache('openrouter', dict(snapshot, models={}))
+assert open('$HOME/.config/providers/capabilities.json', 'rb').read() == before_capabilities
+assert oct(os.stat('$HOME/.config/providers/capabilities.json').st_mode & 0o777) == '0o600'
+
+# A corrupt capability cache is quarantined without making the read path
+# unusable, and static registry models carry explicit unknown capability data.
+with open('$HOME/.config/providers/capabilities.json', 'w') as handle:
+    handle.write('{truncated')
+assert m._load_capabilities() == {'version': 1, 'providers': {}}
+assert os.path.exists('$HOME/.config/providers/capabilities.json.corrupt')
+static_snapshot = m._capability_snapshot(
+    'demo', {'baseURL': 'https://demo.invalid/v1'},
+    rows=[{'id': 'static-model'}], static=True,
+)
+static_record = static_snapshot['models']['static-model']
+assert static_record['reasoning']['support'] == 'unknown'
+assert static_record['input_modalities']['state'] == 'unknown'
+assert static_record['evidence_source'] == 'provider_registry_static_models'
+m._update_capability_cache('openrouter', snapshot)
+
+empty_reasoning = m.normalize_model_row(
+    'demo', 'empty-reasoning', {'id': 'empty-reasoning', 'reasoning': {}},
+    'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'a' * 64,
+)
+assert empty_reasoning['reasoning']['support'] == 'unknown'
+numeric_row = m.normalize_model_row(
+    'demo', 'numeric-values', {
+        'id': 'numeric-values', 'context_length': '131072',
+        'max_completion_tokens': '8192',
+        'pricing': {'prompt': '0.25', 'completion': '1.5'},
+    }, 'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'a' * 64,
+)
+assert numeric_row['context'] == 131072 and isinstance(numeric_row['context'], int)
+assert numeric_row['output'] == 8192 and isinstance(numeric_row['output'], int)
+assert numeric_row['cost'] == {'input': 0.25, 'output': 1.5, 'cache_read': None}
+
+# Nested cache containers are validated before a machine consumer can read
+# them, then quarantined like a corrupt top-level document.
+with open('$HOME/.config/providers/capabilities.json', 'w') as handle:
+    json.dump({'version': 1, 'providers': {'openrouter': {'models': []}}}, handle)
+assert m._load_capabilities() == {'version': 1, 'providers': {}}
+assert os.path.exists('$HOME/.config/providers/capabilities.json.corrupt')
+m._update_capability_cache('openrouter', snapshot)
+
+for row, support in (
+    ({'id': 'generic/full', 'supported_reasoning_levels': [
+        {'effort': 'low'}, {'effort': 'medium'}, {'effort': 'high'}]}, 'full'),
+    ({'id': 'generic/think', 'think_efforts': {
+        'values': ['tiny', 'huge']}}, 'full'),
+    ({'id': 'generic/partial', 'supports_reasoning': True}, 'partial'),
+    ({'id': 'generic/none', 'supports_reasoning': False}, 'none'),
+    ({'id': 'generic/unknown'}, 'unknown'),
+):
+    normalized = m.normalize_model_row(
+        'demo', row['id'], row, 'https://demo.invalid/models',
+        '2026-08-27T00:00:00Z', 'b' * 64,
+    )
+    assert normalized['reasoning']['support'] == support, normalized
+assert m.normalize_model_row(
+    'demo', 'generic/bad',
+    {'id': 'generic/bad', 'supported_reasoning_levels': [{'effort': 7}]},
+    'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'c' * 64,
+)['reasoning']['support'] == 'unknown'
+assert m.normalize_model_row(
+    'demo', 'generic/bad-modalities',
+    {'id': 'generic/bad-modalities', 'architecture': {'input_modalities': ['text', 7]}},
+    'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'd' * 64,
+)['input_modalities']['state'] == 'unknown'
+
+row_a = {'id': 'generic/fingerprint', 'supported_parameters': ['b', 'a'],
+         'architecture': {'input_modalities': ['text', 'image']},
+         'reasoning': {'supported_efforts': ['low', 'high']}}
+row_b = {'reasoning': {'supported_efforts': ['low', 'high']},
+         'architecture': {'input_modalities': ['text', 'image']},
+         'supported_parameters': ['a', 'b'], 'id': 'generic/fingerprint'}
+fp_a = m.normalize_model_row('demo', row_a['id'], row_a,
+    'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'e' * 64)['metadata_fingerprint']
+fp_b = m.normalize_model_row('demo', row_b['id'], row_b,
+    'https://demo.invalid/models', '2026-08-28T00:00:00Z', 'f' * 64)['metadata_fingerprint']
+assert fp_a == fp_b
+
+# The read-only machine interface emits JSON only on stdout and filters an
+# exact model view.  It does not refresh or inspect credentials.
+import contextlib, io
+cap_output = io.StringIO()
+with contextlib.redirect_stdout(cap_output):
+    m.cmd_capabilities(['show', '--provider', 'openrouter',
+                        '--model', 'openrouter/native-reasoning', '--json'])
+view = json.loads(cap_output.getvalue())
+assert list(view['providers']) == ['openrouter']
+assert list(view['providers']['openrouter']['models']) == ['openrouter/native-reasoning']
+assert 'secret' not in cap_output.getvalue()
+subprocess_result = __import__('subprocess').run(
+    [sys.executable, path, 'capabilities', 'show', '--provider', 'openrouter',
+     '--model', 'openrouter/native-reasoning', '--json'],
+    text=True, capture_output=True, check=True,
+)
+assert set(json.loads(subprocess_result.stdout)['providers']['openrouter']['models']) == {
+    'openrouter/native-reasoning'
+}
+assert subprocess_result.stderr == ''
+
+# A real subprocess refresh uses one fixture HTTP response, emits only the
+# selected normalized view on stdout, and never prints the credential. A later
+# failed refresh leaves that provider's snapshot byte-for-byte unchanged.
+import http.server, threading
+class CapabilityHandler(http.server.BaseHTTPRequestHandler):
+    calls = 0
+    empty = False
+    def do_GET(self):
+        type(self).calls += 1
+        assert self.path == '/v1/models'
+        assert self.headers.get('Authorization') == 'Bearer refresh-secret-token'
+        payload = {'data': []} if type(self).empty else {'data': [{
+            'id': 'refresh-model',
+            'architecture': {'input_modalities': ['text', 'image']},
+            'supported_parameters': ['reasoning'],
+            'reasoning': {'supported_efforts': ['native-low', 'native-high'],
+                          'default_effort': 'native-low',
+                          'default_enabled': True, 'mandatory': False},
+            'context_length': '64000', 'max_completion_tokens': '4000',
+            'pricing': {'prompt': '0.1', 'completion': '0.2'},
+        }]}
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *_):
+        pass
+
+server = http.server.HTTPServer(('127.0.0.1', 0), CapabilityHandler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+refresh_registry = '$TMP/refresh-registry.json'
+refresh_base = f'http://127.0.0.1:{server.server_port}/v1'
+with open(refresh_registry, 'w') as handle:
+    json.dump({'version': 1, 'providers': {'demo': {
+        'provider_type': 'OpenAICompatible', 'base_url': refresh_base,
+        'api_format': 'openai', 'npm': '@ai-sdk/openai-compatible',
+        'auth': {'type': 'api-key', 'store': 'opencode', 'key': 'demo'},
+        'enabled': True}}}, handle)
+m.cache_set('demo', 'refresh-secret-token')
+refresh_env = os.environ.copy()
+refresh_env['PROVIDERS_REGISTRY'] = refresh_registry
+refresh_command = [sys.executable, path, 'capabilities', 'refresh',
+                   '--provider', 'demo', '--model', 'refresh-model', '--json']
+first_refresh = __import__('subprocess').run(
+    refresh_command, env=refresh_env, text=True, capture_output=True, check=True)
+assert CapabilityHandler.calls == 1, CapabilityHandler.calls
+refresh_view = json.loads(first_refresh.stdout)
+refresh_record = refresh_view['providers']['demo']['models']['refresh-model']
+assert refresh_record['reasoning']['supported_efforts'] == ['native-low', 'native-high']
+assert refresh_record['context'] == 64000 and refresh_record['output'] == 4000
+assert refresh_record['cost'] == {'input': 0.1, 'output': 0.2, 'cache_read': None}
+assert 'refresh-secret-token' not in first_refresh.stdout
+assert 'refresh-secret-token' not in first_refresh.stderr
+capability_bytes_before_failed_refresh = open('$HOME/.config/providers/capabilities.json', 'rb').read()
+CapabilityHandler.empty = True
+failed_refresh = __import__('subprocess').run(
+    refresh_command, env=refresh_env, text=True, capture_output=True)
+assert failed_refresh.returncode != 0
+assert CapabilityHandler.calls == 2, CapabilityHandler.calls
+assert open('$HOME/.config/providers/capabilities.json', 'rb').read() == capability_bytes_before_failed_refresh
+server.shutdown()
 m._sync_pi_models_mirror(canonical_servers, {'openrouter': openrouter_models})
 assert m.load_json(m.PI_MODELS_PATH)['providers']['openrouter']['models'] == [
     {

@@ -20,6 +20,9 @@ Commands:
   timer disable                Remove the hourly timer
   timer status                 Show timer state and next run
   sync                         vault -> cache -> opencode auth.json -> .zshenv
+  capabilities show ... --json Read the last-known-good model capability cache
+  capabilities refresh ... --json
+                               Refresh model capabilities once, then print JSON
   audit                        List vault llm items, flag non-conforming names
   rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
   add                          Add a provider interactively
@@ -29,7 +32,7 @@ Commands:
   disable <provider>           Disable a provider without deleting its key
 """
 
-import getpass, json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, datetime, getpass, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 
 PROVIDER_STATE_VERSION = 1
@@ -39,6 +42,15 @@ STATE_PATH = os.path.expanduser(
 CACHE_PATH = os.path.expanduser(
     os.environ.get("PROVIDERS_CACHE_PATH", "~/.config/providers/credentials.json")
 )
+CAPABILITIES_PATH = os.path.expanduser(
+    os.environ.get(
+        "PROVIDERS_CAPABILITIES_PATH",
+        os.environ.get("PROVIDER_CAPABILITIES_PATH", "~/.config/providers/capabilities.json"),
+    )
+)
+CAPABILITIES_VERSION = 1
+_LAST_FETCH_RAW = None
+_LAST_FETCH_ENDPOINT = None
 LEGACY_STATE_PATH = os.path.expanduser(
     "~/.config/opencode/refresh-models-state.json"
 )
@@ -280,6 +292,403 @@ def _load_cache():
 
 def _save_cache(data):
     save_json_atomic(CACHE_PATH, data, mode=0o600)
+
+
+def _load_capabilities():
+    """Load the last-known-good provider capability snapshot.
+
+    Capability data is host state, not setup input.  A broken or incompatible
+    snapshot is quarantined and treated as empty so a later refresh can repair
+    it; a failed refresh never calls this writer with an empty replacement.
+    """
+    if not os.path.exists(CAPABILITIES_PATH):
+        return {"version": CAPABILITIES_VERSION, "providers": {}}
+    try:
+        data = load_json(CAPABILITIES_PATH)
+    except (OSError, json.JSONDecodeError) as exc:
+        quarantined = CAPABILITIES_PATH + ".corrupt"
+        try:
+            os.replace(CAPABILITIES_PATH, quarantined)
+        except OSError:
+            pass
+        print(f"  capability cache unreadable ({exc}); using empty snapshot", file=sys.stderr)
+        return {"version": CAPABILITIES_VERSION, "providers": {}}
+    if not _valid_capability_cache(data):
+        quarantined = CAPABILITIES_PATH + ".corrupt"
+        try:
+            os.replace(CAPABILITIES_PATH, quarantined)
+        except OSError:
+            pass
+        print("  capability cache has an unsupported shape; using empty snapshot", file=sys.stderr)
+        return {"version": CAPABILITIES_VERSION, "providers": {}}
+    return data
+
+
+def _save_capabilities(data):
+    if not _valid_capability_cache(data):
+        raise ValueError("invalid capability cache")
+    save_json_atomic(CAPABILITIES_PATH, data, mode=0o600)
+
+
+def _valid_capability_cache(data):
+    """Validate cache containers and provenance identity before exposing them."""
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != CAPABILITIES_VERSION
+        or not isinstance(data.get("providers"), dict)
+    ):
+        return False
+    digest = re.compile(r"^[0-9a-f]{64}$")
+    for name, snapshot in data["providers"].items():
+        if not isinstance(name, str) or not NAME_RE.fullmatch(name) or not isinstance(snapshot, dict):
+            return False
+        if snapshot.get("provider") != name:
+            return False
+        if (
+            not isinstance(snapshot.get("source_endpoint"), str)
+            or not isinstance(snapshot.get("fetched_at"), str)
+            or not isinstance(snapshot.get("raw_response_sha256"), str)
+            or not digest.fullmatch(snapshot["raw_response_sha256"])
+            or not isinstance(snapshot.get("evidence_source"), str)
+            or not isinstance(snapshot.get("models"), dict)
+            or not snapshot["models"]
+        ):
+            return False
+        try:
+            parsed = urllib.parse.urlsplit(snapshot["source_endpoint"])
+        except ValueError:
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        for model_id, record in snapshot["models"].items():
+            if (
+                not isinstance(model_id, str)
+                or not model_id
+                or not isinstance(record, dict)
+                or record.get("provider") != name
+                or record.get("id") != model_id
+                or record.get("source_endpoint") != snapshot["source_endpoint"]
+                or record.get("fetched_at") != snapshot["fetched_at"]
+                or record.get("raw_response_sha256") != snapshot["raw_response_sha256"]
+                or not isinstance(record.get("metadata_fingerprint"), str)
+                or not digest.fullmatch(record["metadata_fingerprint"])
+            ):
+                return False
+    return True
+
+
+def _unknown_modalities():
+    return {"state": "unknown", "values": []}
+
+
+def _known_modalities(values):
+    return {"state": "known", "values": sorted(set(values))}
+
+
+def _unknown_reasoning():
+    return {
+        "support": "unknown",
+        "supported_efforts": [],
+        "default_effort": None,
+        "default_enabled": None,
+        "mandatory": None,
+    }
+
+
+def _normalize_string_list(value, field):
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{field} must be a list of non-empty strings")
+    if len(value) != len(set(value)):
+        raise ValueError(f"{field} must not contain duplicate values")
+    return sorted(value)
+
+
+def _normalize_exact_string_list(value, field):
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{field} must be a list of non-empty strings")
+    if len(value) != len(set(value)):
+        raise ValueError(f"{field} must not contain duplicate values")
+    return list(value)
+
+
+def _numeric(value, field="number", integer=False):
+    """Normalize provider scalar metadata to a JSON number or null."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be numeric or null")
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be numeric or null") from exc
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{field} must be numeric or null")
+    if integer:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{field} must be an integer or null")
+        return int(value)
+    return value
+
+
+def _numeric_int(value, field="number"):
+    return _numeric(value, field, integer=True)
+
+
+def _reasoning_from_row(row):
+    """Normalize provider-specific reasoning advertisements without guessing.
+
+    The returned state is one of full (named levels), partial (reasoning is
+    supported but no levels were advertised), none (explicitly unsupported),
+    or unknown (missing/malformed metadata).  A provider's native labels are
+    kept verbatim; they are not mapped to a generic ladder.
+    """
+    reasoning = row.get("reasoning", None)
+    fields = {}
+    errors = []
+    bool_flags = []
+    if reasoning is not None:
+        if isinstance(reasoning, bool):
+            bool_flags.append(reasoning)
+            reasoning = None
+        elif not isinstance(reasoning, dict):
+            errors.append("reasoning must be an object or boolean")
+        else:
+            fields = reasoning
+    levels = None
+    for source, value in (
+        ("reasoning.supported_efforts", fields.get("supported_efforts")),
+        ("supported_reasoning_levels", row.get("supported_reasoning_levels")),
+        ("think_efforts.values", (row.get("think_efforts") or {}).get("values") if isinstance(row.get("think_efforts"), dict) else None),
+    ):
+        if value is None:
+            continue
+        if source == "supported_reasoning_levels" and isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+            continue
+        try:
+            candidate = _normalize_exact_string_list(value, source)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if levels is None:
+            levels = candidate
+        elif candidate != levels:
+            errors.append("conflicting reasoning effort advertisements")
+
+    # Existing provider shapes sometimes wrap levels as {effort: label}.
+    raw_levels = row.get("supported_reasoning_levels")
+    if raw_levels is not None and isinstance(raw_levels, list) and raw_levels and all(isinstance(item, dict) for item in raw_levels):
+        try:
+            levels = _normalize_exact_string_list([item["effort"] for item in raw_levels], "supported_reasoning_levels")
+        except (KeyError, ValueError) as exc:
+            errors.append(f"supported_reasoning_levels: {exc}")
+
+    think = row.get("think_efforts")
+    if think is not None and not isinstance(think, dict):
+        errors.append("think_efforts must be an object")
+
+    for key in ("reasoning_effort", "custom_reasoning", "supports_reasoning"):
+        if key in row:
+            if not isinstance(row[key], bool):
+                errors.append(f"{key} must be boolean")
+            else:
+                bool_flags.append(row[key])
+    if "supported" in fields and not isinstance(fields["supported"], bool):
+        errors.append("reasoning.supported must be boolean")
+    for key in ("mandatory", "default_enabled"):
+        if key in fields and not isinstance(fields[key], bool):
+            errors.append(f"reasoning.{key} must be boolean")
+    for key in ("default_effort",):
+        if key in fields and fields[key] is not None and (not isinstance(fields[key], str) or not fields[key]):
+            errors.append("reasoning.default_effort must be a non-empty string or null")
+    if errors:
+        result = _unknown_reasoning()
+        result["errors"] = errors
+        return result
+
+    if levels:
+        support = "full"
+    elif any(bool_flags):
+        support = "partial"
+    elif bool_flags and not any(bool_flags):
+        support = "none"
+    elif reasoning is not None:
+        # An empty object says nothing about support.  Only an explicit false
+        # advertisement is authoritative for the unsupported state.
+        if "supported" in fields:
+            support = "partial" if fields["supported"] else "none"
+        elif any(key in fields for key in ("mandatory", "default_enabled", "default_effort", "supported_efforts")):
+            support = "partial"
+        else:
+            support = "unknown"
+    else:
+        support = "unknown"
+    result = {
+        "support": support,
+        "supported_efforts": levels or [],
+        "default_effort": fields.get("default_effort"),
+        "default_enabled": fields.get("default_enabled"),
+        "mandatory": fields.get("mandatory"),
+    }
+    if support == "none" and result["default_effort"] is not None:
+        result["support"] = "partial"
+    return result
+
+
+def normalize_model_row(provider, model_id, row, endpoint, fetched_at, response_sha256, static=False):
+    """Return one credential-free normalized capability record.
+
+    Inventory metadata remains useful even if a capability field is malformed;
+    only that capability section becomes unknown and records its error.
+    """
+    if not isinstance(row, dict):
+        raise ValueError("model row must be an object")
+    errors = []
+    architecture = row.get("architecture")
+    if architecture is not None and not isinstance(architecture, dict):
+        errors.append("architecture must be an object")
+    raw_modalities = row.get("input_modalities")
+    if raw_modalities is None and isinstance(architecture, dict):
+        raw_modalities = architecture.get("input_modalities")
+    if raw_modalities is None:
+        modalities = _unknown_modalities()
+    else:
+        try:
+            modalities = _known_modalities(_normalize_string_list(raw_modalities, "input_modalities"))
+        except ValueError as exc:
+            modalities = _unknown_modalities()
+            modalities["error"] = str(exc)
+            errors.append(str(exc))
+
+    parameters = row.get("supported_parameters")
+    if "supported_parameters" in row and parameters is None:
+        parameters_value = {"state": "unknown", "values": [], "error": "supported_parameters must be a list of strings"}
+        errors.append("supported_parameters must be a list of strings")
+    elif parameters is None:
+        parameters_value = {"state": "unknown", "values": []}
+    else:
+        try:
+            parameters_value = {"state": "known", "values": _normalize_string_list(parameters, "supported_parameters")}
+        except ValueError as exc:
+            parameters_value = {"state": "unknown", "values": [], "error": str(exc)}
+            errors.append(str(exc))
+
+    reasoning_value = _reasoning_from_row(row)
+    if reasoning_value.get("errors"):
+        errors.extend(reasoning_value["errors"])
+    context = row.get("context_length", row.get("context"))
+    output = row.get("max_completion_tokens", row.get("output"))
+    pricing = row.get("pricing", row.get("cost", {}))
+    if not isinstance(pricing, dict):
+        pricing = {}
+        errors.append("pricing/cost must be an object")
+    try:
+        context_value = _numeric_int(context, "context")
+    except ValueError as exc:
+        context_value = None
+        errors.append(str(exc))
+    try:
+        output_value = _numeric_int(output, "output")
+    except ValueError as exc:
+        output_value = None
+        errors.append(str(exc))
+    cost_values = {}
+    for key, raw_value in (
+        ("input", pricing.get("prompt", pricing.get("input"))),
+        ("output", pricing.get("completion", pricing.get("output"))),
+        ("cache_read", pricing.get("cache_prompt", pricing.get("cache_read"))),
+    ):
+        try:
+            cost_values[key] = _numeric(raw_value, f"cost.{key}")
+        except ValueError as exc:
+            cost_values[key] = None
+            errors.append(str(exc))
+    record = {
+        "provider": provider,
+        "id": model_id,
+        "input_modalities": modalities,
+        "supported_parameters": parameters_value,
+        "reasoning": reasoning_value,
+        "context": context_value,
+        "output": output_value,
+        "cost": cost_values,
+        "source_endpoint": endpoint,
+        "fetched_at": fetched_at,
+        "raw_response_sha256": response_sha256,
+        "evidence_source": "provider_models_endpoint" if not static else "provider_registry_static_models",
+    }
+    if errors:
+        record["capability_errors"] = sorted(set(errors))
+    relevant = {
+        key: record[key]
+        for key in ("provider", "id", "input_modalities", "supported_parameters", "reasoning", "context", "output", "cost")
+    }
+    record["metadata_fingerprint"] = hashlib.sha256(
+        json.dumps(relevant, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    return record
+
+
+def _response_rows(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("models response must be an object")
+    rows = payload.get("data", payload.get("models"))
+    if not isinstance(rows, list):
+        raise ValueError("models response must contain a data/models list")
+    return rows
+
+
+def _credential_free_endpoint(base_url):
+    """Return the /models endpoint without userinfo, query, or fragment."""
+    parsed = urllib.parse.urlsplit(str(base_url))
+    host = parsed.hostname or ""
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None:
+        host = f"{host}:{port}"
+    path = parsed.path.rstrip("/") + "/models"
+    return urllib.parse.urlunsplit((parsed.scheme, host, path, "", ""))
+
+
+def _capability_snapshot(provider, cfg, payload=None, rows=None, static=False, raw_bytes=None):
+    endpoint = _credential_free_endpoint(cfg["baseURL"])
+    fetched_at = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    if rows is None and payload is not None:
+        rows = _response_rows(payload)
+    rows = rows or []
+    if raw_bytes is not None:
+        raw = raw_bytes
+    elif payload is not None:
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    else:
+        raw = json.dumps(rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    response_sha256 = hashlib.sha256(raw).hexdigest()
+    normalized = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+            continue
+        normalized[row["id"]] = normalize_model_row(
+            provider, row["id"], row, endpoint, fetched_at, response_sha256, static=static
+        )
+    return {
+        "provider": provider,
+        "source_endpoint": endpoint,
+        "fetched_at": fetched_at,
+        "raw_response_sha256": response_sha256,
+        "evidence_source": "provider_models_endpoint" if not static else "provider_registry_static_models",
+        "models": normalized,
+    }
+
+
+def _update_capability_cache(provider, snapshot):
+    if not isinstance(snapshot, dict) or not snapshot.get("models"):
+        return False
+    cache = _load_capabilities()
+    cache.setdefault("providers", {})[provider] = snapshot
+    _save_capabilities(cache)
+    return True
 
 
 def cache_get(provider):
@@ -750,8 +1159,11 @@ def fetch_models(base_url, auth_cfg):
     if auth_type in ("api_key", "bearer"):
         req.add_header("Authorization", f"Bearer {auth_val}")
     try:
+        global _LAST_FETCH_RAW, _LAST_FETCH_ENDPOINT
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            _LAST_FETCH_ENDPOINT = url
+            _LAST_FETCH_RAW = resp.read()
+            return json.loads(_LAST_FETCH_RAW)
     except urllib.error.HTTPError as e:
         print(f"  HTTP {e.code} fetching {url}", file=sys.stderr)
         return None
@@ -824,11 +1236,20 @@ def refresh_server(name, cfg):
     npm = cfg.get("npm", "@ai-sdk/openai-compatible")
     print(f"  {name} ({base_url}) ...", file=sys.stderr)
     models_list = cfg.get("models", [])
+    fetched_payload = None
+    global _LAST_FETCH_RAW, _LAST_FETCH_ENDPOINT
+    _LAST_FETCH_RAW = None
+    _LAST_FETCH_ENDPOINT = None
     if not models_list:
         resp = fetch_models(base_url, cfg.get("auth"))
         if resp is None:
             return False
-        models_list = resp.get("data", resp.get("models", []))
+        fetched_payload = resp
+        try:
+            models_list = _response_rows(resp)
+        except ValueError as exc:
+            print(f"  Warning: malformed models response for {name}: {exc}", file=sys.stderr)
+            return False
     if not models_list:
         print(f"  Warning: no models returned for {name}", file=sys.stderr)
         return False
@@ -838,6 +1259,15 @@ def refresh_server(name, cfg):
         if not model_id:
             continue
         models[model_id] = handler(m)
+    snapshot = _capability_snapshot(
+        name,
+        {**cfg, "baseURL": base_url},
+        payload=fetched_payload,
+        rows=models_list,
+        static=fetched_payload is None,
+        raw_bytes=_LAST_FETCH_RAW,
+    )
+    _update_capability_cache(name, snapshot)
     opencode = load_json_or_quarantine(OPENCODE_PATH)
     provider_block = opencode.get("provider", {})
     existing = provider_block.setdefault(name, {})
@@ -1613,6 +2043,102 @@ def cmd_sync():
     print("providers: synced vault -> cache -> auth.json -> .zshenv")
 
 
+def _parse_capability_command(args):
+    if not args or args[0] not in ("show", "refresh"):
+        raise ValueError("Usage: providers capabilities <show|refresh> [--provider NAME] [--model ID] --json")
+    command = args[0]
+    provider = None
+    model = None
+    json_requested = False
+    index = 1
+    while index < len(args):
+        argument = args[index]
+        if argument == "--json":
+            if json_requested:
+                raise ValueError("--json may be supplied only once")
+            json_requested = True
+        elif argument in ("--provider", "--model"):
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                raise ValueError(f"{argument} requires a value")
+            value = args[index + 1]
+            if argument == "--provider":
+                if provider is not None:
+                    raise ValueError("--provider may be supplied only once")
+                provider = value
+            else:
+                if model is not None:
+                    raise ValueError("--model may be supplied only once")
+                model = value
+            index += 1
+        else:
+            raise ValueError(f"unknown capabilities option: {argument}")
+        index += 1
+    if not json_requested:
+        raise ValueError("capabilities commands require --json")
+    if provider == "" or model == "":
+        raise ValueError("capability filters cannot be empty")
+    return command, provider, model
+
+
+def _capability_view(cache, provider=None, model=None):
+    providers = cache.get("providers", {}) if isinstance(cache, dict) else {}
+    if not isinstance(providers, dict):
+        raise ValueError("invalid capability cache providers")
+    if provider is not None:
+        if provider not in providers:
+            raise LookupError(f"no capability snapshot for provider: {provider}")
+        selected = {provider: providers[provider]}
+    else:
+        selected = dict(providers)
+    if model is not None:
+        matches = []
+        for name, snapshot in selected.items():
+            models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
+            if isinstance(models, dict) and model in models:
+                matches.append((name, snapshot))
+        if len(matches) != 1:
+            if not matches:
+                raise LookupError(f"no capability record for model: {model}")
+            raise LookupError(f"model ID is ambiguous; pass --provider: {model}")
+        name, snapshot = matches[0]
+        snapshot = dict(snapshot)
+        snapshot["models"] = {model: snapshot["models"][model]}
+        selected = {name: snapshot}
+    return {"version": CAPABILITIES_VERSION, "providers": selected}
+
+
+def cmd_capabilities(args):
+    command, provider, model = _parse_capability_command(args)
+    if command == "refresh":
+        servers = _load_servers()
+        if servers is None:
+            raise ValueError("cannot read provider registry")
+        refreshed = 0
+        # Provider refresh helpers are also used by the human-oriented command
+        # path. Keep their incidental status output off this machine interface.
+        with contextlib.redirect_stdout(sys.stderr):
+            if provider is not None:
+                if provider not in servers:
+                    raise LookupError(f"unknown provider: {provider}")
+                if not _provider_enabled(provider, servers[provider]):
+                    raise LookupError(f"provider is disabled: {provider}")
+                targets = [provider]
+            else:
+                targets = [
+                    name for name, cfg in servers.items()
+                    if _provider_enabled(name, cfg)
+                ]
+            for name in targets:
+                result = refresh_server(name, servers[name])
+                if isinstance(result, dict) and result:
+                    refreshed += 1
+        if provider is not None and refreshed == 0:
+            raise RuntimeError(f"provider refresh failed or returned no models: {provider}")
+    cache = _load_capabilities()
+    view = _capability_view(cache, provider, model)
+    print(json.dumps(view, indent=2, sort_keys=True, ensure_ascii=False))
+
+
 def _conforming_item_name(name):
     """C1 convention: {PROVIDER}_API_KEY, where PROVIDER is a lowercase
     alphanumeric/hyphen provider name uppercased with '-' -> '_' (so the item
@@ -1773,6 +2299,14 @@ def main():
         cmd_sync()
         return
 
+    if cmd == "capabilities":
+        try:
+            cmd_capabilities(args[1:])
+        except (OSError, json.JSONDecodeError, ValueError, LookupError, RuntimeError) as exc:
+            print(f"providers capabilities: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
     if cmd == "audit":
         cmd_audit()
         return
@@ -1800,6 +2334,8 @@ def main():
         print("  providers timer disable    Remove timer")
         print("  providers timer status     Show timer state and next run")
         print("  providers sync             vault -> cache -> auth.json -> .zshenv")
+        print("  providers capabilities show [--provider P] [--model M] --json")
+        print("  providers capabilities refresh [--provider P] [--model M] --json")
         print("  providers audit            List vault llm items, flag non-conforming")
         print("  providers rename [--apply] Enforce C1 naming on vault items")
         print("  providers --help           Show this message")
@@ -1823,7 +2359,7 @@ def main():
         return
 
     print(f"Unknown: {cmd}", file=sys.stderr)
-    print(f"Usage: providers [add|enable|disable|timer|auth|ls|sync|audit|rename|--list|<provider>]", file=sys.stderr)
+    print(f"Usage: providers [add|enable|disable|timer|auth|ls|sync|capabilities|audit|rename|--list|<provider>]", file=sys.stderr)
     sys.exit(1)
 
 
