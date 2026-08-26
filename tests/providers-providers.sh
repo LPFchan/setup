@@ -63,7 +63,8 @@ m._sync_opencodex_provider_statuses = lambda: None
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
-    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta', 'cloudflare'
+    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
+    'cloudflare', 'openrouter'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
@@ -112,6 +113,15 @@ m.save_json_atomic(m.STATE_PATH, state)
 # The canonical registry routes only through its provider object.
 canonical = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
 assert 'profiles' not in canonical
+openrouter = canonical['providers']['openrouter']
+assert openrouter == {
+    'provider_type': 'OpenAICompatible',
+    'base_url': 'https://openrouter.ai/api/v1',
+    'api_format': 'openai',
+    'npm': '@ai-sdk/openai-compatible',
+    'auth': {'type': 'api-key', 'store': 'opencode', 'key': 'openrouter'},
+    'enabled': True,
+}
 serialized = json.dumps(canonical).lower()
 for legacy_field in ('default_model', 'haiku', 'sonnet', 'opus'):
     assert legacy_field not in serialized
@@ -122,9 +132,65 @@ m._validate_registry(canonical)
 m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
-    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta', 'cloudflare'
+    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
+    'cloudflare', 'openrouter'
 }
 m.REGISTRY_PATH = original_registry
+
+# OpenRouter uses the shared OpenAI-compatible adapter and resolves its
+# canonical credential reference through the local cache. No volatile model
+# capability metadata is stored in the registry: model refresh is live.
+canonical_servers = m._servers_from_registry(canonical)
+openrouter_server = canonical_servers['openrouter']
+assert openrouter_server == {
+    'baseURL': 'https://openrouter.ai/api/v1',
+    'api_format': 'openai',
+    'npm': '@ai-sdk/openai-compatible',
+    'auth': {'type': 'auth_json', 'provider': 'openrouter'},
+    'registry_enabled': True,
+    'models': [],
+}
+m.cache_set('openrouter', 'fixture-openrouter-token')
+assert m.get_auth(openrouter_server['auth']) == ('api_key', 'fixture-openrouter-token')
+fetch_calls = []
+def fake_openrouter_fetch(base_url, auth):
+    fetch_calls.append((base_url, auth, m.get_auth(auth)))
+    return {'data': [{'id': 'openrouter/test-model'}]}
+m.fetch_models = fake_openrouter_fetch
+openrouter_models = m.refresh_server('openrouter', openrouter_server)
+assert fetch_calls == [
+    (
+        'https://openrouter.ai/api/v1',
+        {'type': 'auth_json', 'provider': 'openrouter'},
+        ('api_key', 'fixture-openrouter-token'),
+    )
+]
+assert list(openrouter_models) == ['openrouter/test-model']
+assert m.load_json(m.OPENCODE_PATH)['provider']['openrouter']['models'] == {
+    'openrouter/test-model': {
+        'limit': {'context': 32768, 'output': 16384},
+        'cost': {'input': 0, 'output': 0, 'cache_read': 0},
+    }
+}
+m._sync_pi_models_mirror(canonical_servers, {'openrouter': openrouter_models})
+assert m.load_json(m.PI_MODELS_PATH)['providers']['openrouter']['models'] == [
+    {
+        'id': 'openrouter/test-model',
+        'name': 'openrouter/test-model',
+        'contextWindow': 32768,
+        'maxTokens': 16384,
+        'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+    }
+]
+# An empty live inventory must not erase the last known OpenRouter catalog.
+m.fetch_models = lambda *_: {'data': []}
+assert m.refresh_server('openrouter', openrouter_server) is False
+assert m.load_json(m.OPENCODE_PATH)['provider']['openrouter']['models'] == {
+    'openrouter/test-model': {
+        'limit': {'context': 32768, 'output': 16384},
+        'cost': {'input': 0, 'output': 0, 'cache_read': 0},
+    }
+}
 
 # The registry is fetched unverified, so validation is the only gate: missing
 # providers and legacy profile-only shapes must be refused.

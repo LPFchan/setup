@@ -105,6 +105,18 @@
           "id": "@cf/google/gemma-4-26b-a4b-it"
         }
       ]
+    },
+    "openrouter": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "openrouter"
+      },
+      "enabled": true
     }
   }
 }
