@@ -40,6 +40,12 @@ REGISTRY = Path(
 AUTH_JSON = Path(
     os.environ.get("OPENCODEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json")
 )
+PROVIDERS_BIN = Path(
+    os.environ.get(
+        "OPENCODEX_PROVIDERS_BIN",
+        os.environ.get("PROVIDERS_BIN", HOME / ".local/bin/providers"),
+    )
+).expanduser()
 PROVIDER_STATE_VERSION = 1
 PROVIDER_STATE = Path(
     os.environ.get("PROVIDER_STATE_PATH", HOME / ".config/providers/state.json")
@@ -786,7 +792,6 @@ def resumed_model(
 
 
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
-EFFORT_NONE = "none"      # model accepts reasoning but the user disables it
 EFFORT_DEFAULT = "default"  # let the server/harness choose; launcher sends nothing
 EFFORT_THINKING_TOKENS = {
     "low": "4000",
@@ -799,27 +804,58 @@ EFFORT_THINKING_TOKENS = {
 OCX_MODELS_URL = os.environ.get(
     "OPENCODEX_MODELS_URL", "http://localhost:10100/v1/models"
 )
-# Per-provider capability probing hits each provider's own /v1/models. Tests
-# disable it (and the live probe) so the catalog fixture is the only source.
-OPENCODEX_CAPABILITY_PROBE = os.environ.get("OPENCODEX_CAPABILITY_PROBE", "1") != "0"
+
+
+def provider_capability_view(timeout: float = 1.5) -> dict[str, Any]:
+    """Read the shared provider capability cache through its CLI boundary.
+
+    This is deliberately a cache-only operation. The provider module owns
+    credentials and network refreshes; OpenCodex must never reconstruct either
+    concern by calling an enrolled provider itself. A missing or broken
+    providers executable simply leaves the catalog/proxy fallback available.
+    """
+    try:
+        result = subprocess.run(
+            [str(PROVIDERS_BIN), "capabilities", "show", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or not isinstance(payload.get("providers"), dict)
+    ):
+        return {}
+    return payload
 
 
 def model_efforts(info: dict[str, Any]) -> list[str]:
-    """Effort choices for one model, from the server's reasoning support tier.
+    """Return truthful picker choices, with omission represented by default.
 
-    The proxy strips per-model capability fields, so support is tiered from
-    the catalog (discrete levels = full) and a per-provider capability probe
-    (boolean/on-off = partial, absent = none):
-
-      full    -> the real levels the server advertised
-      partial -> reasoning exists but no level names: [none, default]
-      none    -> no reasoning support advertised:     [default]
+    Provider-cache records are authoritative for enrolled routes. Their exact
+    native labels are retained; only the cache's explicit ``full``/``partial``
+    signal can add named levels. A missing or unknown record falls back to the
+    generated Codex catalog, while an explicit cache ``none``/``unknown``
+    clears catalog labels rather than inheriting fabricated choices.
     """
-    if info.get("efforts"):
-        return list(info["efforts"])
-    if info.get("support") == "partial":
-        return [EFFORT_NONE, EFFORT_DEFAULT]
-    return [EFFORT_DEFAULT]
+    efforts = [
+        effort
+        for effort in (info.get("efforts") or [])
+        if isinstance(effort, str) and effort and effort != "none"
+    ]
+    efforts = list(dict.fromkeys(efforts))
+    if EFFORT_DEFAULT not in efforts:
+        efforts.append(EFFORT_DEFAULT)
+    return efforts
 
 
 def provider_enabled(
@@ -946,104 +982,128 @@ def live_model_index(url: str = OCX_MODELS_URL, timeout: float = 0.75) -> dict[s
     return index
 
 
-def _probe_capability(row: dict[str, Any]) -> str:
-    """Reasoning-support tier advertised by one upstream /v1/models row.
+def _capability_route_id(provider: str, model_id: str) -> str:
+    """Turn a provider-native id into the route exposed by OpenCodex.
 
-    'full' when the row lists discrete levels, 'partial' when it only flags
-    reasoning as a boolean (crofai's `reasoning_effort`/`custom_reasoning`,
-    kimicode's `supports_reasoning`), else 'none' — the provider serves the
-    model but offers no reasoning control, so the picker must not invent
-    low~ultra choices for it.
+    Some OpenAI-compatible APIs already include their provider namespace in
+    the id (for example ``openrouter/auto``); preserve that existing route.
     """
-    levels = row.get("supported_reasoning_levels")
-    if isinstance(levels, list) and levels:
-        return "full"
-    think = row.get("think_efforts")
-    if isinstance(think, dict) and think.get("values"):
-        return "full"
-    for key in ("reasoning_effort", "custom_reasoning", "supports_reasoning"):
-        if row.get(key):
-            return "partial"
-    return "none"
+    return model_id if model_id.startswith(f"{provider}/") else f"{provider}/{model_id}"
 
 
-def provider_support_index(
-    registry: dict[str, Any], auth_data: dict[str, Any] | None = None, timeout: float = 0.9
-) -> dict[str, str]:
-    """Model id -> support tier, from each provider's own /v1/models capability
-    fields. The proxy nulls these out, so the upstream endpoints are queried
-    directly. Every visible model is recorded (including 'none'): an endpoint
-    that omits reasoning metadata means no reasoning control, which must
-    override the catalog's blanket level list. Disabled without an
-    OPENCODEX_AUTH_JSON; failures yield {}."""
-    if not OPENCODEX_CAPABILITY_PROBE:
+def provider_capability_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Model route -> normalized record from the providers cache interface."""
+    view = provider_capability_view()
+    providers = view.get("providers", {}) if isinstance(view, dict) else {}
+    if not isinstance(providers, dict):
         return {}
-    if auth_data is None:
-        try:
-            auth_data = load_auth()
-        except UserError:
-            return {}
-    support: dict[str, str] = {}
-    state = load_provider_state()
-    for name, descriptor in registry.get("providers", {}).items():
+    enrolled = registry.get("providers", {})
+    result: dict[str, dict[str, Any]] = {}
+    for provider, snapshot in providers.items():
+        descriptor = enrolled.get(provider, {})
         if descriptor.get("provider_type") != "OpenAICompatible":
             continue
-        if not provider_enabled(name, descriptor, state):
+        if not provider_enabled(provider, descriptor):
             continue
-        base = (descriptor.get("base_url") or "").rstrip("/")
-        auth = descriptor.get("auth") or {}
-        entry = auth_data.get(auth.get("key", ""), {})
-        key = entry.get("key", "") if isinstance(entry, dict) else ""
-        if not base or not key:
+        models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
+        if not isinstance(models, dict):
             continue
-        request = urllib.request.Request(
-            f"{base}/models",
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {key}",
-                # Some edges (Cloudflare) 403 Python's default UA on /models.
-                "User-Agent": "opencodex-launcher",
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.load(response)
-        except (OSError, urllib.error.URLError, json.JSONDecodeError):
-            continue
-        rows = payload.get("data") if isinstance(payload, dict) else None
-        for row in rows or []:
-            if not (isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]):
+        for native_id, record in models.items():
+            if not isinstance(native_id, str) or not native_id or not isinstance(record, dict):
                 continue
-            support[f"{name}/{row['id']}"] = _probe_capability(row)
-    return support
+            route_id = _capability_route_id(provider, native_id)
+            reasoning = record.get("reasoning")
+            reasoning = reasoning if isinstance(reasoning, dict) else {}
+            support = reasoning.get("support")
+            efforts = reasoning.get("supported_efforts")
+            if support != "full" or not isinstance(efforts, list):
+                efforts = []
+            else:
+                efforts = [value for value in efforts if isinstance(value, str) and value]
+            result[route_id] = {
+                "id": route_id,
+                "efforts": efforts,
+                "support": support if support in {"full", "partial", "none", "unknown"} else "unknown",
+                "capability_authoritative": True,
+            }
+    return result
 
 
 def merged_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Codex catalog + live proxy + provider capability probe, merged. The
-    live proxy is the freshness layer (always current when ocx runs); the
-    catalog supplies discrete effort levels; the probe marks reasoning
-    support the proxy strips. Models unknown to all three do not appear.
+    """Merge shared provider capabilities, the Codex catalog, and live proxy.
 
-    The probe is authoritative for the providers it can see: whatever tier
-    it reports overrides the catalog's blanket level list (which ocx writes
-    for every model regardless). 'none' clears the list entirely — a provider
-    with no reasoning metadata offers no reasoning control, so the picker
-    shows only "default". The catalog still wins where the probe has no
-    signal (codex, or a provider whose endpoint is unreachable)."""
+    The shared cache is authoritative for enrolled provider routes. Codex's
+    generated catalog remains the fallback for OAuth/Codex routes and for
+    providers absent from the cache; a cache ``none`` or ``unknown`` record
+    intentionally removes catalog-generated effort labels.
+    """
     live = live_model_index()
+    capabilities = provider_capability_index(registry)
     index: dict[str, dict[str, Any]] = {}
-    known_ids = set(live)
-    for source in (catalog_model_index(known_ids=known_ids), live):
+    known_ids = set(live) | set(capabilities)
+    catalog = catalog_model_index(known_ids=known_ids)
+    # Once a provider has a usable capability snapshot, that snapshot owns the
+    # provider's inventory. Do not retain a catalog/proxy model that vanished
+    # from the last successful provider refresh.
+    authoritative_providers = {
+        model_id.split("/", 1)[0]
+        for model_id in capabilities
+        if "/" in model_id
+    }
+    for provider in authoritative_providers:
+        prefix = f"{provider}/"
+        catalog = {
+            model_id: info
+            for model_id, info in catalog.items()
+            if not model_id.startswith(prefix)
+        }
+        live = {
+            model_id: info
+            for model_id, info in live.items()
+            if not model_id.startswith(prefix)
+        }
+    for source in (catalog, live, capabilities):
         for model_id, info in source.items():
             current = index.setdefault(model_id, dict(info))
-            if info["efforts"]:
+            if info.get("capability_authoritative"):
+                current.update(info)
+                if info.get("support") in {"none", "unknown"}:
+                    current["efforts"] = []
+            elif info.get("efforts"):
                 current["efforts"] = list(info["efforts"])
-    for model_id, support in provider_support_index(registry).items():
-        info = index.setdefault(model_id, {"id": model_id, "efforts": []})
-        info["support"] = support
-        if support != "full":
-            info["efforts"] = []  # no discrete levels to offer
     return index
+
+
+def launch_efforts(provider: str | None, model: str) -> list[str]:
+    """Return effort values accepted for a direct launch.
+
+    A cached model record owns its exact native labels, including labels that
+    are outside OpenCodex's historic generic ladder. If the cache has no
+    record for the model, retain the generic ladder used by catalog/proxy
+    fallback. An explicit cache state without named efforts exposes only
+    omission through ``default``.
+    """
+    if provider is not None:
+        view = provider_capability_view()
+        snapshots = view.get("providers", {})
+        snapshot = snapshots.get(provider) if isinstance(snapshots, dict) else None
+        models = snapshot.get("models") if isinstance(snapshot, dict) else None
+        if isinstance(models, dict):
+            native_id = model
+            prefix = f"{provider}/"
+            if native_id.startswith(prefix):
+                native_id = native_id[len(prefix) :]
+            record = models.get(native_id)
+            if not isinstance(record, dict):
+                record = models.get(model)
+            if isinstance(record, dict):
+                reasoning = record.get("reasoning")
+                reasoning = reasoning if isinstance(reasoning, dict) else {}
+                efforts = reasoning.get("supported_efforts")
+                if reasoning.get("support") != "full" or not isinstance(efforts, list):
+                    efforts = []
+                return model_efforts({"efforts": efforts})
+    return list(EFFORT_ORDER) + [EFFORT_DEFAULT]
 
 
 def ensure_opencodex() -> None:
@@ -1134,11 +1194,19 @@ def launch(
     ensure_provider_auth(provider)
     if model is None:
         raise UserError("a model is required to launch")
-    if effort is not None and effort not in EFFORT_ORDER + (EFFORT_NONE, EFFORT_DEFAULT):
+    # ``none`` was the old name for omission. Accept it as a compatibility
+    # alias, but do not expose or persist it as a picker choice.
+    if effort == "none":
+        effort = EFFORT_DEFAULT
+    if effort is not None and effort not in launch_efforts(provider, model):
         raise UserError(f"unknown reasoning effort: {effort}")
-    # "default"/"none" are pass-throughs: send no explicit effort so the
-    # server/harness applies its own. Only real levels are forwarded.
-    explicit = effort if effort in EFFORT_ORDER else None
+    # "default" is omission: send no explicit effort so the server/harness
+    # applies its own. Named native levels are forwarded unchanged.
+    explicit = effort if effort != EFFORT_DEFAULT else None
+    if explicit is not None and harness in {"grok", "kimi"}:
+        raise UserError(
+            f"{harness} does not support explicit reasoning efforts; use default"
+        )
     routed = model
     if harness == "codex":
         overrides = [
@@ -1181,6 +1249,10 @@ def launch(
     env = os.environ.copy()
     env["ANTHROPIC_MODEL"] = routed
     if explicit is not None:
+        if explicit not in EFFORT_THINKING_TOKENS:
+            raise UserError(
+                f"reasoning effort {explicit!r} has no Claude token mapping"
+            )
         env["MAX_THINKING_TOKENS"] = EFFORT_THINKING_TOKENS[explicit]
     command = [str(OCX), "claude"]
     # A settings.json "model" pin outranks ANTHROPIC_MODEL in claude's
@@ -1278,7 +1350,9 @@ def load_picker_state() -> dict[str, Any]:
             state[key] = {
                 name: value
                 for name, value in values.items()
-                if isinstance(name, str) and isinstance(value, str)
+                if isinstance(name, str)
+                and isinstance(value, str)
+                and value != "none"
             }
     return state
 
@@ -1286,6 +1360,8 @@ def load_picker_state() -> dict[str, Any]:
 def record_picker_state(
     provider: str, model: str, effort: str | None, harness: str
 ) -> None:
+    if effort == "none":
+        effort = EFFORT_DEFAULT
     state = load_picker_state()
     updated = dict(state)
     updated["provider"] = provider
@@ -1518,7 +1594,9 @@ def handle_key(state: ReelState, action: str) -> str | None:
     return None
 
 
-def split_launch_args(args: list[str]) -> tuple[str | None, str | None, list[str]]:
+def split_launch_args(
+    args: list[str], allow_native_efforts: bool = False
+) -> tuple[str | None, str | None, list[str]]:
     """Extract leading '--model X' / '--effort X' (or = forms) from run arguments.
 
     Only honored before the harness token; anything after it is forwarded.
@@ -1541,9 +1619,16 @@ def split_launch_args(args: list[str]) -> tuple[str | None, str | None, list[str
         if option == "--model":
             model = value
         else:
-            if value not in EFFORT_ORDER + (EFFORT_NONE, EFFORT_DEFAULT):
+            if (
+                value not in EFFORT_ORDER + (EFFORT_DEFAULT, "none")
+                and not allow_native_efforts
+            ):
                 raise UserError(f"unknown reasoning effort: {value}")
-            effort = value
+            # Legacy command lines used ``none`` for omission. Keep that
+            # alias accepted while normalizing it before launch validation and
+            # state writes. The selected model's capability record is the
+            # authority for all other effort labels.
+            effort = EFFORT_DEFAULT if value == "none" else value
     return model, effort, rest
 
 
@@ -2036,7 +2121,11 @@ def main() -> int:
         if provider not in effective_providers:
             names = ", ".join(effective_providers) or "none"
             raise UserError(f"provider is disabled: {provider} (enabled: {names})")
-        model, effort, args = split_launch_args(sys.argv[3:])
+        # Native labels cannot be validated until the model is routed and the
+        # shared capability cache can be consulted by launch().
+        model, effort, args = split_launch_args(
+            sys.argv[3:], allow_native_efforts=True
+        )
         harness = "claude"
         if args and args[0] in HARNESSES:
             harness, args = args[0], args[1:]

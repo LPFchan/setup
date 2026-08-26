@@ -388,11 +388,14 @@ server.shutdown()
 m._sync_pi_models_mirror(canonical_servers, {'openrouter': openrouter_models})
 assert m.load_json(m.PI_MODELS_PATH)['providers']['openrouter']['models'] == [
     {
-        'id': 'openrouter/test-model',
-        'name': 'openrouter/test-model',
-        'contextWindow': 32768,
-        'maxTokens': 16384,
-        'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+        'id': 'openrouter/native-reasoning',
+        'name': 'openrouter/native-reasoning',
+        'contextWindow': 131072,
+        'maxTokens': 8192,
+        'cost': {'input': 1.0, 'output': 2.0, 'cacheRead': 0, 'cacheWrite': 0},
+        'input': ['image', 'text'],
+        'reasoning': True,
+        'thinkingLevelMap': {'low': 'low', 'medium': 'medium', 'high': 'high'},
     }
 ]
 # An empty live inventory must not erase the last known OpenRouter catalog.
@@ -513,6 +516,11 @@ assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
 # Miniharness/Pi receives the same successful live inventory. Unrelated
 # providers and provider-owned defaults/tiers survive the projection.
 os.makedirs(os.path.dirname(m.PI_MODELS_PATH), exist_ok=True)
+m._update_capability_cache('demo', m._capability_snapshot(
+    'demo', servers['demo'],
+    rows=[{'id': model_id} for model_id in ('fresh-1', 'fresh-2', 'stale-1')],
+    static=True,
+))
 m.save_json(m.PI_MODELS_PATH, {
     '_comment': 'preserve me',
     'providers': {

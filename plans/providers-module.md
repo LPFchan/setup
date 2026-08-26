@@ -51,7 +51,7 @@ The retired Claudex registry (`claudex-profiles.json`) keeps its legacy profile 
 
 | Consumer | Today reads | New read |
 |---|---|---|
-| opencodex launcher | `auth.json` (`load_auth`, `opencodex:172-179`) | Same file, written by providers. **No opencodex code change needed** — but its "no drift" path must tolerate providers as writer |
+| opencodex launcher | `auth.json` for credentials and the generated catalog for model choices | Credentials remain in the providers-written `auth.json`; enrolled OpenAI-compatible model capabilities come from the cache-only `providers capabilities show --json` interface |
 | opencode (harness) | native `auth.json` | Unchanged — providers writes the same shape |
 | hermes / grimoire skill | `GRIMOIRE_API_KEY` via vaultwarden `get_secret` | Same item name, now enforced by C1 |
 | `.zshenv` block | written by refresh-models | written by providers, same names |
@@ -93,7 +93,8 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 5. One-time: delete the now-redundant copy in `auth.json`? **No** — opencode still reads it; it becomes a mirror. Only `providers` writes it going forward.
 
 ### Phase 4 — Consumers + retirement ✅ COMPLETE
-- `opencodex`/`claudex`: no code change (read auth.json as before). Verify `opencodex_config_status` blanking still hides keys (it does — `opencodex:572-574`).
+- `opencodex`: read the providers capability cache through `providers capabilities show --json`; the cache owns enrolled OpenAI-compatible inventory and native reasoning labels. Codex/OAuth routes continue using the generated catalog and proxy inventory as fallback.
+- `claudex`: read `auth.json` as before. Verify `opencodex_config_status` blanking still hides keys (it does — `opencodex:572-574`).
 - `PROVIDER_CONSUMER_MODULES` in opencodex (`opencodex:61`, test `opencodex-launcher.sh:491`) → `("claudex", "opencodex", "providers")`.
 - Manifest (`manifest.tsv:11`), README (`README.md:88`), checksums: `refresh-models` → `providers`, retired row for old module (pattern: claudex's `retired` row).
 - Retire `refresh-models` binary/state cleanly (keep vault + auth.json untouched).
@@ -134,3 +135,17 @@ Machine consumers use `providers capabilities show [--provider NAME]
 [--model ID] --json` for cache-only reads, or `providers capabilities refresh
 [--provider NAME] [--model ID] --json` for one provider refresh followed by a
 normalized view. JSON is emitted on stdout; diagnostics are emitted on stderr.
+
+OpenCodex treats a successful enrolled-provider snapshot as authoritative for
+that provider's model inventory. Its picker preserves exact native effort
+labels and uses `default` for omission; a saved legacy `none` value is ignored.
+The launcher sends an explicit effort only for a named level, so unknown or
+unsupported cache states do not inherit catalog-generated choices.
+
+The Pi/miniharness mirror consumes the same snapshot after provider refresh.
+Known input modalities are projected to Pi's `input` field. Reasoning support
+maps to `true` for full or partial, `false` for none, and omission for
+unknown. `thinkingLevelMap` contains only Pi's representable native level
+labels (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`), with provider
+strings preserved as values. Missing or invalid refreshed capability data
+leaves the last-known-good Pi projection intact.

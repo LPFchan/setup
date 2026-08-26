@@ -66,19 +66,22 @@ state_path.write_text(json.dumps({
 }))
 assert "commandcode" in namespace["enabled_providers"](registry_disabled)
 
-# Disabled providers are neither probed nor accepted by direct run.
+# Disabled providers are neither consulted from the shared capability view nor
+# accepted by direct run. OpenCodex has no provider-network probe anymore.
 state_path.write_text(json.dumps({
     "version": 1,
     "providers": {"commandcode": {"enabled": False}},
 }))
+capability_bin = state_path.parent / "providers"
+capability_bin.write_text("#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"providers\":{}}'\n")
+capability_bin.chmod(0o700)
+globals_["PROVIDERS_BIN"] = capability_bin
 original_urlopen = namespace["urllib"].request.urlopen
 try:
     namespace["urllib"].request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("disabled provider was probed")
     )
-    assert namespace["provider_support_index"](
-        registry, {"commandcode": {"key": "secret"}}
-    ) == {}
+    assert namespace["provider_capability_index"](registry) == {}
 finally:
     namespace["urllib"].request.urlopen = original_urlopen
 

@@ -23,12 +23,10 @@ export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
 export OPENCODEX_BIN="$HOME/.local/bin/ocx"
 export CODEX_HOME="$TEST_TMP/codex \"home"
 export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
-# Point the live-probe at a dead port: the catalog fixture must be the only
-# model source, otherwise the real ocx on this machine injects extra models.
+# Point the live proxy view at a dead port: the catalog fixture must be the
+# only model source, otherwise the real ocx on this machine injects extras.
 export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
-# Disable the per-provider capability probe too: the catalog fixture must be
-# the only source of reasoning metadata in this offline environment.
-export OPENCODEX_CAPABILITY_PROBE=0
+export OPENCODEX_PROVIDERS_BIN="$TEST_TMP/providers"
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
 cp "$ROOT/files/provider-registry.json" "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
@@ -131,6 +129,12 @@ echo "$n" > "$TEST_TMP/fzf-call"
 sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
 chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/kimi" "$TEST_TMP/fzf"
+cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'capabilities show --json' >> "$TEST_TMP/providers-calls"
+printf '%s\n' '{"version":1,"providers":{}}'
+EOF
+chmod +x "$OPENCODEX_PROVIDERS_BIN"
 PATH="$TEST_TMP:$PATH"
 export PATH
 
@@ -205,6 +209,30 @@ override_model="$cc_opus"
     -c "$expected_catalog_override" -c "$(python3 -c 'import json; print("model_reasoning_effort=" + json.dumps("ultra"))')" \
     -m "commandcode/$override_model")" ]] \
     || fail "run --effort did not add the reasoning effort override"
+
+# Native provider effort labels flow from the shared capability view through
+# argument parsing and into Codex unchanged. Arbitrary labels remain rejected
+# once the selected model's capability record is consulted.
+cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}'
+EOF
+chmod +x "$OPENCODEX_PROVIDERS_BIN"
+"$ROOT/files/opencodex" run commandcode --effort native-balanced --model "$cc_model" codex
+grep -Fqx 'model_reasoning_effort="native-balanced"' "$TEST_TMP/codex-args" \
+    || fail "native provider effort was not forwarded to Codex unchanged"
+! "$ROOT/files/opencodex" run commandcode --effort native-unsupported --model "$cc_model" codex \
+    2>"$TEST_TMP/native-effort-error" \
+    || fail "unsupported native effort was accepted"
+grep -q 'unknown reasoning effort: native-unsupported' "$TEST_TMP/native-effort-error" \
+    || fail "unsupported native effort did not produce a clear error"
+cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'capabilities show --json' >> "$TEST_TMP/providers-calls"
+printf '%s\n' '{"version":1,"providers":{}}'
+EOF
+chmod +x "$OPENCODEX_PROVIDERS_BIN"
+
 "$ROOT/files/opencodex" run commandcode --model "$cc_model" codex --model kept --effort low
 grep -Fqx -- '--model' "$TEST_TMP/codex-args" && grep -Fqx 'kept' "$TEST_TMP/codex-args" \
     || fail "run swallowed a --model placed after the harness"
@@ -260,9 +288,9 @@ ocx_calls_before=$(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0)
     || fail "list failed without a TTY"
 [[ $(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0) -eq $ocx_calls_before ]] \
     || fail "list invoked the ocx binary (proxy start or login)"
-grep -qx "commandcode	$expected_model	low,medium,high	launchable" "$TEST_TMP/list-out" \
+grep -qx "commandcode	$expected_model	low,medium,high,default	launchable" "$TEST_TMP/list-out" \
     || fail "list did not print a catalogued commandcode model with its efforts"
-grep -qx "commandcode	commandcode/$cc_opus	low,medium,high	launchable" "$TEST_TMP/list-out" \
+grep -qx "commandcode	commandcode/$cc_opus	low,medium,high,default	launchable" "$TEST_TMP/list-out" \
     || fail "list did not print every catalogued commandcode model"
 grep -q '^# harnesses: claude, codex, grok, kimi$' "$TEST_TMP/list-out" \
     || fail "list did not report the available harnesses"
@@ -281,7 +309,7 @@ grep -qx '# proxy: stopped' "$TEST_TMP/list-out" \
 jq -e '(.harnesses | index("codex")) and ([.providers[] | select(.name == "commandcode")]
     | first | .launchable
     and ([.models[].id] | index($model))
-    and ([.models[] | select(.id == $model) | .efforts] | first == ["low","medium","high"]))' \
+    and ([.models[] | select(.id == $model) | .efforts] | first == ["low","medium","high","default"]))' \
     --arg model "$expected_model" "$TEST_TMP/list-json" >/dev/null \
     || fail "list --json did not carry the expected catalogue shape"
 jq -e '[.providers[] | has("default_model")] | any | not' "$TEST_TMP/list-json" >/dev/null \
@@ -304,6 +332,11 @@ grep -q 'unknown provider: bogus' "$TEST_TMP/list-unknown-error" \
 "$ROOT/files/opencodex" run commandcode --model "$override_model" grok
 [[ $(cat "$TEST_TMP/grok-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "grok harness did not receive the routed override model via -m"
+! "$ROOT/files/opencodex" run commandcode --effort low --model "$cc_model" grok \
+    2>"$TEST_TMP/grok-effort-error" \
+    || fail "grok accepted an explicit effort it cannot transmit"
+grep -q 'grok does not support explicit reasoning efforts; use default' "$TEST_TMP/grok-effort-error" \
+    || fail "grok effort rejection did not explain the omission requirement"
 
 "$ROOT/files/opencodex" run commandcode --model "$cc_model" kimi
 [[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "$expected_model")" ]] \
@@ -311,6 +344,11 @@ grep -q 'unknown provider: bogus' "$TEST_TMP/list-unknown-error" \
 "$ROOT/files/opencodex" run commandcode --model "$override_model" kimi
 [[ $(cat "$TEST_TMP/kimi-args") == "$(printf '%s\n%s' -m "commandcode/$override_model")" ]] \
     || fail "kimi harness did not receive the routed override model via -m"
+! "$ROOT/files/opencodex" run commandcode --effort low --model "$cc_model" kimi \
+    2>"$TEST_TMP/kimi-effort-error" \
+    || fail "kimi accepted an explicit effort it cannot transmit"
+grep -q 'kimi does not support explicit reasoning efforts; use default' "$TEST_TMP/kimi-effort-error" \
+    || fail "kimi effort rejection did not explain the omission requirement"
 
 # The native Kimi install remains launchable without its private bin directory
 # on PATH, and the provider/model routing contract stays unchanged.
@@ -591,14 +629,18 @@ provider_state_path.write_text(json.dumps({
     "version": 1,
     "providers": {"commandcode": {"enabled": False}},
 }))
+# Capability metadata is read from the providers machine interface. No
+# provider-network probe is part of the OpenCodex process.
+capability_bin = provider_state_path.parent / "providers"
+capability_bin.write_text("#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"providers\":{}}'\n")
+capability_bin.chmod(0o700)
+module_globals["PROVIDERS_BIN"] = capability_bin
 original_urlopen = namespace["urllib"].request.urlopen
 try:
     namespace["urllib"].request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("disabled provider was probed")
+        AssertionError("provider capability endpoint was probed")
     )
-    assert namespace["provider_support_index"](
-        registry, {"commandcode": {"key": "secret"}}
-    ) == {}
+    assert namespace["provider_capability_index"](registry) == {}
 finally:
     namespace["urllib"].request.urlopen = original_urlopen
 
@@ -787,15 +829,15 @@ def provider_walk(current, target):
 provider_walk(state, "codex")
 sel_provider, harness, model, effort = state.selection()
 assert sel_provider == "codex" and harness == "claude"
-assert model == "gpt-5.6-sol" and effort == "high"  # full tier: top real level
+assert model == "gpt-5.6-sol" and effort == "default"  # omission is the safe default
 provider_walk(state, "commandcode")
 namespace["handle_key"](state, "right")
 assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"  # alphabetical first
 namespace["handle_key"](state, "down")
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
-assert state.efforts() == ["low", "medium", "high"]  # effort reel follows the model
+assert state.efforts() == ["low", "medium", "high", "default"]  # effort reel follows the model
 namespace["handle_key"](state, "right")
-assert state.selected_effort() == "high"  # full tier: top real level for that model
+assert state.selected_effort() == "default"  # omission is the safe default
 namespace["handle_key"](state, "right")
 namespace["handle_key"](state, "down")
 assert state.selection()[1] == "codex"  # harness reel
@@ -882,19 +924,19 @@ namespace["handle_key"](state, "up")
 assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"
 state.focus = 2
 namespace["handle_key"](state, "up")
-assert state.selected_effort() == "low"
+assert state.selected_effort() == "medium"
 state.focus = 1
 namespace["handle_key"](state, "down")
 assert state.selected_model() == "commandcode/xiaomi/mimo-v2.5-pro"
 assert state.selected_effort() == "medium"
 namespace["handle_key"](state, "up")
 assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"
-assert state.selected_effort() == "low"
+assert state.selected_effort() == "medium"
 state.focus = 0
 namespace["handle_key"](state, "up")
 provider_walk(state, "commandcode")
 assert state.selected_model() == "commandcode/moonshotai/Kimi-K3"
-assert state.selected_effort() == "low"
+assert state.selected_effort() == "medium"
 assert remembered["models"]["commandcode"] == "commandcode/xiaomi/mimo-v2.5-pro"
 assert remembered["efforts"] == {"commandcode/xiaomi/mimo-v2.5-pro": "medium"}
 
@@ -933,6 +975,12 @@ state_path.write_text(json.dumps({"commandcode": "commandcode/moonshotai/Kimi-K3
 legacy = namespace["load_picker_state"]()
 assert legacy["models"] == {"commandcode": "commandcode/moonshotai/Kimi-K3"}
 assert legacy["provider"] is None and legacy["harness"] is None
+state_path.write_text(json.dumps({
+    "version": 1, "provider": "commandcode", "harness": "codex",
+    "models": {"commandcode": "commandcode/moonshotai/Kimi-K3"},
+    "efforts": {"commandcode/moonshotai/Kimi-K3": "none"},
+}))
+assert "commandcode/moonshotai/Kimi-K3" not in namespace["load_picker_state"]()["efforts"]
 for malformed in (
     "not json",
     "[]",
@@ -982,21 +1030,68 @@ filtered = namespace["ReelState"](providers, registry, index, ["codex"], {})
 assert filtered.reel_entries(3) == ["codex"]
 assert filtered.selection()[1] == "codex"
 
-# Effort choices follow the server's reasoning-support tier.
+# Effort choices follow shared provider capability records. Named native levels
+# are retained, and omission is represented only by `default`.
 model_efforts = namespace["model_efforts"]
-assert model_efforts({"efforts": ["low", "medium"]}) == ["low", "medium"]  # full: real levels
-assert model_efforts({"efforts": [], "support": "partial"}) == ["none", "default"]  # partial
-assert model_efforts({"efforts": []}) == ["default"]  # none
-assert model_efforts({}) == ["default"]  # absent info -> default
-probe = namespace["_probe_capability"]
-assert probe({"supported_reasoning_levels": [{"effort": "low"}]}) == "full"
-assert probe({"think_efforts": {"support": True, "values": ["low", "high"]}}) == "full"
-assert probe({"reasoning_effort": True}) == "partial"
-assert probe({"supports_reasoning": True}) == "partial"
-assert probe({"custom_reasoning": True}) == "partial"
-assert probe({"capabilities": ["completion"]}) == "none"  # no reasoning metadata
-assert probe({"capabilities": ["embedding"]}) == "none"
-assert probe({}) == "none"
+assert model_efforts({"efforts": ["low", "medium"]}) == ["low", "medium", "default"]
+assert model_efforts({"efforts": [], "support": "partial"}) == ["default"]
+assert model_efforts({"efforts": [], "support": "none"}) == ["default"]
+assert model_efforts({}) == ["default"]
+assert model_efforts({"efforts": ["native-low", "native-high"]}) == [
+    "native-low", "native-high", "default"
+]
+
+# The providers CLI is the only enrolled-provider capability source. Its
+# records are authoritative over catalogued effort lists, including explicit
+# none/unknown states; OAuth/Codex fallback remains catalog-owned.
+import json as _json
+capability_payload = {
+    "version": 1,
+    "providers": {
+        "openrouter": {
+            "provider": "openrouter",
+            "models": {
+                "openai/gpt-5": {
+                    "provider": "openrouter", "id": "openai/gpt-5",
+                    "reasoning": {
+                        "support": "full",
+                        "supported_efforts": ["low", "medium", "high"],
+                    },
+                },
+            },
+        },
+        "commandcode": {
+            "provider": "commandcode",
+            "models": {
+                "xiaomi/mimo-v2.5-pro": {
+                    "provider": "commandcode", "id": "xiaomi/mimo-v2.5-pro",
+                    "reasoning": {"support": "none", "supported_efforts": []},
+                },
+                "moonshotai/Kimi-K3": {
+                    "provider": "commandcode", "id": "moonshotai/Kimi-K3",
+                    "reasoning": {"support": "unknown", "supported_efforts": []},
+                },
+            },
+        },
+    },
+}
+capability_bin.write_text(
+    "#!/bin/sh\nprintf '%s\\n' '" + _json.dumps(capability_payload) + "'\n"
+)
+capability_bin.chmod(0o700)
+capability_index = namespace["provider_capability_index"](registry)
+assert capability_index["openrouter/openai/gpt-5"]["efforts"] == ["low", "medium", "high"]
+assert capability_index["openrouter/openai/gpt-5"]["support"] == "full"
+real_live_model_index = module_globals["live_model_index"]
+module_globals["live_model_index"] = lambda: {}
+merged = namespace["merged_model_index"](registry)
+assert merged["commandcode/xiaomi/mimo-v2.5-pro"]["efforts"] == []
+assert merged["commandcode/moonshotai/Kimi-K3"]["efforts"] == []
+assert namespace["model_efforts"](merged["commandcode/xiaomi/mimo-v2.5-pro"]) == ["default"]
+assert namespace["model_efforts"](merged["openrouter/openai/gpt-5"]) == [
+    "low", "medium", "high", "default"
+]
+module_globals["live_model_index"] = real_live_model_index
 
 split = namespace["split_launch_args"]
 assert split(["--model", "m", "--effort", "high", "codex", "-x"]) == ("m", "high", ["codex", "-x"])

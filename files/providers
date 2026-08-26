@@ -1014,15 +1014,25 @@ def _sync_hermes_mirror(servers, refreshed):
         print(f"  hermes: {name}: entry removed (disabled)", file=sys.stderr)
 
 
-def _pi_model_entry(model_id, config):
-    """Project one refreshed OpenCode model record into Pi's model shape."""
+PI_THINKING_LEVELS = frozenset(("minimal", "low", "medium", "high", "xhigh", "max"))
+
+
+def _pi_model_entry(model_id, config, capability=None):
+    """Project one model into Pi's shape using the shared capability record.
+
+    ``config`` remains the inventory/cost fallback for compatibility with
+    older callers. Capability fields are only added when the producer made
+    them known; an unknown field is omitted instead of being guessed.
+    """
     limit = config.get("limit", {}) if isinstance(config, dict) else {}
     cost = config.get("cost", {}) if isinstance(config, dict) else {}
-    return {
+    context = as_int(limit.get("context"), 32768)
+    output = as_int(limit.get("output"), 16384)
+    projected = {
         "id": model_id,
         "name": model_id,
-        "contextWindow": as_int(limit.get("context"), 32768),
-        "maxTokens": as_int(limit.get("output"), 16384),
+        "contextWindow": context,
+        "maxTokens": output,
         "cost": {
             "input": as_number(cost.get("input")),
             "output": as_number(cost.get("output")),
@@ -1030,6 +1040,60 @@ def _pi_model_entry(model_id, config):
             "cacheWrite": 0,
         },
     }
+    if not isinstance(capability, dict):
+        return projected
+
+    # These fields are capability-owned. Start each successful projection
+    # without stale values so an explicit unknown/none state is represented by
+    # omission (or false for explicit reasoning support) rather than by a
+    # previous run's guess.
+    for field in ("input", "reasoning", "thinkingLevelMap"):
+        projected.pop(field, None)
+
+    # The normalized producer record is authoritative for these scalar
+    # metadata fields when it has a value, with the existing inventory shape
+    # retained as a safe fallback for an unknown optional value.
+    if capability.get("context") is not None:
+        projected["contextWindow"] = as_int(capability["context"], context)
+    if capability.get("output") is not None:
+        projected["maxTokens"] = as_int(capability["output"], output)
+    capability_cost = capability.get("cost")
+    if isinstance(capability_cost, dict):
+        for source, target in (("input", "input"), ("output", "output"), ("cache_read", "cacheRead")):
+            if capability_cost.get(source) is not None:
+                projected["cost"][target] = as_number(
+                    capability_cost[source], projected["cost"][target]
+                )
+
+    modalities = capability.get("input_modalities")
+    if (
+        isinstance(modalities, dict)
+        and modalities.get("state") == "known"
+        and isinstance(modalities.get("values"), list)
+        and all(isinstance(value, str) for value in modalities["values"])
+    ):
+        projected["input"] = list(modalities["values"])
+
+    reasoning = capability.get("reasoning")
+    if isinstance(reasoning, dict):
+        support = reasoning.get("support")
+        if support in ("full", "partial"):
+            projected["reasoning"] = True
+        elif support == "none":
+            projected["reasoning"] = False
+        # Pi's map keys are its own finite levels. Keep a provider's exact
+        # native strings as values, but never invent mappings for labels Pi
+        # cannot represent (and never add an explicit `off` mapping).
+        efforts = reasoning.get("supported_efforts")
+        if support == "full" and isinstance(efforts, list):
+            level_map = {
+                effort: effort
+                for effort in efforts
+                if isinstance(effort, str) and effort in PI_THINKING_LEVELS
+            }
+            if level_map:
+                projected["thinkingLevelMap"] = level_map
+    return projected
 
 
 def _sync_pi_models_mirror(servers, refreshed):
@@ -1044,10 +1108,22 @@ def _sync_pi_models_mirror(servers, refreshed):
     providers = config.get("providers")
     if not isinstance(providers, dict):
         providers = {}
+    capabilities = _load_capabilities()
+    capability_providers = capabilities.get("providers", {})
+    if not isinstance(capability_providers, dict):
+        capability_providers = {}
     changed = False
     for name, models in refreshed.items():
         server = servers.get(name)
         if not isinstance(server, dict) or not isinstance(models, dict) or not models:
+            continue
+        # A successful refresh writes capabilities before this mirror runs.
+        # Read that normalized snapshot rather than projecting the lossy
+        # OpenCode model config. Missing/invalid data leaves the previous Pi
+        # projection untouched, preserving the last-known-good inventory.
+        snapshot = capability_providers.get(name)
+        cached_models = snapshot.get("models") if isinstance(snapshot, dict) else None
+        if not isinstance(cached_models, dict) or not cached_models:
             continue
         existing = providers.get(name)
         if not isinstance(existing, dict):
@@ -1056,8 +1132,8 @@ def _sync_pi_models_mirror(servers, refreshed):
         projected["base_url"] = server["baseURL"]
         projected["provider_type"] = "OpenAICompatible"
         projected["models"] = [
-            _pi_model_entry(model_id, model_config)
-            for model_id, model_config in models.items()
+            _pi_model_entry(model_id, models.get(model_id, {}), capability)
+            for model_id, capability in cached_models.items()
             if model_id
         ]
         if providers.get(name) != projected:
@@ -1070,7 +1146,7 @@ def _sync_pi_models_mirror(servers, refreshed):
     for name in refreshed:
         if name in servers and isinstance(refreshed[name], dict) and refreshed[name]:
             print(
-                f"  pi: {name}: {len(refreshed[name])} models mirrored",
+                f"  pi: {name}: {len(capability_providers.get(name, {}).get('models', {}))} models mirrored",
                 file=sys.stderr,
             )
 
