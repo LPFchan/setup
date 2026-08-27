@@ -435,6 +435,15 @@ def _numeric_int(value, field="number"):
     return _numeric(value, field, integer=True)
 
 
+def _model_output_limit(row, default=None):
+    """Read OpenAI-compatible completion limits, including OpenRouter's nesting."""
+    output = row.get("max_completion_tokens", row.get("output"))
+    top_provider = row.get("top_provider")
+    if output is None and isinstance(top_provider, dict):
+        output = top_provider.get("max_completion_tokens")
+    return default if output is None else output
+
+
 def _reasoning_from_row(row):
     """Normalize provider-specific reasoning advertisements without guessing.
 
@@ -577,7 +586,7 @@ def normalize_model_row(provider, model_id, row, endpoint, fetched_at, response_
     if reasoning_value.get("errors"):
         errors.extend(reasoning_value["errors"])
     context = row.get("context_length", row.get("context"))
-    output = row.get("max_completion_tokens", row.get("output"))
+    output = _model_output_limit(row)
     pricing = row.get("pricing", row.get("cost", {}))
     if not isinstance(pricing, dict):
         pricing = {}
@@ -1282,7 +1291,7 @@ def model_to_config_openai(m):
     return {
         "limit": {
             "context": m.get("context_length", 32768),
-            "output": m.get("max_completion_tokens", 16384),
+            "output": _model_output_limit(m, 16384),
         },
         "cost": {"input": 0, "output": 0, "cache_read": 0},
     }

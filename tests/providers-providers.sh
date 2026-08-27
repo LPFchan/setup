@@ -189,7 +189,7 @@ openrouter_row = {
         'default_effort': 'medium',
     },
     'context_length': 131072,
-    'max_completion_tokens': 8192,
+    'top_provider': {'max_completion_tokens': 8192},
     'pricing': {'prompt': '1.0', 'completion': '2.0'},
 }
 snapshot = m._capability_snapshot(
