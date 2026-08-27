@@ -47,6 +47,9 @@ npm() {
 }
 _ensure_runtime "9.8.7"
 [[ "$npm_args" == *"@bitkyc08/opencodex@9.8.7"* ]] || fail "resolved OpenCodex package was not installed"
+[[ "$npm_args" != *"--allow-scripts"* ]] || fail "project install used the rejected allow-scripts CLI flag"
+grep -q '"bun": true' "$OPENCODEX_ROOT/package.json" \
+    || fail "OpenCodex runtime package did not approve Bun's install script"
 [[ "$(_installed_version)" == "9.8.7" ]] || fail "resolved OpenCodex runtime version is wrong"
 unfunction npm
 rm -f "$OPENCODEX_BIN"

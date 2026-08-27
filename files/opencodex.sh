@@ -97,8 +97,16 @@ _ensure_runtime() {
     }
     local staged old package="$OPENCODEX_PACKAGE_NAME@$version"
     staged=$(mktemp -d)
+    mkdir -p "$staged/root"
+    printf '%s\n' \
+        '{' \
+        '  "private": true,' \
+        '  "allowScripts": {' \
+        '    "bun": true' \
+        '  }' \
+        '}' > "$staged/root/package.json"
     if ! npm install --prefix "$staged/root" --no-audit --no-fund --no-package-lock \
-        --allow-scripts=bun "$package"; then
+        "$package"; then
         rm -rf "$staged"
         return 1
     fi
