@@ -9,8 +9,11 @@ audience: fleet
 # FLEET
 
 Run `hostname` to see which machine you're on. All machines reach each other
-over SSH without a password (keys via `ssh-import-id gh:LPFchan`). Topology:
-Cloudflare DNS → 10.0.0.0/24 → Tailscale subnet. Run `sudo tailscale switch --list` to list and check what tailnet you're currently on. `lost.plus` is the default tailnet for the fleet. If you find yourself on a different tailnet and in need of connecting to any of the machines in the fleet, switch to `lost.plus` temporarily, finish the task and make sure to switch back to the initial tailnet you've started with. Every machine runs
+over SSH without a password (keys via `ssh-import-id gh:LPFchan`).
+
+Topology: Cloudflare DNS → 10.0.0.0/24 → Tailscale subnet.
+
+Run `sudo tailscale switch --list` to list and check what tailnet you're currently on. `lost.plus` is the default tailnet for the fleet. If you find yourself on a different tailnet and in need of connecting to any of the machines in the fleet, switch to `lost.plus` temporarily, finish the task and make sure to switch back to the initial tailnet you've started with. Every machine runs
 LPFchan/setup (`setup`, `ai-menu`, `resume`, `backup`, …) with config synced.
 All machines except `bingus` auto-launch tmux and ai-menu by default. Press Esc
 to dismiss ai-menu.
@@ -18,6 +21,8 @@ to dismiss ai-menu.
 When accessing a remote machine, use the `main` tmux session. Do not open a new
 separate tmux session. This allows the operator to see and interact with the
 terminal, such as entering an admin password manually.
+
+When requested to deploy a new web service, use cloudflare credentials from vaultwarden MCP to edit DNS records.
 
 ## yeowoolair — daily-driver MacBook Air
 - yeowool-air.tail4754f6.ts.net (no static IP) · user yeowool
@@ -33,11 +38,12 @@ terminal, such as entering an admin password manually.
 
 ## grimoire — headless Ubuntu dual-RTX 3090 inference server
 - grimoire.lost.plus (10.0.0.51) · user yeowool
-- OpenAI-compatible API at https://chat.lost.plus/v1
-- custom llama.cpp fork (repo ~/grimoire); load the `grimoire` skill for inference and ComfyUI
+- OpenAI-compatible API at chat.lost.plus/v1
+- custom llama.cpp fork (repo ~/grimoire); load the `grimoire` skill for inference setup
 - hosts ComfyUI image-gen server (:8188)
-- hosts eastself (@eastself_bot on Telegram, repo ~/Eastself/)
+- hosts eastself (@eastself_bot on Telegram, eastself.lost.plus, repo ~/Eastself/)
 - hosts hermes agent (@neoyeowoolbot on Telegram)
+	hermes has access to the following:
 	- google cloud CLI, oracle cloud CLI
 	- discord, twitter, instagram DM using Beeper Desktop Linux
 	- iCloud calendar and mail
@@ -46,13 +52,15 @@ terminal, such as entering an admin password manually.
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
 - for sophisticated computer-use tasks: summon codex agent here
+- might be offline when it's occupied for audio/music work
 
 ## eleven — Fedora 44 laptop (Intel i5-5250U, 8 GB)
 - eleven.tailaa113.ts.net (no static IP) · user yeowool
 
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
-- Songbook at https://okdam.lost.plus (repo `~/okdam-songbook`)
+- Songbook at okdam.lost.plus (repo `~/okdam-songbook`)
 - MCP servers run here: obsidian/marble, joongna-price-search, tweet-fetch,
   thinqconnect, vaultwarden, comfyui-mcp
-- gswtools at https://gsw.lost.plus (repo `~/gswtools`)
+- gswtools at gsw.lost.plus (repo `~/gswtools`)
+- artmu-bench at artmu.lost.plus (repo `~/artmu-bench`)
