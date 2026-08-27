@@ -48,6 +48,7 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 	- discord, twitter, instagram DM using Beeper Desktop Linux
 	- iCloud calendar and mail
 	- all credentials at vaultwarden
+- hosts heatmap at heatmap.lost.plus
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
