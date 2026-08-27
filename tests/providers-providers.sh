@@ -255,6 +255,25 @@ assert numeric_row['context'] == 131072 and isinstance(numeric_row['context'], i
 assert numeric_row['output'] == 8192 and isinstance(numeric_row['output'], int)
 assert numeric_row['cost'] == {'input': 0.25, 'output': 1.5, 'cache_read': None}
 
+# Grimoire's endpoint advertises USD per million tokens; the shared cache and
+# every generated consumer catalog use the OpenRouter-style USD-per-token unit.
+grimoire_row = {
+    'id': 'qwen3.8-27B-xhigh',
+    'cost': {'input': 0.33, 'output': 3.25, 'cache_read': 0.1},
+}
+normalized_grimoire = m.normalize_model_row(
+    'grimoire', grimoire_row['id'], grimoire_row,
+    'https://grimoire.invalid/v1/models', '2026-08-27T00:00:00Z', 'a' * 64,
+)
+import math
+for key, expected in {
+    'input': 0.00000033,
+    'output': 0.00000325,
+    'cache_read': 0.0000001,
+}.items():
+    assert math.isclose(normalized_grimoire['cost'][key], expected)
+assert m.model_to_config_grimoire(grimoire_row)['cost'] == normalized_grimoire['cost']
+
 # Nested cache containers are validated before a machine consumer can read
 # them, then quarantined like a corrupt top-level document.
 with open('$HOME/.config/providers/capabilities.json', 'w') as handle:

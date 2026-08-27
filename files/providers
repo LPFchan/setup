@@ -609,6 +609,10 @@ def normalize_model_row(provider, model_id, row, endpoint, fetched_at, response_
     ):
         try:
             cost_values[key] = _numeric(raw_value, f"cost.{key}")
+            # The shared capability contract follows OpenRouter and stores
+            # USD per token. Grimoire advertises USD per million tokens.
+            if provider == "grimoire" and cost_values[key] is not None:
+                cost_values[key] /= 1_000_000
         except ValueError as exc:
             cost_values[key] = None
             errors.append(str(exc))
@@ -1257,6 +1261,10 @@ def fetch_models(base_url, auth_cfg):
         return None
 
 
+def _grimoire_price_per_token(value):
+    return as_number(value) / 1_000_000
+
+
 def model_to_config_grimoire(m):
     cost = m.get("cost", {})
     return {
@@ -1265,9 +1273,9 @@ def model_to_config_grimoire(m):
             "output": as_int(m.get("output"), 16384),
         },
         "cost": {
-            "input": as_number(cost.get("input")),
-            "output": as_number(cost.get("output")),
-            "cache_read": as_number(cost.get("cache_read")),
+            "input": _grimoire_price_per_token(cost.get("input")),
+            "output": _grimoire_price_per_token(cost.get("output")),
+            "cache_read": _grimoire_price_per_token(cost.get("cache_read")),
         },
     }
 

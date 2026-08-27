@@ -128,7 +128,8 @@ native effort labels, context/output/cost metadata, a credential-free `/models`
 endpoint, fetch time, raw response SHA-256, metadata fingerprint, and evidence
 source. Missing capability metadata is represented as `unknown`; malformed
 capability fields are retained as unknown with an error while the model remains
-in the inventory. OpenRouter completion limits are read from
+in the inventory. Costs use USD per token; Grimoire's native USD-per-million
+values are converted at ingestion. OpenRouter completion limits are read from
 `top_provider.max_completion_tokens`, with the common top-level field retained
 for compatible providers. The source is provider `/models` metadata only; it
 does not claim a live semantic canary.
