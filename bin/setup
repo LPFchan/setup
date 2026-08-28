@@ -453,10 +453,10 @@ configure_shell() {
     fi
 done
 unset _setup_brew
-if [[ -d /opt/node/current/bin ]]; then
+if [[ -d /opt/node/bin ]]; then
     case ":$PATH:" in
-        *":/opt/node/current/bin:"*) ;;
-        *) export PATH="/opt/node/current/bin:$PATH" ;;
+        *":/opt/node/bin:"*) ;;
+        *) export PATH="/opt/node/bin:$PATH" ;;
     esac
 fi
 case ":$PATH:" in
@@ -1060,11 +1060,11 @@ harness_update_env() {
 
 # Node bin directories, newest version first. nvm keeps each release in its own
 # prefix and exports NVM_BIN only to interactive shells. Hosts without nvm may
-# instead unpack an official tarball under /opt; /opt/node/current is the stable
-# alias that survives version bumps, so it is preferred over the versioned dirs.
+# instead unpack an official tarball under /opt; /opt/node is the stable alias
+# that survives version bumps, so it is preferred over the versioned dirs.
 _node_bin_dirs() {
     [[ -n "${NVM_BIN:-}" && -d "${NVM_BIN:-}" ]] && printf '%s\n' "$NVM_BIN"
-    [[ -d /opt/node/current/bin ]] && printf '%s\n' /opt/node/current/bin
+    [[ -d /opt/node/bin ]] && printf '%s\n' /opt/node/bin
     local dir
     for dir in "$HOME"/.nvm/versions/node/*/bin(N/) /opt/node-*/bin(N/); do
         printf '%s\n' "$dir"
