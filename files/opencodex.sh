@@ -193,12 +193,61 @@ _release_ref() {
     printf 'release:%s' "$1"
 }
 
-_activate_runtime() {
-    "$OPENCODEX_BIN" service install
+# Version the RUNNING proxy reports, empty when nothing answers on its port.
+# `ocx --version` reads the build on disk, which is exactly the number that
+# does NOT tell us whether the swap took effect.
+_live_proxy_version() {
+    python3 - "$OPENCODEX_CONFIG" <<'PY' 2>/dev/null
+import json, sys, urllib.request
+
+try:
+    port = json.load(open(sys.argv[1])).get("port", 10100)
+except (OSError, ValueError):
+    port = 10100
+try:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as response:
+        print(json.load(response).get("version", ""))
+except Exception:
+    pass
+PY
 }
 
+# A package swap leaves the previous build serving until something restarts it.
+# `service install` re-registers and restarts, so it is the whole job when it
+# works; the version probe is what proves it did, because a failure here used
+# to be invisible.
+_activate_runtime() {
+    "$OPENCODEX_BIN" service install || return 1
+    local installed live
+    installed=$(_installed_version)
+    live=$(_live_proxy_version)
+    # An unreachable proxy reports no version, which is not evidence of drift.
+    if [[ -z "$installed" || -z "$live" || "$live" == "$installed" ]]; then
+        return 0
+    fi
+    echo "opencodex: proxy still serving $live after install; restarting" >&2
+    "$OPENCODEX_BIN" service restart || return 1
+    live=$(_live_proxy_version)
+    if [[ -z "$live" || "$live" == "$installed" ]]; then
+        return 0
+    fi
+    echo "opencodex: proxy is serving $live but $installed is installed" >&2
+    return 1
+}
+
+# Drift, not just "is a process registered". A proxy running last week's build
+# answers `service status` perfectly happily, and treating that as current is
+# what let a failed restart record itself as a finished update — leaving
+# `setup update` with nothing left to retry.
 _runtime_active() {
-    "$OPENCODEX_BIN" service status >/dev/null 2>&1
+    "$OPENCODEX_BIN" service status >/dev/null 2>&1 || return 1
+    local installed live
+    installed=$(_installed_version)
+    live=$(_live_proxy_version)
+    if [[ -z "$installed" || -z "$live" ]]; then
+        return 0
+    fi
+    [[ "$live" == "$installed" ]]
 }
 
 _apply() {

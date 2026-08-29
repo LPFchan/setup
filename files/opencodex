@@ -329,6 +329,14 @@ def desired_opencodex_config(
         provider.pop("selectedModels", None)
         providers[name] = provider
 
+    # Bind loopback. A non-loopback bind makes OpenCodex refuse to install or
+    # refresh its service unless OPENCODEX_API_AUTH_TOKEN is exported in the
+    # calling shell — a variable that only lives inside the unit's own
+    # ExecStart. An unattended `setup update` never has it, so the
+    # `ocx service install` that restarts the proxy after a package swap fails,
+    # and the previous build keeps serving with nothing left to restart it.
+    # Agents reach the proxy over loopback anyway; nothing off-box dials it.
+    config["hostname"] = "127.0.0.1"
     config["syncResumeHistory"] = sys.platform == "darwin"
     return config, managed
 
@@ -347,7 +355,16 @@ def proxy_health(port: int) -> dict[str, Any] | None:
 
 
 def live_proxy_port() -> int | None:
-    """Port of a healthy running proxy, or None when nothing is serving."""
+    """Port of a running proxy that a restart could act on, else None.
+
+    Both callers ask "is a process holding this port, and is it stale?", never
+    "may I route a request here" — so a proxy that answers is live even when it
+    answers unhappily. `restart_required` is the case that matters: an upgrade
+    swapped the package tree underneath it, and it reports that instead of
+    exiting. Reading only `ok` as alive made the one state that exists to ask
+    for a restart look like an empty port, so the restart never ran and the
+    replacement could not bind.
+    """
     try:
         port = json.loads(RUNTIME_PORT.read_text())["port"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
@@ -355,7 +372,9 @@ def live_proxy_port() -> int | None:
     if not isinstance(port, int):
         return None
     payload = proxy_health(port)
-    return port if payload is not None and payload.get("status") == "ok" else None
+    if payload is None:
+        return None
+    return port if payload.get("status") in {"ok", "restart_required"} else None
 
 
 def live_proxy_version(port: int) -> str | None:
@@ -507,6 +526,23 @@ def provider_config_diff(
     return reasons
 
 
+def proxy_self_reported_restart(port: int) -> list[str]:
+    """Reason the proxy itself is asking to be restarted, else [].
+
+    Stands apart from version drift because the proxy knows things the two
+    version numbers do not: a reinstall of the same version still swaps every
+    file, and `restart_required` is how it reports that its own code changed
+    on disk. Reading its stated reason keeps the restart from depending on the
+    versions happening to differ.
+    """
+    payload = proxy_health(port) or {}
+    if payload.get("status") != "restart_required":
+        return []
+    error = payload.get("error")
+    detail = error.get("message") if isinstance(error, dict) else None
+    return [detail if isinstance(detail, str) and detail else "proxy reports restart_required"]
+
+
 def proxy_version_drift(port: int) -> list[str]:
     """Reason the RUNNING proxy predates the ocx build on disk, else [].
 
@@ -526,10 +562,10 @@ def proxy_stale_reasons(port: int, desired_providers: dict[str, Any]) -> list[st
     """Human-readable reasons the proxy on `port` must restart to be current.
 
     A healthy but unreadable provider view contributes no reasons, so callers
-    never blind-restart on routing; version drift is read from /healthz and
-    stands on its own.
+    never blind-restart on routing; the proxy's own restart request and the
+    version drift are both read from /healthz and each stands on its own.
     """
-    reasons = proxy_version_drift(port)
+    reasons = proxy_self_reported_restart(port) + proxy_version_drift(port)
     live = live_provider_view(port)
     if live is not None:
         reasons.extend(provider_config_diff(desired_providers, live))
@@ -548,6 +584,30 @@ def proxy_restart_status() -> tuple[bool, int | None, list[str]]:
     return True, port, proxy_stale_reasons(port, providers)
 
 
+def restart_stale_proxy(context: str) -> None:
+    """Replace the running proxy process. Shared by apply and launch.
+
+    The service manager is asked first because `ocx restart` cannot recover the
+    `restart_required` case this most exists for: its stop half asks the same
+    health endpoint whether a proxy is running, reads the unhappy answer as
+    "nothing is there", skips the kill, and then cannot bind the port the
+    survivor still holds. systemd and launchd stop a process by PID and never
+    ask it for permission. Plain `restart` remains the fallback for an install
+    with no registered service.
+    """
+    if not (OCX.is_file() and os.access(OCX, os.X_OK)):
+        print(
+            "opencodex: the running proxy is stale but ocx is missing; "
+            f"restart the proxy to {context} it",
+            file=sys.stderr,
+        )
+        return
+    for command in (["service", "restart"], ["restart"]):
+        if not subprocess.run([str(OCX), *command]).returncode:
+            return
+    print("opencodex: proxy restart failed; run: ocx service restart", file=sys.stderr)
+
+
 def converge_live_proxy(desired: dict[str, Any]) -> None:
     """Restart a running proxy left stale by the apply that just ran.
 
@@ -558,23 +618,13 @@ def converge_live_proxy(desired: dict[str, Any]) -> None:
     An `_ensure_runtime` upgrade is the same shape: the new build is on disk
     while the old one keeps serving. Comparing the live view (not the disk
     diff) is what heals a proxy that went stale on an earlier apply.
-    `ocx restart` is stop + ensure; ensure waits for health and resyncs the
-    catalog.
     """
     port = live_proxy_port()
     if port is None:
         return
     if not proxy_stale_reasons(port, desired.get("providers", {})):
         return
-    if not (OCX.is_file() and os.access(OCX, os.X_OK)):
-        print(
-            "opencodex: the running proxy is stale but ocx is missing; "
-            "restart the proxy to apply it",
-            file=sys.stderr,
-        )
-        return
-    if subprocess.run([str(OCX), "restart"]).returncode:
-        print("opencodex: proxy restart failed; run: ocx restart", file=sys.stderr)
+    restart_stale_proxy("apply")
 
 
 def apply_opencodex_registry(registry_path: Path) -> None:
@@ -618,6 +668,7 @@ def remove_opencodex_managed() -> None:
     if isinstance(providers, dict):
         for name in managed_provider_names():
             providers.pop(name, None)
+    config.pop("hostname", None)
     config.pop("syncResumeHistory", None)
     write_json_atomic(OPENCODEX_CONFIG, config)
     try:
@@ -1171,24 +1222,15 @@ def launch(
         # The proxy snapshots config.json at startup, never reloads it, and
         # keeps running the build that was on disk when it started, so a stale
         # process would serve old routing — or an old runtime — to every
-        # harness the moment it launches. `ocx restart` is stop + ensure, so
-        # the plain ensure below is skipped (restart covers it and resyncs the
-        # catalog).
+        # harness the moment it launches. A restart is stop + ensure, so the
+        # plain ensure below is skipped (it covers it and resyncs the catalog).
         print(
-            "opencodex: the running proxy is stale; "
-            "running `ocx restart` to refresh it",
+            "opencodex: the running proxy is stale; restarting it",
             file=sys.stderr,
         )
         for reason in reasons:
             print(f"  - {reason}", file=sys.stderr)
-        if not (OCX.is_file() and os.access(OCX, os.X_OK)):
-            print(
-                "opencodex: the running proxy is stale but ocx is missing; "
-                "restart the proxy to refresh it",
-                file=sys.stderr,
-            )
-        elif subprocess.run([str(OCX), "restart"]).returncode:
-            print("opencodex: proxy restart failed; run: ocx restart", file=sys.stderr)
+        restart_stale_proxy("refresh")
     else:
         ensure_opencodex()
     ensure_provider_auth(provider)

@@ -24,6 +24,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 source "$ROOT/lib/script-helpers.sh"
 source "$ROOT/files/opencodex.sh"
 
+# The live-version probe opens a real socket on the configured port, so left
+# alone the suite would answer from whatever proxy happens to be running on the
+# machine running the tests. Unknown is the tolerated case; the drift cases
+# below stub it deliberately.
+_live_proxy_version() { print '' }
+
 OPENCODEX_RELEASE_VERSION=""
 npm() { print '9.8.7'; }
 [[ "$(_resolve_release_version)" == "9.8.7" ]] || fail "npm latest version was not resolved"
@@ -101,6 +107,38 @@ OPENCODEX_RELEASE_VERSION="2.7.42"
 touch "$HOME/.opencodex/service-stopped"
 expect_status 1 outdated
 rm "$HOME/.opencodex/service-stopped"
+expect_status 0 current
+
+# A registered service says nothing about which build is serving: an upgrade
+# swaps the package tree under a running proxy and the old one keeps answering.
+# Recording that as "current" is what leaves setup with nothing left to retry.
+_live_proxy_version() { print '2.7.42' }
+expect_status 0 current
+_live_proxy_version() { print '2.7.41' }
+expect_status 1 outdated
+_live_proxy_version() { print '' }
+expect_status 0 current
+
+# ...and the activation step restarts a proxy the install left behind.
+restart_calls=0
+cat > "$OPENCODEX_BIN" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then echo 'opencodex 2.7.42'; fi
+if [ "${1:-}" = service ] && [ "${2:-}" = restart ]; then echo restarted >> "$HOME/.opencodex/restarts"; fi
+EOF
+chmod +x "$OPENCODEX_BIN"
+rm -f "$HOME/.opencodex/restarts"
+_live_proxy_version() { [[ -e "$HOME/.opencodex/restarts" ]] && print '2.7.42' || print '2.7.41' }
+_activate_runtime || fail "activation did not recover a proxy left on the previous build"
+[[ -f "$HOME/.opencodex/restarts" ]] || fail "activation never restarted the stale proxy"
+
+_live_proxy_version() { print '2.7.41' }
+rm -f "$HOME/.opencodex/restarts"
+if _activate_runtime 2>/dev/null; then
+    fail "activation reported success while the previous build kept serving"
+fi
+_live_proxy_version() { print '' }
+install_surfaces
 expect_status 0 current
 
 print '# drift' >> "$BIN"

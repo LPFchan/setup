@@ -164,9 +164,32 @@ globals_["subprocess"].run = lambda argv, *a, **k: restarts.append(argv) or Fake
 globals_["installed_ocx_version"] = lambda: "2.0.0"
 globals_["live_proxy_version"] = lambda port: "2.0.0"
 
-# Live view stale (disabled) against a desired enable -> restart.
+# Live view stale (disabled) against a desired enable -> restart. The service
+# manager is asked first: it stops the old process by PID, where `ocx restart`
+# asks the proxy's own health endpoint whether anything is running and skips
+# the kill when a stale proxy answers unhappily.
 namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
-assert restarts == [[str(ocx), "restart"]], restarts
+assert restarts == [[str(ocx), "service", "restart"]], restarts
+
+# No registered service to restart -> fall back to the standalone path.
+restarts.clear()
+
+
+class FailingServiceRun(FakeRun):
+    def __init__(self, argv):
+        super().__init__()
+        self.returncode = 1 if argv[1:3] == ["service", "restart"] else 0
+
+
+globals_["subprocess"].run = lambda argv, *a, **k: (
+    restarts.append(argv) or FailingServiceRun(argv)
+)
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [
+    [str(ocx), "service", "restart"],
+    [str(ocx), "restart"],
+], restarts
+globals_["subprocess"].run = lambda argv, *a, **k: restarts.append(argv) or FakeRun()
 
 # Live view already matches -> no restart.
 restarts.clear()
@@ -191,7 +214,7 @@ restarts.clear()
 token_file.write_text("test-token\n")
 live_disabled = {"openai": True}
 namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": True}}})
-assert restarts == [[str(ocx), "restart"]], restarts
+assert restarts == [[str(ocx), "service", "restart"]], restarts
 
 # Field tolerance: a minimal live row (name+disabled only) whose disabled flag
 # matches must not falsely restart, however richly the desired entry is set —
@@ -221,12 +244,12 @@ restarts.clear()
 config_path.write_text(json.dumps({"providers": {"commandcode": {"disabled": False}}}))
 live_disabled = {"commandcode": True}
 namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
-assert [str(ocx), "restart"] in restarts, restarts
+assert [str(ocx), "service", "restart"] in restarts, restarts
 assert [str(ocx), "ensure"] not in restarts, restarts
 restarts.clear()
 config_path.write_text(json.dumps({"providers": {"commandcode": {"disabled": True}}}))
 namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
-assert [str(ocx), "restart"] not in restarts, restarts
+assert [str(ocx), "service", "restart"] not in restarts, restarts
 assert [str(ocx), "ensure"] in restarts, restarts
 
 # An update swaps the runtime out from under the running proxy, which keeps
@@ -239,10 +262,10 @@ assert namespace["proxy_version_drift"](1) == [
 ]
 restarts.clear()
 namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": True}}})
-assert restarts == [[str(ocx), "restart"]], restarts
+assert restarts == [[str(ocx), "service", "restart"]], restarts
 restarts.clear()
 namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
-assert [str(ocx), "restart"] in restarts, restarts
+assert [str(ocx), "service", "restart"] in restarts, restarts
 assert [str(ocx), "ensure"] not in restarts, restarts
 
 # A proxy or an install that reports no version is never drift, and matching

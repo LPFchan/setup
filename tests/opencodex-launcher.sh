@@ -479,6 +479,30 @@ jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null
 "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
     || fail "freshly applied OpenCodex config was not current"
 
+# The bind address is managed, not merely seeded. A non-loopback hostname makes
+# OpenCodex refuse `service install` without a token that only the service
+# unit's own environment holds, so an unattended update cannot restart the
+# proxy and the superseded build keeps serving.
+jq -e '.hostname == "127.0.0.1"' "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "apply did not bind the OpenCodex proxy to loopback"
+python3 - "$OPENCODEX_CONFIG" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as stream:
+    config = json.load(stream)
+config["hostname"] = "0.0.0.0"
+with open(path, "w") as stream:
+    json.dump(config, stream)
+PY
+if "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY"; then
+    fail "a non-loopback bind was not reported as drift"
+fi
+"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
+jq -e '.hostname == "127.0.0.1"' "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "apply did not converge a non-loopback bind back to loopback"
+
 # A machine whose config still carries a pin from an older release converges on
 # the next apply; leaving it would silently outrank what a launch asks for.
 python3 - "$OPENCODEX_CONFIG" <<'PY'
@@ -1118,6 +1142,53 @@ assert reel_at(width + gap, width, gap) == 1
 assert reel_at(3 * (width + gap), width, gap) == 3
 assert reel_at(4 * (width + gap), width, gap) is None  # padding
 assert reel_at(-1, width, gap) is None
+PY
+
+# A proxy that reports `restart_required` is running and needs replacing. It
+# used to read as an empty port, so nothing restarted it and the replacement
+# could not bind the port the survivor still held.
+python3 - "$ROOT/files/opencodex" <<'PY'
+import json
+import runpy
+import sys
+import tempfile
+from pathlib import Path
+
+namespace = runpy.run_path(sys.argv[1], run_name="opencodex_test")
+module_globals = namespace["live_proxy_port"].__globals__
+
+runtime_port = Path(tempfile.mkdtemp()) / "runtime-port.json"
+runtime_port.write_text(json.dumps({"port": 10100}))
+module_globals["RUNTIME_PORT"] = runtime_port
+
+payloads: dict[str, object] = {}
+module_globals["proxy_health"] = lambda port: payloads.get("value")
+# Never let the assertions below reach a proxy that is actually running on this
+# machine's port 10100.
+module_globals["live_provider_view"] = lambda port: None
+
+payloads["value"] = {"status": "ok", "version": "2.35.0"}
+assert namespace["live_proxy_port"]() == 10100
+assert namespace["proxy_self_reported_restart"](10100) == []
+
+payloads["value"] = {
+    "status": "restart_required",
+    "version": "2.34.0",
+    "error": {"code": "package_tree_changed", "message": "package files changed"},
+}
+assert namespace["live_proxy_port"]() == 10100, "a proxy asking to restart read as no proxy"
+assert namespace["proxy_self_reported_restart"](10100) == ["package files changed"]
+
+# Its own report stands alone: a reinstall of the same version swaps every file
+# while both version numbers still match.
+module_globals["installed_ocx_version"] = lambda: "2.34.0"
+assert namespace["proxy_version_drift"](10100) == []
+assert namespace["proxy_stale_reasons"](10100, {}) == ["package files changed"]
+
+payloads["value"] = {"status": "draining"}
+assert namespace["live_proxy_port"]() is None
+payloads["value"] = None
+assert namespace["live_proxy_port"]() is None
 PY
 
 "$ROOT/files/opencodex" --version
