@@ -24,6 +24,12 @@ terminal, such as entering an admin password manually.
 
 When requested to deploy a new web service, use cloudflare credentials from vaultwarden MCP to edit DNS records.
 
+## NanoPi R3S LTS — OpenWrt router (LAN gateway)
+- 10.0.0.1 · user root (SSH pubkey + LuCI creds in vaultwarden)
+- OpenWrt 24.10.2, Rockchip SoC, ~1 GB RAM
+- gateway for the 10.0.0.0/24 LAN (Cloudflare → this → Tailscale)
+- persistent log at /etc/logpersist.log — procd svc /etc/init.d/logpersist, 1 MB rolling, survives reboots
+
 ## yeowoolair — daily-driver MacBook Air
 - yeowool-air.tailaa113.ts.net (no static IP) · user yeowool
 - active repos in ~/Documents/
