@@ -1239,6 +1239,13 @@ def as_int(value, default):
         return default
 
 
+def _opencode_output_limit(output, context):
+    """Give OpenCode a finite ceiling for an unbounded provider limit."""
+    if as_number(output, None) == -1:
+        return as_int(context, 32768)
+    return output
+
+
 def fetch_models(base_url, auth_cfg):
     url = base_url.rstrip("/") + "/models"
     req = urllib.request.Request(url)
@@ -1267,10 +1274,12 @@ def _grimoire_price_per_token(value):
 
 def model_to_config_grimoire(m):
     cost = m.get("cost", {})
+    context = as_int(m.get("context"), 32768)
+    output = as_int(m.get("output"), 16384)
     return {
         "limit": {
-            "context": as_int(m.get("context"), 32768),
-            "output": as_int(m.get("output"), 16384),
+            "context": context,
+            "output": _opencode_output_limit(output, context),
         },
         "cost": {
             "input": _grimoire_price_per_token(cost.get("input")),
@@ -1282,10 +1291,12 @@ def model_to_config_grimoire(m):
 
 def model_to_config_crofai(m):
     pricing = m.get("pricing", {})
+    context = as_int(m.get("context_length"), 32768)
+    output = as_int(m.get("max_completion_tokens"), 16384)
     return {
         "limit": {
-            "context": as_int(m.get("context_length"), 32768),
-            "output": as_int(m.get("max_completion_tokens"), 16384),
+            "context": context,
+            "output": _opencode_output_limit(output, context),
         },
         "cost": {
             "input": as_number(pricing.get("prompt")),
@@ -1296,10 +1307,12 @@ def model_to_config_crofai(m):
 
 
 def model_to_config_openai(m):
+    context = m.get("context_length", 32768)
+    output = _model_output_limit(m, 16384)
     return {
         "limit": {
-            "context": m.get("context_length", 32768),
-            "output": _model_output_limit(m, 16384),
+            "context": context,
+            "output": _opencode_output_limit(output, context),
         },
         "cost": {"input": 0, "output": 0, "cache_read": 0},
     }

@@ -274,6 +274,32 @@ for key, expected in {
     assert math.isclose(normalized_grimoire['cost'][key], expected)
 assert m.model_to_config_grimoire(grimoire_row)['cost'] == normalized_grimoire['cost']
 
+# An output limit of -1 means the provider does not impose a generation cap.
+# OpenCode requires a finite positive ceiling, while Miniharness uses -1 to
+# preserve unbounded generation for evaluation runs.
+unbounded_grimoire_row = {
+    'id': 'qwen3.8-27B-xhigh',
+    'context': 237568,
+    'output': -1,
+}
+unbounded_grimoire = m.normalize_model_row(
+    'grimoire', unbounded_grimoire_row['id'], unbounded_grimoire_row,
+    'https://grimoire.invalid/v1/models', '2026-08-27T00:00:00Z', 'a' * 64,
+)
+assert unbounded_grimoire['output'] == -1
+assert m.model_to_config_grimoire(unbounded_grimoire_row)['limit'] == {
+    'context': 237568,
+    'output': 237568,
+}
+assert m._pi_model_entry(
+    unbounded_grimoire_row['id'],
+    m.model_to_config_grimoire(unbounded_grimoire_row),
+    unbounded_grimoire,
+)['maxTokens'] == -1
+assert m.model_to_config_grimoire({
+    'id': 'finite-output', 'context': 131072, 'output': 8192,
+})['limit']['output'] == 8192
+
 # Nested cache containers are validated before a machine consumer can read
 # them, then quarantined like a corrupt top-level document.
 with open('$HOME/.config/providers/capabilities.json', 'w') as handle:
