@@ -39,7 +39,8 @@ grep -Fq -- "--user-data-dir=$BROWSER_USE_PROFILE_DIR" "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-address=127.0.0.1' "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-port=9223' "$TEST_TMP/unit.snapshot"
 grep -Fq -- 'WantedBy=default.target' "$TEST_TMP/unit.snapshot"
-grep -Fq -- '--user enable --now browser-use-chrome.service' "$SYSTEMCTL_LOG"
+grep -Fq -- '--user enable browser-use-chrome.service' "$SYSTEMCTL_LOG"
+grep -Fq -- '--user restart browser-use-chrome.service' "$SYSTEMCTL_LOG"
 grep -Fq -- '--user disable --now browser-use-chrome.service' "$SYSTEMCTL_LOG"
 
 if [[ -x /snap/bin/chromium ]]; then

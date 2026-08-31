@@ -74,7 +74,8 @@ _apply() {
     command install -m 0644 "$staged" "$UNIT" || { rm -f "$staged"; return 1; }
     rm -f "$staged"
     systemctl --user daemon-reload || return 1
-    systemctl --user enable --now browser-use-chrome.service || return 1
+    systemctl --user enable browser-use-chrome.service || return 1
+    systemctl --user restart browser-use-chrome.service || return 1
     record_script_state "$MODULE" "systemd-user" "$hash" "$hash"
     echo "browser-use-chrome: $action -> $UNIT"
 }
