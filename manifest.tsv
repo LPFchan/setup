@@ -9,6 +9,7 @@ service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl	fleet	linux
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
 providers	~/.local/bin/providers	script	files/providers.sh
+browser-use-chrome	~/.config/systemd/user/browser-use-chrome.service	script	files/browser-use-chrome.sh	fleet	linux
 refresh-models	~/.local/bin/refresh-models	script	files/refresh-models.sh			retired
 backup	~/.local/bin/backup	0755	bin/backup	fleet	linux
 system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux
