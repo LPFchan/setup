@@ -30,10 +30,17 @@ zsh -c "source '$ROOT/lib/script-helpers.sh'; source '$ROOT/files/browser-use-ch
 UNIT="$BROWSER_USE_SYSTEMD_DIR/browser-use-chrome.service"
 [[ ! -e "$UNIT" ]] || { echo "unit survived uninstall" >&2; exit 1; }
 grep -Fq "ExecStart=$BROWSER_USE_CHROMIUM_BIN" "$TEST_TMP/unit.snapshot"
+grep -Fq -- "--user-data-dir=$BROWSER_USE_PROFILE_DIR" "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-address=127.0.0.1' "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-port=9222' "$TEST_TMP/unit.snapshot"
 grep -Fq -- 'WantedBy=default.target' "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--user enable --now browser-use-chrome.service' "$SYSTEMCTL_LOG"
 grep -Fq -- '--user disable --now browser-use-chrome.service' "$SYSTEMCTL_LOG"
+
+if [[ -x /snap/bin/chromium ]]; then
+    snap_profile=$(BROWSER_USE_CHROMIUM_BIN=/snap/bin/chromium BROWSER_USE_PROFILE_DIR= \
+        zsh -c "source '$ROOT/lib/script-helpers.sh'; source '$ROOT/files/browser-use-chrome.sh'; _profile_dir")
+    [[ "$snap_profile" == "$HOME/snap/chromium/common/browser-use-profile" ]]
+fi
 
 echo "browser-use-chrome tests passed"

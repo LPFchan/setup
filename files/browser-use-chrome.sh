@@ -7,7 +7,6 @@
 MODULE="browser-use-chrome"
 UNIT_DIR="${BROWSER_USE_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
 UNIT="$UNIT_DIR/browser-use-chrome.service"
-PROFILE_DIR="${BROWSER_USE_PROFILE_DIR:-$HOME/.local/state/browser-use/chromium}"
 
 _chrome_binary() {
     local candidate
@@ -26,9 +25,24 @@ _chrome_binary() {
     return 1
 }
 
-_render_unit() {
+_profile_dir() {
+    if [[ -n "${BROWSER_USE_PROFILE_DIR:-}" ]]; then
+        printf '%s\n' "$BROWSER_USE_PROFILE_DIR"
+        return 0
+    fi
     local chrome
     chrome=$(_chrome_binary) || return 1
+    if [[ "$chrome" == /snap/* ]]; then
+        printf '%s\n' "$HOME/snap/chromium/common/browser-use-profile"
+    else
+        printf '%s\n' "$HOME/.local/state/browser-use/chromium"
+    fi
+}
+
+_render_unit() {
+    local chrome profile
+    chrome=$(_chrome_binary) || return 1
+    profile=$(_profile_dir) || return 1
     cat <<EOF
 # setup-module: browser-use-chrome
 [Unit]
@@ -36,7 +50,7 @@ Description=Headless Chromium for Browser Use
 After=network.target
 
 [Service]
-ExecStart=$chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=%h/.local/state/browser-use/chromium about:blank
+ExecStart=$chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=$profile about:blank
 Restart=on-failure
 RestartSec=3
 
@@ -50,11 +64,12 @@ _desired_hash() {
 }
 
 _apply() {
-    local action="$1" staged hash
+    local action="$1" staged hash profile
     staged=$(mktemp)
     _render_unit > "$staged" || { rm -f "$staged"; return 1; }
     hash=$(setup_sha256_string < "$staged")
-    mkdir -p "$UNIT_DIR" "$PROFILE_DIR" || { rm -f "$staged"; return 1; }
+    profile=$(_profile_dir) || { rm -f "$staged"; return 1; }
+    mkdir -p "$UNIT_DIR" "$profile" || { rm -f "$staged"; return 1; }
     command install -m 0644 "$staged" "$UNIT" || { rm -f "$staged"; return 1; }
     rm -f "$staged"
     systemctl --user daemon-reload || return 1
