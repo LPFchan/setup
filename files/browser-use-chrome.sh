@@ -7,6 +7,7 @@
 MODULE="browser-use-chrome"
 UNIT_DIR="${BROWSER_USE_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
 UNIT="$UNIT_DIR/browser-use-chrome.service"
+CDP_PORT="${BROWSER_USE_CDP_PORT:-9223}"
 
 _chrome_binary() {
     local candidate
@@ -50,7 +51,7 @@ Description=Headless Chromium for Browser Use
 After=network.target
 
 [Service]
-ExecStart=$chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=$profile about:blank
+ExecStart=$chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT --remote-allow-origins=* --user-data-dir=$profile about:blank
 Restart=on-failure
 RestartSec=3
 
@@ -99,14 +100,16 @@ status() {
     current=$(setup_sha256_string < "$UNIT")
     rm -f "$staged"
 
-    state="up-to-date"
+    state="current"
     [[ "$current" == "$desired" ]] || state="outdated"
-    systemctl --user is-enabled --quiet browser-use-chrome.service || state="disabled"
-    systemctl --user is-active --quiet browser-use-chrome.service || state="stopped"
+    systemctl --user is-enabled --quiet browser-use-chrome.service || state="outdated"
+    systemctl --user is-active --quiet browser-use-chrome.service || state="outdated"
+    curl -fsS --max-time 2 "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null \
+        || state="outdated"
 
     printf '%-25s %-12s local=%s remote=%s target=%s\n' \
         "$MODULE" "$state" "${current:0:7}" "${desired:0:7}" "$UNIT"
-    [[ "$state" == "up-to-date" ]]
+    [[ "$state" == "current" ]]
 }
 
 uninstall() {
