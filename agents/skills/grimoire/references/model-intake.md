@@ -57,9 +57,9 @@ Canonical entrypoint: `scripts/intake-peft-checkpoint.py`.
 Read `records/decisions/DEC-20260703-001-training-checkpoint-intake.md` and
 `/home/yeowool/Eastself/guides/bprime-v1-regeneration-to-launch.md`.
 
-The script produces an adapter GGUF, a tokenizer-aligned base GGUF using exact
-`trainable_token_indices`, a provenance manifest, and an optional minimal
-`--lora` registry entry.
+The script produces an adapter GGUF, produces or explicitly reuses a
+tokenizer-aligned base GGUF using exact `trainable_token_indices`, writes a
+provenance manifest, and can add a minimal `--lora` registry entry.
 
 Dry-run first:
 
@@ -69,6 +69,7 @@ cd /home/yeowool/grimoire
   --checkpoint /home/yeowool/models/WORK/checkpoint-N \
   --base-gguf /home/yeowool/models/gguf/BASE.gguf \
   --base-hf /home/yeowool/models/base-hf/BASE \
+  --shared-tokenizer-gguf /home/yeowool/models/gguf/VERIFIED-TOKENIZER-BASE.gguf \
   --model-alias MODEL_ALIAS \
   --ctx-size VERIFIED_CONTEXT \
   --outtype f16 \
@@ -82,7 +83,16 @@ state and the printed config. Keep explicit `--outtype f16`; provide
 - Do not run conversion under `sudo`.
 - Merge justified serving fields into the script's minimal registry entry.
 - Keep `.intake.json`; it hashes inputs, so hash outputs separately.
-- Tokenizer rewriting copies the base GGUF; reuse verified aligned outputs.
+- Tokenizer rewriting copies the complete base GGUF. Use
+  `--shared-tokenizer-gguf` when the base GGUF hash, tokenizer JSON hash, and
+  exact `trainable_token_indices` match a verified aligned output. This reuses
+  only the tokenizer base; it does not silently reuse an existing adapter.
+- The verified shared base for the retained Eastself B-prime aliases is
+  `/home/yeowool/models/gguf/gemma-4-31B_q4_0-it-eastself-tokenizer.gguf`.
+- On Btrfs, preserve manifest-backed per-alias paths as copy-on-write reflinks
+  when compatibility requires their names to remain. Verify complete hashes
+  before and after replacement. Do not use hardlinks: a later forced rewrite
+  could modify every linked alias.
 - Registry changes require unload/reload or preset re-activation.
 - Verify effective patch mode and control-token behavior before launch.
 - `POST /alpha` changes only an active LoRA backend; resolve exactly one model
