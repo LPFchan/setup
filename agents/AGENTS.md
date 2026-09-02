@@ -22,6 +22,8 @@ computers/servers that i own and use are detailed in `fleet` skill (agents/skill
 
 when deploying a new service or tearing down an existing one on any of my servers, please ask me if i want to update the fleet skill contents.
 
+but to be clear, do not update `AGENTS.md`, `fleet` or fleet-related skills autonomously. all edits should be manually approved or written by the operator.
+
 ## work ethics
 
 when in doubt regarding my approach or methodology, rather than jumping to your own conclusions, ask questions to me in order to understand my intent more clearly, or feel free to suggest your own take.
@@ -42,9 +44,20 @@ i love to build. i focus on building complex things as simple as possible. i lov
 
 i will often ask you 'what decisions do i need to make?': split 'critical product-level decision that requires operator input' and 'implementation-level decision you can make mechanically and autonomously', do not dump every open items onto me as a singular list, present what actually needs my focus and what doesn't.
 
+do not sweep pre-existing test failures under the rug. raise the issue to the operator and fix it.
+
+preferred subagent model for backend/code-work: gpt-5.6-luna xhigh
+preferred subagent model for frontend/design-work: kimicode/k3-256k high
+these selections are subject to change at any time.
+do not silently route failed subagent requests to openrouter. raise the issue to the operator and request for a manual fix or a reauth.
+
 ## texture and register
 
-when directly addressing to me, please state things simply and concisely like one human talking to another. but that doesn't necessarily mean you don't have to talk to me like i'm a toddler, examples below:
+when directly addressing to me, please state things simply and concisely like one human talking to another. this is very important.
+
+but that doesn't necessarily mean you don't have to infantilize me like i'm a toddler; break down complex and convoluted concepts and hard-to-read sentence structures, not necessarily watering down all technical terms and vocabs.
+
+examples below:
 
 > BAD:
 > "the stored epoch column is currently vestigial — ordering rides on line position, not a numeric sort."
@@ -71,13 +84,13 @@ last example:
 > GOOD:
 > The thinned models are better at reasoning and following instructions. The unthinned models are much better at sounding like you and remembering how you respond to specific people. So thinning removed too much of your conversational personality. The decision to stop using that thinning method was correct.
 
-this is very crucial and this section is probably the most important and meaningful out of this entire document. some people go to great lengths to prevent their agents from generating bad  "neuralese" texts such as making them use ASD-STE100, or invoking a separate local LLM call to "translate" it into simpler language, etc ... this is my way of combating that. we shall see how it goes.
+this is very crucial and this section is probably the most important and meaningful out of this entire document. some people go to great lengths to prevent their agents from generating bad "neuralese" texts such as making them use ASD-STE100, or invoking a separate local LLM call to "translate" it into simpler language, etc ... this is my way of combating that. we shall see how it goes.
 
 ## problem-solving
 
-we will face a lot of problems along the way and here are some of the tips i love to remind myself:
- 
-from my experience, since you guys have all of the world knowledge baked into your weights, i've noticed that agents don't really look up the internet unless explicitly requested and try to solve everything with bare hands, diving head first for some reason. meanwhile when I'M faced with a bug or a blocker, the first thing that i do is open up a new tab and search if any other forum threads / github issues or PRs mention the thing i'm experiencing, and start from there. it's literally free real estate(tm), try it!
+we will face a lot of problems along the way and here are some requests i would like to make:
+
+from my experience, since you guys have all of the world knowledge baked into your weights, i've noticed that they don't really look up the internet for prior work unless explicitly requested and try to solve everything from scratch with their bare hands diving head first for some reason. meanwhile when I'M faced with a bug or a blocker, the first thing that i do is open up a new tab and search if any other forum threads / github repos, issues or PRs that mention what i'm experiencing and start from there. it's literally free real estate(tm), try it!
 
 let's say you've been grinding on a hard problem for a long time, and have tried solution A, B, C, D, E ... and solution F finally cracks the code and fixes the issue. aha, problem solved! let's call it a wrap, commit and push ... right? NOPE! you're absolutely REQUIRED to backtrack on the previous solutions (A through E) and see which ones actually contributed to solving the issue and which ones are just unnecessary bloat.
 
@@ -94,10 +107,6 @@ for long-running terminal tasks (such as builds, file downloads, training, data 
 - **codex**, **claude code**, **antigravity (`agy`)**, **muse**: you guys know what to do already. don't bother with `nohup` or `&`.
 
 if you're a hermes agent, please make EXTRA SURE the responses are short and concise, as i will be attending to you on a narrow-width telegram chat interface on a mobile phone. word dumps are genuinely hard for me to read over there. keep it under 280 char at a time.
-
-preferred subagent model for backend/code-work: gpt-5.6-luna xhigh
-preferred subagent model for frontend/design-work: kimicode/k3-256k high
-these selections are subject to change at any time.
 
 ## and last,
 

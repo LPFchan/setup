@@ -24,7 +24,7 @@ terminal, such as entering an admin password manually.
 
 When requested to deploy a new web service, use cloudflare credentials from vaultwarden MCP to edit DNS records.
 
-## NanoPi R3S LTS — OpenWrt router (LAN gateway)
+## NanoPi R3S LTS — OpenWrt router
 - 10.0.0.1 · user root (SSH pubkey + LuCI creds in vaultwarden)
 - OpenWrt 24.10.2, Rockchip SoC, ~1 GB RAM
 - gateway for the 10.0.0.0/24 LAN (Cloudflare → this → Tailscale)
@@ -56,6 +56,7 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 	- iCloud calendar and mail
 	- all credentials at vaultwarden
 - hosts heatmap at heatmap.lost.plus
+- second RTX 3090 currently vacant due to board-level repair work
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
@@ -67,8 +68,9 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
-- Songbook at okdam.lost.plus (repo `~/okdam-songbook`)
-- MCP servers run here: obsidian/marble, joongna-price-search, tweet-fetch,
-  thinqconnect, vaultwarden, comfyui-mcp
-- gswtools at gsw.lost.plus (repo `~/gswtools`)
-- artmu-bench at artmu.lost.plus (repo `~/artmu-bench`)
+- hosts MCP servers: obsidian/marble, joongna-price-search, tweet-fetch, thinqconnect, vaultwarden, comfyui-mcp
+- hosts lost.plus homepage (repo `~/lost.plus`)
+- hosts Songbook at okdam.lost.plus (repo `~/okdam-songbook`)
+- hosts gswtools at gsw.lost.plus (repo `~/gswtools`)
+- hosts artmu-bench at artmu.lost.plus (repo `~/artmu-bench`)
+- hosts censor at censor.lost.plus (repo `~/censor`)
