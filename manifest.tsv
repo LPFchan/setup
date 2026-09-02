@@ -20,4 +20,5 @@ fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
 agents	~/.agents/AGENTS.md	script	files/agents.sh
 ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh	fleet
+mac-boot	/usr/local/bin/mac-boot	script	files/mac-boot.sh	fleet	darwin
 tmux	~/.tmux.conf	script	files/tmux.sh

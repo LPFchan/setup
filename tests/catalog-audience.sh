@@ -39,11 +39,15 @@ trusted_linux=$(list_for Linux)
     echo "trusted Linux catalog omitted fleet/linux entries" >&2
     exit 1
 }
+[[ "$trusted_linux" != *mac-boot* ]] || {
+    echo "trusted Linux catalog exposed mac-boot" >&2
+    exit 1
+}
 
 # Trusted Darwin: fleet cross-platform stays; linux-only is hidden.
 trusted_darwin=$(list_for Darwin)
-[[ "$trusted_darwin" == *ssh-aliases* ]] || {
-    echo "trusted Darwin catalog omitted cross-platform fleet entry" >&2
+[[ "$trusted_darwin" == *ssh-aliases* && "$trusted_darwin" == *mac-boot* ]] || {
+    echo "trusted Darwin catalog omitted fleet entries" >&2
     exit 1
 }
 [[ "$trusted_darwin" != *kernel-simmer* && "$trusted_darwin" != *backup* \
@@ -58,7 +62,8 @@ printf '%s\n' "$other_key" > "$HOME/.ssh/id_ed25519.pub"
 public_linux=$(list_for Linux)
 public_darwin=$(list_for Darwin)
 for public in "$public_linux" "$public_darwin"; do
-    [[ "$public" != *ssh-aliases* && "$public" != *kernel-simmer* && "$public" != *backup* ]] || {
+    [[ "$public" != *ssh-aliases* && "$public" != *kernel-simmer* && "$public" != *backup* \
+        && "$public" != *mac-boot* ]] || {
         echo "public catalog exposed fleet entries" >&2
         exit 1
     }
