@@ -123,7 +123,7 @@ Usage: mac-boot [status|--help|volume-name]
 Show or change the selected macOS startup volume.
 
   status         Show the selected volume and the other bootable choices.
-  volume-name    Select an exact volume name and open the restart dialog.
+  volume-name    Select an exact volume and restart within 60 seconds.
   -h, --help     Show this help.
 
 Changing the startup volume uses a narrowly scoped passwordless sudo rule.
@@ -165,11 +165,9 @@ else
         *) self=$(command -v -- "$0") ;;
     esac
     /usr/bin/sudo -n "$self" --set-boot "$target_name" || exit
-    echo "Opening the standard macOS restart dialog."
-    /usr/bin/osascript -e 'tell application "loginwindow" to «event aevtrrst»' || {
-        echo "Could not open the restart dialog; restart from the Apple menu when ready." >&2
-        exit 1
-    }
+    echo "Requesting a normal macOS restart so applications can close."
+    /usr/bin/osascript -e 'tell application "System Events" to restart' || \
+        echo "Normal restart request failed; the forced restart remains scheduled." >&2
     exit 0
 fi
 
@@ -182,7 +180,8 @@ selected=$(/usr/sbin/bless --getBoot)
     exit 1
 }
 
-echo "Boot volume set to $target_name."
+/sbin/shutdown -r +60s "mac-boot: rebooting into $target_name" || exit
+echo "Boot volume set to $target_name; forced restart scheduled in 60 seconds."
 EOF
 }
 

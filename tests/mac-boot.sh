@@ -48,10 +48,12 @@ grep -Fq 'APFSVolumeGroupID' "$MAC_BOOT_BIN" \
     || { echo "helper does not validate APFS volume groups" >&2; exit 1; }
 grep -Fq 'APFSSnapshot' "$MAC_BOOT_BIN" \
     || { echo "helper does not exclude APFS snapshots" >&2; exit 1; }
-grep -Fq 'tell application "loginwindow" to «event aevtrrst»' "$MAC_BOOT_BIN" \
-    || { echo "helper does not request the standard macOS restart dialog" >&2; exit 1; }
-if grep -Fq '/sbin/shutdown -r now' "$MAC_BOOT_BIN"; then
-    echo "helper still forces an immediate restart" >&2
+grep -Fq 'tell application "System Events" to restart' "$MAC_BOOT_BIN" \
+    || { echo "helper does not request a normal application-aware restart" >&2; exit 1; }
+grep -Fq '/sbin/shutdown -r +60s' "$MAC_BOOT_BIN" \
+    || { echo "helper does not guarantee a restart after 60 seconds" >&2; exit 1; }
+if grep -Fq 'aevtrrst' "$MAC_BOOT_BIN"; then
+    echo "helper still opens a confirmation dialog" >&2
     exit 1
 fi
 grep -Fq 'target_name="$1"' "$MAC_BOOT_BIN" \
@@ -67,8 +69,8 @@ grep -Fq "printf 'available" "$MAC_BOOT_BIN" \
 mac_boot_help=$("$MAC_BOOT_BIN" --help)
 [[ "$mac_boot_help" == *'mac-boot [status|--help|volume-name]'* ]] \
     || { echo "helper does not document its arguments" >&2; exit 1; }
-[[ "$mac_boot_help" == *'open the restart dialog'* ]] \
-    || { echo "helper help does not describe the graceful restart" >&2; exit 1; }
+[[ "$mac_boot_help" == *'restart within 60 seconds'* ]] \
+    || { echo "helper help does not describe the restart timeout" >&2; exit 1; }
 if grep -Fq 'Audio Work' "$MAC_BOOT_BIN" || grep -Fq 'The Rest' "$MAC_BOOT_BIN"; then
     echo "helper hardcodes this machine's volume names" >&2
     exit 1
