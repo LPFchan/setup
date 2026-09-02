@@ -10,6 +10,13 @@ export XDG_STATE_HOME="$TEST_TMP/state"
 export STATE_DIR="$XDG_STATE_HOME/setup"
 mkdir -p "$HOME/.ssh" "$STATE_DIR"
 
+OWNER_KEYS_FILE="$TEST_TMP/github.keys"
+cat > "$OWNER_KEYS_FILE" <<'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOwnerKeyOne owner-one
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCTestOwnerKeyTwo owner-two
+EOF
+export SETUP_OWNER_KEYS_URL="file://$OWNER_KEYS_FILE"
+
 fail() {
     echo "FAIL: $*" >&2
     exit 1
@@ -60,5 +67,46 @@ self_block=$(SSH_ALIASES_SELF=bingus _build_block)
     || fail "keepalives are missing, so a suspended laptop hangs until the TCP timeout"
 [[ "$grimoire_block" == *'ConnectTimeout 5'* ]] \
     || fail "an unbounded connect stalls reconnects made before Wi-Fi returns"
+
+# Exercise the real managed-block lifecycle without executing setup's command
+# dispatcher.
+export SETUP_SOURCE_ONLY=1
+export LINUX_SETUP_SOURCE_URL="file://$ROOT"
+source "$ROOT/bin/setup"
+source "$ROOT/files/ssh-aliases.sh"
+
+manage_block "$SSH_CONFIG" "$MODULE" "$(_build_block)" "upsert" "append" >/dev/null
+status_output=$(status 2>&1) && fail "missing authorized_keys did not make the module outdated"
+[[ "$status_output" == *'outdated'* ]] \
+    || fail "missing authorized_keys did not report outdated"
+
+printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUnmanagedKey keep-me' > "$HOME/.ssh/authorized_keys"
+install >/dev/null
+
+grep -q '^# >>> setup:ssh-aliases-github-keys >>>$' "$HOME/.ssh/authorized_keys" \
+    || fail "authorized_keys managed block was not installed"
+grep -q 'TestOwnerKeyOne' "$HOME/.ssh/authorized_keys" \
+    || fail "first GitHub owner key was not installed"
+grep -q 'UnmanagedKey' "$HOME/.ssh/authorized_keys" \
+    || fail "an unmanaged authorized key was overwritten"
+[[ "$(stat -f '%Lp' "$HOME/.ssh/authorized_keys" 2>/dev/null || stat -c '%a' "$HOME/.ssh/authorized_keys")" == "600" ]] \
+    || fail "authorized_keys permissions are not 600"
+
+status >/dev/null || fail "freshly installed GitHub owner keys are not current"
+printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOwnerKeyThree owner-three' >> "$OWNER_KEYS_FILE"
+status_output=$(status 2>&1) && fail "a new GitHub owner key did not make the module outdated"
+[[ "$status_output" == *'outdated'* ]] \
+    || fail "changed GitHub owner keys did not report outdated"
+
+update >/dev/null
+grep -q 'TestOwnerKeyThree' "$HOME/.ssh/authorized_keys" \
+    || fail "update did not enroll the new GitHub owner key"
+status >/dev/null || fail "updated GitHub owner keys are not current"
+
+uninstall >/dev/null
+grep -q 'UnmanagedKey' "$HOME/.ssh/authorized_keys" \
+    || fail "uninstall removed an unmanaged authorized key"
+! grep -q 'setup:ssh-aliases-github-keys' "$HOME/.ssh/authorized_keys" \
+    || fail "uninstall left the GitHub owner-key block behind"
 
 echo "ssh aliases tests passed"
