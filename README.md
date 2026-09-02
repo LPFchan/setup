@@ -49,6 +49,8 @@ Setup automatically filters available modules based on your machine:
 1. **Audience Filter:** Compares your public SSH key (`~/.ssh/*.pub`) against the team key list at `https://github.com/LPFchan.keys`. If your key matches, fleet-only modules are made available.
 2. **Platform Filter:** Checks your operating system (`Linux` or `macOS`) and shows only modules that work on your system.
 
+For each online run, setup resolves the repository's `main` branch to one exact commit before fetching module metadata and payloads. This keeps status checks and installs on the same repository snapshot even while GitHub's raw-file caches are refreshing.
+
 ---
 
 ## Modules

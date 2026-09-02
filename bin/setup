@@ -7,6 +7,25 @@ setopt KSH_ARRAYS SH_WORD_SPLIT NO_UNSET PIPE_FAIL
 ORIG_ARGS=("$@")
 
 SOURCE_URL="${LINUX_SETUP_SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}"
+
+# A moving Raw GitHub branch can serve different paths from different cached
+# commits. Resolve main once per process and fetch every repository file from
+# that immutable commit so the manifest, checksums, and payloads agree.
+pin_source_revision() {
+    local ref_json revision
+    [[ -n "${LINUX_SETUP_SOURCE_URL:-}" ]] && return 0
+
+    ref_json=$(curl -fsSL -H 'Cache-Control: no-cache' --connect-timeout 8 --max-time 60 \
+        https://api.github.com/repos/LPFchan/setup/git/ref/heads/main 2>/dev/null) \
+        || return 0
+    revision=$(printf '%s\n' "$ref_json" \
+        | sed -n 's/.*"sha":[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' \
+        | head -1)
+    printf '%s\n' "$revision" | grep -Eq '^[0-9a-f]{40}$' || return 0
+    SOURCE_URL="https://raw.githubusercontent.com/LPFchan/setup/$revision"
+}
+pin_source_revision
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/setup"
 MANIFEST_URL="$SOURCE_URL/manifest.tsv"
 MANIFEST_FILE="$STATE_DIR/manifest.tsv"
@@ -20,11 +39,8 @@ SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring providers b
 USER_SERVICE_MODULES="providers"
 BATCH=0
 
-# SOURCE_URL normally points at a moving GitHub branch.  Raw GitHub caches each
-# path independently, so checksums.tsv and its payload can otherwise describe
-# different commits for up to five minutes.  Revalidate every source fetch so
-# status and install observe one current branch state instead of repeatedly
-# "updating" an already-current file.
+# Cache revalidation remains useful for custom HTTP sources. The default GitHub
+# source is pinned above, so all of its paths are guaranteed to share a commit.
 fetch_source_url() {
     curl -fsSL -H 'Cache-Control: no-cache' --connect-timeout 8 --max-time 60 "$@"
 }
