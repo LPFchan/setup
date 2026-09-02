@@ -123,42 +123,54 @@ Usage: mac-boot [status|--help|volume-name]
 Show or change the selected macOS startup volume.
 
   status         Show the selected volume and the other bootable choices.
-  volume-name    Select an exact volume name and reboot immediately.
+  volume-name    Select an exact volume name and open the restart dialog.
   -h, --help     Show this help.
 
 Changing the startup volume uses a narrowly scoped passwordless sudo rule.
 HELP
 }
 
-[[ "$#" -le 1 ]] || {
-    usage >&2
-    exit 2
-}
-
-case "${1:-status}" in
-    help|-h|--help)
-        usage
-        exit 0
-        ;;
-    status)
-        show_status
-        exit 0
-        ;;
-    "")
+if [[ "$(id -u)" -eq 0 && "$#" -eq 2 && "$1" = --set-boot ]]; then
+    target_name="$2"
+else
+    [[ "$#" -le 1 ]] || {
         usage >&2
         exit 2
-        ;;
-    *)
-        target_name="$1"
-        ;;
-esac
+    }
 
-if [[ "$(id -u)" -ne 0 ]]; then
+    case "${1:-status}" in
+        help|-h|--help)
+            usage
+            exit 0
+            ;;
+        status)
+            show_status
+            exit 0
+            ;;
+        "")
+            usage >&2
+            exit 2
+            ;;
+        *)
+            target_name="$1"
+            ;;
+    esac
+
+    [[ "$(id -u)" -ne 0 ]] || {
+        echo "Run partition switches as your logged-in user, without sudo." >&2
+        exit 2
+    }
     case "$0" in
         /*) self="$0" ;;
         *) self=$(command -v -- "$0") ;;
     esac
-    exec /usr/bin/sudo "$self" "$@"
+    /usr/bin/sudo -n "$self" --set-boot "$target_name" || exit
+    echo "Opening the standard macOS restart dialog."
+    /usr/bin/osascript -e 'tell application "loginwindow" to «event aevtrrst»' || {
+        echo "Could not open the restart dialog; restart from the Apple menu when ready." >&2
+        exit 1
+    }
+    exit 0
 fi
 
 target_device=$(device_for_name "$target_name")
@@ -170,8 +182,7 @@ selected=$(/usr/sbin/bless --getBoot)
     exit 1
 }
 
-echo "Boot volume set to $target_name; rebooting now."
-/sbin/shutdown -r now
+echo "Boot volume set to $target_name."
 EOF
 }
 
