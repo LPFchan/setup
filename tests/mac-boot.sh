@@ -13,20 +13,24 @@ export MAC_BOOT_OWNER="$(id -un)"
 export MAC_BOOT_GROUP="$(id -gn)"
 export MAC_BOOT_SUDO="$TEST_TMP/fake-sudo"
 export MAC_BOOT_VISUDO="$TEST_TMP/fake-visudo"
+export MAC_BOOT_USER="test-user"
 mkdir -p "$HOME" "${MAC_BOOT_BIN:h}" "${MAC_BOOT_SUDOERS:h}"
 
 cat > "$MAC_BOOT_SUDO" <<'EOF'
 #!/bin/sh
-if [ "${1:-}" = -n ]; then shift; fi
+if [ "${1:-}" = -n ]; then
+    shift
+    if [ "${FAKE_SUDO_REJECT_ADMIN:-0}" = 1 ] && [ "${1:-}" = /usr/bin/true ]; then
+        exit 1
+    fi
+fi
 if [ "${1:-}" = -l ]; then exit 0; fi
 if [ "${1:-}" = -v ]; then exit 0; fi
 exec "$@"
 EOF
-cat > "$MAC_BOOT_VISUDO" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-chmod +x "$MAC_BOOT_SUDO" "$MAC_BOOT_VISUDO"
+chmod +x "$MAC_BOOT_SUDO"
+printf '#!/bin/sh\nexit 0\n' > "$MAC_BOOT_VISUDO"
+chmod +x "$MAC_BOOT_VISUDO"
 
 # shellcheck disable=SC1091
 source "$ROOT/lib/script-helpers.sh"
@@ -36,8 +40,8 @@ source "$ROOT/files/mac-boot.sh"
 status >/dev/null 2>&1 && { echo "missing module reported current" >&2; exit 1; }
 install >/dev/null
 status >/dev/null
-grep -Fqx "$(id -un) ALL=(root) NOPASSWD: $MAC_BOOT_BIN *" \
-    "$MAC_BOOT_SUDOERS" || { echo "sudo rule is not exact" >&2; exit 1; }
+grep -Fqx "test-user ALL=(root) NOPASSWD: $MAC_BOOT_BIN *" "$MAC_BOOT_SUDOERS" \
+    || { echo "narrow passwordless sudo rule was not installed" >&2; exit 1; }
 grep -Fq 'diskutil info -plist "$volume_ref"' "$MAC_BOOT_BIN" \
     || { echo "helper does not discover volumes by name" >&2; exit 1; }
 grep -Fq 'APFSVolumeGroupID' "$MAC_BOOT_BIN" \
@@ -48,6 +52,8 @@ grep -Fq '/sbin/shutdown -r now' "$MAC_BOOT_BIN" \
     || { echo "helper does not reboot after selection" >&2; exit 1; }
 grep -Fq 'target_name="$1"' "$MAC_BOOT_BIN" \
     || { echo "helper does not accept literal volume names" >&2; exit 1; }
+grep -Fq 'exec /usr/bin/sudo "$self" "$@"' "$MAC_BOOT_BIN" \
+    || { echo "helper does not self-escalate through sudo" >&2; exit 1; }
 grep -Fq 'diskutil list -plist' "$MAC_BOOT_BIN" \
     || { echo "status does not discover available boot volumes" >&2; exit 1; }
 grep -Fq "printf 'available" "$MAC_BOOT_BIN" \
@@ -64,6 +70,16 @@ fi
 
 printf '\n# drift\n' >> "$MAC_BOOT_BIN"
 status >/dev/null 2>&1 && { echo "modified helper reported current" >&2; exit 1; }
+export SETUP_BATCH=1 FAKE_SUDO_REJECT_ADMIN=1
+if update >/dev/null 2>&1; then
+    echo "batch update did not defer without cached admin authentication" >&2
+    exit 1
+else
+    rc=$?
+fi
+[[ "$rc" -eq 75 ]] || { echo "batch update returned $rc instead of deferred status" >&2; exit 1; }
+status >/dev/null 2>&1 && { echo "deferred update unexpectedly changed the helper" >&2; exit 1; }
+export SETUP_BATCH=0 FAKE_SUDO_REJECT_ADMIN=0
 update >/dev/null
 status >/dev/null
 uninstall >/dev/null

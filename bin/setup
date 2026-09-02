@@ -1177,7 +1177,7 @@ cmd_update_harnesses() {
 
 cmd_update() {
     configure_shell || true
-    local new_count=0 new_names=() failure_count=0 failure_names=() filters=()
+    local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
     local want_modules=1 want_harnesses=0 manifest_input
     # `setup update` covers everything; `setup update harnesses` narrows to the
@@ -1218,11 +1218,24 @@ cmd_update() {
                 current)
                     ;;
                 outdated)
-                    if ! _script_update "$module" "$target" "$source"; then
-                        echo "Warning: $module update failed." >&2
-                        failure_count=$((failure_count + 1))
-                        failure_names+=("$module")
+                    local script_update_rc
+                    if _script_update "$module" "$target" "$source"; then
+                        script_update_rc=0
+                    else
+                        script_update_rc=$?
                     fi
+                    case "$script_update_rc" in
+                        0) ;;
+                        75)
+                            deferred_count=$((deferred_count + 1))
+                            deferred_names+=("$module")
+                            ;;
+                        *)
+                            echo "Warning: $module update failed." >&2
+                            failure_count=$((failure_count + 1))
+                            failure_names+=("$module")
+                            ;;
+                    esac
                     ;;
                 uninstalled)
                     new_count=$((new_count + 1))
@@ -1292,7 +1305,10 @@ cmd_update() {
         fi
         if [[ "$failure_count" -gt 0 ]]; then
             echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
-        elif [[ "$new_count" -eq 0 ]]; then
+        fi
+        if [[ "$deferred_count" -gt 0 ]]; then
+            echo "$deferred_count module(s) need an interactive update: ${deferred_names[*]}"
+        elif [[ "$failure_count" -eq 0 && "$new_count" -eq 0 ]]; then
             echo "All modules up to date."
         fi
     fi
@@ -1414,7 +1430,7 @@ Description=Daily setup update check
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/setup update
+ExecStart=%h/.local/bin/setup --batch update
 "
 
 AUTOUPDATE_TIMER_UNIT="[Unit]
@@ -1453,6 +1469,7 @@ cmd_schedule() {
     <key>ProgramArguments</key>
     <array>
         <string>$script_path</string>
+        <string>--batch</string>
         <string>update</string>
     </array>
     <key>StartCalendarInterval</key>
@@ -2380,6 +2397,13 @@ while (($# > 0)); do
         *) break ;;
     esac
 done
+
+# Scheduled jobs and other headless callers cannot answer password prompts.
+# Treat them as batch runs even when an older schedule omitted --batch.
+if [[ ! -t 0 && ! -t 1 && ! -t 2 ]]; then
+    BATCH=1
+fi
+export SETUP_BATCH="$BATCH"
 
 cmd="${1:-}"
 (( $# > 0 )) && shift

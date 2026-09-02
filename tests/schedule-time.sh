@@ -19,6 +19,8 @@ cmd_schedule > "$TMP/linux-out"
 timer="$HOME/.config/systemd/user/setup-update.timer"
 grep -Fqx 'OnCalendar=*-*-* 06:00:00' "$timer" \
     || fail "Linux timer is not scheduled for 06:00"
+grep -Fqx 'ExecStart=%h/.local/bin/setup --batch update' "$HOME/.config/systemd/user/setup-update.service" \
+    || fail "Linux timer does not use non-interactive update mode"
 grep -q 'scheduled daily at 06:00 (systemd)' "$TMP/linux-out" \
     || fail "Linux schedule output has the wrong time"
 grep -qx -- '--user daemon-reload' "$SYSTEMCTL_CALLS" \
@@ -36,6 +38,8 @@ cmd_schedule > "$TMP/macos-out"
 plist="$HOME/Library/LaunchAgents/com.lost.plus.setup-update.plist"
 grep -q '<key>Hour</key><integer>6</integer>' "$plist" \
     || fail "macOS timer is not scheduled for 06:00"
+grep -A4 '<key>ProgramArguments</key>' "$plist" | grep -q '<string>--batch</string>' \
+    || fail "macOS timer does not use non-interactive update mode"
 grep -q 'scheduled daily at 06:00 (launchd)' "$TMP/macos-out" \
     || fail "macOS schedule output has the wrong time"
 grep -q 'bootstrap gui/501' "$LAUNCHCTL_CALLS" \

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$(uname -s)" != Linux ]]; then
+    echo "system-updates tests skipped (Linux-only module)"
+    exit 0
+fi
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TEST_TMP=$(mktemp -d)
 trap 'rm -rf "$TEST_TMP"' EXIT

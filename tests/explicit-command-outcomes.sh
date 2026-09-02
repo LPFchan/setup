@@ -26,6 +26,18 @@ install_one() { [[ "$1" == ok ]]; }
 if cmd_update fail ok >/dev/null 2>&1; then rc=0; else rc=$?; fi
 [[ $rc -ne 0 ]] || fail "mixed update failure was masked"
 
+# A script module may defer work that needs an interactive administrator
+# prompt. Batch updates report it without failing the scheduled run.
+write_manifest '# module\ttarget\tmode\tsource\ndefer\t~/defer\tscript\tx\n'
+script_status_fields() { printf '%s\toutdated\tupdate available\told\tnew\t1\t\n' "$HOME/defer"; }
+_script_update() { return 75; }
+if output=$(cmd_update defer 2>&1); then rc=0; else rc=$?; fi
+[[ $rc -eq 0 ]] || fail "deferred script update failed the command"
+[[ "$output" == *'1 module(s) need an interactive update: defer'* ]] \
+    || fail "deferred script update was not reported"
+[[ "$output" != *'All modules up to date.'* ]] \
+    || fail "deferred script update was reported as current"
+
 # Explicit enable/disable aggregate, verify convergence, and reject service-ctl.
 SERVICE_MODULES='fail ok service-ctl'
 USER_SERVICE_MODULES='fail ok'

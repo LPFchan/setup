@@ -82,7 +82,8 @@ show_status() {
     disk_index=0
     while [[ "$disk_index" -lt "$disk_count" ]]; do
         disk_identifier=$(/usr/bin/plutil -extract "AllDisks.$disk_index" raw -o - "$disk_list")
-        if load_boot_volume "/dev/$disk_identifier"; then
+        if load_boot_volume "/dev/$disk_identifier" \
+            && [[ "$device_node" != "$current_device" ]]; then
             printf 'available    %-10s %s\n' "${device_node#/dev/}" "$resolved_name"
         fi
         disk_index=$((disk_index + 1))
@@ -97,11 +98,11 @@ Usage: mac-boot [status|--help|volume-name]
 
 Show or change the selected macOS startup volume.
 
-  status         Show the selected volume and every available bootable volume.
+  status         Show the selected volume and the other bootable choices.
   volume-name    Select an exact volume name and reboot immediately.
   -h, --help     Show this help.
 
-Changing the startup volume requires sudo.
+Changing the startup volume uses a narrowly scoped passwordless sudo rule.
 HELP
 }
 
@@ -128,10 +129,13 @@ case "${1:-status}" in
         ;;
 esac
 
-[[ "$(id -u)" -eq 0 ]] || {
-    echo "Run partition switches with sudo." >&2
-    exit 1
-}
+if [[ "$(id -u)" -ne 0 ]]; then
+    case "$0" in
+        /*) self="$0" ;;
+        *) self=$(command -v -- "$0") ;;
+    esac
+    exec /usr/bin/sudo "$self" "$@"
+fi
 
 target_device=$(device_for_name "$target_name")
 
@@ -203,6 +207,11 @@ install() {
 }
 
 update() {
+    if [[ "${SETUP_BATCH:-0}" == 1 && "$(id -u)" -ne 0 ]] \
+        && ! "$MAC_BOOT_SUDO" -n /usr/bin/true 2>/dev/null; then
+        echo "mac-boot: update deferred; run 'setup update mac-boot' in a terminal" >&2
+        return 75
+    fi
     _apply updated
 }
 
@@ -212,15 +221,17 @@ status() {
         return 2
     fi
 
-    local desired desired_command current state
+    local desired desired_command desired_sudoers current current_sudoers state
     desired=$(_desired_hash)
     desired_command=$(_render_command | setup_sha256_string)
     current=$(setup_sha256_string < "$MAC_BOOT_BIN")
+    desired_sudoers=$(_render_sudoers | setup_sha256_string)
+    current_sudoers=$(setup_sha256_string < "$MAC_BOOT_SUDOERS")
     state="current"
     [[ "$current" == "$desired_command" ]] || state="outdated"
     [[ "$(_file_identity "$MAC_BOOT_BIN")" == "$MAC_BOOT_OWNER:$MAC_BOOT_GROUP:755" ]] || state="outdated"
+    [[ "$current_sudoers" == "$desired_sudoers" ]] || state="outdated"
     [[ "$(_file_identity "$MAC_BOOT_SUDOERS")" == "$MAC_BOOT_OWNER:$MAC_BOOT_GROUP:440" ]] || state="outdated"
-    "$MAC_BOOT_SUDO" -n -l "$MAC_BOOT_BIN" "Setup Status Probe" >/dev/null 2>&1 || state="outdated"
 
     if [[ "$state" == "current" ]]; then
         record_script_state "$MODULE" "privileged-files" "$desired" "$desired"
