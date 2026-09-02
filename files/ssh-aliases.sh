@@ -37,7 +37,7 @@ _build_block() {
         printf '    User %s\n' "$user"
         printf '    IdentityFile ~/.ssh/id_ed25519\n'
         if [[ "$host_keys" == "ignore" ]]; then
-            printf '    UserKnownHostsFile none\n'
+            printf '    UserKnownHostsFile /dev/null\n'
             printf '    StrictHostKeyChecking no\n'
         fi
         # Suspending a laptop strands the TCP session; without keepalives the

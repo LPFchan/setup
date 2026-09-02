@@ -26,7 +26,7 @@ mac_block=$(printf '%s\n' "$block" | awk '
     found && /^Host / && $2 != "yeowoolmac" { exit }
     found { print }
 ')
-[[ "$mac_block" == *'UserKnownHostsFile none'* \
+[[ "$mac_block" == *'UserKnownHostsFile /dev/null'* \
    && "$mac_block" == *'StrictHostKeyChecking no'* ]] \
     || fail "Mac mini partition host keys are not ignored"
 bingus_block=$(printf '%s\n' "$block" | awk '
