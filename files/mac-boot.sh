@@ -54,36 +54,38 @@ device_for_name() {
 }
 
 show_status() {
-    current=$(/usr/sbin/bless --getBoot 2>/dev/null || true)
-    for entry in "audio-work|Audio Work" "the-rest|The Rest"; do
-        old_ifs=$IFS
-        IFS='|'
-        set -- $entry
-        IFS=$old_ifs
-        device=$(device_for_name "$2")
-        marker=""
-        [[ "$current" = "$device" ]] && marker=" (selected)"
-        printf '%-12s %-10s %s%s\n' "$1" "${device#/dev/}" "$2" "$marker"
-    done
+    current_device=$(/usr/sbin/bless --getBoot 2>/dev/null) || {
+        echo "Could not determine the selected boot volume." >&2
+        exit 1
+    }
+    info_file=$(mktemp)
+    trap 'rm -f "$info_file"' EXIT
+    /usr/sbin/diskutil info -plist "$current_device" > "$info_file"
+    current_name=$(/usr/bin/plutil -extract VolumeName raw -o - "$info_file")
+    rm -f "$info_file"
+    trap - EXIT
+    printf 'selected     %-10s %s\n' "${current_device#/dev/}" "$current_name"
+}
+
+[[ "$#" -le 1 ]] || {
+    echo "Usage: mac-boot [status|volume-name]" >&2
+    exit 2
 }
 
 case "${1:-status}" in
     status)
         show_status
+        exit 0
         ;;
-    audio-work)
-        target_name="Audio Work"
-        ;;
-    the-rest)
-        target_name="The Rest"
+    "")
+        echo "Usage: mac-boot [status|volume-name]" >&2
+        exit 2
         ;;
     *)
-        echo "Usage: mac-boot [status|audio-work|the-rest]" >&2
-        exit 2
+        target_name="$1"
         ;;
 esac
 
-[[ "${1:-status}" = status ]] && exit 0
 [[ "$(id -u)" -eq 0 ]] || {
     echo "Run partition switches with sudo." >&2
     exit 1
@@ -104,8 +106,7 @@ EOF
 }
 
 _render_sudoers() {
-    printf '%s ALL=(root) NOPASSWD: %s audio-work, %s the-rest\n' \
-        "$MAC_BOOT_USER" "$MAC_BOOT_BIN" "$MAC_BOOT_BIN"
+    printf '%s ALL=(root) NOPASSWD: %s *\n' "$MAC_BOOT_USER" "$MAC_BOOT_BIN"
 }
 
 _desired_hash() {
@@ -177,8 +178,7 @@ status() {
     [[ "$current" == "$desired_command" ]] || state="outdated"
     [[ "$(_file_identity "$MAC_BOOT_BIN")" == "$MAC_BOOT_OWNER:$MAC_BOOT_GROUP:755" ]] || state="outdated"
     [[ "$(_file_identity "$MAC_BOOT_SUDOERS")" == "$MAC_BOOT_OWNER:$MAC_BOOT_GROUP:440" ]] || state="outdated"
-    "$MAC_BOOT_SUDO" -n -l "$MAC_BOOT_BIN" audio-work >/dev/null 2>&1 || state="outdated"
-    "$MAC_BOOT_SUDO" -n -l "$MAC_BOOT_BIN" the-rest >/dev/null 2>&1 || state="outdated"
+    "$MAC_BOOT_SUDO" -n -l "$MAC_BOOT_BIN" "Setup Status Probe" >/dev/null 2>&1 || state="outdated"
 
     if [[ "$state" == "current" ]]; then
         record_script_state "$MODULE" "privileged-files" "$desired" "$desired"

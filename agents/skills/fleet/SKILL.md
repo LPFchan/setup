@@ -62,7 +62,7 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 - mac.lost.plus (10.0.0.52) · user yeowool
 - for sophisticated computer-use tasks: summon codex agent here
 - two partitions: `audio work` and `the rest`. ssh and parsec through mac.lost.plus  should resolve for both partitions, regardless of the logged in status.
-- to switch between two partitions, use `mac-boot status` and `sudo mac-boot (partition name)` (should be passwordless)
+- to switch between partitions, use `mac-boot status`, `sudo mac-boot 'The Rest'`, or `sudo mac-boot 'Audio Work'` (switching should be passwordless)
 
 ## eleven — Fedora 44 laptop (Intel i5-5250U, 8 GB)
 - eleven.tailaa113.ts.net (no static IP) · user yeowool
