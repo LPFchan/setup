@@ -21,8 +21,14 @@ source "$ROOT/lib/script-helpers.sh"
 source "$ROOT/files/ssh-aliases.sh"
 
 block=$(SSH_ALIASES_SELF=not-a-fleet-host _build_block)
-[[ "$block" == $'Host *\n    StrictHostKeyChecking no'* ]] \
-    || fail "changed host keys still stop SSH connections"
+mac_block=$(printf '%s\n' "$block" | awk '
+    /^Host yeowoolmac mac.lost.plus$/ { found=1 }
+    found && /^Host / && $2 != "yeowoolmac" { exit }
+    found { print }
+')
+[[ "$mac_block" == *'UserKnownHostsFile none'* \
+   && "$mac_block" == *'StrictHostKeyChecking no'* ]] \
+    || fail "Mac mini partition host keys are not ignored"
 bingus_block=$(printf '%s\n' "$block" | awk '
     /^Host bingus$/ { found=1 }
     found && /^Host / && $2 != "bingus" { exit }
@@ -41,6 +47,9 @@ grimoire_block=$(printf '%s\n' "$block" | awk '
 ')
 [[ "$grimoire_block" != *'SetEnv TERM='* ]] \
     || fail "TERM fallback leaked to hosts that support tmux-256color"
+[[ "$grimoire_block" != *'UserKnownHostsFile '* \
+   && "$grimoire_block" != *'StrictHostKeyChecking '* ]] \
+    || fail "Mac mini host-key policy leaked to other hosts"
 
 self_block=$(SSH_ALIASES_SELF=bingus _build_block)
 [[ "$self_block" != *'Host bingus'* ]] \

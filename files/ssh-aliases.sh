@@ -11,9 +11,9 @@
 MODULE="ssh-aliases"
 SSH_CONFIG="$HOME/.ssh/config"
 
-# alias | hostname | user | optional TERM fallback
+# alias | hostname | user | optional TERM fallback | optional host-key policy
 FLEET=(
-    "yeowoolmac|mac.lost.plus|yeowool"
+    "yeowoolmac|mac.lost.plus|yeowool||ignore"
     "grimoire|grimoire.lost.plus|yeowool"
     "oci-ubuntu|oci.lost.plus|ubuntu"
     "bingus|bingus.lost.plus|yeowool|xterm-256color"
@@ -23,17 +23,23 @@ FLEET=(
 _self() { echo "${SSH_ALIASES_SELF:-$(hostname -s 2>/dev/null || hostname)}"; }
 
 _build_block() {
-    local self entry alias hn user term
+    local self entry alias hn user term host_keys
     self=$(_self)
-    printf 'Host *\n'
-    printf '    StrictHostKeyChecking no\n'
     for entry in "${FLEET[@]}"; do
-        IFS='|' read -r alias hn user term <<< "$entry"
+        IFS='|' read -r alias hn user term host_keys <<< "$entry"
         [[ "$alias" == "$self" ]] && continue
-        printf 'Host %s\n' "$alias"
+        if [[ "$host_keys" == "ignore" ]]; then
+            printf 'Host %s %s\n' "$alias" "$hn"
+        else
+            printf 'Host %s\n' "$alias"
+        fi
         printf '    HostName %s\n' "$hn"
         printf '    User %s\n' "$user"
         printf '    IdentityFile ~/.ssh/id_ed25519\n'
+        if [[ "$host_keys" == "ignore" ]]; then
+            printf '    UserKnownHostsFile none\n'
+            printf '    StrictHostKeyChecking no\n'
+        fi
         # Suspending a laptop strands the TCP session; without keepalives the
         # client waits out the full TCP timeout before reporting a broken pipe,
         # which is what makes a lid-close look like a hung terminal.
