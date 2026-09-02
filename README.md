@@ -81,7 +81,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
 | `agents` | AI agent instructions and skills (`~/.agents/`, linked to all installed AI harnesses) | `files/agents.sh` |
-| `ssh-aliases` | Manages outbound host shortcuts and keepalives in `~/.ssh/config` | `files/ssh-aliases.sh` |
+| `ssh-aliases` | Manages outbound host shortcuts, keepalives, and permissive host-key checking in `~/.ssh/config` | `files/ssh-aliases.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu) | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
@@ -145,6 +145,8 @@ stanza options below stay in `ssh-aliases`, which owns `~/.ssh/config`.
 - Generated `Host` stanzas still carry `ServerAliveInterval 15` /
   `ServerAliveCountMax 3`, which covers drops with no sleep involved — walking
   out of Wi-Fi range — where there is no clock jump to detect.
+- `StrictHostKeyChecking no` is the default for outbound SSH connections. New
+  keys are recorded, while a changed key warns and connects instead of stopping.
 - It engages only on a plain login: exactly one non-option operand, no remote
   command, and a TTY on both stdin and stdout. `ssh host cmd`, forwarding-only
   sessions, scripts, and agent invocations keep stock behavior. A session that

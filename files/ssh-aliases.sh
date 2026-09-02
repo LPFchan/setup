@@ -25,6 +25,8 @@ _self() { echo "${SSH_ALIASES_SELF:-$(hostname -s 2>/dev/null || hostname)}"; }
 _build_block() {
     local self entry alias hn user term
     self=$(_self)
+    printf 'Host *\n'
+    printf '    StrictHostKeyChecking no\n'
     for entry in "${FLEET[@]}"; do
         IFS='|' read -r alias hn user term <<< "$entry"
         [[ "$alias" == "$self" ]] && continue

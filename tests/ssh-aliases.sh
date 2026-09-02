@@ -21,6 +21,8 @@ source "$ROOT/lib/script-helpers.sh"
 source "$ROOT/files/ssh-aliases.sh"
 
 block=$(SSH_ALIASES_SELF=not-a-fleet-host _build_block)
+[[ "$block" == $'Host *\n    StrictHostKeyChecking no'* ]] \
+    || fail "changed host keys still stop SSH connections"
 bingus_block=$(printf '%s\n' "$block" | awk '
     /^Host bingus$/ { found=1 }
     found && /^Host / && $2 != "bingus" { exit }
