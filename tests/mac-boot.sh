@@ -54,8 +54,10 @@ grep -Fq 'target_name="$1"' "$MAC_BOOT_BIN" \
     || { echo "helper does not accept literal volume names" >&2; exit 1; }
 grep -Fq 'exec /usr/bin/sudo "$self" "$@"' "$MAC_BOOT_BIN" \
     || { echo "helper does not self-escalate through sudo" >&2; exit 1; }
-grep -Fq 'diskutil list -plist' "$MAC_BOOT_BIN" \
-    || { echo "status does not discover available boot volumes" >&2; exit 1; }
+grep -Fq 'diskutil apfs listVolumeGroups -plist' "$MAC_BOOT_BIN" \
+    || { echo "status does not discover APFS system volumes" >&2; exit 1; }
+grep -Fq 'volume_role" = System' "$MAC_BOOT_BIN" \
+    || { echo "status does not exclude APFS data volumes" >&2; exit 1; }
 grep -Fq "printf 'available" "$MAC_BOOT_BIN" \
     || { echo "status does not label available boot volumes" >&2; exit 1; }
 mac_boot_help=$("$MAC_BOOT_BIN" --help)

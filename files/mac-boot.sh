@@ -32,7 +32,6 @@ load_boot_volume() {
         && filesystem=$(/usr/bin/plutil -extract FilesystemType raw -o - "$info_file" 2>/dev/null) \
         && bootable=$(/usr/bin/plutil -extract Bootable raw -o - "$info_file" 2>/dev/null) \
         && internal=$(/usr/bin/plutil -extract Internal raw -o - "$info_file" 2>/dev/null) \
-        && sealed=$(/usr/bin/plutil -extract Sealed raw -o - "$info_file" 2>/dev/null) \
         && snapshot=$(/usr/bin/plutil -extract APFSSnapshot raw -o - "$info_file" 2>/dev/null) \
         && volume_group=$(/usr/bin/plutil -extract APFSVolumeGroupID raw -o - "$info_file" 2>/dev/null) \
         && device_node=$(/usr/bin/plutil -extract DeviceNode raw -o - "$info_file" 2>/dev/null) || {
@@ -45,7 +44,6 @@ load_boot_volume() {
         && "$filesystem" = apfs \
         && "$bootable" = true \
         && "$internal" = true \
-        && "$sealed" = Yes \
         && "$snapshot" = false \
         && -n "$volume_group" \
         && "$device_node" = /dev/disk* ]] || {
@@ -53,9 +51,43 @@ load_boot_volume() {
     }
 }
 
+system_devices() {
+    groups_file=$(mktemp)
+    /usr/sbin/diskutil apfs listVolumeGroups -plist > "$groups_file" 2>/dev/null || {
+        rm -f "$groups_file"
+        return 1
+    }
+
+    container_count=$(/usr/bin/plutil -extract Containers raw -o - "$groups_file")
+    container_index=0
+    while [[ "$container_index" -lt "$container_count" ]]; do
+        group_count=$(/usr/bin/plutil -extract "Containers.$container_index.VolumeGroups" raw -o - "$groups_file")
+        group_index=0
+        while [[ "$group_index" -lt "$group_count" ]]; do
+            volume_count=$(/usr/bin/plutil -extract \
+                "Containers.$container_index.VolumeGroups.$group_index.Volumes" raw -o - "$groups_file")
+            volume_index=0
+            while [[ "$volume_index" -lt "$volume_count" ]]; do
+                volume_path="Containers.$container_index.VolumeGroups.$group_index.Volumes.$volume_index"
+                volume_role=$(/usr/bin/plutil -extract "$volume_path.Role" raw -o - "$groups_file")
+                if [[ "$volume_role" = System ]]; then
+                    volume_device=$(/usr/bin/plutil -extract "$volume_path.DeviceIdentifier" raw -o - "$groups_file")
+                    printf '/dev/%s\n' "$volume_device"
+                fi
+                volume_index=$((volume_index + 1))
+            done
+            group_index=$((group_index + 1))
+        done
+        container_index=$((container_index + 1))
+    done
+    rm -f "$groups_file"
+}
+
 device_for_name() {
     volume_name="$1"
-    load_boot_volume "$volume_name" && [[ "$resolved_name" = "$volume_name" ]] || {
+    load_boot_volume "$volume_name" \
+        && [[ "$resolved_name" = "$volume_name" ]] \
+        && system_devices | /usr/bin/grep -Fx "$device_node" >/dev/null || {
         echo "Could not find a unique internal bootable macOS system volume named $volume_name." >&2
         exit 1
     }
@@ -68,28 +100,20 @@ show_status() {
         echo "Could not determine the selected boot volume." >&2
         exit 1
     }
-    load_boot_volume "$current_device" || {
+    load_boot_volume "$current_device" \
+        && system_devices | /usr/bin/grep -Fx "$current_device" >/dev/null || {
         echo "The selected boot volume is not a valid internal macOS system volume." >&2
         exit 1
     }
     current_name="$resolved_name"
     printf 'selected     %-10s %s\n' "${current_device#/dev/}" "$current_name"
 
-    disk_list=$(mktemp)
-    trap 'rm -f "$disk_list"' EXIT
-    /usr/sbin/diskutil list -plist > "$disk_list"
-    disk_count=$(/usr/bin/plutil -extract AllDisks raw -o - "$disk_list")
-    disk_index=0
-    while [[ "$disk_index" -lt "$disk_count" ]]; do
-        disk_identifier=$(/usr/bin/plutil -extract "AllDisks.$disk_index" raw -o - "$disk_list")
-        if load_boot_volume "/dev/$disk_identifier" \
+    system_devices | while IFS= read -r system_device; do
+        if load_boot_volume "$system_device" \
             && [[ "$device_node" != "$current_device" ]]; then
             printf 'available    %-10s %s\n' "${device_node#/dev/}" "$resolved_name"
         fi
-        disk_index=$((disk_index + 1))
     done
-    rm -f "$disk_list"
-    trap - EXIT
 }
 
 usage() {
@@ -221,17 +245,15 @@ status() {
         return 2
     fi
 
-    local desired desired_command desired_sudoers current current_sudoers state
+    local desired desired_command current state
     desired=$(_desired_hash)
     desired_command=$(_render_command | setup_sha256_string)
     current=$(setup_sha256_string < "$MAC_BOOT_BIN")
-    desired_sudoers=$(_render_sudoers | setup_sha256_string)
-    current_sudoers=$(setup_sha256_string < "$MAC_BOOT_SUDOERS")
     state="current"
     [[ "$current" == "$desired_command" ]] || state="outdated"
     [[ "$(_file_identity "$MAC_BOOT_BIN")" == "$MAC_BOOT_OWNER:$MAC_BOOT_GROUP:755" ]] || state="outdated"
-    [[ "$current_sudoers" == "$desired_sudoers" ]] || state="outdated"
     [[ "$(_file_identity "$MAC_BOOT_SUDOERS")" == "$MAC_BOOT_OWNER:$MAC_BOOT_GROUP:440" ]] || state="outdated"
+    "$MAC_BOOT_SUDO" -n -l "$MAC_BOOT_BIN" "Setup Status Probe" >/dev/null 2>&1 || state="outdated"
 
     if [[ "$state" == "current" ]]; then
         record_script_state "$MODULE" "privileged-files" "$desired" "$desired"
