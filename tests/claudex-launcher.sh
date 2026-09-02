@@ -27,6 +27,12 @@ fi
 EOF
 chmod +x "$CLAUDEX_CORE"
 
+help_output=$(CLAUDEX_REGISTRY="$TEST_TMP/missing-registry.json" "$ROOT/files/claudex" --help)
+[[ "$help_output" == *'Usage: claudex'* ]] || fail "claudex --help did not print usage"
+[[ "$help_output" == *'without loading profile configuration'* ]] \
+    || fail "claudex --help does not work independently of its registry"
+[[ ! -e "$TEST_TMP/core-args" ]] || fail "claudex --help was forwarded to the core"
+
 "$ROOT/files/claudex" --version
 expected=--version
 [[ $(cat "$TEST_TMP/core-args") == "$expected" ]] || fail "ordinary command was not forwarded"

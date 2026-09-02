@@ -20,36 +20,46 @@ _render_command() {
 #!/bin/sh
 set -eu
 
-device_for_name() {
-    volume_name="$1"
+load_boot_volume() {
+    volume_ref="$1"
     info_file=$(mktemp)
-    trap 'rm -f "$info_file"' EXIT
-    /usr/sbin/diskutil info -plist "$volume_name" > "$info_file" 2>/dev/null || {
-        echo "Could not find a unique volume named $volume_name." >&2
-        exit 1
+    /usr/sbin/diskutil info -plist "$volume_ref" > "$info_file" 2>/dev/null || {
+        rm -f "$info_file"
+        return 1
     }
 
-    resolved_name=$(/usr/bin/plutil -extract VolumeName raw -o - "$info_file")
-    filesystem=$(/usr/bin/plutil -extract FilesystemType raw -o - "$info_file")
-    bootable=$(/usr/bin/plutil -extract Bootable raw -o - "$info_file")
-    internal=$(/usr/bin/plutil -extract Internal raw -o - "$info_file")
-    sealed=$(/usr/bin/plutil -extract Sealed raw -o - "$info_file")
-    volume_group=$(/usr/bin/plutil -extract APFSVolumeGroupID raw -o - "$info_file")
-    device_node=$(/usr/bin/plutil -extract DeviceNode raw -o - "$info_file")
+    resolved_name=$(/usr/bin/plutil -extract VolumeName raw -o - "$info_file" 2>/dev/null) \
+        && filesystem=$(/usr/bin/plutil -extract FilesystemType raw -o - "$info_file" 2>/dev/null) \
+        && bootable=$(/usr/bin/plutil -extract Bootable raw -o - "$info_file" 2>/dev/null) \
+        && internal=$(/usr/bin/plutil -extract Internal raw -o - "$info_file" 2>/dev/null) \
+        && sealed=$(/usr/bin/plutil -extract Sealed raw -o - "$info_file" 2>/dev/null) \
+        && snapshot=$(/usr/bin/plutil -extract APFSSnapshot raw -o - "$info_file" 2>/dev/null) \
+        && volume_group=$(/usr/bin/plutil -extract APFSVolumeGroupID raw -o - "$info_file" 2>/dev/null) \
+        && device_node=$(/usr/bin/plutil -extract DeviceNode raw -o - "$info_file" 2>/dev/null) || {
+            rm -f "$info_file"
+            return 1
+        }
+    rm -f "$info_file"
 
-    [[ "$resolved_name" = "$volume_name" \
+    [[ -n "$resolved_name" \
         && "$filesystem" = apfs \
         && "$bootable" = true \
         && "$internal" = true \
         && "$sealed" = Yes \
+        && "$snapshot" = false \
         && -n "$volume_group" \
         && "$device_node" = /dev/disk* ]] || {
-        echo "$volume_name is not a valid internal bootable macOS system volume." >&2
+        return 1
+    }
+}
+
+device_for_name() {
+    volume_name="$1"
+    load_boot_volume "$volume_name" && [[ "$resolved_name" = "$volume_name" ]] || {
+        echo "Could not find a unique internal bootable macOS system volume named $volume_name." >&2
         exit 1
     }
 
-    rm -f "$info_file"
-    trap - EXIT
     printf '%s\n' "$device_node"
 }
 
@@ -58,27 +68,59 @@ show_status() {
         echo "Could not determine the selected boot volume." >&2
         exit 1
     }
-    info_file=$(mktemp)
-    trap 'rm -f "$info_file"' EXIT
-    /usr/sbin/diskutil info -plist "$current_device" > "$info_file"
-    current_name=$(/usr/bin/plutil -extract VolumeName raw -o - "$info_file")
-    rm -f "$info_file"
-    trap - EXIT
+    load_boot_volume "$current_device" || {
+        echo "The selected boot volume is not a valid internal macOS system volume." >&2
+        exit 1
+    }
+    current_name="$resolved_name"
     printf 'selected     %-10s %s\n' "${current_device#/dev/}" "$current_name"
+
+    disk_list=$(mktemp)
+    trap 'rm -f "$disk_list"' EXIT
+    /usr/sbin/diskutil list -plist > "$disk_list"
+    disk_count=$(/usr/bin/plutil -extract AllDisks raw -o - "$disk_list")
+    disk_index=0
+    while [[ "$disk_index" -lt "$disk_count" ]]; do
+        disk_identifier=$(/usr/bin/plutil -extract "AllDisks.$disk_index" raw -o - "$disk_list")
+        if load_boot_volume "/dev/$disk_identifier"; then
+            printf 'available    %-10s %s\n' "${device_node#/dev/}" "$resolved_name"
+        fi
+        disk_index=$((disk_index + 1))
+    done
+    rm -f "$disk_list"
+    trap - EXIT
+}
+
+usage() {
+    cat <<'HELP'
+Usage: mac-boot [status|--help|volume-name]
+
+Show or change the selected macOS startup volume.
+
+  status         Show the selected volume and every available bootable volume.
+  volume-name    Select an exact volume name and reboot immediately.
+  -h, --help     Show this help.
+
+Changing the startup volume requires sudo.
+HELP
 }
 
 [[ "$#" -le 1 ]] || {
-    echo "Usage: mac-boot [status|volume-name]" >&2
+    usage >&2
     exit 2
 }
 
 case "${1:-status}" in
+    help|-h|--help)
+        usage
+        exit 0
+        ;;
     status)
         show_status
         exit 0
         ;;
     "")
-        echo "Usage: mac-boot [status|volume-name]" >&2
+        usage >&2
         exit 2
         ;;
     *)

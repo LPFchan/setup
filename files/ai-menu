@@ -221,10 +221,26 @@ _ai_stamp_recent_dir() {
     return 0
 }
 
+_ai_usage() {
+    cat <<'EOF'
+Usage: ai [enable|disable|--help]
+
+Open the interactive AI, SSH host, and recent-folder launcher.
+
+  enable         Enable automatic launch in new interactive terminals.
+  disable        Disable automatic launch in new interactive terminals.
+  -h, --help     Show this help without opening the launcher.
+EOF
+}
+
 ai() {
     local autolaunch_state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/setup
     local autolaunch_disabled=$autolaunch_state_dir/ai-menu-autolaunch-disabled
     case ${1:-} in
+        help|-h|--help)
+            _ai_usage
+            return 0
+            ;;
         enable)
             rm -f -- $autolaunch_disabled
             echo "ai-menu: auto-launch enabled"

@@ -55,6 +55,15 @@ run_ai() {
         "$zsh_bin" -f -c 'source "$1"; shift; ai "$@"' zsh "$PAYLOAD_TARGET" "$@" >/dev/null 2>&1
 }
 
+ai_help=$(PATH="$TEST_TMP/bin:/usr/bin:/bin" \
+    "$zsh_bin" -f -c 'source "$1"; ai --help' zsh "$PAYLOAD_TARGET")
+[[ "$ai_help" == *'Usage: ai [enable|disable|--help]'* ]] \
+    || fail "ai --help did not document its arguments"
+[[ "$ai_help" == *'without opening the launcher'* ]] \
+    || fail "ai --help did not explain its non-interactive behavior"
+[[ ! -e "$TEST_TMP/launches" ]] \
+    || fail "ai --help opened the interactive launcher"
+
 block_hash_before=$(_state_hash)
 run_ai disable
 [[ -e "$STATE_DIR/ai-menu-autolaunch-disabled" ]] \

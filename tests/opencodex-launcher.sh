@@ -60,6 +60,11 @@ PY
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+help_output=$(OPENCODEX_REGISTRY="$TEST_TMP/missing-registry.json" "$ROOT/files/opencodex" --help)
+[[ "$help_output" == *'Usage: opencodex'* ]] || fail "opencodex --help did not print usage"
+[[ "$help_output" == *'without loading provider configuration'* ]] \
+    || fail "opencodex --help does not work independently of its registry"
+
 cat > "$OPENCODEX_BIN" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in

@@ -82,12 +82,14 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
 | `agents` | AI agent instructions and skills (`~/.agents/`, linked to all installed AI harnesses) | `files/agents.sh` |
 | `ssh-aliases` | Manages outbound host shortcuts in `~/.ssh/config` and syncs the owner's GitHub keys into a preserved block in `~/.ssh/authorized_keys` | `files/ssh-aliases.sh` |
-| `mac-boot` | Fleet-only macOS boot-volume switcher that accepts exact volume names, with passwordless switching through a narrowly scoped sudo rule | `files/mac-boot.sh` |
-| `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu) | `files/ai-menu.sh` |
+| `mac-boot` | Fleet-only macOS boot-volume switcher whose status shows the selected volume and every available bootable macOS volume; accepts exact volume names with passwordless switching through a narrowly scoped sudo rule | `files/mac-boot.sh` |
+| `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
 | `providers` | Vault-owned provider API keys: enrollment, local cache, and mirrors into opencode `auth.json`, `.zshenv`, and Hermes `~/.hermes/config.yaml` (live model discovery where available; registry-owned model lists for compatible endpoints without `/models`) (`~/.local/bin/providers`) | `files/providers.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
+
+Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
 
 ---
 

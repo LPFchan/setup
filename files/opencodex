@@ -2129,7 +2129,24 @@ def render_catalogue(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def print_help() -> None:
+    print(
+        """Usage: opencodex [list [--provider NAME] [--json] | run <provider> [options] | --help]
+
+Open the interactive provider, model, effort, and harness launcher.
+
+  list [--provider NAME] [--json]  List launchable models and capabilities.
+  run <provider> [options]          Launch an exact provider/model selection.
+  -h, --help                        Show this help without loading provider configuration.
+
+Other arguments are forwarded to ocx."""
+    )
+
+
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] in ("--help", "-h", "help"):
+        print_help()
+        return 0
     if len(sys.argv) >= 2 and sys.argv[1].startswith("__"):
         command = sys.argv[1]
         if command == "__validate":
