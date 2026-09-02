@@ -8,7 +8,7 @@ argument-hint: "the change to make (optional — defaults to the work already re
 
 Other agents are working in this checkout concurrently. Treat it as read-only:
 mint your own worktree in a temporary location, do the work there, merge onto
-main, purge the worktree.
+main, purge the worktree when you're done with the work.
 
 1. Resolve the real default branch and the repo root. Not a git repo, or no
    worktree support? Stop — don't fall back to the shared checkout.
@@ -23,17 +23,7 @@ main, purge the worktree.
 4. Rebase onto the base tip. If main moved while you worked, resolve the
    conflict the correct way — in your tree, where it costs nobody else. Then
    land it with `git merge --ff-only` in the shared checkout, and push.
-5. `git worktree remove`, `git branch -d`, `git worktree prune`. Confirm with
-   `git worktree list`.
-
-The safe variants are load-bearing. `--ff-only` refuses rather than clobber
-another agent's uncommitted edits; `worktree remove` and `branch -d` refuse to
-discard unmerged work. A refusal means work you were about to destroy: report
-the collision and leave the branch intact. Never force, stash, or checkout over
-someone else's files.
-
-Creating a branch normally needs the operator to ask. Invoking this skill is
-that ask — a worktree can't share a checked-out branch — and step 5 deletes it.
+5. make sure to `git worktree remove`, `git branch -d`, `git worktree prune`. Confirm with `git worktree list`.
 
 Your tree starts from committed history, so another agent's in-progress edits
 aren't in it. If the work genuinely depends on them, say so and wait.
