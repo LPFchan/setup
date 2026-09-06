@@ -227,6 +227,110 @@ may not have it — pass it inline as above when unsure.
 - First `page_info()` right after `new_tab()` on an about:blank tab can
   throw a null `scrollWidth` error; call `goto_url(url)` + `wait_for_load()`
   and retry — the tab is fine.
-- On hosts without the service (oci-ubuntu), either install Chrome +
-  an equivalent user service, or use `browser-use auth login` cloud
-  browsers; don't try to drive a GUI browser that isn't there.
+- On hosts without the service (oci-ubuntu), either install Chrome + an
+  equivalent user service, or use `browser-use auth login` cloud browsers;
+  don't try to drive a GUI browser that isn't there.
+
+## Extensions in the headless Chrome (grimoire, verified 2026-09)
+
+Branded Chrome 137+ ignores `--load-extension` (and the
+`--disable-features=DisableLoadExtensionCommandLineSwitch` override died in
+Chrome 142). Working path on branded Chrome: chromedriver BiDi
+`webExtension.install`. Chrome keeps its fingerprint; no Chrome-for-Testing
+needed (operator prefers branded — CFT can be flagged as bot traffic).
+
+### One-time service prep
+
+The service needs `--enable-unsafe-extension-debugging` added to
+`ExecStart` (it's already on grimoire's unit as of 2026-09):
+
+```bash
+systemctl --user cat browser-use-chrome   # confirm the flag is present
+```
+
+### Install an extension
+
+Extensions live unpacked in `~/.local/share/browser-use/extensions/<name>/`.
+To get one from the Web Store, download the CRX and strip its header:
+
+```bash
+curl -sL -o ext.crx "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=$(google-chrome --version | grep -oP '\\d+[.]\\d+[.]\\d+[.]\\d+')&acceptformat=crx2,crx3&x=id%3D<EXT_ID>%26uc"
+python3 -c "d=open('ext.crx','rb').read(); open('ext.zip','wb').write(d[d.find(b'PK\\x03\\x04'):])"
+mkdir -p ~/.local/share/browser-use/extensions/<name> && unzip -oq ext.zip -d ~/.local/share/browser-use/extensions/<name>
+```
+
+Then install via chromedriver's BiDi endpoint (chromedriver version must
+match Chrome; lives at `~/opt/chromedriver/chromedriver-linux64/chromedriver`,
+run with `--port=9515` in background if not running). It attaches to the
+ALREADY-RUNNING Chrome via `debuggerAddress` — it does not relaunch it:
+
+```python
+# pip: websockets
+import json, urllib.request, http.client, asyncio, websockets
+
+async def main():
+    body = json.dumps({"capabilities": {"alwaysMatch": {
+        "browserName": "chrome", "unhandledPromptBehavior": "accept",
+        "goog:chromeOptions": {"debuggerAddress": "127.0.0.1:9223"},
+        "webSocketUrl": True}}})
+    conn = http.client.HTTPConnection("127.0.0.1", 9515)
+    conn.request("POST", "/session", body, {"Content-Type": "application/json"})
+    val = json.loads(conn.getresponse().read())["value"]
+    ws_url = val["capabilities"]["webSocketUrl"]
+    async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+        await ws.send(json.dumps({"id": 1, "method": "webExtension.install",
+            "params": {"extensionData": {"type": "path",
+                       "path": "/home/yeowool/.local/share/browser-use/extensions/<name>"}}}))
+        async for msg in ws:
+            m = json.loads(msg)
+            if m.get("id") == 1:
+                print(m)  # {result:{extension:"<id>"}} on success
+                break
+
+asyncio.run(main())
+```
+
+Param shape matters: `extensionData: {type:'path', path: ...}` — a bare
+`extensionPath` gives "Invalid input in extensionData", and base64/archived
+is rejected ("Archived and Base64 extensions are not supported").
+
+### Using an installed extension
+
+MV3 service workers go idle after ~30s and a CDP connect does NOT wake them.
+Re-running the same install (same path) updates in place, keeps the same
+extension id, and restarts the SW — do that right before driving it. Then
+attach to the SW target and evaluate as usual.
+
+### Uninstall
+
+chromedriver BiDi has no uninstall command. To remove one: stop the service,
+remove the extension's key from
+`~/.local/state/browser-use/chromium/Default/Preferences`
+(`extensions.settings["<id>"]`), delete its dir in
+`Default/Extensions/<id>`, and start the service again. Note the unpacked
+source stays in `~/.local/share/browser-use/extensions/<name>/` — delete that
+too if you don't plan to reinstall.
+
+
+### Triggering extensions programmatically (SingleFile example)
+
+The content script does NOT respond to `content.save` via
+`chrome.tabs.sendMessage` (that handler belongs to the popup). SingleFile's
+supported automation path is `runtime.onMessageExternal`: its background
+listens for the string `"save-page"` (also `edit-and-save-page`,
+`save-selected-tabs`, ...) and saves the active tab. Its manifest doesn't
+declare `externally_connectable`, so patch it once:
+
+```bash
+python3 -c "import json; p='$HOME/.local/share/browser-use/extensions/singlefile/manifest.json'; m=json.load(open(p)); m['externally_connectable']={'ids':['*']}; json.dump(m, open(p,'w'), indent=2)"
+```
+
+Then reinstall (per "Using" above) to reload it. A tiny helper extension
+(`save-trigger`, installed the same way) whose SW calls
+`chrome.runtime.sendMessage('<sf-id>', 'save-page')` fires the save; the
+file lands in `~/Downloads/`. Verified end-to-end on example.com.
+
+Helper scripts from the 2026-09-06 session may still be on grimoire's /tmp
+(`reinstall4.py`, `e2e2.py`, `cd_attach.py`) but /tmp doesn't survive
+reboots — treat this section as the canonical recipe.
+
