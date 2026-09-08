@@ -23,7 +23,9 @@ set -g allow-passthrough on
 # advertise support; csi-u encodes them unambiguously (Tab vs Ctrl-I,
 # Enter vs Ctrl-M), which TUIs like Kimi Code expect.
 set -g extended-keys always
+%if "#{>=:#{version},3.5}"
 set -g extended-keys-format csi-u
+%endif
 # Fixed array indexes keep repeated `source-file` reloads idempotent. The tmux
 # pattern covers nested fleet sessions whose outer terminal is another tmux.
 set -s terminal-features[90] "xterm*:RGB"

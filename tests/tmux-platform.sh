@@ -34,6 +34,9 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux panes do not advertise truecolor to applications"
 [[ "$BLOCK_CONTENT" == *'set-environment -g CLAUDE_CODE_TMUX_TRUECOLOR 1'* ]] \
     || fail "Claude Code is not allowed to render truecolor inside tmux"
+[[ "$BLOCK_CONTENT" == *'%if "#{>=:#{version},3.5}"'* \
+   && "$BLOCK_CONTENT" == *'set -g extended-keys-format csi-u'* ]] \
+    || fail "tmux extended key format is not guarded for versions before 3.5"
 [[ "$BLOCK_CONTENT" == *'bind c new-window -c ~'* ]] \
     || fail "tmux prefix-c does not create windows in home"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}"'* ]] \

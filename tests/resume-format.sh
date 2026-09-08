@@ -78,6 +78,28 @@ row=$(cat "$TEST_TMP/fzf-input")
 [[ "$row" != *"Programmatic Codex run"* ]] \
     || { echo "FAIL: resume included a programmatic Codex exec session" >&2; exit 1; }
 
+jq_bin=$(command -v jq)
+rm -f "$FAKE_BIN/fzf"
+ln -s "$jq_bin" "$FAKE_BIN/jq"
+cat > "$FAKE_BIN/fzf-multicolumn" <<'EOF'
+#!/usr/bin/env bash
+touch "$TEST_TMP/fzf-multicolumn-started"
+cat >/dev/null
+exit 130
+EOF
+chmod +x "$FAKE_BIN/fzf-multicolumn"
+rm -f "$TEST_TMP/stderr" "$TEST_TMP/unexpected-dispatch"
+
+if ! PATH="$FAKE_BIN:/usr/bin:/bin" "$ROOT/files/resume" >"$TEST_TMP/stdout" 2>"$TEST_TMP/stderr"; then
+    echo "FAIL: fzf-multicolumn cancellation should exit successfully" >&2
+    exit 1
+fi
+[[ -e "$TEST_TMP/fzf-multicolumn-started" ]] \
+    || { echo "FAIL: resume did not fall back to fzf-multicolumn" >&2; exit 1; }
+[[ ! -s "$TEST_TMP/stdout" && ! -s "$TEST_TMP/stderr" ]] \
+    || { echo "FAIL: fzf-multicolumn cancellation produced output" >&2; exit 1; }
+rm -f "$FAKE_BIN/fzf-multicolumn" "$FAKE_BIN/jq"
+
 cat > "$FAKE_BIN/fzf" <<'EOF'
 #!/usr/bin/env bash
 cat >/dev/null

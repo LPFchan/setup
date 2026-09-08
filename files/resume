@@ -11,9 +11,9 @@ Usage: resume [--help]
 
   Interactively pick and resume a Claude Code, Codex, OpenCode,
   Antigravity CLI, ForgeCode, Hermes, Grok Build, Kimi Code, or
-  Muse Code session via fzf.
+  Muse Code session via fzf or fzf-multicolumn.
 
-  Without arguments, opens an fzf picker of recent sessions. Selecting
+  Without arguments, opens a picker of recent sessions. Selecting
   a session resumes it with the appropriate tool.
 
   help    Show this message
@@ -611,8 +611,17 @@ format_for_fzf() {
     done
 }
 
+if command -v fzf >/dev/null 2>&1; then
+    picker=fzf
+elif command -v fzf-multicolumn >/dev/null 2>&1; then
+    picker=fzf-multicolumn
+else
+    echo "resume: requires fzf or fzf-multicolumn" >&2
+    exit 127
+fi
+
 picker_status=0
-if selected=$(fzf --no-sort \
+if selected=$("$picker" --no-sort \
         --reverse \
         --height=50% \
         --min-height=8 \

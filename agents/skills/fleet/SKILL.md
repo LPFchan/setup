@@ -35,7 +35,7 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 - active repos in ~/Documents/
 
 ## mangchi — NVIDIA Jetson AGX Thor (T5000)
-- mangchi.tailaa113.ts.net · user yeowool
+- mangchi.lost.plus (10.0.0.53) · user yeowool
 - Ubuntu 24.04 with JetPack 7.2.1 BSP; 128 GB unified memory
 - preferred training and inference host
 
