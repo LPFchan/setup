@@ -20,8 +20,8 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 m._is_macos = lambda: False
 m.subprocess.run = lambda *a, **k: type('R', (), {'returncode': 0, 'stderr': b''})()
-sys.argv = [path, 'timer', 'enable']
-m.cmd_timer_enable()
+sys.argv = [path, 'schedule']
+m.cmd_schedule_enable()
 service_path = os.path.join(m.SERVICE_DIR, 'providers.service')
 with open(service_path) as f:
     service_unit = f.read()
@@ -60,7 +60,7 @@ run_driver() {
 
 AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1 || true
 [[ -e "$marker" ]] || { echo "failed provider setup removed retry marker" >&2; exit 1; }
-[[ $(cat "$TMP/auth.log") == auth ]] || { echo "provider setup did not call providers auth" >&2; exit 1; }
+[[ $(cat "$TMP/auth.log") == add ]] || { echo "provider setup did not call providers add" >&2; exit 1; }
 
 AUTH_LOG="$TMP/auth.log" AUTH_RC=0 run_driver >/dev/null 2>&1
 [[ ! -e "$marker" ]] || { echo "successful provider setup kept retry marker" >&2; exit 1; }

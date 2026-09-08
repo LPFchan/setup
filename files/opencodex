@@ -867,7 +867,7 @@ def provider_capability_view(timeout: float = 1.5) -> dict[str, Any]:
     """
     try:
         result = subprocess.run(
-            [str(PROVIDERS_BIN), "capabilities", "show", "--json"],
+            [str(PROVIDERS_BIN), "capabilities", "--json"],
             capture_output=True,
             text=True,
             timeout=timeout,

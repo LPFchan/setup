@@ -100,7 +100,7 @@ module_enable_cmd() {
         service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin enable --all" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin service-ctl); echo "$bin enable $1" ;;
-        providers)     bin=$(_resolve_bin providers); echo "$bin enable" ;;
+        providers)     bin=$(_resolve_bin providers); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
     esac
@@ -113,7 +113,7 @@ module_disable_cmd() {
         service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin disable --all" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin service-ctl); echo "$bin disable $1" ;;
-        providers)     bin=$(_resolve_bin providers); echo "$bin disable" ;;
+        providers)     bin=$(_resolve_bin providers); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
     esac
@@ -2390,14 +2390,14 @@ _post_providers_setup() {
     if [[ -t 1 && -r /dev/tty ]]; then
         echo
         echo "Choose which providers to configure; blank keys stay disabled."
-        if "$providers_bin" auth </dev/tty >/dev/tty 2>&1; then
+        if "$providers_bin" add </dev/tty >/dev/tty 2>&1; then
             rm -f "$marker"
             return 0
         fi
         echo "Warning: providers provider setup failed; it will be offered again." >&2
         return 1
     fi
-    echo "Warning: providers provider setup is pending. Run '$providers_bin auth' to choose providers." >&2
+    echo "Warning: providers provider setup is pending. Run '$providers_bin add' to enroll providers." >&2
     return 1
 }
 

@@ -136,7 +136,7 @@ EOF
 chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/kimi" "$TEST_TMP/fzf"
 cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' 'capabilities show --json' >> "$TEST_TMP/providers-calls"
+printf '%s\n' 'capabilities --json' >> "$TEST_TMP/providers-calls"
 printf '%s\n' '{"version":1,"providers":{}}'
 EOF
 chmod +x "$OPENCODEX_PROVIDERS_BIN"
@@ -233,7 +233,7 @@ grep -q 'unknown reasoning effort: native-unsupported' "$TEST_TMP/native-effort-
     || fail "unsupported native effort did not produce a clear error"
 cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' 'capabilities show --json' >> "$TEST_TMP/providers-calls"
+printf '%s\n' 'capabilities --json' >> "$TEST_TMP/providers-calls"
 printf '%s\n' '{"version":1,"providers":{}}'
 EOF
 chmod +x "$OPENCODEX_PROVIDERS_BIN"

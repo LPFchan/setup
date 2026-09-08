@@ -350,14 +350,14 @@ assert fp_a == fp_b
 import contextlib, io
 cap_output = io.StringIO()
 with contextlib.redirect_stdout(cap_output):
-    m.cmd_capabilities(['show', '--provider', 'openrouter',
+    m.cmd_capabilities(['--provider', 'openrouter',
                         '--model', 'openrouter/native-reasoning', '--json'])
 view = json.loads(cap_output.getvalue())
 assert list(view['providers']) == ['openrouter']
 assert list(view['providers']['openrouter']['models']) == ['openrouter/native-reasoning']
 assert 'secret' not in cap_output.getvalue()
 subprocess_result = __import__('subprocess').run(
-    [sys.executable, path, 'capabilities', 'show', '--provider', 'openrouter',
+    [sys.executable, path, 'capabilities', '--provider', 'openrouter',
      '--model', 'openrouter/native-reasoning', '--json'],
     text=True, capture_output=True, check=True,
 )
@@ -410,12 +410,15 @@ with open(refresh_registry, 'w') as handle:
 m.cache_set('demo', 'refresh-secret-token')
 refresh_env = os.environ.copy()
 refresh_env['PROVIDERS_REGISTRY'] = refresh_registry
-refresh_command = [sys.executable, path, 'capabilities', 'refresh',
-                   '--provider', 'demo', '--model', 'refresh-model', '--json']
+refresh_command = [sys.executable, path, 'refresh', 'demo']
+show_command = [sys.executable, path, 'capabilities',
+                '--provider', 'demo', '--model', 'refresh-model', '--json']
 first_refresh = __import__('subprocess').run(
     refresh_command, env=refresh_env, text=True, capture_output=True, check=True)
 assert CapabilityHandler.calls == 1, CapabilityHandler.calls
-refresh_view = json.loads(first_refresh.stdout)
+first_show = __import__('subprocess').run(
+    show_command, env=refresh_env, text=True, capture_output=True, check=True)
+refresh_view = json.loads(first_show.stdout)
 refresh_record = refresh_view['providers']['demo']['models']['refresh-model']
 assert refresh_record['reasoning']['supported_efforts'] == ['native-low', 'native-high']
 assert refresh_record['context'] == 64000 and refresh_record['output'] == 4000
@@ -425,8 +428,7 @@ assert 'refresh-secret-token' not in first_refresh.stderr
 capability_bytes_before_failed_refresh = open('$HOME/.config/providers/capabilities.json', 'rb').read()
 CapabilityHandler.empty = True
 failed_refresh = __import__('subprocess').run(
-    refresh_command, env=refresh_env, text=True, capture_output=True)
-assert failed_refresh.returncode != 0
+    refresh_command, env=refresh_env, text=True, capture_output=True, check=True)
 assert CapabilityHandler.calls == 2, CapabilityHandler.calls
 assert open('$HOME/.config/providers/capabilities.json', 'rb').read() == capability_bytes_before_failed_refresh
 server.shutdown()
@@ -485,7 +487,7 @@ assert 'foreign' in opencode['provider']
 real_refresh_server = m.refresh_server  # restored for the mirror assertions
 seen = []
 m.refresh_server = lambda name, cfg: seen.append(name) or True
-sys.argv = [path]
+sys.argv = [path, 'refresh']
 m.main()
 assert seen == ['demo'], seen
 
@@ -655,34 +657,29 @@ assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
 assert m._set_provider_enabled('demo', True)
 assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is True
 
-sys.argv = [path, 'auth', 'unused', 'unused-key']
-m.cmd_auth()
+m._set_key(m._auth_provider('unused', servers['unused']), 'unused-key')
+m._set_provider_enabled('unused', True)
 assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
 assert m.load_json(m.OPENCODE_PATH)['disabled_providers'] == ['foreign-disabled']
 
-sys.argv = [path, 'unused']
+sys.argv = [path, 'refresh', 'unused']
 m.refresh_server = lambda name, cfg: seen.append(name) or True
 m.main()
 assert seen[-1] == 'unused'
 
-import builtins
-builtins.input = lambda prompt='': 'grimoire'
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 try:
-    m._add_provider()
+    m._add_provider('grimoire', 'https://wrong-endpoint.invalid/v1', 'k')
 except ValueError as exc:
-    assert 'unique' in str(exc)
+    assert 'already registered' in str(exc)
 else:
-    raise AssertionError('provider add allowed a collision with a registry provider')
+    raise AssertionError('provider add allowed an endpoint override on a registry provider')
 
 m.REGISTRY_PATH = fixture_registry
-answers = iter(['added', 'https://added.invalid/v1', 'y'])
-builtins.input = lambda prompt='': next(answers)
-m.getpass.getpass = lambda prompt='': 'secret-token'
 m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
 captured = {}
 m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
-m._add_provider()
+m._add_provider('added', 'https://added.invalid/v1', 'secret-token')
 assert captured['provider']['name'] == 'added'
 assert set(captured['provider']) == {
     'name', 'provider_type', 'base_url', 'auth', 'enabled', 'api_format', 'npm'
@@ -691,12 +688,10 @@ assert captured['token'] == 'secret-token'
 
 # Agents can add a provider directly without any prompts. The endpoint is
 # normalized before it is published, and the token is never printed.
-answers = iter(['static', 'https://static.invalid/v1', '@vendor/static', 'y'])
-builtins.input = lambda prompt='': next(answers)
 m.fetch_models = lambda base, auth: None
 captured = {}
 m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
-m._add_provider()
+m._add_provider('static', 'https://static.invalid/v1', 'secret-token', '@vendor/static')
 assert captured['provider']['models'] == [{'id': '@vendor/static'}]
 assert captured['token'] == 'secret-token'
 
@@ -728,36 +723,37 @@ with contextlib.redirect_stdout(add_output):
     m.main()
 assert captured['provider']['models'] == [{'id': '@vendor/static'}]
 
-timer_output = io.StringIO()
+schedule_output = io.StringIO()
 m._is_macos = lambda: True
-with contextlib.redirect_stdout(timer_output):
-    m.cmd_timer_status()
-assert timer_output.getvalue().strip() == 'timer: not installed'
+with contextlib.redirect_stdout(schedule_output):
+    m.cmd_schedule_status()
+assert schedule_output.getvalue().strip() == 'schedule: not installed'
 
-# The command tree is explicit: provider state and timer control are separate
-# branches, and the former nested namespace plus argument-less timer commands
-# are rejected.
+# The command tree is explicit: provider state and schedule control are
+# separate branches, and removed or malformed forms are rejected.
 dispatch = []
 m._set_provider_enabled = lambda name, enabled: dispatch.append((name, enabled)) or True
-m.cmd_timer_enable = lambda: dispatch.append(('timer', 'enable'))
-m.cmd_timer_disable = lambda: dispatch.append(('timer', 'disable'))
-m.cmd_timer_status = lambda: dispatch.append(('timer', 'status'))
+m.cmd_schedule_enable = lambda: dispatch.append(('schedule', 'enable'))
+m.cmd_schedule_disable = lambda: dispatch.append(('schedule', 'disable'))
+m.cmd_schedule_status = lambda: dispatch.append(('schedule', 'status'))
 for argv in ([path, 'enable', 'demo'], [path, 'disable', 'demo'],
-             [path, 'timer', 'enable'], [path, 'timer', 'disable'],
-             [path, 'timer', 'status']):
+             [path, 'schedule'], [path, 'schedule', 'disable'],
+             [path, 'schedule', 'status']):
     sys.argv = argv
     m.main()
 assert dispatch == [
-    ('demo', True), ('demo', False), ('timer', 'enable'),
-    ('timer', 'disable'), ('timer', 'status')
+    ('demo', True), ('demo', False), ('schedule', 'enable'),
+    ('schedule', 'disable'), ('schedule', 'status')
 ]
-for argv in ([path, 'provider', 'add'], [path, 'add', 'only-name'], [path, 'enable'],
-             [path, 'disable'], [path, 'status']):
+for argv in ([path, 'timer'], [path, 'auth'], [path, 'sync'], [path, 'audit'],
+             [path, 'rename'], [path, 'ls'], [path, '--list'],
+             [path, 'add', 'only-name'], [path, 'enable'], [path, 'disable'],
+             [path, 'schedule', 'bogus'], [path, 'unused']):
     sys.argv = argv
     try:
         m.main()
     except SystemExit as exc:
-        assert exc.code == 1
+        assert exc.code == 1, argv
     else:
         raise AssertionError(f'removed command form was accepted: {argv}')
 

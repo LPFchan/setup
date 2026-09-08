@@ -10,26 +10,20 @@ credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi-based
 tools such as Miniharness.
 
 Commands:
-  (no args)                    Refresh model lists for all enabled providers
-  <provider>                   Refresh model list for one enabled provider
-  --list                       List configured provider names
-  auth                         Interactive API key enrollment (prompts per provider)
-  auth <provider> <key>        Write key directly (agent-friendly)
-  ls                           List providers and enrollment status (never the key)
-  timer enable                 Install the hourly systemd/launchd timer
-  timer disable                Remove the hourly timer
-  timer status                 Show timer state and next run
-  sync                         vault -> cache -> opencode auth.json -> .zshenv
-  capabilities show ... --json Read the last-known-good model capability cache
-  capabilities refresh ... --json
-                               Refresh model capabilities once, then print JSON
-  audit                        List vault llm items, flag non-conforming names
-  rename [--dry-run|--apply]   Enforce the C1 naming convention on vault items
-  add                          Add a provider interactively
-  add <provider> <url> <key> [model]
-                               Add directly; model is required without /models
-  enable <provider>            Enable a provider that has an API key
-  disable <provider>           Disable a provider without deleting its key
+  (no args)                    List providers and key status (never the key)
+  list [--names]               Same listing; --names prints bare names
+  add <name> <url> [key] [model]
+                               Enroll a provider and its API key in one step;
+                               key goes to the vault; model is required when
+                               the endpoint does not expose /models
+  enable <name>                Enable a provider that has an API key
+  disable <name>               Disable a provider without deleting its key
+  refresh [name]               Sync keys, then refresh model lists
+                               (all enabled providers if name is omitted)
+  capabilities [--provider P] [--model M] [--json]
+                               Read the last-known-good capability cache
+  schedule [disable|status]    Hourly background refresh (bare: install it)
+  help                         Show usage
 """
 
 import contextlib, datetime, getpass, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
@@ -190,6 +184,49 @@ class VaultError(RuntimeError):
 
 def vault_available():
     return bool(VAULT_TOKEN)
+
+
+def _persist_vault_token(token):
+    """Persist the vault token so later runs (timer included) can reach the
+    vault. The env mirror owns the .zshenv api-keys block and carries this
+    line through every rewrite, so storing the token in the module cache is
+    enough — _write_env_mirror emits it from there."""
+    cache_set("_vault_token", token)
+
+
+def _ensure_vault_token(interactive):
+    """First-run onboarding: prompt for the vaultwarden API token once, store
+    it in .zshenv so every later run (timer included) picks it up. Skipped
+    when the token is already available or when there is no terminal to ask.
+    Returns the token, or "" when onboarding could not run."""
+    global VAULT_TOKEN
+    if VAULT_TOKEN:
+        return VAULT_TOKEN
+    token = _read_env_block().get("VAULTWARDEN_SECRETS_TOKEN", "")
+    if token:
+        VAULT_TOKEN = token
+        return token
+    if not interactive:
+        return ""
+    print("providers needs a vaultwarden API token to reach the key vault.")
+    print(f"  vault: {VAULT_URL}")
+    try:
+        token = getpass.getpass("  vaultwarden token (leave blank to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+    if not token:
+        return ""
+    VAULT_TOKEN = token
+    try:
+        vault_list_items()
+    except VaultError as exc:
+        VAULT_TOKEN = ""
+        print(f"  token rejected ({exc}); nothing stored", file=sys.stderr)
+        return ""
+    _persist_vault_token(token)
+    print("  token stored in ~/.zshenv (VAULTWARDEN_SECRETS_TOKEN)")
+    return token
 
 
 def _vault_call(tool, arguments):
@@ -843,6 +880,11 @@ def _sync_zsenv_to_cache():
     cache = _load_cache()
     changed = False
     for env_name, value in block.items():
+        if env_name == "VAULTWARDEN_SECRETS_TOKEN":
+            if value and cache.get("_vault_token") != value:
+                cache["_vault_token"] = value
+                changed = True
+            continue
         provider = _provider_from_env(env_name)
         if not provider:
             continue
@@ -869,7 +911,7 @@ def _write_auth_mirror(cache):
     if not isinstance(existing, dict):
         existing = {}
     for provider, value in cache.items():
-        if not value:
+        if not value or provider.startswith("_"):
             continue
         if provider not in existing or existing.get(provider, {}).get("key") != value:
             existing[provider] = {"type": "api", "key": value}
@@ -884,8 +926,15 @@ def _write_env_mirror(cache):
     api-type providers come from the cache (vault-authoritative); OAuth tokens
     (*_OAUTH_TOKEN) are owned by their harnesses and carried through from
     auth.json unchanged, never written from the cache.
+    The cache also carries the vault token under the reserved _vault_token
+    key so headless runs can reach the vault; it is not a provider and is
+    excluded from every provider-facing mirror.
     """
-    lines = [f"export {_env_name(p)}={v}" for p, v in sorted(cache.items()) if v]
+    lines = [f"export {_env_name(p)}={v}" for p, v in sorted(cache.items())
+             if v and not p.startswith("_")]
+    vault_token = cache.get("_vault_token", "")
+    if vault_token:
+        lines.insert(0, f"export VAULTWARDEN_SECRETS_TOKEN={vault_token}")
     if os.path.exists(OLD_AUTH_PATH):
         try:
             auth = load_json(OLD_AUTH_PATH)
@@ -1643,7 +1692,7 @@ def _set_provider_enabled(provider, enabled):
     if enabled and not _get_key(auth_provider):
         print(
             f"Cannot enable {provider}: no API key. "
-            f"Run: providers auth {provider} <key>",
+            f"Run: providers add {provider} <url> <key>",
             file=sys.stderr,
         )
         return False
@@ -1679,79 +1728,6 @@ def vault_call_edit(item_name, value):
     _vault_call("edit_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
 
 
-def cmd_auth():
-    """Interactive or direct API key onboarding.
-
-    providers auth                     → interactive prompt for all missing keys
-    providers auth <provider> <key>    → write key directly (agent-friendly)
-    """
-    _sync_cache_from_vault(_load_servers() or {})
-
-    servers = _load_servers()
-    if servers is None:
-        sys.exit(1)
-
-    if len(sys.argv) >= 4:
-        provider = sys.argv[2]
-        key = sys.argv[3]
-        if provider not in servers:
-            print(f"Unknown provider: {provider}", file=sys.stderr)
-            print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
-            sys.exit(1)
-        _set_key(_auth_provider(provider, servers[provider]), key)
-        if not _set_provider_enabled(provider, True):
-            sys.exit(1)
-        return
-
-    cache = _load_cache()
-    missing = [s for s, cfg in servers.items() if not cache_get(_auth_provider(s, cfg))]
-    configured = [s for s, cfg in servers.items() if cache_get(_auth_provider(s, cfg))]
-
-    if configured:
-        print("Configured:")
-        for s in configured:
-            print(f"  {s}: ✓")
-        print()
-
-    if not missing:
-        _sync_opencode_provider_statuses(servers)
-        print("All provider API keys are already stored in the vault.")
-        return
-
-    print("Providers available to enable:")
-    for s in missing:
-        url = PROVIDER_URLS.get(s, "")
-        print(f"  {s}" + (f"  — {url}" if url else ""))
-    print()
-
-    enabled = []
-    for s in missing:
-        url = PROVIDER_URLS.get(s, "")
-        prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
-        try:
-            key = getpass.getpass(prompt)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if key.strip():
-            cache_set(_auth_provider(s, servers[s]), key.strip())
-            enabled.append(s)
-
-    if enabled:
-        _sync_mirrors()
-        state = _load_provider_state()
-        if state is None:
-            print("Provider state is invalid; keys were saved but enablement was not changed.", file=sys.stderr)
-            return
-        for name in enabled:
-            state.setdefault("providers", {}).setdefault(name, {})["enabled"] = True
-        save_json_atomic(STATE_PATH, state)
-        _sync_opencode_provider_statuses(servers)
-        print(f"\nSaved to vault (llm/) and mirrors")
-    else:
-        print("\nNo keys entered.")
-
-
 def cmd_ls():
     servers = _load_servers()
     if servers is None:
@@ -1765,7 +1741,7 @@ def cmd_ls():
         print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
 
 
-def cmd_timer_enable():
+def cmd_schedule_enable():
     _sync_cache_from_vault(_load_servers() or {})
 
     script_path = os.path.abspath(sys.argv[0])
@@ -1821,7 +1797,7 @@ def cmd_timer_enable():
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", "providers.timer"], check=True
         )
-        print("providers timer enabled (hourly)")
+        print("providers schedule enabled (hourly)")
 
     # --- provider onboarding ---
 
@@ -2011,14 +1987,28 @@ def _provision_provider(provider, token):
         )
         _run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
         commit = _run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
-    _store_token(provider["name"], token)
+    _set_key(provider["name"], token)
+    # setup update converges the machine to the pushed commit, but a failed or
+    # unavailable setup run must not leave the provider invisible locally:
+    # merge the new descriptor into the local registry as well.
+    local_registry = _validate_registry(load_json(REGISTRY_PATH))
+    local_registry["providers"][provider["name"]] = {
+        key: value for key, value in provider.items() if key != "name"
+    }
+    _validate_registry(local_registry)
+    save_json_atomic(REGISTRY_PATH, local_registry)
+    state = _load_provider_state()
+    if state is not None:
+        state.setdefault("providers", {}).setdefault(provider["name"], {})["enabled"] = True
+        save_json_atomic(STATE_PATH, state)
     env = os.environ.copy()
     env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
     modules = _provider_consumer_modules()
     proc = subprocess.run([SETUP_BIN, "update", *modules], env=env)
     if proc.returncode:
-        raise ValueError(
-            "the provider was pushed and its token was stored, but setup provisioning failed; rerun setup update"
+        print(
+            "providers: pushed and enrolled locally, but setup provisioning failed; rerun setup update",
+            file=sys.stderr,
         )
 
 
@@ -2062,33 +2052,110 @@ def _prepare_provider(name, base_url, token, fallback_model=None):
     return provider, len(models)
 
 
-def _add_provider(name=None, base_url=None, token=None, fallback_model=None):
-    interactive = name is None and base_url is None and token is None and fallback_model is None
-    if interactive:
-        name = input("Provider name: ").strip()
-    _validate_new_provider_name(name)
-    if interactive:
-        base_url = input("OpenAI-compatible API base URL: ")
+def _add_interactive():
+    """Prompt for the API key of each registry provider that does not have
+    one yet; blank answers stay disabled. This is the onboarding path that
+    `setup` drives after install."""
+    _sync_cache_from_vault(_load_servers() or {})
+    servers = _load_servers()
+    if servers is None:
+        sys.exit(1)
+    cache = _load_cache()
+    missing = [s for s, cfg in servers.items() if not cache_get(_auth_provider(s, cfg))]
+    configured = [s for s, cfg in servers.items() if cache_get(_auth_provider(s, cfg))]
+    if configured:
+        print("Configured:")
+        for s in configured:
+            print(f"  {s}: key on file")
+        print()
+    if not missing:
+        _sync_opencode_provider_statuses(servers)
+        print("All provider API keys are already stored in the vault.")
+        return
+    print("Providers available to enable (blank key stays disabled):")
+    for s in missing:
+        url = PROVIDER_URLS.get(s, "")
+        print(f"  {s}" + (f"  - {url}" if url else ""))
+    print()
+    enabled = []
+    for s in missing:
+        url = PROVIDER_URLS.get(s, "")
+        prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
+        try:
+            key = getpass.getpass(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if key.strip():
+            cache_set(_auth_provider(s, servers[s]), key.strip())
+            enabled.append(s)
+    if enabled:
+        _sync_mirrors()
+        state = _load_provider_state()
+        if state is None:
+            print("Provider state is invalid; keys were saved but enablement was not changed.", file=sys.stderr)
+            return
+        for name in enabled:
+            state.setdefault("providers", {}).setdefault(name, {})["enabled"] = True
+        save_json_atomic(STATE_PATH, state)
+        _sync_opencode_provider_statuses(servers)
+        print()
+        print("Saved to vault (llm/) and mirrors")
+    else:
+        print()
+        print("No keys entered.")
+
+
+def _add_provider(name, base_url=None, token=None, fallback_model=None):
+    """One-step enrollment: `add <name> <url> [key] [model]`.
+
+    If the provider already exists in the registry, this enrolls (or rotates)
+    its API key in the vault and enables it. The URL must match the
+    registered endpoint so a typo cannot silently redirect a provider. If the
+    provider is new, it is registered (published to the setup repo) and its
+    key enrolled in the same step.
+    """
+    servers = _load_servers()
+    if servers is None:
+        raise ValueError("cannot read provider registry")
+    if name in servers:
+        if base_url is not None and base_url.strip().rstrip("/") != servers[name]["baseURL"].rstrip("/"):
+            raise ValueError(
+                f"{name} is already registered with endpoint {servers[name]['baseURL']}"
+            )
+        if token is None:
+            token = getpass.getpass(f"{name} API key: ").strip()
+        if not token:
+            raise ValueError("the API key cannot be empty")
+        auth_provider = _auth_provider(name, servers[name])
+        _set_key(auth_provider, token)
+        if not _set_provider_enabled(name, True):
+            raise ValueError(f"could not enable {name}")
+        print(f"providers: enrolled key for {name}")
+        return
+    if base_url is None:
+        raise ValueError(f"unknown provider {name}: pass a base URL to register it")
+    if token is None:
         token = getpass.getpass("API token: ")
     try:
         provider, model_count = _prepare_provider(name, base_url, token, fallback_model)
     except ValueError as exc:
-        if not interactive or "supply an explicit model ID" not in str(exc):
+        if "supply an explicit model ID" not in str(exc) or fallback_model is not None:
+            raise
+        if not sys.stdin.isatty():
             raise
         fallback_model = input("Model ID (the endpoint does not expose /models): ")
         provider, model_count = _prepare_provider(name, base_url, token, fallback_model)
-    print("\nProvider to publish:")
+    print()
+    print("Provider to publish:")
     print(f"  name: {name}")
     print(f"  endpoint: {provider['base_url']}")
     print(f"  models: {model_count} available")
-    print("  token: [stored locally]")
-    if interactive and input("Commit to LPFchan/setup main and provision this machine? [y/N] ").strip().lower() != "y":
-        return
+    print("  key: [stored in vault]")
     _provision_provider(provider, token)
-    print(f"providers: provisioned {name}")
+    print(f"providers: added {name}")
 
-
-def cmd_timer_disable():
+def cmd_schedule_disable():
     if _is_macos():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
@@ -2096,7 +2163,7 @@ def cmd_timer_disable():
             subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
                            capture_output=True)
             os.remove(plist_path)
-        print("providers launchd agent disabled")
+        print("providers launchd schedule disabled")
     else:
         subprocess.run(
             ["systemctl", "--user", "disable", "--now", "providers.timer"],
@@ -2107,10 +2174,10 @@ def cmd_timer_disable():
             if os.path.exists(p):
                 os.remove(p)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        print("providers timer disabled")
+        print("providers schedule disabled")
 
 
-def cmd_timer_status():
+def cmd_schedule_status():
     if _is_macos():
         plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
         if os.path.exists(plist_path):
@@ -2119,11 +2186,11 @@ def cmd_timer_status():
                 capture_output=True, text=True,
             )
             if result.returncode == 0:
-                print("timer: active (launchd hourly)")
+                print("schedule: active (launchd hourly)")
             else:
-                print("timer: not loaded")
+                print("schedule: not loaded")
         else:
-            print("timer: not installed")
+            print("schedule: not installed")
     else:
         result = subprocess.run(
             ["systemctl", "--user", "is-active", "providers.timer"],
@@ -2135,28 +2202,14 @@ def cmd_timer_status():
                 ["systemctl", "--user", "show", "-p", "NextElapseUSecRealtime", "providers.timer"],
                 capture_output=True, text=True,
             ).stdout.strip().split("=")[-1]
-            print(f"timer: active (next: {next_run})")
+            print(f"schedule: active (next: {next_run})")
         else:
-            print(f"timer: {state}")
-def cmd_sync():
-    """vault -> cache -> opencode auth.json + .zshenv."""
-    servers = _load_servers()
-    if servers is None:
-        sys.exit(1)
-    _sync_cache_from_vault(servers)
-    _sync_mirrors()
-    _sync_opencode_provider_statuses(servers)
-    print("providers: synced vault -> cache -> auth.json -> .zshenv")
-
-
+            print(f"schedule: {state}")
 def _parse_capability_command(args):
-    if not args or args[0] not in ("show", "refresh"):
-        raise ValueError("Usage: providers capabilities <show|refresh> [--provider NAME] [--model ID] --json")
-    command = args[0]
     provider = None
     model = None
     json_requested = False
-    index = 1
+    index = 0
     while index < len(args):
         argument = args[index]
         if argument == "--json":
@@ -2177,13 +2230,13 @@ def _parse_capability_command(args):
                 model = value
             index += 1
         else:
-            raise ValueError(f"unknown capabilities option: {argument}")
+            raise ValueError(
+                "Usage: providers capabilities [--provider NAME] [--model ID] [--json]"
+            )
         index += 1
-    if not json_requested:
-        raise ValueError("capabilities commands require --json")
     if provider == "" or model == "":
         raise ValueError("capability filters cannot be empty")
-    return command, provider, model
+    return provider, model, json_requested
 
 
 def _capability_view(cache, provider=None, model=None):
@@ -2214,32 +2267,7 @@ def _capability_view(cache, provider=None, model=None):
 
 
 def cmd_capabilities(args):
-    command, provider, model = _parse_capability_command(args)
-    if command == "refresh":
-        servers = _load_servers()
-        if servers is None:
-            raise ValueError("cannot read provider registry")
-        refreshed = 0
-        # Provider refresh helpers are also used by the human-oriented command
-        # path. Keep their incidental status output off this machine interface.
-        with contextlib.redirect_stdout(sys.stderr):
-            if provider is not None:
-                if provider not in servers:
-                    raise LookupError(f"unknown provider: {provider}")
-                if not _provider_enabled(provider, servers[provider]):
-                    raise LookupError(f"provider is disabled: {provider}")
-                targets = [provider]
-            else:
-                targets = [
-                    name for name, cfg in servers.items()
-                    if _provider_enabled(name, cfg)
-                ]
-            for name in targets:
-                result = refresh_server(name, servers[name])
-                if isinstance(result, dict) and result:
-                    refreshed += 1
-        if provider is not None and refreshed == 0:
-            raise RuntimeError(f"provider refresh failed or returned no models: {provider}")
+    provider, model, _json_requested = _parse_capability_command(args)
     cache = _load_capabilities()
     view = _capability_view(cache, provider, model)
     print(json.dumps(view, indent=2, sort_keys=True, ensure_ascii=False))
@@ -2253,71 +2281,6 @@ def _conforming_item_name(name):
         return False
     stem = name[: -len("_API_KEY")]
     return bool(re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*", stem))
-
-
-def cmd_audit():
-    """List vault llm items and flag names that violate C1."""
-    if not vault_available():
-        print("vault token unset; cannot audit", file=sys.stderr)
-        sys.exit(1)
-    try:
-        items = vault_list_items()
-    except VaultError as exc:
-        print(f"vault unreachable: {exc}", file=sys.stderr)
-        sys.exit(1)
-    if not items:
-        print("vault llm/ folder is empty")
-        return
-    print(f"vault llm/ ({len(items)} items):")
-    for item in items:
-        name = item["name"]
-        flag = "" if _conforming_item_name(name) else "  <- non-conforming"
-        print(f"  {name}{flag}")
-
-
-def cmd_rename():
-    """Enforce C1 on vault llm items. Default dry-run; --apply performs renames.
-
-    Only non-deleted, non-OAuth, non-conforming items are renamed. OAuth items
-    (*_OAUTH_TOKEN / *_REFRESH_TOKEN) are out of scope and never touched.
-    """
-    dry_run = "--apply" not in sys.argv
-    if not vault_available():
-        print("vault token unset; cannot rename", file=sys.stderr)
-        sys.exit(1)
-    try:
-        items = vault_list_items()
-    except VaultError as exc:
-        print(f"vault unreachable: {exc}", file=sys.stderr)
-        sys.exit(1)
-    plan = []
-    for item in items:
-        name = item["name"]
-        if item.get("deleted"):
-            continue
-        if _conforming_item_name(name):
-            continue
-        if name.endswith(("_OAUTH_TOKEN", "_REFRESH_TOKEN")):
-            continue
-        # map to a proper provider name: lowercase alnum/hyphen, then to env form
-        provider = re.sub(r"[^a-z0-9-]", "-", name.lower())
-        provider = re.sub(r"-+", "-", provider).strip("-")
-        env = provider.replace("-", "_").upper()
-        if not env.endswith("_API_KEY"):
-            env += "_API_KEY"
-        plan.append((item, name, env))
-    if not plan:
-        print("vault llm/ items all conform to C1")
-        return
-    print("C1 renames planned:")
-    for item, old, new in plan:
-        print(f"  {old} -> {new}")
-    if dry_run:
-        print("\n(dry run — pass --apply to perform)")
-        return
-    for item, old, new in plan:
-        vault_rename(old, new, item.get("item_id"))
-        print(f"  renamed {old} -> {new}")
 
 
 def main():
@@ -2336,30 +2299,76 @@ def main():
             sys.exit(1)
         return
 
-    if not args:
-        _source_zsenv()
-        _sync_zsenv_to_cache()
-        _sync_mirrors()
-        servers = _load_servers()
-        if servers is None:
+USAGE = """providers — vault-owned provider API keys and model refresh
+
+Usage:
+  providers                     List providers and key status (never the key)
+  providers list [--names]      Same listing; --names prints bare names
+  providers add <name> <url> [key] [model]
+                                Enroll a provider and its API key in one step
+                                (model is required when the endpoint has no /models)
+  providers enable <name>       Enable a provider that has an API key
+  providers disable <name>      Disable a provider without deleting its key
+  providers refresh [name]      Sync keys, then refresh models (all enabled if omitted)
+  providers capabilities [--provider P] [--model M] [--json]
+                                Read the last-known-good capability cache
+  providers schedule [disable|status]
+                                Hourly background refresh (bare: install it)
+  providers help                Show this message
+"""
+
+
+def _usage(stream=sys.stdout):
+    print(USAGE, file=stream)
+
+
+def _refresh_all(servers):
+    refreshed = {}
+    for name, srv_cfg in servers.items():
+        if not _provider_enabled(name, srv_cfg):
+            continue
+        models = refresh_server(name, srv_cfg)
+        if isinstance(models, dict):
+            refreshed[name] = models
+    return refreshed
+
+
+def _refresh_one(servers, name):
+    if name not in servers:
+        print(f"Unknown provider: {name}", file=sys.stderr)
+        print(f"Known: {', '.join(servers)}", file=sys.stderr)
+        sys.exit(1)
+    if not _provider_enabled(name, servers[name]):
+        print(
+            f"{name} is disabled. Run: providers enable {name}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    models = refresh_server(name, servers[name])
+    return {name: models} if isinstance(models, dict) else {}
+
+
+def main():
+    args = sys.argv[1:]
+
+    if args and args[0] == "__validate":
+        try:
+            _validate_registry(load_json(args[1]))
+        except (IndexError, OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"providers: {exc}", file=sys.stderr)
             sys.exit(1)
-        _sync_cache_from_vault(servers)
-        _sync_mirrors()
-        _sync_opencode_provider_statuses(servers)
-        refreshed = {}
-        for name, srv_cfg in servers.items():
-            if not _provider_enabled(name, srv_cfg):
-                continue
-            models = refresh_server(name, srv_cfg)
-            if isinstance(models, dict):
-                refreshed[name] = models
-        _sync_hermes_mirror(servers, refreshed)
-        _sync_pi_models_mirror(servers, refreshed)
         return
 
-    cmd = args[0]
+    if args and args[0] == "__migrate-state":
+        if _load_provider_state() is None:
+            sys.exit(1)
+        return
 
-    if cmd == "--list":
+    if not args or args == ["list"]:
+        cmd_ls()
+        return
+
+    if args == ["list", "--names"]:
         servers = _load_servers()
         if servers is None:
             sys.exit(1)
@@ -2367,10 +2376,20 @@ def main():
             print(name)
         return
 
+    cmd = args[0]
+
     if cmd == "add":
-        if len(args) not in (1, 4, 5):
-            print("Usage: providers add [<provider> <base-url> <key> [model]]", file=sys.stderr)
+        if not sys.stdin.isatty() and len(args) not in (3, 4, 5):
+            print("Usage: providers add <name> <base-url> [key] [model]", file=sys.stderr)
             sys.exit(1)
+        if len(args) > 5:
+            print("Usage: providers add <name> <base-url> [key] [model]", file=sys.stderr)
+            sys.exit(1)
+        _ensure_vault_token(interactive=sys.stdin.isatty())
+        if len(args) == 1:
+            # interactive: walk through each provider missing a key
+            _add_interactive()
+            return
         try:
             _add_provider(*args[1:])
         except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -2380,29 +2399,30 @@ def main():
 
     if cmd in ("enable", "disable"):
         if len(args) != 2:
-            print(f"Usage: providers {cmd} <provider>", file=sys.stderr)
+            print(f"Usage: providers {cmd} <name>", file=sys.stderr)
             sys.exit(1)
         if not _set_provider_enabled(args[1], cmd == "enable"):
             sys.exit(1)
         return
 
-    if cmd == "timer":
-        if len(args) != 2 or args[1] not in ("enable", "disable", "status"):
-            print("Usage: providers timer <enable|disable|status>", file=sys.stderr)
+    if cmd == "refresh":
+        if len(args) > 2:
+            print("Usage: providers refresh [name]", file=sys.stderr)
             sys.exit(1)
-        {"enable": cmd_timer_enable, "disable": cmd_timer_disable, "status": cmd_timer_status}[args[1]]()
-        return
-
-    if cmd == "auth":
-        cmd_auth()
-        return
-
-    if cmd == "ls":
-        cmd_ls()
-        return
-
-    if cmd == "sync":
-        cmd_sync()
+        _source_zsenv()
+        _sync_zsenv_to_cache()
+        servers = _load_servers()
+        if servers is None:
+            sys.exit(1)
+        _sync_cache_from_vault(servers)
+        _sync_mirrors()
+        _sync_opencode_provider_statuses(servers)
+        if len(args) == 2:
+            refreshed = _refresh_one(servers, args[1])
+        else:
+            refreshed = _refresh_all(servers)
+        _sync_hermes_mirror(servers, refreshed)
+        _sync_pi_models_mirror(servers, refreshed)
         return
 
     if cmd == "capabilities":
@@ -2413,59 +2433,21 @@ def main():
             sys.exit(1)
         return
 
-    if cmd == "audit":
-        cmd_audit()
-        return
-
-    if cmd == "rename":
-        cmd_rename()
-        return
-
-    if cmd in ("--help", "-h", "help"):
-        print("providers — vault-owned provider API keys and model refresh")
-        print()
-        print("Usage:")
-        print("  providers                  Refresh all enabled providers")
-        print("  providers <provider>       Refresh a single enabled provider")
-        print("  providers --list           List configured provider names")
-        print("  providers auth             Interactive API key enrollment")
-        print("  providers auth <p> <k>     Write key directly (agent-friendly)")
-        print("  providers ls               List providers and key status")
-        print("  providers add                   Add a provider interactively")
-        print("  providers add <p> <url> <key> [model]")
-        print("                                  Add directly; model is required without /models")
-        print("  providers enable <p>       Enable a provider that has an API key")
-        print("  providers disable <p>      Disable a provider without deleting its key")
-        print("  providers timer enable     Install systemd/launchd timer (hourly)")
-        print("  providers timer disable    Remove timer")
-        print("  providers timer status     Show timer state and next run")
-        print("  providers sync             vault -> cache -> auth.json -> .zshenv")
-        print("  providers capabilities show [--provider P] [--model M] --json")
-        print("  providers capabilities refresh [--provider P] [--model M] --json")
-        print("  providers audit            List vault llm items, flag non-conforming")
-        print("  providers rename [--apply] Enforce C1 naming on vault items")
-        print("  providers --help           Show this message")
-        return
-
-    servers = _load_servers()
-    if servers is None:
-        sys.exit(1)
-    if cmd in servers:
-        if not _provider_enabled(cmd, servers[cmd]):
-            print(
-                f"{cmd} is disabled. Run: providers enable {cmd}",
-                file=sys.stderr,
-            )
+    if cmd == "schedule":
+        sub = args[1] if len(args) > 1 else "enable"
+        if len(args) > 2 or sub not in ("enable", "disable", "status"):
+            print("Usage: providers schedule [disable|status]", file=sys.stderr)
             sys.exit(1)
-        _sync_opencode_provider_statuses(servers)
-        models = refresh_server(cmd, servers[cmd])
-        if isinstance(models, dict):
-            _sync_hermes_mirror(servers, {cmd: models})
-            _sync_pi_models_mirror(servers, {cmd: models})
+        {"enable": cmd_schedule_enable, "disable": cmd_schedule_disable, "status": cmd_schedule_status}[sub]()
         return
 
-    print(f"Unknown: {cmd}", file=sys.stderr)
-    print(f"Usage: providers [add|enable|disable|timer|auth|ls|sync|capabilities|audit|rename|--list|<provider>]", file=sys.stderr)
+    if cmd in ("help", "--help", "-h"):
+        _usage()
+        return
+
+    print(f"Unknown command: {cmd}", file=sys.stderr)
+    print(file=sys.stderr)
+    _usage(sys.stderr)
     sys.exit(1)
 
 
