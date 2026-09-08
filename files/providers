@@ -11,7 +11,6 @@ tools such as Miniharness.
 
 Commands:
   (no args)                    List providers and key status (never the key)
-  list [--names]               Same listing; --names prints bare names
   add <name> <url> [key] [model]
                                Enroll a provider and its API key in one step;
                                key goes to the vault; model is required when
@@ -2303,7 +2302,6 @@ USAGE = """providers — vault-owned provider API keys and model refresh
 
 Usage:
   providers                     List providers and key status (never the key)
-  providers list [--names]      Same listing; --names prints bare names
   providers add <name> <url> [key] [model]
                                 Enroll a provider and its API key in one step
                                 (model is required when the endpoint has no /models)
@@ -2364,16 +2362,8 @@ def main():
             sys.exit(1)
         return
 
-    if not args or args == ["list"]:
+    if not args:
         cmd_ls()
-        return
-
-    if args == ["list", "--names"]:
-        servers = _load_servers()
-        if servers is None:
-            sys.exit(1)
-        for name in servers:
-            print(name)
         return
 
     cmd = args[0]

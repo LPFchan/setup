@@ -746,7 +746,7 @@ assert dispatch == [
     ('schedule', 'disable'), ('schedule', 'status')
 ]
 for argv in ([path, 'timer'], [path, 'auth'], [path, 'sync'], [path, 'audit'],
-             [path, 'rename'], [path, 'ls'], [path, '--list'],
+             [path, 'rename'], [path, 'ls'], [path, 'list'], [path, '--list'],
              [path, 'add', 'only-name'], [path, 'enable'], [path, 'disable'],
              [path, 'schedule', 'bogus'], [path, 'unused']):
     sys.argv = argv
