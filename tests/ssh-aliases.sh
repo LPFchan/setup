@@ -33,9 +33,9 @@ mangchi_block=$(printf '%s\n' "$block" | awk '
     found && /^Host / && $2 != "mangchi" { exit }
     found { print }
 ')
-[[ "$mangchi_block" == *'HostName mangchi.tailaa113.ts.net'* \
+[[ "$mangchi_block" == *'HostName mangchi.lost.plus'* \
    && "$mangchi_block" == *'User yeowool'* ]] \
-    || fail "mangchi Tailscale alias is missing"
+    || fail "mangchi private DNS alias is missing"
 mac_block=$(printf '%s\n' "$block" | awk '
     /^Host yeowoolmac mac.lost.plus$/ { found=1 }
     found && /^Host / && $2 != "yeowoolmac" { exit }
