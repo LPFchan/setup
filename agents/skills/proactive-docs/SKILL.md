@@ -30,7 +30,7 @@ Route the change:
 
   | Topic | Note |
   | --- | --- |
-  | Harness install, MCP registration, yolo, RTK | `01-harnesses.md` |
+  | Harness install, MCP registration, yolo | `01-harnesses.md` |
   | Shell and SSH | `02-shell-ssh.md` |
   | Backup, kernel, monitoring, fans | `03-server-ops.md` |
   | Bootstrap or first run | `00-overview.md` |

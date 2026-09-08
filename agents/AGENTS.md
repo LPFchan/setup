@@ -101,8 +101,6 @@ let's say you've been grinding on a hard problem for a long time, and have tried
 
 when installing python packages, always use the repo-local `.venv` and its pip. never `--break-system-packages` on system-wide Python. use `pipx` if a global install is needed.
 
-i might've turned on what's known as 'RTK' (rust token killer, rtk-ai/rtk). it's a neat tool that compresses tool output so you burn through the tokens less! however `sudo rtk <cmd>` can fail with `rtk: command not found`. in this case use the real binary: `/usr/bin/docker`, `/usr/bin/git`, …
-
 for long-running terminal tasks (such as builds, file downloads, training, data processing, etc):
 - **hermes**: `background=true` + `notify_on_complete=true` 
 - **kimi**: `run_in_background=true`
