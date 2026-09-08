@@ -16,6 +16,7 @@ OWNER_KEYS_URL="${SETUP_OWNER_KEYS_URL:-https://github.com/LPFchan.keys}"
 
 # alias | hostname | user | optional TERM fallback | optional host-key policy
 FLEET=(
+    "mangchi|mangchi.tailaa113.ts.net|yeowool"
     "yeowoolmac|mac.lost.plus|yeowool||ignore"
     "grimoire|grimoire.lost.plus|yeowool"
     "oci-ubuntu|oci.lost.plus|ubuntu"

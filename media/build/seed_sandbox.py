@@ -19,10 +19,11 @@ SB   = os.path.join(HERE, 'sandbox')
 HOME = os.path.join(SB, 'home')
 CONF = os.path.join(SB, 'conf')
 
-FLEET = ['yeowoolair', 'grimoire', 'bingus', 'yeowoolmac', 'oci-ubuntu']
+FLEET = ['yeowoolair', 'mangchi', 'grimoire', 'bingus', 'yeowoolmac', 'oci-ubuntu']
 SELF  = 'yeowoolair'
 
 SSH_HOSTS = [                       # mirrors files/ssh-aliases.sh
+    ('mangchi',    'mangchi.tailaa113.ts.net', 'yeowool', None),
     ('yeowoolmac', 'mac.lost.plus',   'yeowool', None),
     ('grimoire',   'grimoire.lost.plus', 'yeowool', None),
     ('oci-ubuntu', 'oci.lost.plus',   'ubuntu',  None),

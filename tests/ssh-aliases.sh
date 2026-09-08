@@ -28,6 +28,14 @@ source "$ROOT/lib/script-helpers.sh"
 source "$ROOT/files/ssh-aliases.sh"
 
 block=$(SSH_ALIASES_SELF=not-a-fleet-host _build_block)
+mangchi_block=$(printf '%s\n' "$block" | awk '
+    /^Host mangchi$/ { found=1 }
+    found && /^Host / && $2 != "mangchi" { exit }
+    found { print }
+')
+[[ "$mangchi_block" == *'HostName mangchi.tailaa113.ts.net'* \
+   && "$mangchi_block" == *'User yeowool'* ]] \
+    || fail "mangchi Tailscale alias is missing"
 mac_block=$(printf '%s\n' "$block" | awk '
     /^Host yeowoolmac mac.lost.plus$/ { found=1 }
     found && /^Host / && $2 != "yeowoolmac" { exit }

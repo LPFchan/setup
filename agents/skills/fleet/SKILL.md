@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (eleven, bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
+description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (mangchi, eleven, bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
 argument-hint: "Host name (e.g. bingus, grimoire) or fleet question"
 tags: [fleet, ssh, remote, hosts, infrastructure]
 audience: fleet
@@ -33,6 +33,11 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 ## yeowoolair — daily-driver MacBook Air
 - yeowool-air.tailaa113.ts.net (no static IP) · user yeowool
 - active repos in ~/Documents/
+
+## mangchi — NVIDIA Jetson AGX Thor (T5000)
+- mangchi.tailaa113.ts.net · user yeowool
+- Ubuntu 24.04 with JetPack 7.2.1 BSP; 128 GB unified memory
+- preferred training and inference host
 
 ## bingus — Synology DS923+ NAS (DSM 7)
 - bingus.lost.plus (10.0.0.50) · user yeowool
