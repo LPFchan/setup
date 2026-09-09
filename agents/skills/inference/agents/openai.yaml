@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inference"
+  short_description: "Operate the fleet inference system safely"
+  default_prompt: "Use $inference to inspect or operate the fleet inference system safely."

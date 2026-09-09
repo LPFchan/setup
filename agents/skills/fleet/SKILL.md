@@ -50,7 +50,7 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 ## grimoire — headless Ubuntu dual-RTX 3090 inference server
 - grimoire.lost.plus (10.0.0.51) · user yeowool
 - OpenAI-compatible API at chat.lost.plus/v1
-- custom llama.cpp fork (repo ~/grimoire); load the `grimoire` skill for inference setup
+- inference gateway repo `~/inference`; load the `inference` skill for Grimoire and Mangchi serving
 - usage/telemetry dashboard at dash.lost.plus (`dash` compose service, :9002, same repo)
 - hosts ComfyUI image-gen server (:8188)
 - hosts eastself (@eastself_bot on Telegram, eastself.lost.plus, repo ~/Eastself/)

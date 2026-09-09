@@ -7,6 +7,8 @@
 | Control plane | `src/grimoire/` | Python; `DEV_SRC_BIND` currently shadows the image |
 | Webui | `webui/` submodule | Host `webui/build` bind shadows the image UI |
 | Engine | Dockerfile-pinned `TheTom/llama-cpp-turboquant` | `/opt/grimoire-llama-cpp` in `grimoire:local` |
+| Mangchi lifecycle | `src/grimoire/mangchi_agent.py`, `etc/mangchi-agent.json` | Residency agent on `mangchi.lost.plus:9700` |
+| Remote inference | `vllm-remote` entries in `etc/models.grimoire.json` | Per-model vLLM containers on Mangchi |
 | Models/state | `/home/yeowool/models`, `state/` | External binds |
 
 `src/grimoire/pflash/deps/llama.cpp` is a converter/PFlash dependency, not the

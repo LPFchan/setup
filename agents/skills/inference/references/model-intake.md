@@ -7,7 +7,8 @@
 | Host models | `/home/yeowool/models` |
 | Container models | `/models` |
 | Live registry | `state/models.json` |
-| Tracked seed | `etc/models.json` |
+| Grimoire tracked seed | `etc/models.grimoire.json` |
+| Mangchi tracked seed | `etc/models.mangchi.json` |
 
 The newer registry file wins at startup; a newer seed can overwrite live state.
 The `state/` bind follows atomic replacements; the seed file bind may retain an
@@ -16,8 +17,8 @@ old inode until container recreation.
 Before intake or recreation:
 
 ```bash
-jq '.models | length' etc/models.json state/models.json
-diff -u <(jq -S . etc/models.json) <(jq -S . state/models.json)
+jq '.models | length' etc/models.grimoire.json state/models.json
+diff -u <(jq -S . etc/models.grimoire.json) <(jq -S . state/models.json)
 ```
 
 Mutate live state through the API, then reconcile accepted entries into the seed
@@ -41,7 +42,7 @@ Use an explicitly reviewed full-registry edit to remove stale keys.
 5. Read back the entry and `/v1/models`; load outside a conflicting preset.
 6. Smoke the claimed capability; inspect command/logs, VRAM, context, and output;
    unload unless residency is intended.
-7. Reconcile accepted config into `etc/models.json`.
+7. Reconcile accepted config into the matching `etc/models.<target>.json` seed.
 
 Legacy `/ingest` and `grimoire ingest` create minimal configs, not production
 entries. Validate conservative TurboQuant K/V settings before stronger
@@ -64,7 +65,7 @@ provenance manifest, and can add a minimal `--lora` registry entry.
 Dry-run first:
 
 ```bash
-cd /home/yeowool/grimoire
+cd /home/yeowool/inference
 .venv/bin/python scripts/intake-peft-checkpoint.py \
   --checkpoint /home/yeowool/models/WORK/checkpoint-N \
   --base-gguf /home/yeowool/models/gguf/BASE.gguf \

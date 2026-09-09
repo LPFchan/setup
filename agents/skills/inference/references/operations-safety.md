@@ -35,6 +35,7 @@ diagnosing.
 | --- | --- | --- |
 | `/health` works; management fails | `/status`, manager logs | Proxy alive; manager down |
 | Listed model fails | `active`, `status`, preset | Catalog includes unloaded models |
+| Mangchi model fails | Agent `/status`, target vLLM port, gateway logs | Agent unreachable, cold load failed, or vLLM exited |
 | switch/stop 409 | Active preset | Preset lock |
 | preset 200, incomplete | `failed`, `warnings`, `/status` | Partial activation |
 | Registry rollback | Seed/state mtimes and diff | Newer seed won |
@@ -56,6 +57,10 @@ ComfyUI or Eastself.
 Port `9001` binds all interfaces. Admin auth falls back to the API key;
 registry writes/uploads/deletes currently accept API auth. Treat all as
 administrative.
+
+Mangchi's residency agent binds port `9700` and authorizes the actual TCP source
+address against `MANGCHI_AGENT_TRUSTED_CIDRS`. Keep it on LAN/Tailscale only;
+do not place it behind a public proxy or trust forwarded client-IP headers.
 
 `/cors-proxy` accepts arbitrary targets and forwarded headers without explicit
 route auth. Treat it as an SSRF/open-proxy boundary; never use it for general

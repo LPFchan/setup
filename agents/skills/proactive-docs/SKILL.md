@@ -39,8 +39,8 @@ Route the change:
 
 | Fact | Owner |
 | --- | --- |
-| Code, Docker/Compose, registry implementation, spec/status/decisions/research | `/home/yeowool/grimoire/` canonical repo surface |
-| Fleet operating procedure: endpoints, presets, lifecycle, intake, forks, upgrades, incidents, ComfyUI co-tenancy | `setup/agents/skills/grimoire/` |
+| Code, Docker/Compose, registry implementation, spec/status/decisions/research | `/home/yeowool/inference/` canonical repo surface |
+| Fleet operating procedure: endpoints, presets, lifecycle, intake, forks, upgrades, incidents, ComfyUI co-tenancy | `setup/agents/skills/inference/` |
 | Eastself training workflow | `/home/yeowool/Eastself/` canonical guide or repo surface |
 
 Do not recreate `inference/` notes for these facts.

@@ -32,6 +32,34 @@ The split keeps lifecycle/chat in one state owner while proxy workers scale enco
 `/v1/models` includes unloaded models; check `active` and `status.value`.
 Chat, embedding, rerank, and `/props` may cold-load; inspect with `/props?model=ALIAS&autoload=false`.
 
+## Mangchi Remote Backends
+
+Models with `backend: vllm-remote` remain part of Grimoire's registry and public
+API, but their process and GPU memory live on Mangchi. A remote entry contains:
+
+| Field | Meaning |
+| --- | --- |
+| `remote-agent-url` | Mangchi residency agent origin, normally `http://mangchi.lost.plus:9700` |
+| `remote-model-id` | Launch-spec name understood by the residency agent |
+| `remote-url` | vLLM origin used for inference after the model is resident |
+| `backend-model-id` | Native model ID written into forwarded OpenAI requests |
+
+`switch` and cold-load call the agent's `/models/<id>/load`; `stop` calls
+`/models/<id>/unload`. Mangchi owns its 110 GiB residency budget, LRU eviction,
+and launch health. Remote models never consume Grimoire GPU allocation or use
+llama.cpp slot persistence. Grimoire keeps client authentication and strips its
+credentials before forwarding requests.
+
+From Grimoire, inspect the agent without loading anything:
+
+```bash
+curl -fsS http://mangchi.lost.plus:9700/healthz
+curl -fsS http://mangchi.lost.plus:9700/status | jq
+```
+
+The agent trusts the configured private source CIDRs and has no application
+token. Never publish port 9700 or a vLLM port to the public internet.
+
 ## Presets
 
 A gateway preset is a saved workload topology in host `state/presets.json` (container `/var/lib/grimoire/presets.json`):
@@ -61,7 +89,7 @@ operation. Never edit/delete those files without explicit request and exact-diff
 Before an irreversible modification:
 
 1. Show the exact definition/code change and obtain explicit approval.
-2. Ask whether to update `~/setup/agents/skills/grimoire/` references in the
+2. Ask whether to update `~/setup/agents/skills/inference/` references in the
    same change.
 
 Prefer the API after approval; direct JSON/Python edits require specific approval.

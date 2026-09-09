@@ -1,17 +1,14 @@
 ---
-name: grimoire
-version: 1.0
-description: "Operate and develop the fleet-only Grimoire multi-GPU inference system. Use whenever work involves the grimoire host, chat.lost.plus, /home/yeowool/grimoire, gateway or OpenAI-compatible endpoints, model loading and eviction, presets, the model registry, GGUF/PEFT/LoRA intake, the forked llama.cpp webui, the TurboQuant backend, ComfyUI or its MCP companion, deployment, GPU allocation, or inference incidents."
-argument-hint: "Operational task, model/preset name, or incident"
-audience: fleet
+name: inference
+description: "Operate and develop the fleet inference system across Grimoire and Mangchi. Use for chat.lost.plus, /home/yeowool/inference, gateway or remote-backend routing, model lifecycle, presets, registry and model intake, llama.cpp or vLLM engines, ComfyUI co-tenancy, deployment, GPU allocation, or inference incidents."
 ---
 
-# Grimoire
+# Inference
 
 ## Before Work
 
 1. Load `fleet`; use its SSH/tmux procedure unless already on `grimoire`.
-2. Read `/home/yeowool/grimoire/AGENTS.md`; preserve dirty worktrees.
+2. Read `/home/yeowool/inference/AGENTS.md`; preserve dirty worktrees.
 3. Trust, in order: live authenticated service and installed unit; current
    code/config/state; accepted repo records.
 4. Resolve contradictions before rebuilding or mutating state.
@@ -39,7 +36,7 @@ curl -fsS -H "Authorization: Bearer $GRIMOIRE_API_KEY" "$GRIMOIRE_ORIGIN/presets
 
 | When the task involves… | Read |
 | --- | --- |
-| Client URLs, model discovery, load/unload/switch behavior, GPU placement or eviction, preset creation/activation, or predicting which models stop/start | [gateway-presets.md](references/gateway-presets.md) |
+| Client URLs, model discovery, local or remote load/unload/switch behavior, GPU placement or eviction, Mangchi residency, preset creation/activation, or predicting which models stop/start | [gateway-presets.md](references/gateway-presets.md) |
 | Adding, replacing, deleting, or accepting a GGUF, Hugging Face model, checkpoint, adapter, or LoRA; syncing live and tracked registries | [model-intake.md](references/model-intake.md) |
 | Runtime ownership, the webui/engine split, fork/upstream differences, DFlash canaries, Python gateway edits, webui/engine updates, or Docker/Compose/systemd changes | [architecture-upgrades.md](references/architecture-upgrades.md) |
 | ComfyUI service/UI, image models/workflows/custom nodes, GPU 1 co-tenancy, or the ComfyUI MCP tunnel | [comfyui.md](references/comfyui.md) |
@@ -50,6 +47,7 @@ Open every matching row.
 ## Before Any Mutation
 
 1. Capture preset, status, fixed map, GPU state, and worktree state.
+   For a Mangchi model, also capture `http://mangchi.lost.plus:9700/status`.
 2. Predict stops, starts, moves, and locks.
 3. Change the owning layer only.
 4. Verify response body, `/status`, GPU/process state, and logs.
