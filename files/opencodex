@@ -320,13 +320,17 @@ def desired_opencodex_config(
                     "liveModels": True,
                 }
             )
+            narrowed = _catalog_selected_models(name)
+            if narrowed is not None:
+                provider["selectedModels"] = narrowed
+            else:
+                provider.pop("selectedModels", None)
         # Never pin a model: a launch names the one it wants, and with
         # liveModels the proxy serves each provider's full rotating fleet
         # rather than a profile-mapped subset. Popping rather than merely
         # not writing is what retires a pin an older release left behind.
         provider.pop("defaultModel", None)
         provider.pop("models", None)
-        provider.pop("selectedModels", None)
         providers[name] = provider
 
     # Bind loopback. A non-loopback bind makes OpenCodex refuse to install or
@@ -887,6 +891,26 @@ def provider_capability_view(timeout: float = 1.5) -> dict[str, Any]:
     ):
         return {}
     return payload
+
+
+def _catalog_selected_models(provider: str) -> list[str] | None:
+    """Sorted model ids a provider's last successful refresh kept.
+
+    The ocx proxy runs its own live /models discovery and would happily
+    re-list models the providers module filtered out of every other mirror
+    (the grimoire eastself checkpoints). Feeding the providers-owned,
+    already-filtered inventory back as the proxy's selectedModels allowlist
+    narrows what ships to Codex's catalog and /v1/models to the same set.
+    None means no usable snapshot, so the caller drops the key and the proxy
+    exposes its full live catalog instead of emptying it.
+    """
+    view = provider_capability_view()
+    providers = view.get("providers", {})
+    snapshot = providers.get(provider) if isinstance(providers, dict) else None
+    models = snapshot.get("models") if isinstance(snapshot, dict) else None
+    if not isinstance(models, dict) or not models:
+        return None
+    return sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
 
 
 def model_efforts(info: dict[str, Any]) -> list[str]:
