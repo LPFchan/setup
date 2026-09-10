@@ -39,6 +39,10 @@ source "$ROOT/files/tmux.sh"
     || fail "tmux extended key format is not guarded for versions before 3.5"
 [[ "$BLOCK_CONTENT" == *'bind c new-window -c ~'* ]] \
     || fail "tmux prefix-c does not create windows in home"
+[[ "$BLOCK_CONTENT" == *'bind -n WheelUpPane if-shell -F "#{||:#{alternate_on},#{mouse_any_flag}}" { send-keys -M } { copy-mode -e }'* ]] \
+    || fail "tmux wheel-up does not enter copy-mode in shell panes"
+[[ "$BLOCK_CONTENT" == *'bind -n WheelDownPane if-shell -F "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } { send-keys -X -N 3 scroll-down }'* ]] \
+    || fail "tmux wheel-down does not scroll forward in copy-mode"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}"'* ]] \
     || fail "tmux tab dragging does not capture a stable source window"
 [[ "$BLOCK_CONTENT" == *'bind -n MouseDrag1Status run-shell -C -t = '*'#{@setup-drag-window}'* ]] \
@@ -105,6 +109,8 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
     right_default_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusDefault[[:space:]]' || true)
     right_left_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root MouseDown3StatusLeft[[:space:]]' || true)
     new_window_binding=$("$tmux_bin" -L "$test_server" list-keys -T prefix | grep -E ' prefix c[[:space:]]' || true)
+    wheel_up_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root WheelUpPane[[:space:]]' || true)
+    wheel_down_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root WheelDownPane[[:space:]]' || true)
     double_tab_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root DoubleClick1Status[[:space:]]' || true)
     double_empty_binding=$("$tmux_bin" -L "$test_server" list-keys -T root | grep -E ' root DoubleClick1StatusDefault[[:space:]]' || true)
     copy_drag_binding=$("$tmux_bin" -L "$test_server" list-keys -T copy-mode | grep -E ' copy-mode MouseDragEnd1Pane[[:space:]]' || true)
@@ -159,6 +165,12 @@ if tmux_bin=$(command -v tmux 2>/dev/null); then
         || fail "tmux did not install the persistent hostname menu: '$right_left_binding'"
     [[ "$new_window_binding" == *"new-window -c $HOME"* ]] \
         || fail "tmux prefix-c does not create windows in home: '$new_window_binding'"
+    [[ "$wheel_up_binding" == *'copy-mode -e'* \
+       && "$wheel_up_binding" == *'send-keys -M'* ]] \
+        || fail "tmux did not install the root wheel-up binding: '$wheel_up_binding'"
+    [[ "$wheel_down_binding" == *'send-keys -M'* \
+       && "$wheel_down_binding" == *'scroll-down'* ]] \
+        || fail "tmux did not install the root wheel-down binding: '$wheel_down_binding'"
     [[ "$double_tab_binding" == *'kill-window -t ='* ]] \
         || fail "tmux did not install tab double-click close: '$double_tab_binding'"
     [[ "$double_empty_binding" == *'new-window -a'* \

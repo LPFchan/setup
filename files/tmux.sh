@@ -46,6 +46,13 @@ set -g focus-events on
 # Scrollback is allocated lazily, so this caps rather than reserves; a pane that
 # fills it costs a few hundred MB.
 set -g history-limit 2000000
+# Root-table wheel bindings: outside the alternate screen, wheel-up enters
+# copy-mode (auto-exits back at the bottom); wheel-down scrolls forward and
+# exits. tmux 3.7 no longer ships these, and the declared tmux-mighty-scroll
+# plugin that used to provide them is not installed, so without these
+# bindings trackpad scroll-up in a plain shell pane does nothing.
+bind -n WheelUpPane if-shell -F "#{||:#{alternate_on},#{mouse_any_flag}}" { send-keys -M } { copy-mode -e }
+bind -n WheelDownPane if-shell -F "#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } { send-keys -X -N 3 scroll-down }
 bind c new-window -c ~
 bind -n MouseDown1Status set-option -t = -F @setup-drag-window "#{window_id}" \; switch-client -t =
 bind -n MouseDrag1Status run-shell -C -t = "swap-window -d -s \"#{@setup-drag-window}\" -t \"#{window_id}\""
