@@ -14,7 +14,7 @@ The split keeps lifecycle/chat in one state owner while proxy workers scale enco
 | Route | Meaning | Auth |
 | --- | --- | --- |
 | `GET /health` | Proxy liveness only | none |
-| `GET /v1/models` | Registry plus active/status metadata | API |
+| `GET /v1/models` | Registry plus active/status metadata; `?refresh_remote=true` actively probes remote health | API |
 | `GET /status` | Processes, ports, GPUs, fixed map | API |
 | `GET /models` | Registry plus active/fixed summary | API |
 | `POST /switch/{model}` | Load model | admin |
@@ -49,6 +49,12 @@ API, but their process and GPU memory live on Mangchi. A remote entry contains:
 and launch health. Remote models never consume Grimoire GPU allocation or use
 llama.cpp slot persistence. Grimoire keeps client authentication and strips its
 credentials before forwarding requests.
+
+Opening the webui model selector requests `/v1/models?refresh_remote=true`.
+Grimoire first checks the residency agent, then the remote vLLM `/health`
+endpoint. Confirmed health or confirmed absence/death replaces the displayed
+status. Timeouts, transport failures, and incomplete responses keep the last
+known value, so an ambiguous check does not turn a model offline.
 
 From Grimoire, inspect the agent without loading anything:
 
