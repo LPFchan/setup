@@ -150,6 +150,7 @@ assert openrouter_server == {
     'auth': {'type': 'auth_json', 'provider': 'openrouter'},
     'registry_enabled': True,
     'models': [],
+    'model_exclude_prefixes': [],
 }
 m.cache_set('openrouter', 'fixture-openrouter-token')
 assert m.get_auth(openrouter_server['auth']) == ('api_key', 'fixture-openrouter-token')
@@ -432,6 +433,23 @@ failed_refresh = __import__('subprocess').run(
 assert CapabilityHandler.calls == 2, CapabilityHandler.calls
 assert open('$HOME/.config/providers/capabilities.json', 'rb').read() == capability_bytes_before_failed_refresh
 server.shutdown()
+# Registry-owned model_exclude_prefixes removes matching ids from a live
+# refresh before any mirror sees them. The provider's other models pass
+# through unchanged.
+m.cache_set('demo', 'demo-key')
+m.fetch_models = lambda base, auth: {'data': [
+    {'id': 'eastself-a'}, {'id': 'eastself-b'}, {'id': 'keep-1'},
+]}
+demo_exclude = copy.deepcopy(servers['demo'])
+demo_exclude['model_exclude_prefixes'] = ['eastself-']
+excluded_models = m.refresh_server('demo', demo_exclude)
+assert list(excluded_models) == ['keep-1'], excluded_models
+assert list(m.load_json(m.OPENCODE_PATH)['provider']['demo']['models']) == ['keep-1']
+# A filter that removes every model is treated as an empty refresh and does
+# not replace the last known inventory.
+m.fetch_models = lambda base, auth: {'data': [{'id': 'eastself-a'}]}
+assert m.refresh_server('demo', demo_exclude) is False
+assert list(m.load_json(m.OPENCODE_PATH)['provider']['demo']['models']) == ['keep-1']
 m._sync_pi_models_mirror(canonical_servers, {'openrouter': openrouter_models})
 assert m.load_json(m.PI_MODELS_PATH)['providers']['openrouter']['models'] == [
     {

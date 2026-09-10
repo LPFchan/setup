@@ -1407,6 +1407,21 @@ def refresh_server(name, cfg):
     if not models_list:
         print(f"  Warning: no models returned for {name}", file=sys.stderr)
         return False
+    exclude_prefixes = tuple(
+        prefix for prefix in cfg.get("model_exclude_prefixes", []) if prefix
+    )
+    if exclude_prefixes:
+        before = len(models_list)
+        models_list = [
+            m for m in models_list
+            if not str(m.get("id", "")).startswith(exclude_prefixes)
+        ]
+        excluded = before - len(models_list)
+        if excluded:
+            print(f"  {name}: {excluded} models excluded by registry prefix", file=sys.stderr)
+        if not models_list:
+            print(f"  Warning: all models excluded by prefix for {name}", file=sys.stderr)
+            return False
     models = {}
     for m in models_list:
         model_id = m.get("id", "")
@@ -1503,6 +1518,7 @@ def _servers_from_registry(registry):
             "auth": {"type": "auth_json", "provider": auth_key},
             "registry_enabled": provider.get("enabled") is True,
             "models": provider.get("models", []),
+            "model_exclude_prefixes": provider.get("model_exclude_prefixes", []),
         }
     return servers
 
@@ -1886,6 +1902,12 @@ def _validate_registry(data):
                 model_ids.append(model["id"])
             if len(model_ids) != len(set(model_ids)):
                 raise ValueError(f"duplicate static model for {provider_name}")
+            exclude_prefixes = provider.get("model_exclude_prefixes", [])
+            if not isinstance(exclude_prefixes, list):
+                raise ValueError(f"model_exclude_prefixes for {provider_name} must be a list")
+            for prefix in exclude_prefixes:
+                if not isinstance(prefix, str) or not prefix:
+                    raise ValueError(f"invalid model_exclude_prefixes entry for {provider_name}")
         elif auth.get("type") != "oauth" or not isinstance(auth.get("provider"), str):
             raise ValueError(f"invalid OAuth descriptor for {provider_name}")
     return data

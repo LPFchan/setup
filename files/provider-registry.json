@@ -27,7 +27,10 @@
         "store": "opencode",
         "key": "grimoire"
       },
-      "enabled": true
+      "enabled": true,
+      "model_exclude_prefixes": [
+        "eastself-"
+      ]
     },
     "crofai": {
       "provider_type": "OpenAICompatible",
