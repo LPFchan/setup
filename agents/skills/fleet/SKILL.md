@@ -81,3 +81,4 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 - hosts artmu-bench at artmu.lost.plus (repo `~/artmu-bench`)
 - hosts censor at censor.lost.plus (repo `~/censor`)
 - hosts Photopeace at photopeace.lost.plus (repo `~/photopeace`)
+- hosts Coverse at coverse.lost.plus (repo `~/coverse`)
