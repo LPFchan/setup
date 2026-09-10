@@ -37,6 +37,7 @@ UI, and system-prompt presets. Never replace it wholesale from upstream.
 | Registry/preset | API update; reload affected active models |
 | Compose env/mount | Recreate through the installed service |
 | Engine pin/flags/patches/image deps | Rebuild image, then recreate |
+| Mangchi vLLM pin/patch/image deps | Build from the inference repo root, then restart the residency agent and reload affected models |
 | Model files | Validate and load; no rebuild |
 
 ## Webui Update
@@ -67,6 +68,26 @@ UI, and system-prompt presets. Never replace it wholesale from upstream.
 
 Read `systemctl cat grimoire.service` before deployment; installed unit state
 outranks repo-local unit files.
+
+## Mangchi vLLM Image Update
+
+The Mangchi image applies repo-owned patches from `patches/mangchi-vllm/` to
+the exact vLLM SHA pinned in `docker/mangchi-vllm/Dockerfile`. Build from the
+inference repo root so Docker can read both the image files and patch directory:
+
+```bash
+DOCKER_BUILDKIT=1 docker build \
+  -t mangchi-vllm:thor-qsa-fp8-5fd5dd5 \
+  -f docker/mangchi-vllm/Dockerfile .
+```
+
+Do not build while a large model is resident. After rebuilding, restart the
+residency agent so it reloads `etc/mangchi-agent.json`, then unload and reload
+each affected model. Verify a streamed chat response contains partial
+`prompt_progress`, cumulative `timings`, and final `timings`. The current patch
+provides the live web UI metrics; `--enable-per-request-metrics` and
+`--enable-prompt-tokens-details` retain vLLM's native final metrics and cached
+token details.
 
 Native DFlash canaries use
 `/tmp/spec-analysis/bee-shallow/build/bin/llama-server`; with
