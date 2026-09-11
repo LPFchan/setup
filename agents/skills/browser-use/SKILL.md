@@ -205,12 +205,12 @@ When enabled, search `$BH_AGENT_WORKSPACE/domain-skills/<host>/` before inventin
 
 Headless hosts have no GUI Chrome. A dedicated headless Chrome runs as a
 user systemd service on grimoire (`browser-use-chrome.service`, CDP on
-127.0.0.1:9222). The daemon's auto-discovery does not find it (Chrome
+127.0.0.1:9223). The daemon's auto-discovery does not find it (Chrome
 147+ no longer writes DevToolsActivePort where the scanner looks), so
 always set the CDP endpoint explicitly:
 
 ```bash
-BU_CDP_URL=http://127.0.0.1:9222 browser-use <<'PY'
+BU_CDP_URL=http://127.0.0.1:9223 browser-use <<'PY'
 new_tab("https://example.com")
 print(page_info())
 PY
