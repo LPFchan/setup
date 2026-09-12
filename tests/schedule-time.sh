@@ -12,8 +12,20 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 SYSTEMCTL_CALLS="$TMP/systemctl-calls"
 : > "$SYSTEMCTL_CALLS"
+export SYSTEMCTL_CALLS
 uname() { echo Linux; }
-systemctl() { printf '%s\n' "$*" >> "$SYSTEMCTL_CALLS"; }
+# cmd_schedule now delegates to the shared schedule helper, which runs as a
+# subprocess and cannot see shell functions. Stub systemctl as an executable
+# on PATH so the helper's calls are intercepted too.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/systemctl" <<'EOF'
+#!/usr/bin/env zsh
+printf '%s\n' "$*" >> "$SYSTEMCTL_CALLS"
+EOF
+chmod +x "$TMP/bin/systemctl"
+ln -sf "$ROOT/bin/schedule" "$TMP/bin/schedule"
+export PATH="$TMP/bin:$PATH"
+export SCHEDULE_USER_DIR="$HOME/.config/systemd/user"
 
 cmd_schedule > "$TMP/linux-out"
 timer="$HOME/.config/systemd/user/setup-update.timer"

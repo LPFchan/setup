@@ -1301,25 +1301,6 @@ cmd_doctor() {
     return "$missing"
 }
 
-AUTOUPDATE_SERVICE_UNIT="[Unit]
-Description=Daily setup update check
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/setup --batch update
-"
-
-AUTOUPDATE_TIMER_UNIT="[Unit]
-Description=Daily setup update
-
-[Timer]
-OnCalendar=*-*-* 06:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-"
-
 cmd_schedule() {
     if [[ "${1:-}" == "status" ]]; then
         shift
@@ -1365,12 +1346,17 @@ PLIST
         launchctl bootstrap "gui/$_uid" "$plist" 2>/dev/null || true
         echo "setup auto-update scheduled daily at 06:00 (launchd)"
     else
-        local dir="$HOME/.config/systemd/user"
-        mkdir -p "$dir"
-        echo "$AUTOUPDATE_SERVICE_UNIT" > "$dir/setup-update.service"
-        echo "$AUTOUPDATE_TIMER_UNIT" > "$dir/setup-update.timer"
-        systemctl --user daemon-reload
-        systemctl --user enable --now setup-update.timer
+        # Render + enable via the shared schedule helper. The timer needs
+        # Persistent=true so a missed 06:00 run fires at next login.
+        local schedule_bin extra
+        schedule_bin=$(_resolve_bin schedule)
+        extra=$(mktemp)
+        printf 'Persistent=true\n' > "$extra"
+        "$schedule_bin" install-timer user setup-update "Daily setup update" \
+            "%h/.local/bin/setup --batch update" "*-*-* 06:00:00" "" "$extra"
+        local rc=$?
+        rm -f "$extra"
+        (( rc == 0 )) || return "$rc"
         echo "setup auto-update scheduled daily at 06:00 (systemd)"
     fi
 }
@@ -1408,22 +1394,6 @@ cmd_schedule_status() {
     return 1
 }
 
-systemctl_inactive_state() {
-    local state="$1" rc="$2"
-    case "$state:$rc" in
-        inactive:3|failed:3) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-systemctl_disabled_state() {
-    local state="$1" rc="$2"
-    case "$state:$rc" in
-        disabled:1) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 cmd_unschedule() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         local plist="$HOME/Library/LaunchAgents/com.lost.plus.setup-update.plist"
@@ -1447,29 +1417,7 @@ cmd_unschedule() {
         rm -f "$plist" || return 1
         echo "setup auto-update unscheduled"
     else
-        local timer="$HOME/.config/systemd/user/setup-update.timer"
-        local service="$HOME/.config/systemd/user/setup-update.service"
-        if ! systemctl --user disable --now setup-update.timer; then
-            # A failed disable may mean the desired state already holds, but
-            # quiet nonzero statuses are ambiguous with D-Bus/user-manager
-            # errors. Accept only successful textual queries with documented,
-            # explicitly inactive + disabled terminal values.
-            local active_state enabled_state active_rc enabled_rc
-            if active_state=$(systemctl --user is-active setup-update.timer 2>/dev/null); then active_rc=0; else active_rc=$?; fi
-            if enabled_state=$(systemctl --user is-enabled setup-update.timer 2>/dev/null); then enabled_rc=0; else enabled_rc=$?; fi
-            if systemctl_inactive_state "$active_state" "$active_rc" \
-               && systemctl_disabled_state "$enabled_state" "$enabled_rc"; then
-                :
-            else
-                echo "setup: failed to disable auto-update timer; state indeterminate or still enabled/active; retaining $service and $timer" >&2
-                return 1
-            fi
-        fi
-        rm -f "$service" "$timer" || return 1
-        systemctl --user daemon-reload || {
-            echo "setup: removed units but daemon-reload failed" >&2
-            return 1
-        }
+        "$(_resolve_bin schedule)" uninstall-timer user setup-update
         echo "setup auto-update unscheduled"
     fi
 }
