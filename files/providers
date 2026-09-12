@@ -95,6 +95,16 @@ def _schedule_bin():
     return os.path.expanduser("~/.local/bin/schedule")
 
 
+def _run_schedule(*args):
+    """Run the shared schedule helper, or explain how to install it."""
+    path = _schedule_bin()
+    if not os.access(path, os.X_OK):
+        raise SystemExit(
+            f"schedule helper not found at {path}; run: setup install schedule"
+        )
+    return os.spawnl(os.P_WAIT, path, "schedule", *args)
+
+
 def load_json(path):
     with open(path) as f:
         return json.load(f)
@@ -1795,18 +1805,17 @@ def cmd_schedule_enable():
             if r.stderr:
                 print(r.stderr.decode().rstrip(), file=sys.stderr)
     else:
-        # Delegate unit render + enable to the shared schedule helper. Run it
-        # directly (not via subprocess.run) so tests that stub subprocess.run
-        # can still intercept the helper's own systemctl calls.
+        # Delegate unit render + enable to the shared schedule helper.
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as tf:
             tf.write("Persistent=true\n")
             timer_extra = tf.name
         try:
-            rc = os.spawnlp(os.P_WAIT, _schedule_bin(), "schedule",
-                            "install-timer", "user", "providers",
-                            "Refresh provider model list from configured providers",
-                            script_path, "hourly", "", timer_extra)
+            rc = _run_schedule(
+                "install-timer", "user", "providers",
+                "Refresh provider model list from configured providers",
+                script_path, "hourly", "", timer_extra,
+            )
         finally:
             os.unlink(timer_extra)
         if rc:
@@ -2185,8 +2194,7 @@ def cmd_schedule_disable():
             os.remove(plist_path)
         print("providers launchd schedule disabled")
     else:
-        rc = os.spawnlp(os.P_WAIT, _schedule_bin(), "schedule",
-                        "uninstall-timer", "user", "providers")
+        rc = _run_schedule("uninstall-timer", "user", "providers")
         if rc:
             raise SystemExit(rc)
         print("providers schedule disabled")
@@ -2207,8 +2215,7 @@ def cmd_schedule_status():
         else:
             print("schedule: not installed")
     else:
-        os.spawnlp(os.P_WAIT, _schedule_bin(), "schedule",
-                   "status", "user", "providers")
+        _run_schedule("status", "user", "providers")
 def _parse_capability_command(args):
     provider = None
     model = None

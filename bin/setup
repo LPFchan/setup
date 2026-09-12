@@ -93,6 +93,18 @@ _resolve_bin() {
     fi
 }
 
+# The shared systemd helper is its own module, so it can be absent on a
+# machine that only installed setup. Report that the way cmd_update_harnesses
+# reports a missing harnesses module, instead of "command not found".
+_resolve_schedule_bin() {
+    local bin; bin=$(_resolve_bin schedule)
+    if [[ "$bin" == schedule ]] && ! command -v schedule >/dev/null 2>&1; then
+        printf "%s\n" "schedule module not installed; run: setup install schedule" >&2
+        return 1
+    fi
+    printf "%s\n" "$bin"
+}
+
 module_enable_cmd() {
     local bin
     case "$1" in
@@ -1349,7 +1361,7 @@ PLIST
         # Render + enable via the shared schedule helper. The timer needs
         # Persistent=true so a missed 06:00 run fires at next login.
         local schedule_bin extra
-        schedule_bin=$(_resolve_bin schedule)
+        schedule_bin=$(_resolve_schedule_bin) || return 1
         extra=$(mktemp)
         printf 'Persistent=true\n' > "$extra"
         "$schedule_bin" install-timer user setup-update "Daily setup update" \
@@ -1417,7 +1429,9 @@ cmd_unschedule() {
         rm -f "$plist" || return 1
         echo "setup auto-update unscheduled"
     else
-        "$(_resolve_bin schedule)" uninstall-timer user setup-update || return 1
+        local schedule_bin
+        schedule_bin=$(_resolve_schedule_bin) || return 1
+        "$schedule_bin" uninstall-timer user setup-update || return 1
         echo "setup auto-update unscheduled"
     fi
 }

@@ -40,6 +40,15 @@ grep -qx -- '--user daemon-reload' "$SYSTEMCTL_CALLS" \
 grep -qx -- '--user enable --now setup-update.timer' "$SYSTEMCTL_CALLS" \
     || fail "Linux timer was not enabled"
 
+# With the helper absent, cmd_schedule must say how to install it rather than
+# dying with "command not found".
+missing_out="$TMP/missing-err"
+if PATH="/usr/bin:/bin" cmd_schedule 2> "$missing_out"; then
+    fail "cmd_schedule succeeded without the schedule helper"
+fi
+grep -q 'run: setup install schedule' "$missing_out" \
+    || fail "missing schedule helper did not name the install command"
+
 LAUNCHCTL_CALLS="$TMP/launchctl-calls"
 : > "$LAUNCHCTL_CALLS"
 uname() { echo Darwin; }
