@@ -1,0 +1,194 @@
+#!/usr/bin/env zsh
+# schedule — shared systemd timer helper + fzf registry/conductor for the
+# fleet’s scheduled jobs.
+#
+# One canonical implementation of the systemd control plane (unit render,
+# daemon-reload, enable/disable, status probe) that the setup, providers,
+# backup, system-updates, and kernel-simmer tools call instead of
+# hand-rolling their own. Timers keep their per-tool content (resource
+# limits, masking, holds) — only the plumbing is shared.
+#
+# With no arguments (and a terminal + fzf) it opens the registry/conductor
+# menu over every timer on the machine.
+
+# Isolate from the caller's zsh startup (options, aliases, functions, modules).
+# The helper is invoked from interactive shells, tests, and systemd contexts;
+# user startup files must not change its behavior. -L localizes the emulate,
+# -R resets to zsh defaults.
+emulate -LR zsh
+set -u
+
+prog="${0:t}"
+
+fail() { echo "$prog: $*" >&2; exit 1; }
+
+# --- scope handling ---------------------------------------------------
+# scope is "user" (~/.config/systemd/user) or "system" (/etc/systemd/system).
+_scope_dir() {
+    case "$1" in
+        user)   printf "%s\n" "${SCHEDULE_USER_DIR:-$HOME/.config/systemd/user}" ;;
+        system) printf "%s\n" "${SCHEDULE_SYSTEM_DIR:-/etc/systemd/system}" ;;
+        *) return 1 ;;
+    esac
+}
+
+_systemctl() {
+    local scope="$1"; shift
+    if [[ "$scope" == "user" ]]; then
+        systemctl --user "$@"
+    else
+        systemctl "$@"
+    fi
+}
+
+# --- unit rendering ---------------------------------------------------
+# render-service SCOPE NAME DESCRIPTION EXECSTART [EXTRA-SERVICE-LINES-FILE]
+# render-timer  SCOPE NAME DESCRIPTION ONCALENDAR [EXTRA-TIMER-LINES-FILE]
+# The optional file holds extra lines appended to the [Service]/[Timer]
+# section, so a tool can inject resource limits or RandomizedDelaySec
+# without owning the skeleton.
+_render_service() {
+    emulate -L zsh -o no_glob
+    local desc="$1" exec="$2" extra="$3"
+    cat <<EOF
+[Unit]
+Description=$desc
+
+[Service]
+Type=oneshot
+ExecStart=$exec
+EOF
+    if [[ -n "$extra" && -f "$extra" ]]; then
+        cat "$extra"
+    fi
+    return 0
+}
+
+_render_timer() {
+    emulate -L zsh -o no_glob
+    local desc="$1" oncal="$2" extra="$3"
+    cat <<EOF
+[Unit]
+Description=$desc
+
+[Timer]
+OnCalendar=$oncal
+EOF
+    if [[ -n "$extra" && -f "$extra" ]]; then
+        cat "$extra"
+    fi
+    cat <<EOF
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+cmd_render() {
+    local kind="$1" scope="$2" name="$3" desc="$4" a5="${5:-}" a6="${6:-}"
+    case "$kind" in
+        service) _render_service "$desc" "$a5" "${a6:-}" ;;
+        timer)   _render_timer "$desc" "$a5" "${a6:-}" ;;
+        *) fail "render: kind must be service|timer" ;;
+    esac
+}
+
+# --- install / uninstall ----------------------------------------------
+# install-timer SCOPE NAME DESCRIPTION EXECSTART ONCALENDAR \
+#               [SERVICE-EXTRA-FILE] [TIMER-EXTRA-FILE]
+cmd_install_timer() {
+    local scope="$1" name="$2" desc="$3" exec="$4" oncal="$5"
+    local svc_extra="${6:-}" timer_extra="${7:-}"
+    local dir; dir=$(_scope_dir "$scope") || fail "bad scope: $scope"
+    mkdir -p "$dir" || fail "cannot create $dir"
+    _render_service "$desc" "$exec" "$svc_extra" > "$dir/$name.service" || return 1
+    _render_timer "$desc" "$oncal" "$timer_extra" > "$dir/$name.timer" || return 1
+    _systemctl "$scope" daemon-reload || fail "daemon-reload failed"
+    _systemctl "$scope" enable --now "$name.timer" || fail "enable --now $name.timer failed"
+    echo "$prog: installed + enabled $name.timer ($scope, $oncal)"
+}
+
+# uninstall-timer SCOPE NAME
+cmd_uninstall_timer() {
+    local scope="$1" name="$2"
+    local dir; dir=$(_scope_dir "$scope") || fail "bad scope: $scope"
+    _systemctl "$scope" disable --now "$name.timer" >/dev/null 2>&1 || true
+    rm -f "$dir/$name.service" "$dir/$name.timer" "$dir/timers.target.wants/$name.timer"
+    _systemctl "$scope" daemon-reload || fail "daemon-reload failed"
+    echo "$prog: uninstalled $name.timer ($scope)"
+}
+
+# --- status ------------------------------------------------------------
+# status SCOPE NAME — one line, exit 0 when enabled+active.
+cmd_status() {
+    local scope="$1" name="$2"
+    local dir; dir=$(_scope_dir "$scope") || fail "bad scope: $scope"
+    [[ -f "$dir/$name.timer" ]] || { echo "$name: not-installed"; return 1; }
+    local enabled active next
+    enabled=$(_systemctl "$scope" is-enabled "$name.timer" 2>/dev/null || echo unknown)
+    active=$(_systemctl "$scope" is-active "$name.timer" 2>/dev/null || echo unknown)
+    next=$(_systemctl "$scope" show -p NextElapseUSecRealtime --value "$name.timer" 2>/dev/null || true)
+    echo "$name: $enabled/$active${next:+ (next: $next)}"
+    [[ "$enabled" == "enabled" && "$active" == "active" ]]
+}
+
+# --- registry / conductor ---------------------------------------------
+# list every timer across both scopes as TSV: scope, name, next, last.
+_list_timers() {
+    local scope
+    for scope in user system; do
+        _systemctl "$scope" list-timers --all --no-legend --no-pager 2>/dev/null \
+            | awk -v s="$scope" '{u=$(NF-1); if (u ~ /\.timer$/) print s"\t"u"\t"$1" "$2" "$3"\t"$(NF)}'
+    done
+}
+
+cmd_list() {
+    printf "%s\t%s\t%s\n" "SCOPE" "TIMER" "NEXT"
+    _list_timers
+}
+
+cmd_menu() {
+    (( $+commands[fzf] )) || fail "fzf not installed; use: $prog list|status|install-timer|uninstall-timer"
+    [[ -t 0 ]] || fail "menu needs a terminal; use: $prog list"
+    local sel
+    sel=$(_list_timers | fzf --prompt="schedule > " --height=60% --reverse \
+            --header="enter=status  ctrl-r=run  ctrl-l=logs" \
+            --expect=enter,ctrl-r,ctrl-l \
+            --delimiter="\t" --with-nth=1,2,3) || return 0
+    local key unit scope
+    key=$(sed -n "1p" <<<"$sel")
+    unit=$(sed -n "2p" <<<"$sel" | cut -f2)
+    scope=$(sed -n "2p" <<<"$sel" | cut -f1)
+    [[ -n "$unit" ]] || return 0
+    case "$key" in
+        ctrl-r) _systemctl "$scope" start "${unit%.timer}.service" ;;
+        ctrl-l) _systemctl "$scope" -u "${unit%.timer}.service" </dev/null 2>&1 | ${PAGER:-less} ;;
+        *)      cmd_status "$scope" "${unit%.timer}" ;;
+    esac
+}
+
+# --- dispatch ----------------------------------------------------------
+main() {
+    local cmd="${1:-menu}"; shift || true
+    case "$cmd" in
+        menu)            cmd_menu "$@" ;;
+        list)            cmd_list "$@" ;;
+        render)          cmd_render "$@" ;;
+        install-timer)   cmd_install_timer "$@" ;;
+        uninstall-timer) cmd_uninstall_timer "$@" ;;
+        status)          cmd_status "$@" ;;
+        *)
+            cat <<EOF >&2
+usage: $prog [command]
+  menu                                   fzf registry/conductor (default)
+  list                                   TSV of all timers (user + system)
+  render service|timer SCOPE NAME DESC ARG [EXTRA-FILE]
+  install-timer SCOPE NAME DESC EXECSTART ONCALENDAR [SVC-X] [TIMER-X]
+  uninstall-timer SCOPE NAME
+  status SCOPE NAME
+EOF
+            exit 2 ;;
+    esac
+}
+
+main "$@"

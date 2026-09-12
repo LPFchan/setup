@@ -10,6 +10,7 @@ gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
 providers	~/.local/bin/providers	script	files/providers.sh
 harnesses	~/.local/bin/harnesses	script	files/harnesses.sh
+schedule	~/.local/bin/schedule	0755	bin/schedule	fleet	linux
 browser-use-chrome	~/.config/systemd/user/browser-use-chrome.service	script	files/browser-use-chrome.sh	fleet	linux
 refresh-models	~/.local/bin/refresh-models	script	files/refresh-models.sh			retired
 backup	~/.local/bin/backup	0755	bin/backup	fleet	linux
