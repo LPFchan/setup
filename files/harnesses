@@ -284,15 +284,32 @@ def _mirror_zshenv(exports):
 
 PROXY_PORT = 10101
 PROXY_UNIT = "opencodex-proxy.service"
+# `ocx service` registers a systemd user unit on Linux and this launchd agent
+# on macOS, so "is the proxy up" is a different question per platform.
+PROXY_LAUNCHD_LABEL = "com.opencodex.proxy"
 
 
 def _proxy_service_active():
     try:
+        if _is_macos():
+            r = subprocess.run(["launchctl", "list"],
+                               capture_output=True, text=True, timeout=10)
+            for line in r.stdout.splitlines():
+                fields = line.split()
+                # "<pid>\t<status>\t<label>"; a loaded-but-stopped agent
+                # carries "-" where the pid would be.
+                if len(fields) == 3 and fields[2] == PROXY_LAUNCHD_LABEL:
+                    return fields[0].isdigit()
+            return False
         r = subprocess.run(["systemctl", "--user", "is-active", PROXY_UNIT],
                            capture_output=True, text=True, timeout=10)
         return r.stdout.strip() == "active"
     except Exception:
         return False
+
+
+def _proxy_service_name():
+    return PROXY_LAUNCHD_LABEL if _is_macos() else PROXY_UNIT
 
 
 def _write_base_url_export():
@@ -313,22 +330,30 @@ def _write_base_url_export():
     # still talk to api.anthropic.com and reject every fleet model. The
     # systemd user manager reads environment.d at startup; set-environment
     # covers the manager that is already running.
+    url = "http://127.0.0.1:%d" % PROXY_PORT
+    if _is_macos():
+        subprocess.run(["launchctl", "setenv", "ANTHROPIC_BASE_URL", url], check=False)
+        print("  set ANTHROPIC_BASE_URL for GUI-launched apps (launchctl setenv)")
+        print("  note: launchctl setenv does not survive a reboot; shells use .zshenv")
+        return
     ENVIRONMENT_D.parent.mkdir(parents=True, exist_ok=True)
-    ENVIRONMENT_D.write_text("ANTHROPIC_BASE_URL=http://127.0.0.1:%d\n" % PROXY_PORT)
+    ENVIRONMENT_D.write_text("ANTHROPIC_BASE_URL=%s\n" % url)
     print("  exported ANTHROPIC_BASE_URL to systemd user units via %s" % ENVIRONMENT_D)
     subprocess.run(["systemctl", "--user", "set-environment",
-                    "ANTHROPIC_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT],
-                   check=False)
+                    "ANTHROPIC_BASE_URL=%s" % url], check=False)
     print("  restart a service to pick it up, e.g. systemctl --user restart t3code.service")
 
 
 def _remove_base_url_export():
     begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
-    if ENVIRONMENT_D.exists():
-        ENVIRONMENT_D.unlink()
-        print("  removed %s" % ENVIRONMENT_D)
-    subprocess.run(["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
-                   check=False)
+    if _is_macos():
+        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
+    else:
+        if ENVIRONMENT_D.exists():
+            ENVIRONMENT_D.unlink()
+            print("  removed %s" % ENVIRONMENT_D)
+        subprocess.run(["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
+                       check=False)
     if not ZSHENV.exists():
         return
     text = ZSHENV.read_text()
@@ -346,15 +371,16 @@ def cmd_proxy(names):
         return 1
     # 'ocx service' installs when absent and repairs an existing service, so it
     # is the idempotent entry point regardless of current state.
-    print("ensuring opencodex proxy service (%s) ..." % PROXY_UNIT)
+    print("ensuring opencodex proxy service (%s) ..." % _proxy_service_name())
     if subprocess.run([ocx, "service"]).returncode != 0:
         eprint("  ocx service install/repair failed; see ~/.opencodex/service.log")
         return 1
     if not _proxy_service_active():
-        eprint("  %s is not active after repair; not writing ANTHROPIC_BASE_URL." % PROXY_UNIT)
+        eprint("  %s is not active after repair; not writing ANTHROPIC_BASE_URL."
+               % _proxy_service_name())
         _remove_base_url_export()
         return 1
-    print("  %s is active (auto-restarts on failure)." % PROXY_UNIT)
+    print("  %s is active (auto-restarts on failure)." % _proxy_service_name())
     # The service auto-restarts, so an unconditional export is safe. It is only
     # written once the proxy is confirmed running, and removed if it is not.
     _write_base_url_export()
