@@ -507,6 +507,12 @@ def _reasoning_from_row(row):
         ("reasoning.supported_efforts", fields.get("supported_efforts")),
         ("supported_reasoning_levels", row.get("supported_reasoning_levels")),
         ("think_efforts.values", (row.get("think_efforts") or {}).get("values") if isinstance(row.get("think_efforts"), dict) else None),
+        # Kimi spells the same list valid_efforts. Both are read rather than
+        # one being normalized into the other: a provider's own labels are
+        # evidence, and guessing which spelling it "meant" is how a ladder
+        # silently goes missing -- k3-256k advertises low/high/max, and with
+        # only the `values` spelling matched it read as no levels at all.
+        ("think_efforts.valid_efforts", (row.get("think_efforts") or {}).get("valid_efforts") if isinstance(row.get("think_efforts"), dict) else None),
     ):
         if value is None:
             continue
@@ -531,8 +537,14 @@ def _reasoning_from_row(row):
             errors.append(f"supported_reasoning_levels: {exc}")
 
     think = row.get("think_efforts")
+    think_default = None
     if think is not None and not isinstance(think, dict):
         errors.append("think_efforts must be an object")
+    elif isinstance(think, dict) and think.get("default_effort") is not None:
+        if isinstance(think["default_effort"], str) and think["default_effort"]:
+            think_default = think["default_effort"]
+        else:
+            errors.append("think_efforts.default_effort must be a non-empty string")
 
     for key in ("reasoning_effort", "custom_reasoning", "supports_reasoning"):
         if key in row:
@@ -573,7 +585,7 @@ def _reasoning_from_row(row):
     result = {
         "support": support,
         "supported_efforts": levels or [],
-        "default_effort": fields.get("default_effort"),
+        "default_effort": fields.get("default_effort") if fields.get("default_effort") is not None else think_default,
         "default_enabled": fields.get("default_enabled"),
         "mandatory": fields.get("mandatory"),
     }

@@ -245,6 +245,30 @@ empty_reasoning = m.normalize_model_row(
     'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'a' * 64,
 )
 assert empty_reasoning['reasoning']['support'] == 'unknown'
+# Kimi names the level list think_efforts.valid_efforts. Reading only the
+# `values` spelling made a model advertising low/high/max look like it had no
+# levels at all, which is indistinguishable from a model that has none.
+kimi_row = m.normalize_model_row(
+    'demo', 'k3-256k', {
+        'id': 'k3-256k', 'supports_reasoning': True,
+        'think_efforts': {
+            'support': True, 'valid_efforts': ['low', 'high', 'max'],
+            'default_effort': 'max',
+        },
+    },
+    'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'b' * 64,
+)
+assert kimi_row['reasoning']['support'] == 'full', 'valid_efforts not read'
+assert kimi_row['reasoning']['supported_efforts'] == ['low', 'high', 'max']
+assert kimi_row['reasoning']['default_effort'] == 'max'
+bad_think = m.normalize_model_row(
+    'demo', 'bad-think', {
+        'id': 'bad-think',
+        'think_efforts': {'valid_efforts': ['low'], 'default_effort': 3},
+    },
+    'https://demo.invalid/models', '2026-08-27T00:00:00Z', 'c' * 64,
+)
+assert bad_think['reasoning']['support'] == 'unknown', 'malformed default passed silently'
 numeric_row = m.normalize_model_row(
     'demo', 'numeric-values', {
         'id': 'numeric-values', 'context_length': '131072',
