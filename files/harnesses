@@ -38,6 +38,7 @@ CLAUDE_SETTINGS = HOME/".claude/settings.json"
 CODEX_CONFIG = HOME/".codex/config.toml"
 T3_SETTINGS = HOME/".t3/userdata/settings.json"
 ZSHENV = HOME/".zshenv"
+ENVIRONMENT_D = HOME/".config/environment.d/10-harnesses-anthropic.conf"
 
 def eprint(*a): print(*a, file=sys.stderr)
 
@@ -307,9 +308,27 @@ def _write_base_url_export():
     ZSHENV.write_text(text)
     print("  exported ANTHROPIC_BASE_URL=http://127.0.0.1:%d in %s" % (PROXY_PORT, ZSHENV))
 
+    # .zshenv only reaches shells. Systemd user services never read it, so a
+    # service-spawned claude (T3 Code's claudeAgent provider is one) would
+    # still talk to api.anthropic.com and reject every fleet model. The
+    # systemd user manager reads environment.d at startup; set-environment
+    # covers the manager that is already running.
+    ENVIRONMENT_D.parent.mkdir(parents=True, exist_ok=True)
+    ENVIRONMENT_D.write_text("ANTHROPIC_BASE_URL=http://127.0.0.1:%d\n" % PROXY_PORT)
+    print("  exported ANTHROPIC_BASE_URL to systemd user units via %s" % ENVIRONMENT_D)
+    subprocess.run(["systemctl", "--user", "set-environment",
+                    "ANTHROPIC_BASE_URL=http://127.0.0.1:%d" % PROXY_PORT],
+                   check=False)
+    print("  restart a service to pick it up, e.g. systemctl --user restart t3code.service")
+
 
 def _remove_base_url_export():
     begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
+    if ENVIRONMENT_D.exists():
+        ENVIRONMENT_D.unlink()
+        print("  removed %s" % ENVIRONMENT_D)
+    subprocess.run(["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
+                   check=False)
     if not ZSHENV.exists():
         return
     text = ZSHENV.read_text()

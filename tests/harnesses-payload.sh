@@ -93,6 +93,11 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": sub
 assert ns["cmd_proxy"]([]) == 0
 zshenv = (HOME/".zshenv").read_text()
 assert "export ANTHROPIC_BASE_URL=http://127.0.0.1:10101" in zshenv
+# Shells read .zshenv; systemd user services do not. T3 Code's claudeAgent is
+# spawned by t3code.service, so the var has to reach the user manager too.
+envd = HOME/".config/environment.d/10-harnesses-anthropic.conf"
+assert envd.exists(), "no environment.d drop-in written for systemd user units"
+assert envd.read_text().strip() == "ANTHROPIC_BASE_URL=http://127.0.0.1:10101"
 
 # inactive service -> export removed, nonzero rc
 def run_inactive(argv, **kw):
@@ -103,6 +108,7 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": s
 assert ns["cmd_proxy"]([]) == 1
 zshenv2 = (HOME/".zshenv").read_text()
 assert "ANTHROPIC_BASE_URL" not in zshenv2, "base-url export left behind on inactive proxy"
+assert not envd.exists(), "environment.d drop-in left behind on inactive proxy"
 print("proxy ok")
 PY
 
