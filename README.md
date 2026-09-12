@@ -67,6 +67,7 @@ Simple modules that copy a managed script or executable to your machine.
 | `service-ctl` | `~/.local/bin/service-ctl` | Fleet-only system service controller |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | GPU fan speed control script |
 | `monitoring` | `~/.local/bin/monitoring` | System monitoring utility |
+| `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `providers`, `backup`, `system-updates`, and `kernel-simmer` all render their timers through it |
 | `backup` | `~/.local/bin/backup` | Restic-based incremental backup script to `bingus` |
 | `system-updates` | `~/.local/bin/system-updates` | Safe daily package updater (Linux only, runs between 03:00–03:30) |
 
@@ -88,6 +89,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
+| `harnesses` | AI harness install, update, per-harness settings, and MCP enrollment (`~/.local/bin/harnesses`) | `files/harnesses.sh` |
 | `providers` | Vault-owned provider API keys: enrollment, local cache, and mirrors into opencode `auth.json`, `.zshenv`, and Hermes `~/.hermes/config.yaml` (live model discovery where available; registry-owned model lists for compatible endpoints without `/models`) (`~/.local/bin/providers`) | `files/providers.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
