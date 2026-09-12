@@ -25,7 +25,7 @@
       "json": {
         "permissions": { "defaultMode": "auto" },
         "attribution": { "commit": "", "pr": "" },
-        "effortLevel": "xhigh"
+        "effortLevel": "high"
       },
       "permissionsAllowAdd": [
         "Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",

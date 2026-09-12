@@ -27,7 +27,7 @@ claude.write_text(json.dumps({
 ns["cmd_settings"]([])
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
-assert d["effortLevel"] == "xhigh", "manifest scalar not applied"
+assert d["effortLevel"] == "high", "manifest scalar not applied"
 allow = d["permissions"]["allow"]
 for keep in ("Read", "mcp__custom__*", "Skill"):
     assert keep in allow, f"existing allow entry {keep} clobbered"
