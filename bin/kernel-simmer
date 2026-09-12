@@ -91,30 +91,21 @@ in_skip() {
     return 1
 }
 
-# --- service + timer unit templates -----------------------------------
+# --- service + timer rendering (via shared schedule helper) ------------
 
-SERVICE_UNIT='[Unit]
-Description=Check and install delayed kernel updates (kernel-simmer)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/kernel-simmer check
-Environment=CONFIG_DIR=/etc/kernel-simmer
-StandardOutput=journal
-StandardError=journal'
-
-TIMER_UNIT='[Unit]
-Description=Weekly kernel-simmer check
-
-[Timer]
-OnCalendar=weekly
-Persistent=true
-RandomizedDelaySec=1h
-
-[Install]
-WantedBy=timers.target'
+schedule_bin() {
+    if [[ -n "${SCHEDULE_BIN:-}" ]]; then
+        printf '%s\n' "$SCHEDULE_BIN"
+        return
+    fi
+    local self; self=$(readlink -f "$0")
+    local candidate="$(dirname "$self")/schedule"
+    if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return
+    fi
+    printf '%s\n' "${HOME}/.local/bin/schedule"
+}
 
 # --- daemon check (invoked by systemd timer) --------------------------
 
@@ -221,13 +212,22 @@ cmd_enable() {
     done
     info "kernel meta-packages held"
 
-    # Install systemd service unit
-    echo "${SERVICE_UNIT}" > /etc/systemd/system/${SERVICE_NAME}
-    info "installed /etc/systemd/system/${SERVICE_NAME}"
-
-    # Install systemd timer unit
-    echo "${TIMER_UNIT}" > /etc/systemd/system/${TIMER_NAME}
-    info "installed /etc/systemd/system/${TIMER_NAME}"
+    # Render + install both units through the shared schedule helper.
+    local sched; sched=$(schedule_bin)
+    local ue se te
+    ue=$(mktemp); se=$(mktemp); te=$(mktemp)
+    printf '%s\n' "After=network-online.target" "Wants=network-online.target" > "$ue"
+    printf '%s\n' "Environment=CONFIG_DIR=/etc/kernel-simmer" "StandardOutput=journal" "StandardError=journal" > "$se"
+    printf '%s\n' "Persistent=true" "RandomizedDelaySec=1h" > "$te"
+    "$sched" render service system kernel-simmer \
+        "Check and install delayed kernel updates (kernel-simmer)" \
+        "/usr/local/bin/kernel-simmer check" "$se" "$ue" \
+        > /etc/systemd/system/${SERVICE_NAME}
+    "$sched" render timer system kernel-simmer \
+        "Weekly kernel-simmer check" "weekly" "$te" \
+        > /etc/systemd/system/${TIMER_NAME}
+    command rm -f "$ue" "$se" "$te"
+    info "installed /etc/systemd/system/${SERVICE_NAME} + ${TIMER_NAME}"
 
     # Ensure default gap
     if [[ ! -f "${GAP_FILE}" ]]; then
