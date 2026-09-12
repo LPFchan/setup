@@ -1040,155 +1040,18 @@ cmd_install() {
 
 # --- AI harness self-updates ----------------------------------------
 #
-# The coding harnesses are not manifest modules: each one installs itself
-# (npm global, vendor curl installer, git checkout + venv) and ships its own
-# updater. So `setup update` does not fetch anything for them — it locates the
-# binary and hands the work to that updater.
-#
-# Resolution cannot rely on PATH alone. The daily timer runs under systemd's
-# user manager, whose PATH holds neither the active node bin directory nor the
-# vendor install prefixes, so every harness carries explicit fallback paths.
+# Harness install/update/settings/MCP enrollment now lives in the harnesses
+# module (~/.local/bin/harnesses; see files/harnesses and
+# files/harnesses-manifest.json). setup update delegates to it here. The
+# per-harness resolution and updater logic moved with it.
 
-HARNESSES="claude codex opencode agy hermes grok kimi muse t3"
-
-harness_update_args() {
-    case "$1" in
-        opencode) echo "upgrade" ;;
-        hermes)   echo "update --yes" ;;   # the only harness that prompts by default
-        # muse has no update subcommand. ~/.local/bin/muse is a launcher that
-        # refreshes itself and the versioned binary beside it, in the background
-        # and at most hourly. harness_update_env forces that check to run now,
-        # in the foreground; --version is the cheapest command that lets the
-        # launcher reach the handoff and exit.
-        muse)     echo "--version" ;;
-        t3)       echo "--yes t3@latest service update" ;;
-        *)        echo "update" ;;
-    esac
-}
-
-# Environment an updater needs, as NAME=VALUE words. Empty for harnesses whose
-# updater is a plain subcommand.
-harness_update_env() {
-    case "$1" in
-        muse) echo "MUSE_SYNC_UPDATE=1" ;;
-    esac
-}
-
-# Node bin directories, newest version first. nvm keeps each release in its own
-# prefix and exports NVM_BIN only to interactive shells. Hosts without nvm may
-# instead unpack an official tarball under /opt; /opt/node is the stable alias
-# that survives version bumps, so it is preferred over the versioned dirs.
-_node_bin_dirs() {
-    [[ -n "${NVM_BIN:-}" && -d "${NVM_BIN:-}" ]] && printf '%s\n' "$NVM_BIN"
-    [[ -d /opt/node/bin ]] && printf '%s\n' /opt/node/bin
-    local dir
-    for dir in "$HOME"/.nvm/versions/node/*/bin(N/) /opt/node-*/bin(N/); do
-        printf '%s\n' "$dir"
-    done | sort -Vr
-}
-
-harness_candidates() {
-    local name="$1"
-    case "$name" in
-        claude)   printf '%s\n' "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" ;;
-        opencode) printf '%s\n' "$HOME/.opencode/bin/opencode" ;;
-        agy)      printf '%s\n' "$HOME/.local/bin/agy" ;;
-        hermes)   printf '%s\n' "$HOME/.local/bin/hermes" ;;
-        grok)     printf '%s\n' "$HOME/.local/bin/grok" "$HOME/.grok/bin/grok" ;;
-        kimi)     printf '%s\n' "${KIMI_CODE_HOME:-$HOME/.kimi-code}/bin/kimi" ;;
-        muse)     printf '%s\n' "$HOME/.local/bin/muse" ;;
-    esac
-    case "$name" in
-        claude|codex)
-            local prefix dir
-            prefix=$(npm config get prefix 2>/dev/null || true)
-            [[ -n "$prefix" && "$prefix" != undefined ]] && printf '%s\n' "$prefix/bin/$name"
-            while IFS= read -r dir; do
-                [[ -n "$dir" ]] && printf '%s\n' "$dir/$name"
-            done < <(_node_bin_dirs)
-            ;;
-    esac
-}
-
-harness_resolve() {
-    local name="$1" candidate
-    # `t3 service update` installs the service when it is absent, so only
-    # resolve its npx runner for an existing T3 Code background service.
-    if [[ "$name" == t3 ]]; then
-        [[ -f "$HOME/.config/systemd/user/t3code.service" ]] || return 1
-        local dir
-        while IFS= read -r dir; do
-            candidate="$dir/npx"
-            if [[ -x "$candidate" ]]; then
-                printf '%s\n' "$candidate"
-                return 0
-            fi
-        done < <(_node_bin_dirs)
-        candidate=$(command -v npx 2>/dev/null || true)
-        if [[ -n "$candidate" && -x "$candidate" ]]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-        return 1
-    fi
-    candidate=$(command -v "$name" 2>/dev/null || true)
-    if [[ -n "$candidate" && -x "$candidate" ]]; then
-        printf '%s\n' "$candidate"
+cmd_update_harnesses() {
+    local bin="$HOME/.local/bin/harnesses"
+    if [[ ! -x "$bin" ]]; then
+        printf "%s\n" "harnesses module not installed; run: setup install harnesses" >&2
         return 0
     fi
-    while IFS= read -r candidate; do
-        if [[ -n "$candidate" && -x "$candidate" ]]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done < <(harness_candidates "$name")
-    return 1
-}
-
-# The harness's own bin directory goes on PATH for the run: codex is a
-# `#!/usr/bin/env node` script that cannot start without the node binary
-# sitting next to it. stdin is closed so no updater can block the timer on a
-# prompt, and a timeout bounds a hung download.
-harness_update_one() {
-    local name="$1" bin="$2" dir
-    dir=$(dirname "$bin")
-    local -a argv
-    local envwords
-    argv=("$bin" $(harness_update_args "$name"))
-    envwords=$(harness_update_env "$name")
-    [[ -z "$envwords" ]] || argv=(env $envwords "${argv[@]}")
-    if command -v timeout >/dev/null 2>&1; then
-        PATH="$dir:$PATH" timeout "${SETUP_HARNESS_TIMEOUT:-900}" "${argv[@]}" </dev/null
-    else
-        PATH="$dir:$PATH" "${argv[@]}" </dev/null
-    fi
-}
-
-# Sets HARNESS_FAILED_NAMES for the caller's summary; returns nonzero if any
-# installed harness failed to update.
-cmd_update_harnesses() {
-    HARNESS_FAILED_NAMES=()
-    local name bin present=0
-    local -a missing
-    missing=()
-    for name in $HARNESSES; do
-        if ! bin=$(harness_resolve "$name"); then
-            missing+=("$name")
-            continue
-        fi
-        present=$((present + 1))
-        echo "Updating harness $name ($bin)"
-        if ! harness_update_one "$name" "$bin"; then
-            echo "Warning: $name self-update failed." >&2
-            HARNESS_FAILED_NAMES+=("$name")
-        fi
-    done
-    if ((present == 0)); then
-        echo "No AI harnesses installed."
-    elif ((${#missing[@]} > 0)); then
-        echo "Not installed, skipped: ${missing[*]}"
-    fi
-    (( ${#HARNESS_FAILED_NAMES[@]} == 0 ))
+    "$bin" update
 }
 
 cmd_update() {
@@ -1329,15 +1192,12 @@ cmd_update() {
         fi
     fi
 
-    HARNESS_FAILED_NAMES=()
+    local harness_failed=0
     if ((want_harnesses == 1)); then
         echo
-        cmd_update_harnesses || true
-        if ((${#HARNESS_FAILED_NAMES[@]} > 0)); then
-            echo "${#HARNESS_FAILED_NAMES[@]} harness(es) could not be updated: ${HARNESS_FAILED_NAMES[*]}" >&2
-        fi
+        cmd_update_harnesses || harness_failed=1
     fi
-    (( failure_count == 0 && ${#HARNESS_FAILED_NAMES[@]} == 0 ))
+    (( failure_count == 0 && harness_failed == 0 ))
 }
 
 cmd_uninstall() {

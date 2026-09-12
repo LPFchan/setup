@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""harnesses — fzf client to install, update, and configure AI coding harnesses.
+
+Absorbs the harness self-update logic formerly bolted onto "setup update"
+(bin/setup) and the retired linux-setup/01-harnesses.md Obsidian doc.
+
+Actions: install | update | settings | mcp. With no argument an fzf menu is
+shown when attached to a terminal.
+
+Secret discovery mirrors the providers module: vaultwarden folder=mcp, item
+name == env var name, token from VAULTWARDEN_SECRETS_TOKEN /
+VAULTWARDEN_MCP_TOKEN, direct MCP-over-HTTP with a non-default User-Agent.
+"""
+
+from __future__ import annotations
+import json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import urllib.error, urllib.request
+
+HOME = pathlib.Path.home()
+HERE = pathlib.Path(__file__).resolve().parent
+
+def _find_manifest():
+    env = os.environ.get("HARNESSES_MANIFEST")
+    candidates = [env, str(HOME/".config/harnesses/manifest.json"),
+                  str(HERE/"harnesses-manifest.json"),
+                  str(HERE.parent/"files/harnesses-manifest.json")]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return pathlib.Path(c)
+    raise SystemExit("harnesses: manifest not found (looked in: %s)" % ", ".join(candidates))
+
+MANIFEST_PATH = _find_manifest()
+MANIFEST = json.loads(MANIFEST_PATH.read_text())
+VAULT_URL = os.environ.get("VAULTWARDEN_MCP_URL", os.environ.get("VAULTWARDEN_URL", "https://vault.lost.plus/mcp"))
+VAULT_FOLDER = "mcp"
+VAULT_TOKEN = os.environ.get("VAULTWARDEN_SECRETS_TOKEN") or os.environ.get("VAULTWARDEN_MCP_TOKEN", "")
+CLAUDE_SETTINGS = HOME/".claude/settings.json"
+CODEX_CONFIG = HOME/".codex/config.toml"
+T3_SETTINGS = HOME/".t3/userdata/settings.json"
+ZSHENV = HOME/".zshenv"
+
+def eprint(*a): print(*a, file=sys.stderr)
+
+def load_json(path):
+    if not os.path.exists(path): return {}
+    try:
+        with open(path) as f: return json.load(f)
+    except json.JSONDecodeError as exc:
+        q = str(path)+".corrupt"; os.replace(path, q)
+        eprint("  %s was corrupt (%s); moved aside and rebuilding" % (path, exc))
+        return {}
+
+def save_json_atomic(path, data):
+    directory = os.path.dirname(path)
+    pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+    try: mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError: mode = 0o600
+    fd, tmp = tempfile.mkstemp(prefix=".harnesses.", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as h:
+            json.dump(data, h, indent=2); h.write("\n"); h.flush(); os.fsync(h.fileno())
+        os.chmod(tmp, mode); os.replace(tmp, path)
+    finally:
+        try: os.unlink(tmp)
+        except FileNotFoundError: pass
+
+def deep_merge(base, overlay):
+    out = dict(base)
+    for k, v in overlay.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+class VaultError(RuntimeError): pass
+
+def _vault_call(tool, arguments):
+    if not VAULT_TOKEN: raise VaultError("vault token not set")
+    body = {"jsonrpc":"2.0","id":id(arguments),"method":"tools/call","params":{"name":tool,"arguments":arguments}}
+    req = urllib.request.Request(VAULT_URL, data=json.dumps(body).encode(), headers={
+        "Authorization": "Bearer "+VAULT_TOKEN, "Content-Type":"application/json",
+        "Accept":"application/json, text/event-stream", "User-Agent":"harnesses/1.0"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read())
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise VaultError("vault unreachable: %s" % exc) from exc
+    result = payload.get("result", {})
+    if result.get("isError"): raise VaultError(str(result))
+    content = result.get("content", [])
+    return content[0].get("text","") if content else ""
+
+def vault_get(item_name):
+    text = _vault_call("get_secret", {"folder":VAULT_FOLDER,"item_name":item_name})
+    if not text: raise VaultError("empty secret for "+item_name)
+    return text.strip()
+
+def _expand(p): return os.path.expanduser(p)
+
+def _node_bin_dirs():
+    dirs = []
+    nvm = os.environ.get("NVM_BIN")
+    if nvm and os.path.isdir(nvm): dirs.append(nvm)
+    if os.path.isdir("/opt/node/bin"): dirs.append("/opt/node/bin")
+    for base in (HOME/".nvm/versions/node", pathlib.Path("/opt")):
+        if base.exists():
+            for d in sorted(base.glob("*/bin"), reverse=True): dirs.append(str(d))
+    return dirs
+
+def harness_resolve(name, spec):
+    if spec.get("viaNpx"):
+        if not (HOME/".config/systemd/user/t3code.service").exists(): return None
+        for d in _node_bin_dirs():
+            c = os.path.join(d, "npx")
+            if os.path.isfile(c) and os.access(c, os.X_OK): return c
+        return shutil.which("npx")
+    c = shutil.which(name)
+    if c: return c
+    candidates = [_expand(p) for p in spec.get("candidates", [])]
+    if name in ("claude","codex"):
+        try:
+            prefix = subprocess.run(["npm","config","get","prefix"], capture_output=True, text=True, timeout=5).stdout.strip()
+            if prefix and prefix != "undefined": candidates.append(os.path.join(prefix,"bin",name))
+        except Exception: pass
+        for d in _node_bin_dirs(): candidates.append(os.path.join(d,name))
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK): return c
+    return None
+
+def harnesses(): return [(h["name"], h) for h in MANIFEST["harnesses"]]
+
+def cmd_install(names):
+    specs = dict(harnesses())
+    targets = names or [n for n,s in harnesses() if s.get("install")]
+    if not shutil.which("node"):
+        print("node is required for codex/t3 but not found.")
+        print("  Install node via nvm (https://github.com/nvm-sh/nvm) or /opt/node, then re-run.")
+    rc = 0
+    for name in targets:
+        spec = specs.get(name)
+        if not spec:
+            eprint("  unknown harness: "+name); rc = 1; continue
+        cmd = spec.get("install","").strip()
+        if not cmd:
+            print("  %s: no first-party installer registered; skipping." % name); continue
+        if harness_resolve(name, spec):
+            print("  %s: already installed; skipping." % name); continue
+        print("  installing %s: %s" % (name, cmd))
+        if subprocess.run(["sh","-c",cmd]).returncode != 0:
+            eprint("  %s: install failed" % name); rc = 1
+    return rc
+
+def cmd_update(names):
+    specs = dict(harnesses())
+    targets = names or list(specs)
+    present = 0; missing = []; failed = []
+    for name in targets:
+        spec = specs.get(name)
+        if not spec:
+            eprint("  unknown harness: "+name); failed.append(name); continue
+        binpath = harness_resolve(name, spec)
+        if not binpath:
+            missing.append(name); continue
+        present += 1
+        argv = [binpath] + spec.get("updateArgs","update").split()
+        if spec.get("updateEnv"): argv = ["env", spec["updateEnv"]] + argv
+        print("Updating harness %s (%s)" % (name, binpath))
+        env = dict(os.environ)
+        env["PATH"] = os.path.dirname(binpath)+os.pathsep+env.get("PATH","")
+        try:
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, env=env,
+                               timeout=int(os.environ.get("SETUP_HARNESS_TIMEOUT","900")))
+            if r.returncode != 0: failed.append(name)
+        except subprocess.TimeoutExpired:
+            failed.append(name)
+    if present == 0:
+        print("No AI harnesses installed.")
+    elif missing:
+        print("Not installed, skipped: "+" ".join(missing))
+    if failed:
+        eprint("harness(es) could not be updated: "+" ".join(failed))
+    return 0 if not failed else 1
+
+def _write_claude_settings():
+    spec = MANIFEST["settings"]["claude"]
+    overlay = spec["json"]
+    current = load_json(CLAUDE_SETTINGS)
+    merged = deep_merge(current, overlay)
+    # permissions.allow is union-merged, never replaced, so the module cannot
+    # clobber an operator's existing (often longer) allow list.
+    allow_add = spec.get("permissionsAllowAdd", [])
+    if allow_add:
+        existing = merged.setdefault("permissions", {}).get("allow", [])
+        seen = set(existing)
+        for entry in allow_add:
+            if entry not in seen:
+                existing.append(entry)
+        merged["permissions"]["allow"] = existing
+    save_json_atomic(CLAUDE_SETTINGS, merged)
+    print("  wrote %s" % CLAUDE_SETTINGS)
+
+def _write_t3_settings():
+    models = MANIFEST["settings"]["t3"]["claudeCustomModels"]
+    current = load_json(T3_SETTINGS)
+    inst = current.setdefault("providerInstances", {})
+    claude = inst.setdefault("claudeAgent", {"driver":"claudeAgent","enabled":True,"config":{}})
+    config = claude.setdefault("config", {})
+    config.setdefault("binaryPath", "claude")
+    existing = config.get("customModels", [])
+    seen = { (m.get("slug") if isinstance(m,dict) else m) for m in existing }
+    for m in models:
+        if m["slug"] not in seen: existing.append(m)
+    config["customModels"] = existing
+    save_json_atomic(T3_SETTINGS, current)
+    print("  wrote %s (%d claude customModels)" % (T3_SETTINGS, len(existing)))
+
+def cmd_settings(names):
+    _write_claude_settings()
+    _write_t3_settings()
+    print("settings applied. t3 custom models appear in the picker; routing them")
+    print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:10101 (a local opencodex proxy).")
+    return 0
+
+def _claude_mcp_add(s):
+    envvar = s["envVar"]
+    header = ("Authorization: Bearer ${%s}" % envvar) if s["auth"]=="bearer" else ("X-API-Key: ${%s}" % envvar)
+    return ["claude","mcp","add","--scope","user",s["name"],"--transport","http",s["url"],"--header",header]
+
+def _codex_mcp_block(s):
+    lines = ["[mcp_servers.%s]" % s["name"], "url = \"%s\"" % s["url"]]
+    if s["auth"]=="bearer": lines.append("bearer_token_env_var = \"%s\"" % s["envVar"])
+    else: lines.append("env_http_headers = { \"X-API-Key\" = \"%s\" }" % s["envVar"])
+    return "\n".join(lines)+"\n"
+
+def cmd_mcp(names):
+    servers = MANIFEST["mcpServers"]
+    if names: servers = [s for s in servers if s["name"] in names]
+    exports = []
+    for s in servers:
+        envvar, item = s["envVar"], s["vaultItem"]
+        val = os.environ.get(envvar)
+        if not val:
+            try:
+                val = vault_get(item)
+                print("  pulled %s from vault item mcp/%s" % (envvar, item))
+            except VaultError as exc:
+                eprint("  could not resolve %s (mcp/%s): %s" % (envvar, item, exc)); val = None
+        if val: exports.append("export %s=%s" % (envvar, val))
+    _mirror_zshenv(exports)
+    if shutil.which("claude"):
+        existing = subprocess.run(["claude","mcp","list"], capture_output=True, text=True).stdout
+        for s in servers:
+            if s["name"] in existing: continue
+            subprocess.run(_claude_mcp_add(s))
+        print("  claude MCP servers enrolled")
+    else:
+        print("  claude not installed; skipped claude MCP enrollment")
+    _write_codex_mcp(servers)
+    return 0
+
+def _write_codex_mcp(servers):
+    text = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
+    changed = False
+    for s in servers:
+        if re.search(r"^\[mcp_servers\."+re.escape(s["name"])+r"\]", text, re.M): continue
+        text = text.rstrip("\n")+"\n\n"+_codex_mcp_block(s); changed = True
+    if changed:
+        CODEX_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CODEX_CONFIG.write_text(text if text.endswith("\n") else text+"\n")
+        print("  wrote %s (codex MCP servers)" % CODEX_CONFIG)
+
+def _mirror_zshenv(exports):
+    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+    block = begin+"\n"+"\n".join(exports)+"\n"+end+"\n"
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    if begin in text and end in text:
+        text = re.sub(re.escape(begin)+r".*?"+re.escape(end)+r"\n?", block, text, flags=re.S)
+    else:
+        text = text.rstrip("\n")+("\n\n" if text.strip() else "")+block
+    ZSHENV.write_text(text)
+    print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
+
+PROXY_PORT = 10101
+PROXY_UNIT = "opencodex-proxy.service"
+
+
+def _proxy_service_active():
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-active", PROXY_UNIT],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def _write_base_url_export():
+    begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
+    block = (begin + "\n"
+             + "export ANTHROPIC_BASE_URL=http://127.0.0.1:%d\n" % PROXY_PORT
+             + end + "\n")
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    if begin in text and end in text:
+        text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", block, text, flags=re.S)
+    else:
+        text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
+    ZSHENV.write_text(text)
+    print("  exported ANTHROPIC_BASE_URL=http://127.0.0.1:%d in %s" % (PROXY_PORT, ZSHENV))
+
+
+def _remove_base_url_export():
+    begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
+    if not ZSHENV.exists():
+        return
+    text = ZSHENV.read_text()
+    if begin not in text:
+        return
+    text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", "", text, flags=re.S)
+    ZSHENV.write_text(text)
+    print("  removed ANTHROPIC_BASE_URL block from %s" % ZSHENV)
+
+
+def cmd_proxy(names):
+    ocx = shutil.which("ocx") or str(HOME / ".local/bin/ocx")
+    if not shutil.which("ocx") and not os.path.isfile(ocx):
+        eprint("  opencodex (ocx) not installed; install it via the opencodex module first.")
+        return 1
+    # 'ocx service' installs when absent and repairs an existing service, so it
+    # is the idempotent entry point regardless of current state.
+    print("ensuring opencodex proxy service (%s) ..." % PROXY_UNIT)
+    if subprocess.run([ocx, "service"]).returncode != 0:
+        eprint("  ocx service install/repair failed; see ~/.opencodex/service.log")
+        return 1
+    if not _proxy_service_active():
+        eprint("  %s is not active after repair; not writing ANTHROPIC_BASE_URL." % PROXY_UNIT)
+        _remove_base_url_export()
+        return 1
+    print("  %s is active (auto-restarts on failure)." % PROXY_UNIT)
+    # The service auto-restarts, so an unconditional export is safe. It is only
+    # written once the proxy is confirmed running, and removed if it is not.
+    _write_base_url_export()
+    print("opencodex proxy guaranteed up; custom claude models now route through it.")
+    return 0
+
+ACTIONS = ["install","update","settings","mcp","proxy"]
+
+def menu():
+    if not (shutil.which("fzf") and sys.stdin.isatty()):
+        print("usage: harnesses [%s] [name...]" % "|".join(ACTIONS)); return 2
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; esac"
+    r = subprocess.run(["fzf","--prompt","harnesses > ","--height=40%","--reverse",
+                        "--preview",preview,"--preview-window=up,3,wrap"],
+                       input="\n".join(ACTIONS), text=True, capture_output=True)
+    choice = r.stdout.strip()
+    if not choice: return 0
+    return dispatch(choice, [])
+
+def dispatch(action, names):
+    if action=="install": return cmd_install(names)
+    if action=="update": return cmd_update(names)
+    if action=="settings": return cmd_settings(names)
+    if action=="mcp": return cmd_mcp(names)
+    if action=="proxy": return cmd_proxy(names)
+    return menu()
+
+def main():
+    args = sys.argv[1:]
+    if not args: return menu()
+    return dispatch(args[0], args[1:])
+
+if __name__ == "__main__":
+    sys.exit(main())
