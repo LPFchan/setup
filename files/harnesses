@@ -344,13 +344,28 @@ def cmd_proxy(names):
 
 ACTIONS = ["install","update","settings","mcp","proxy"]
 
+USAGE = """usage: harnesses [%s] [name...]
+
+  install   install/update node, claude, codex
+  update    self-update the installed harnesses
+  settings  render claude + t3 settings from the manifest
+  mcp       enroll MCP servers from vaultwarden folder=mcp
+  proxy     ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL
+
+With no arguments (and a terminal + fzf) it opens the action menu.
+Every action takes optional harness names to narrow the run.""" % "|".join(ACTIONS)
+
+
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
-        print("usage: harnesses [%s] [name...]" % "|".join(ACTIONS)); return 2
+        print(USAGE); return 2
     preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; esac"
+    # Only stdout is captured. fzf draws its interface on stderr in --height
+    # mode, so capturing stderr too renders the whole menu into a pipe and the
+    # terminal shows nothing at all.
     r = subprocess.run(["fzf","--prompt","harnesses > ","--height=40%","--reverse",
                         "--preview",preview,"--preview-window=up,3,wrap"],
-                       input="\n".join(ACTIONS), text=True, capture_output=True)
+                       input="\n".join(ACTIONS), text=True, stdout=subprocess.PIPE)
     choice = r.stdout.strip()
     if not choice: return 0
     return dispatch(choice, [])
@@ -361,11 +376,16 @@ def dispatch(action, names):
     if action=="settings": return cmd_settings(names)
     if action=="mcp": return cmd_mcp(names)
     if action=="proxy": return cmd_proxy(names)
-    return menu()
+    eprint("harnesses: unknown action %r" % action)
+    eprint(USAGE)
+    return 2
 
 def main():
     args = sys.argv[1:]
     if not args: return menu()
+    if args[0] in ("-h", "--help", "help"):
+        print(USAGE)
+        return 0
     return dispatch(args[0], args[1:])
 
 if __name__ == "__main__":

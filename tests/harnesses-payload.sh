@@ -105,3 +105,24 @@ zshenv2 = (HOME/".zshenv").read_text()
 assert "ANTHROPIC_BASE_URL" not in zshenv2, "base-url export left behind on inactive proxy"
 print("proxy ok")
 PY
+
+# --- CLI surface: --help prints help, unknown actions do not open the picker ---
+help_out="$TMP/help.out"
+if ! HOME="$HOME" python3 "$ROOT/files/harnesses" --help > "$help_out" 2>&1; then
+    echo "FAIL: harnesses --help exited nonzero" >&2; exit 1
+fi
+grep -q "usage: harnesses" "$help_out" || { echo "FAIL: --help did not print usage" >&2; exit 1; }
+grep -q "proxy " "$help_out" || { echo "FAIL: --help did not list the actions" >&2; exit 1; }
+
+bogus_out="$TMP/bogus.out"
+if HOME="$HOME" python3 "$ROOT/files/harnesses" frobnicate > "$bogus_out" 2>&1; then
+    echo "FAIL: unknown action exited zero" >&2; exit 1
+fi
+grep -q "unknown action" "$bogus_out" || { echo "FAIL: unknown action was not reported" >&2; exit 1; }
+
+# The fzf menu must not capture stderr: fzf draws its interface there in
+# --height mode, so capture_output would render the whole menu into a pipe.
+grep -q "capture_output" <(sed -n '/^def menu/,/^def dispatch/p' "$ROOT/files/harnesses") \
+    && { echo "FAIL: menu() captures fzf's stderr; its UI would never reach the terminal" >&2; exit 1; }
+
+echo "cli surface ok"
