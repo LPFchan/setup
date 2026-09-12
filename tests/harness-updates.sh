@@ -13,45 +13,23 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 CALLS="$TMP/calls"
 : > "$CALLS"
 
-# The harness self-update logic moved out of bin/setup into the harnesses
-# module. cmd_update_harnesses now locates ~/.local/bin/harnesses and hands
-# the work to it. These stubs stand in for that client.
+# The harnesses module owns harness updating end to end: `harnesses update`
+# runs the self-updaters and `harnesses schedule` installs the timer that
+# calls it. setup must not reach into that anymore. This stub stands in for
+# the installed client and records anything setup sends it.
 make_harnesses_client() {
     local rc="${1:-0}"
     cat > "$HOME/.local/bin/harnesses" <<EOF
 #!/usr/bin/env zsh
-printf "harnesses %s\\n" "\$*" >> "$CALLS"
+printf "harnesses %s\n" "\$*" >> "$CALLS"
 exit $rc
 EOF
     chmod +x "$HOME/.local/bin/harnesses"
 }
 
-# With no client installed the delegation is a clean no-op (the module simply
-# is not present on this machine yet).
-rm -f "$HOME/.local/bin/harnesses"
-cmd_update_harnesses > "$TMP/out" 2>&1 \
-    || fail "absent harnesses client reported failure: $(cat "$TMP/out")"
-grep -q "harnesses module not installed" "$TMP/out" \
-    || fail "absent client was not signposted: $(cat "$TMP/out")"
-[[ ! -s "$CALLS" ]] || fail "a missing client was still invoked"
-
-# With a client present the update is delegated to it.
-make_harnesses_client 0
-cmd_update_harnesses > "$TMP/out" 2>&1 \
-    || fail "delegated update reported failure: $(cat "$TMP/out")"
-grep -qx "harnesses update" "$CALLS" \
-    || fail "update was not delegated to the harnesses client: $(tr "\n" "; " < "$CALLS")"
-
-# A failing client fails the run so the timer journal shows it.
-make_harnesses_client 1
-if cmd_update_harnesses > "$TMP/out" 2>&1; then
-    fail "failing client did not fail cmd_update_harnesses"
-fi
-
 # --- cmd_update integration -----------------------------------------
-# Which of the two halves (manifest modules, harnesses) a given argument list
-# runs. The daily timer calls `setup update` with no arguments, so that form
-# must cover both.
+# `setup update` is a module updater and nothing else. The daily timer calls
+# it with no arguments, so that form must not quietly drive the harnesses.
 make_harnesses_client 0
 FETCHES="$TMP/fetches"
 : > "$FETCHES"
@@ -76,15 +54,16 @@ run_update() {
 
 run_update || fail "bare update failed: $(cat "$TMP/out")"
 grep -qx "module tmux" "$CALLS" || fail "bare update skipped manifest modules"
-grep -qx "harnesses update" "$CALLS" || fail "bare update skipped harnesses"
+if grep -q "harnesses update" "$CALLS"; then
+    fail "bare setup update still ran the harness self-updaters"
+fi
 
 run_update tmux || fail "module-filtered update failed: $(cat "$TMP/out")"
 grep -qx "module tmux" "$CALLS" || fail "module-filtered update skipped its module"
 if grep -qx "module harnesses" "$CALLS"; then fail "module-filtered update touched other modules"; fi
-if grep -q "harnesses update" "$CALLS"; then fail "module-filtered update pulled in harnesses"; fi
 
 # `harnesses` is a module like any other: filtering on it updates the module,
-# not the per-harness self-updaters. Those belong to `harnesses update`.
+# not the per-harness self-updaters.
 run_update harnesses || fail "harnesses-module update failed: $(cat "$TMP/out")"
 grep -qx "module harnesses" "$CALLS" || fail "setup update harnesses skipped the module itself"
 if grep -q "harnesses update" "$CALLS"; then
@@ -93,15 +72,34 @@ fi
 [[ -s "$FETCHES" ]] || fail "setup update harnesses did not fetch the manifest"
 
 run_update tmux harnesses || fail "combined update failed: $(cat "$TMP/out")"
-grep -qx "module tmux" "$CALLS" || fail "combined update skipped its module"
+grep -qx "module tmux" "$CALLS" || fail "combined update skipped tmux"
+grep -qx "module harnesses" "$CALLS" || fail "combined update skipped harnesses"
 if grep -q "harnesses update" "$CALLS"; then
     fail "a filtered update still pulled in the harness self-updaters"
 fi
 
-# A harness failure alone must fail `setup update`, so the timer journal shows it.
+# A broken harnesses client cannot fail a module update any longer, because
+# setup never calls it.
 make_harnesses_client 1
-if run_update; then fail "failing harness did not fail cmd_update"; fi
+run_update || fail "a failing harnesses client broke an unrelated module update"
 grep -q "All modules up to date" "$TMP/out" \
-    || fail "module summary lost when a harness failed: $(cat "$TMP/out")"
+    || fail "module summary missing: $(cat "$TMP/out")"
+
+# --- setup's service-module wiring ------------------------------------
+# setup enable/disable/status drive the module's own timer, the same way they
+# already drive the providers timer.
+unset -f is_service_module
+is_service_module() {
+    local m
+    for m in ${SERVICE_MODULES}; do [[ "$m" == "$1" ]] && return 0; done
+    return 1
+}
+is_service_module harnesses || fail "harnesses is not registered as a service module"
+[[ "$(module_service_unit harnesses)" == harnesses-update.timer ]] \
+    || fail "harnesses service unit is wrong: $(module_service_unit harnesses)"
+[[ "$(module_enable_cmd harnesses)" == *"harnesses schedule" ]] \
+    || fail "setup enable harnesses does not call the module: $(module_enable_cmd harnesses)"
+[[ "$(module_disable_cmd harnesses)" == *"harnesses schedule disable" ]] \
+    || fail "setup disable harnesses does not call the module: $(module_disable_cmd harnesses)"
 
 echo "ok"

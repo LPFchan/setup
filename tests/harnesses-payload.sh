@@ -132,3 +132,41 @@ grep -q "capture_output" <(sed -n '/^def menu/,/^def dispatch/p' "$ROOT/files/ha
     && { echo "FAIL: menu() captures fzf's stderr; its UI would never reach the terminal" >&2; exit 1; }
 
 echo "cli surface ok"
+
+# --- schedule: the module owns its own update cadence ------------------
+sched_tmp="$TMP/sched"
+mkdir -p "$sched_tmp/bin" "$sched_tmp/units"
+cat > "$sched_tmp/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$SCHED_LOG"
+case "${2:-}" in
+  is-enabled) echo enabled ;;
+  is-active)  echo active ;;
+esac
+exit 0
+STUB
+chmod +x "$sched_tmp/bin/systemctl"
+export SCHED_LOG="$sched_tmp/log"; : > "$SCHED_LOG"
+
+SCHEDULE_USER_DIR="$sched_tmp/units" PATH="$sched_tmp/bin:$PATH" \
+    SCHEDULE_BIN="$ROOT/bin/schedule" HOME="$HOME" \
+    python3 "$ROOT/files/harnesses" schedule > "$sched_tmp/out" 2>&1 \
+    || { echo "FAIL: harnesses schedule failed: $(cat "$sched_tmp/out")" >&2; exit 1; }
+
+grep -Fqx 'OnCalendar=*-*-* 07:00:00' "$sched_tmp/units/harnesses-update.timer" \
+    || { echo "FAIL: harnesses timer is not scheduled for 07:00" >&2; exit 1; }
+grep -Fqx 'Persistent=true' "$sched_tmp/units/harnesses-update.timer" \
+    || { echo "FAIL: harnesses timer is not persistent" >&2; exit 1; }
+grep -Fqx 'ExecStart=%h/.local/bin/harnesses update' "$sched_tmp/units/harnesses-update.service" \
+    || { echo "FAIL: harnesses timer does not run the module's own updater" >&2; exit 1; }
+grep -q 'enable --now harnesses-update.timer' "$SCHED_LOG" \
+    || { echo "FAIL: harnesses timer was not enabled" >&2; exit 1; }
+
+SCHEDULE_USER_DIR="$sched_tmp/units" PATH="$sched_tmp/bin:$PATH" \
+    SCHEDULE_BIN="$ROOT/bin/schedule" HOME="$HOME" \
+    python3 "$ROOT/files/harnesses" schedule disable > "$sched_tmp/out" 2>&1 \
+    || { echo "FAIL: harnesses schedule disable failed: $(cat "$sched_tmp/out")" >&2; exit 1; }
+[[ ! -f "$sched_tmp/units/harnesses-update.timer" ]] \
+    || { echo "FAIL: harnesses timer left behind after disable" >&2; exit 1; }
+
+echo "schedule ok"

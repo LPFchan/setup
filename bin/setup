@@ -35,8 +35,8 @@ RETIRED_FILE="$STATE_DIR/retired.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring providers backup system-updates"
-USER_SERVICE_MODULES="providers"
+SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring providers harnesses backup system-updates"
+USER_SERVICE_MODULES="providers harnesses"
 BATCH=0
 
 # Cache revalidation remains useful for custom HTTP sources. The default GitHub
@@ -66,8 +66,8 @@ Commands:
   status [module...]   Show installed/current/outdated/modified state
   install [module...]  Install module files (copies to ~/.local/bin/)
   update [module...]   Update installed modules; reports new modules available
-                       No arguments also runs each AI harness's self-updater;
-                       'harnesses update' runs just those
+                       AI harnesses update themselves: see 'harnesses update'
+                       and 'harnesses schedule'
   uninstall [module...] Remove managed files
   enable [module...]   Enable service modules (requires sudo)
   disable [module...]  Disable service modules (requires sudo)
@@ -94,8 +94,8 @@ _resolve_bin() {
 }
 
 # The shared systemd helper is its own module, so it can be absent on a
-# machine that only installed setup. Report that the way cmd_update_harnesses
-# reports a missing harnesses module, instead of "command not found".
+# machine that only installed setup. Report that with an actionable message
+# rather than a bare "command not found".
 _resolve_schedule_bin() {
     local bin; bin=$(_resolve_bin schedule)
     if [[ "$bin" == schedule ]] && ! command -v schedule >/dev/null 2>&1; then
@@ -113,6 +113,7 @@ module_enable_cmd() {
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin service-ctl); echo "$bin enable $1" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule" ;;
+        harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
     esac
@@ -126,6 +127,7 @@ module_disable_cmd() {
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin service-ctl); echo "$bin disable $1" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule disable" ;;
+        harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
     esac
@@ -138,6 +140,7 @@ module_service_unit() {
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;
         providers)     echo "providers.timer" ;;
+        harnesses)      echo "harnesses-update.timer" ;;
         backup)         echo "backup.timer" ;;
         system-updates) echo "system-updates.timer" ;;
     esac
@@ -1057,28 +1060,17 @@ cmd_install() {
 # files/harnesses-manifest.json). setup update delegates to it here. The
 # per-harness resolution and updater logic moved with it.
 
-cmd_update_harnesses() {
-    local bin="$HOME/.local/bin/harnesses"
-    if [[ ! -x "$bin" ]]; then
-        printf "%s\n" "harnesses module not installed; run: setup install harnesses" >&2
-        return 0
-    fi
-    "$bin" update
-}
-
 cmd_update() {
     configure_shell || true
     local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
-    local want_harnesses=0 manifest_input
-    # `setup update` updates every module and then runs each harness's own
-    # self-updater. Any filtered run is a plain module update, `harnesses`
-    # included: `setup update harnesses` updates the harnesses module itself,
-    # and `harnesses update` is what drives the per-harness self-updaters.
+    local manifest_input
+    # `setup update` only updates modules. The harnesses keep their own
+    # cadence: `harnesses update` runs the per-harness self-updaters and
+    # `harnesses schedule` installs the timer that calls it.
     for target_module in "$@"; do
         filters+=("$target_module")
     done
-    (($# == 0)) && want_harnesses=1
     fetch_manifest || return 1
     manifest_input="$MANIFEST_FILE"
     while IFS=$'\t' read -r module target mode source; do
@@ -1193,12 +1185,7 @@ cmd_update() {
         echo "All modules up to date."
     fi
 
-    local harness_failed=0
-    if ((want_harnesses == 1)); then
-        echo
-        cmd_update_harnesses || harness_failed=1
-    fi
-    (( failure_count == 0 && harness_failed == 0 ))
+    (( failure_count == 0 ))
 }
 
 cmd_uninstall() {

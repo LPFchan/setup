@@ -361,7 +361,144 @@ def cmd_proxy(names):
     print("opencodex proxy guaranteed up; custom claude models now route through it.")
     return 0
 
-ACTIONS = ["install","update","settings","mcp","proxy"]
+# --- schedule ---------------------------------------------------------
+# The module owns its own update cadence: `harnesses schedule` installs a
+# daily 07:00 timer that runs `harnesses update`. setup's 06:00 timer no
+# longer touches the harnesses, so this is the only automatic path.
+TIMER_NAME = "harnesses-update"
+PLIST_NAME = "com.lost.plus.harnesses-update"
+LAUNCHD_DIR = HOME/"Library/LaunchAgents"
+SCHEDULE_HOUR = 7
+
+
+def _is_macos():
+    return sys.platform == "darwin"
+
+
+def _schedule_bin():
+    """Locate the shared schedule helper (sourced tree or installed)."""
+    env = os.environ.get("SCHEDULE_BIN")
+    if env:
+        return env
+    candidate = pathlib.Path(__file__).resolve().parent.parent/"bin"/"schedule"
+    if candidate.exists():
+        return str(candidate)
+    return str(HOME/".local/bin/schedule")
+
+
+def _run_schedule(*args):
+    """Run the shared schedule helper, or explain how to install it."""
+    path = _schedule_bin()
+    if not os.access(path, os.X_OK):
+        raise SystemExit(
+            "schedule helper not found at %s; run: setup install schedule" % path
+        )
+    return os.spawnl(os.P_WAIT, path, "schedule", *args)
+
+
+def _self_path():
+    return os.path.abspath(sys.argv[0])
+
+
+def _launchd_plist_path():
+    return LAUNCHD_DIR/("%s.plist" % PLIST_NAME)
+
+
+def _schedule_enable():
+    if _is_macos():
+        LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
+        plist = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>%s</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+        <string>update</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>%d</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/harnesses-update.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/harnesses-update.log</string>
+</dict>
+</plist>
+""" % (PLIST_NAME, _self_path(), SCHEDULE_HOUR)
+        path = _launchd_plist_path()
+        path.write_text(plist)
+        uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (uid, PLIST_NAME)],
+                       capture_output=True)
+        r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, str(path)],
+                           capture_output=True)
+        if r.returncode != 0:
+            eprint("  launchctl bootstrap failed: %s"
+                   % (r.stderr.decode(errors="replace").strip() or r.returncode))
+            return 1
+        print("harnesses auto-update scheduled daily at %02d:00 (launchd)" % SCHEDULE_HOUR)
+        return 0
+
+    # setup's timer runs at 06:00; stay an hour clear of it so the two do not
+    # contend for the network. Persistent=true replays a run missed while off.
+    with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as tf:
+        tf.write("Persistent=true\n")
+        timer_extra = tf.name
+    try:
+        rc = _run_schedule("install-timer", "user", TIMER_NAME,
+                           "Daily AI harness self-update",
+                           "%h/.local/bin/harnesses update",
+                           "*-*-* %02d:00:00" % SCHEDULE_HOUR, "", timer_extra)
+    finally:
+        os.unlink(timer_extra)
+    if rc:
+        return rc
+    print("harnesses auto-update scheduled daily at %02d:00 (systemd)" % SCHEDULE_HOUR)
+    return 0
+
+
+def _schedule_disable():
+    if _is_macos():
+        path = _launchd_plist_path()
+        subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), PLIST_NAME)],
+                       capture_output=True)
+        if path.exists():
+            path.unlink()
+        print("harnesses auto-update unscheduled")
+        return 0
+    rc = _run_schedule("uninstall-timer", "user", TIMER_NAME)
+    if rc:
+        return rc
+    print("harnesses auto-update unscheduled")
+    return 0
+
+
+def _schedule_status():
+    if _is_macos():
+        print("schedule: %s" % ("installed" if _launchd_plist_path().exists()
+                                else "not installed"))
+        return 0
+    return _run_schedule("status", "user", TIMER_NAME)
+
+
+def cmd_schedule(names):
+    action = names[0] if names else "enable"
+    if action in ("enable", "on"):
+        return _schedule_enable()
+    if action in ("disable", "off"):
+        return _schedule_disable()
+    if action == "status":
+        return _schedule_status()
+    eprint("harnesses: schedule takes enable|disable|status")
+    return 2
+
+
+ACTIONS = ["install","update","settings","mcp","proxy","schedule"]
 
 USAGE = """Usage: harnesses [%s] [name...] [--help]
 
@@ -372,6 +509,8 @@ Install, update, and configure the fleet's AI coding harnesses.
   settings [name...]  Render claude + t3 settings from the manifest.
   mcp [name...]       Enroll MCP servers from vaultwarden folder=mcp.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
+  schedule [enable|disable|status]
+                      Daily 07:00 timer that runs 'harnesses update'.
   -h, --help          Show this help.
 
 With no arguments (and a terminal + fzf) it opens the action menu.
@@ -381,7 +520,7 @@ Every action takes optional harness names to narrow the run.""" % "|".join(ACTIO
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; esac"
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 07:00 timer that runs harnesses update;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
@@ -398,6 +537,7 @@ def dispatch(action, names):
     if action=="settings": return cmd_settings(names)
     if action=="mcp": return cmd_mcp(names)
     if action=="proxy": return cmd_proxy(names)
+    if action=="schedule": return cmd_schedule(names)
     eprint("harnesses: unknown action %r" % action)
     eprint(USAGE)
     return 2
