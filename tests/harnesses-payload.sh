@@ -194,12 +194,14 @@ SCHEDULE_USER_DIR="$sched_tmp/units" PATH="$sched_tmp/bin:$PATH" \
     python3 "$ROOT/files/harnesses" schedule > "$sched_tmp/out" 2>&1 \
     || { echo "FAIL: harnesses schedule failed: $(cat "$sched_tmp/out")" >&2; exit 1; }
 
-grep -Fqx 'OnCalendar=*-*-* 07:00:00' "$sched_tmp/units/harnesses-update.timer" \
-    || { echo "FAIL: harnesses timer is not scheduled for 07:00" >&2; exit 1; }
+grep -Fqx 'OnCalendar=*-*-* 11:00:00' "$sched_tmp/units/harnesses-update.timer" \
+    || { echo "FAIL: harnesses timer is not scheduled for 11:00" >&2; exit 1; }
 grep -Fqx 'Persistent=true' "$sched_tmp/units/harnesses-update.timer" \
     || { echo "FAIL: harnesses timer is not persistent" >&2; exit 1; }
-grep -Fqx 'ExecStart=%h/.local/bin/harnesses update' "$sched_tmp/units/harnesses-update.service" \
-    || { echo "FAIL: harnesses timer does not run the module's own updater" >&2; exit 1; }
+# The pass must be 'daily', not 'update': settings are rendered from what the
+# proxy reports, so the proxy has to be converged first, in that order.
+grep -Fqx 'ExecStart=%h/.local/bin/harnesses daily' "$sched_tmp/units/harnesses-update.service" \
+    || { echo "FAIL: harnesses timer does not run the full daily pass" >&2; exit 1; }
 grep -q 'enable --now harnesses-update.timer' "$SCHED_LOG" \
     || { echo "FAIL: harnesses timer was not enabled" >&2; exit 1; }
 

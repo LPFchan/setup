@@ -59,7 +59,7 @@ m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 m.vault_available = lambda: False
 
 # Keep the test hermetic: the real ocx/codex sync must not run from here.
-m._sync_opencodex_provider_statuses = lambda: None
+m._sync_opencodex_provider_statuses = lambda restart=True: None
 
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'

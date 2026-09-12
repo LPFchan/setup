@@ -508,7 +508,7 @@ def cmd_proxy(names):
 TIMER_NAME = "harnesses-update"
 PLIST_NAME = "com.lost.plus.harnesses-update"
 LAUNCHD_DIR = HOME/"Library/LaunchAgents"
-SCHEDULE_HOUR = 7
+SCHEDULE_HOUR = 11
 
 
 def _is_macos():
@@ -556,7 +556,7 @@ def _schedule_enable():
     <key>ProgramArguments</key>
     <array>
         <string>%s</string>
-        <string>update</string>
+        <string>daily</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
@@ -592,15 +592,16 @@ def _schedule_enable():
         print("harnesses auto-update scheduled daily at %02d:00 (launchd)" % SCHEDULE_HOUR)
         return 0
 
-    # setup's timer runs at 06:00; stay an hour clear of it so the two do not
-    # contend for the network. Persistent=true replays a run missed while off.
+    # setup's timer runs at 06:00 and providers refreshes hourly; this pass runs
+    # late enough to be clear of both, and it restarts the proxy, so it wants an
+    # hour where nothing is mid-turn. Persistent=true replays a run missed while off.
     with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as tf:
         tf.write("Persistent=true\n")
         timer_extra = tf.name
     try:
         rc = _run_schedule("install-timer", "user", TIMER_NAME,
-                           "Daily AI harness self-update",
-                           "%h/.local/bin/harnesses update",
+                           "Daily AI harness maintenance",
+                           "%h/.local/bin/harnesses daily",
                            "*-*-* %02d:00:00" % SCHEDULE_HOUR, "", timer_extra)
     finally:
         os.unlink(timer_extra)
@@ -634,6 +635,57 @@ def _schedule_status():
     return _run_schedule("status", "user", TIMER_NAME)
 
 
+def _proxy_stop_budget():
+    """Give the proxy unit long enough to drain before systemd kills it.
+
+    OpenCodex drains in-flight turns on SIGTERM for shutdownTimeoutMs (the
+    opencodex module sets 300s). systemd's default TimeoutStopSec is 90s, so
+    without this the drain is cut short by SIGKILL and a live turn dies anyway
+    -- along with the response-state flush that runs after the drain.
+    """
+    if _is_macos():
+        return 0
+    directory = HOME/".config/systemd/user/%s.d" % PROXY_UNIT
+    directory.mkdir(parents=True, exist_ok=True)
+    override = directory/"50-stop-timeout.conf"
+    desired = "[Service]\nTimeoutStopSec=330\n"
+    if override.exists() and override.read_text() == desired:
+        return 0
+    override.write_text(desired)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    print("  raised %s stop timeout to 330s (drain budget)" % PROXY_UNIT)
+    return 0
+
+
+def cmd_daily(names):
+    """The scheduled pass: bring the proxy current, then render, then update.
+
+    Order is the point. Settings are generated from what the proxy reports, so
+    the proxy has to be serving current config before they are rendered, and
+    the restart that gets it there belongs here -- on a daily cadence at an
+    hour nothing is running -- rather than in the hourly refresh that feeds it.
+    """
+    failed = []
+    _proxy_stop_budget()
+    module = HOME/".local/bin/opencodex"
+    if os.access(module, os.X_OK):
+        if subprocess.run([sys.executable, str(module), "__apply"]).returncode:
+            failed.append("opencodex apply")
+    else:
+        print("  opencodex module not installed; skipping proxy config apply")
+    for name, fn in (("settings", cmd_settings), ("update", cmd_update)):
+        try:
+            if fn([]):
+                failed.append(name)
+        except Exception as exc:
+            eprint("  %s failed: %s" % (name, exc))
+            failed.append(name)
+    if failed:
+        eprint("harnesses daily: %s failed" % ", ".join(failed))
+        return 1
+    return 0
+
+
 def cmd_schedule(names):
     action = names[0] if names else "enable"
     if action in ("enable", "on"):
@@ -646,7 +698,7 @@ def cmd_schedule(names):
     return 2
 
 
-ACTIONS = ["install","update","settings","mcp","proxy","schedule"]
+ACTIONS = ["install","update","settings","mcp","proxy","daily","schedule"]
 
 USAGE = """Usage: harnesses [%s] [name...] [--help]
 
@@ -657,6 +709,7 @@ Install, update, and configure the fleet's AI coding harnesses.
   settings [name...]  Render claude + t3 settings from the manifest.
   mcp [name...]       Enroll MCP servers from vaultwarden folder=mcp.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
+  daily               The scheduled pass: proxy apply, settings, update.
   schedule [enable|disable|status]
                       Daily 07:00 timer that runs 'harnesses update'.
   -h, --help          Show this help.
@@ -680,6 +733,7 @@ def menu():
     return dispatch(choice, [])
 
 def dispatch(action, names):
+    if action=="daily": return cmd_daily(names)
     if action=="install": return cmd_install(names)
     if action=="update": return cmd_update(names)
     if action=="settings": return cmd_settings(names)

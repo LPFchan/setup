@@ -352,6 +352,11 @@ def desired_opencodex_config(
     # and the previous build keeps serving with nothing left to restart it.
     # Agents reach the proxy over loopback anyway; nothing off-box dials it.
     config["hostname"] = "127.0.0.1"
+    # The proxy drains in-flight turns on SIGTERM for this long before aborting
+    # them. Its 5s default is shorter than a single coding turn, so a restart
+    # lands as a cancelled request. harnesses raises the unit's TimeoutStopSec
+    # to match; systemd SIGKILLs at 90s otherwise and the drain never finishes.
+    config["shutdownTimeoutMs"] = 300000
     config["syncResumeHistory"] = sys.platform == "darwin"
     return config, managed
 
@@ -502,6 +507,12 @@ def provider_config_diff(
         if not isinstance(live, dict):
             reasons.append(f"provider '{name}' is not loaded by the running proxy")
             continue
+        # Without this the ladders land on disk and the running proxy keeps
+        # forwarding an effort the model rejects: the server snapshots config
+        # at startup and never re-reads it.
+        if "modelReasoningEfforts" in live and desired.get("modelReasoningEfforts") is not None:
+            if desired["modelReasoningEfforts"] != live["modelReasoningEfforts"]:
+                reasons.append(f"provider '{name}' reasoning ladders differ")
         for field in ("adapter", "authMode"):
             if field in live and desired.get(field) is not None and desired[field] != live[field]:
                 reasons.append(
@@ -642,7 +653,7 @@ def converge_live_proxy(desired: dict[str, Any]) -> None:
     restart_stale_proxy("apply")
 
 
-def apply_opencodex_registry(registry_path: Path) -> None:
+def apply_opencodex_registry(registry_path: Path, restart: bool = True) -> None:
     registry = load_registry(registry_path)
     original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
     desired, managed = desired_opencodex_config(registry, original, load_auth())
@@ -653,7 +664,8 @@ def apply_opencodex_registry(registry_path: Path) -> None:
         OPENCODEX_MANAGED, "managed provider record"
     ) != record:
         write_json_atomic(OPENCODEX_MANAGED, record, 0o600)
-    converge_live_proxy(desired)
+    if restart:
+        converge_live_proxy(desired)
 
 
 def opencodex_config_status(registry_path: Path) -> bool:
@@ -2238,8 +2250,13 @@ def main() -> int:
         elif command == "__apply":
             # The registry path is optional so provider-state consumers can
             # re-apply enablement without knowing where the snapshot lives.
+            # --no-restart is for callers on a frequent cadence: they refresh
+            # what is on disk and leave the restart to the daily pass, so an
+            # hourly job can never cancel a turn that is mid-flight.
+            rest = [a for a in sys.argv[2:] if a != "--no-restart"]
             apply_opencodex_registry(
-                Path(sys.argv[2]) if len(sys.argv) > 2 else REGISTRY
+                Path(rest[0]) if rest else REGISTRY,
+                restart="--no-restart" not in sys.argv[2:],
             )
         elif command == "__remove":
             remove_opencodex_managed()

@@ -1695,11 +1695,18 @@ def _sync_opencode_provider_statuses(servers):
     save_json_atomic(OPENCODE_PATH, opencode)
 
 
-def _sync_opencodex_provider_statuses():
-    """Mirror provider status into OpenCodex and the Codex model catalog."""
+def _sync_opencodex_provider_statuses(restart=True):
+    """Mirror provider status into OpenCodex and the Codex model catalog.
+
+    `restart=False` is for the refresh path. A refresh runs hourly and can land
+    at any moment, and a proxy restart aborts whatever turn is in flight; the
+    config is brought current on disk and the daily harnesses pass is what
+    restarts the proxy onto it.
+    """
     if not (os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK)):
         return
-    if subprocess.run([OPENCODEX_BIN, "__apply"]).returncode:
+    argv = [OPENCODEX_BIN, "__apply"] + ([] if restart else ["--no-restart"])
+    if subprocess.run(argv).returncode:
         print("  OpenCodex config unchanged; run: setup update opencodex", file=sys.stderr)
         return
     ocx = shutil.which("ocx")
@@ -2437,6 +2444,11 @@ def main():
             refreshed = _refresh_all(servers)
         _sync_hermes_mirror(servers, refreshed)
         _sync_pi_models_mirror(servers, refreshed)
+        # A refresh is the moment the capability cache changes, so it is the
+        # moment OpenCodex's derived config goes stale. Push it to disk here
+        # rather than waiting for a module reinstall, which is keyed on the
+        # module's own payload changing and never fires when only data moves.
+        _sync_opencodex_provider_statuses(restart=False)
         return
 
     if cmd == "capabilities":
