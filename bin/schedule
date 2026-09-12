@@ -42,17 +42,23 @@ _systemctl() {
 }
 
 # --- unit rendering ---------------------------------------------------
-# render-service SCOPE NAME DESCRIPTION EXECSTART [EXTRA-SERVICE-LINES-FILE]
+# render-service SCOPE NAME DESCRIPTION EXECSTART [EXTRA-SERVICE-LINES-FILE] \
+#                 [EXTRA-UNIT-LINES-FILE]
 # render-timer  SCOPE NAME DESCRIPTION ONCALENDAR [EXTRA-TIMER-LINES-FILE]
-# The optional file holds extra lines appended to the [Service]/[Timer]
-# section, so a tool can inject resource limits or RandomizedDelaySec
-# without owning the skeleton.
+# The optional files hold extra lines appended to the [Service]/[Unit]/[Timer]
+# section, so a tool can inject resource limits, RandomizedDelaySec, or
+# Wants=/After= ordering without owning the skeleton.
 _render_service() {
     emulate -L zsh -o no_glob
-    local desc="$1" exec="$2" extra="$3"
+    local desc="$1" exec="$2" extra="$3" unit_extra="${4:-}"
     cat <<EOF
 [Unit]
 Description=$desc
+EOF
+    if [[ -n "$unit_extra" && -f "$unit_extra" ]]; then
+        cat "$unit_extra"
+    fi
+    cat <<EOF
 
 [Service]
 Type=oneshot
@@ -85,9 +91,9 @@ EOF
 }
 
 cmd_render() {
-    local kind="$1" scope="$2" name="$3" desc="$4" a5="${5:-}" a6="${6:-}"
+    local kind="$1" scope="$2" name="$3" desc="$4" a5="${5:-}" a6="${6:-}" a7="${7:-}"
     case "$kind" in
-        service) _render_service "$desc" "$a5" "${a6:-}" ;;
+        service) _render_service "$desc" "$a5" "${a6:-}" "${a7:-}" ;;
         timer)   _render_timer "$desc" "$a5" "${a6:-}" ;;
         *) fail "render: kind must be service|timer" ;;
     esac
@@ -95,13 +101,13 @@ cmd_render() {
 
 # --- install / uninstall ----------------------------------------------
 # install-timer SCOPE NAME DESCRIPTION EXECSTART ONCALENDAR \
-#               [SERVICE-EXTRA-FILE] [TIMER-EXTRA-FILE]
+#               [SERVICE-EXTRA-FILE] [TIMER-EXTRA-FILE] [UNIT-EXTRA-FILE]
 cmd_install_timer() {
     local scope="$1" name="$2" desc="$3" exec="$4" oncal="$5"
-    local svc_extra="${6:-}" timer_extra="${7:-}"
+    local svc_extra="${6:-}" timer_extra="${7:-}" unit_extra="${8:-}"
     local dir; dir=$(_scope_dir "$scope") || fail "bad scope: $scope"
     mkdir -p "$dir" || fail "cannot create $dir"
-    _render_service "$desc" "$exec" "$svc_extra" > "$dir/$name.service" || return 1
+    _render_service "$desc" "$exec" "$svc_extra" "$unit_extra" > "$dir/$name.service" || return 1
     _render_timer "$desc" "$oncal" "$timer_extra" > "$dir/$name.timer" || return 1
     _systemctl "$scope" daemon-reload || fail "daemon-reload failed"
     _systemctl "$scope" enable --now "$name.timer" || fail "enable --now $name.timer failed"
@@ -182,8 +188,8 @@ main() {
 usage: $prog [command]
   menu                                   fzf registry/conductor (default)
   list                                   TSV of all timers (user + system)
-  render service|timer SCOPE NAME DESC ARG [EXTRA-FILE]
-  install-timer SCOPE NAME DESC EXECSTART ONCALENDAR [SVC-X] [TIMER-X]
+  render service|timer SCOPE NAME DESC ARG [EXTRA-FILE] [UNIT-EXTRA-FILE]
+  install-timer SCOPE NAME DESC EXECSTART ONCALENDAR [SVC-X] [TIMER-X] [UNIT-X]
   uninstall-timer SCOPE NAME
   status SCOPE NAME
 EOF

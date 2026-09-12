@@ -485,20 +485,43 @@ run_backup() (
     restic_cmd check
 )
 
+schedule_bin() {
+    if [[ -n "${SCHEDULE_BIN:-}" ]]; then
+        printf '%s\n' "$SCHEDULE_BIN"
+        return
+    fi
+    local self; self=$(readlink -f "$0")
+    local candidate="$(dirname "$self")/schedule"
+    if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return
+    fi
+    # setup installs schedule next to backup under ~/.local/bin.
+    local operator_home
+    operator_home=$(getent passwd "${SUDO_USER:-${USER}}" | cut -d: -f6)
+    if [[ -n "$operator_home" && -x "$operator_home/.local/bin/schedule" ]]; then
+        printf '%s\n' "$operator_home/.local/bin/schedule"
+        return
+    fi
+    printf '%s\n' "/usr/local/bin/schedule"
+}
+
 write_systemd_units() {
     local executable="$1" host="$2"
     mkdir -p "$SYSTEMD_DIR"
     remove_legacy_systemd_artifacts
 
-    cat > "$SYSTEMD_DIR/backup.service" <<UNIT
-[Unit]
-Description=Incremental backup and repository maintenance for ${host} over SFTP
+    # Render through the shared schedule helper, passing backup-specific
+    # resource limits and timer tuning as extra-lines files.
+    local svc_extra timer_extra unit_extra
+    svc_extra=$(mktemp) || die "mktemp failed"
+    timer_extra=$(mktemp) || die "mktemp failed"
+    unit_extra=$(mktemp) || die "mktemp failed"
+    cat > "$unit_extra" <<'EXTRA'
 Wants=network-online.target
 After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=${executable} run
+EXTRA
+    cat > "$svc_extra" <<'EXTRA'
 Nice=19
 IOSchedulingClass=idle
 CPUSchedulingPolicy=idle
@@ -511,20 +534,20 @@ Environment=RESTIC_READ_CONCURRENCY=1
 TimeoutStartSec=12h
 TimeoutStopSec=10min
 KillSignal=SIGINT
-UNIT
-
-    cat > "$SYSTEMD_DIR/backup.timer" <<'UNIT'
-[Unit]
-Description=Daily incremental backup and repository maintenance
-
-[Timer]
-OnCalendar=*-*-* 09:00:00
+EXTRA
+    cat > "$timer_extra" <<'EXTRA'
 RandomizedDelaySec=15min
 Persistent=false
+EXTRA
 
-[Install]
-WantedBy=timers.target
-UNIT
+    local sched; sched=$(schedule_bin)
+    SCHEDULE_SYSTEM_DIR="$SYSTEMD_DIR" "$sched" render service system backup \
+        "Incremental backup and repository maintenance for ${host} over SFTP" \
+        "${executable} run" "$svc_extra" "$unit_extra" > "$SYSTEMD_DIR/backup.service"
+    SCHEDULE_SYSTEM_DIR="$SYSTEMD_DIR" "$sched" render timer system backup \
+        "Daily incremental backup and repository maintenance" \
+        "*-*-* 09:00:00" "$timer_extra" > "$SYSTEMD_DIR/backup.timer"
+    command rm -f "$svc_extra" "$timer_extra" "$unit_extra"
 }
 
 remove_legacy_nfs() {

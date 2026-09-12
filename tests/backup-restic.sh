@@ -16,6 +16,7 @@ export BACKUP_CONF_DIR="$TEST_TMP/etc/backup"
 export BACKUP_STATE_DIR="$TEST_TMP/var/lib/backup"
 export BACKUP_CACHE_DIR="$TEST_TMP/var/cache/backup"
 export BACKUP_SYSTEMD_DIR="$TEST_TMP/systemd"
+export SCHEDULE_BIN="$ROOT/bin/schedule"
 export BACKUP_LOCK_FILE="$TEST_TMP/backup.lock"
 export BACKUP_RECOVERY_DIR="$TEST_TMP/recovery"
 
