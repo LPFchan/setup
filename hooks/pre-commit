@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-for f in install.sh bin/setup lib/script-helpers.sh; do
+for f in install.sh bin/setup bin/schedule lib/script-helpers.sh; do
     zsh -n "$f" || { echo "Syntax error in $f — commit blocked" >&2; exit 1; }
 done
 while IFS=$'\t' read -r _module _target mode source _audience _platform; do
@@ -12,9 +12,10 @@ while IFS=$'\t' read -r _module _target mode source _audience _platform; do
     zsh -n "$source" || { echo "Syntax error in $source — commit blocked" >&2; exit 1; }
 done < manifest.tsv
 
+# bin/setup and bin/schedule are zsh; they are checked with zsh -n above.
 for f in bin/*; do
     [[ -f "$f" ]] || continue
-    [[ "$f" == bin/setup ]] && continue
+    [[ "$f" == bin/setup || "$f" == bin/schedule ]] && continue
     bash -n "$f" || { echo "Syntax error in $f — commit blocked" >&2; exit 1; }
 done
 

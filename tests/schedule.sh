@@ -3,15 +3,7 @@
 # plumbing across user and system scopes, plus extra-lines injection.
 set -euo pipefail
 
-# Self-locate the repo root. When run through a wrapper (e.g. an agent
-# harness) $0 and ${%x} can be the interpreter name rather than this
-# script path, so resolve by searching candidate anchors for bin/schedule.
-ROOT=""
-for _cand in "${0:A:h:h}" "${${(%):-%x}:A:h:h}" "$(pwd)" "$(pwd)/.."; do
-    if [[ -f "$_cand/bin/schedule" ]]; then ROOT="$(cd "$_cand" && pwd)"; break; fi
-done
-unset _cand
-[[ -n "$ROOT" ]] || { echo "schedule test: could not locate repo root" >&2; exit 1; }
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -44,10 +36,12 @@ export PATH="$TMP/bin:$PATH"
 SCHEDULE="$ROOT/bin/schedule"
 
 # render emits the shared skeleton.
-"$SCHEDULE" render timer user demo "Demo" "daily" > "$TMP/rout" 2> "$TMP/rerr"; echo "HRC=$?"; echo "OUT:"; cat "$TMP/rout"; echo "ERR:"; cat "$TMP/rerr"; grep -q "OnCalendar=daily" "$TMP/rout" \
-    || fail "render timer omitted OnCalendar"
-"$SCHEDULE" render timer user demo "Demo" "daily" | grep -q "WantedBy=timers.target" \
-    || fail "render timer omitted Install section"
+# Capture once and match in-shell: piping into `grep -q` under `set -o
+# pipefail` fails the pipeline, because grep exits on the first match and the
+# renderer dies of SIGPIPE before it finishes writing.
+rendered=$("$SCHEDULE" render timer user demo "Demo" "daily") || fail "render timer exited nonzero"
+[[ "$rendered" == *"OnCalendar=daily"* ]] || fail "render timer omitted OnCalendar"
+[[ "$rendered" == *"WantedBy=timers.target"* ]] || fail "render timer omitted Install section"
 
 # install writes both units to the scope dir and runs the enable dance.
 printf "Nice=19\n" > "$TMP/svc-extra"
@@ -63,7 +57,7 @@ grep -q "systemctl --user enable --now demo.timer" "$LOG" || fail "user enable -
 
 # status reports enabled/active and exits 0.
 "$SCHEDULE" status user demo >/dev/null || fail "status returned nonzero for enabled+active"
-"$SCHEDULE" status user demo | grep -q "enabled/active" || fail "status output malformed"
+[[ "$("$SCHEDULE" status user demo)" == *"enabled/active"* ]] || fail "status output malformed"
 
 # system scope uses no --user flag.
 : > "$LOG"
