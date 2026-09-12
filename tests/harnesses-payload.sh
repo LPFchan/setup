@@ -24,6 +24,12 @@ claude.write_text(json.dumps({
     "effortLevel": "low",
     "custom_key": "keepme",
 }))
+t3_path = HOME/".t3/userdata/settings.json"
+t3_path.write_text(json.dumps({"providerInstances": {"claudeAgent": {"driver": "claudeAgent",
+    "enabled": True, "config": {"customModels": [
+        {"slug": "grimoire/qwen3.8-flash-next-uncensored-nvfp4", "name": "stale bare row"},
+        {"slug": "operator/private-model", "name": "Operator model"},
+    ]}}}}))
 ns["cmd_settings"]([])
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
@@ -39,10 +45,19 @@ t3 = json.loads((HOME/".t3/userdata/settings.json").read_text())
 models = t3["providerInstances"]["claudeAgent"]["config"]["customModels"]
 slugs = {m["slug"] for m in models}
 assert "kimicode/k3-256k" in slugs and "codex/gpt-6-astra" in slugs
+# a model whose real ladder has a hole must ship option descriptors, or t3
+# renders no reasoning selector for it at all
+qwen = next(m for m in models if m["slug"].startswith("grimoire/qwen3.8-flash-next"))
+effort = next(d for d in qwen["capabilities"]["optionDescriptors"] if d["id"] == "effort")
+assert effort["type"] == "select", "effort descriptor is not a select"
+assert [o["id"] for o in effort["options"]] == ["low", "medium", "xhigh"], \
+    "qwen effort options drifted from the levels grimoire accepts"
+assert "high" not in {o["id"] for o in effort["options"]}, "qwen does not accept 'high'"
 # re-run is idempotent (no duplicate models)
 ns["cmd_settings"]([])
 models2 = json.loads((HOME/".t3/userdata/settings.json").read_text())["providerInstances"]["claudeAgent"]["config"]["customModels"]
 assert len(models2) == len(models), "t3 customModels duplicated on re-run"
+assert "operator/private-model" in slugs, "operator-added custom model was dropped"
 
 # --- mcp: codex config blocks appended once, zshenv mirror idempotent ---
 # claude is not on PATH in the test env, so enrollment is skipped; only the

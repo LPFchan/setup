@@ -209,9 +209,26 @@ def _write_t3_settings():
     config = claude.setdefault("config", {})
     config.setdefault("binaryPath", "claude")
     existing = config.get("customModels", [])
-    seen = { (m.get("slug") if isinstance(m,dict) else m) for m in existing }
-    for m in models:
-        if m["slug"] not in seen: existing.append(m)
+    # Append what is missing, and refresh the fields the manifest owns on rows
+    # that are already there -- an entry added before the manifest grew a
+    # 'capabilities' block would otherwise keep its bare shape forever, and t3
+    # shows no reasoning selector for a model without option descriptors.
+    # Operator-added slugs the manifest does not name are left untouched.
+    by_slug = { m["slug"]: m for m in models }
+    out = []
+    for row in existing:
+        slug = row.get("slug") if isinstance(row, dict) else row
+        want = by_slug.get(slug)
+        if want is None:
+            out.append(row)
+            continue
+        merged = dict(row) if isinstance(row, dict) else {"slug": slug}
+        merged.update(want)
+        out.append(merged)
+    for slug, m in by_slug.items():
+        if slug not in { (r.get("slug") if isinstance(r,dict) else r) for r in out }:
+            out.append(m)
+    existing = out
     config["customModels"] = existing
     save_json_atomic(T3_SETTINGS, current)
     print("  wrote %s (%d claude customModels)" % (T3_SETTINGS, len(existing)))

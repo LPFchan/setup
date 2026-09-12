@@ -2,33 +2,147 @@
   "version": 1,
   "comment": "Canonical harness + MCP registry for the 'harnesses' module. Absorbs the retired linux-setup/01-harnesses.md Obsidian doc. The harnesses list mirrors the self-update logic formerly bolted onto bin/setup; mcpServers is the fleet MCP catalog enrolled per harness. Secrets live in vaultwarden folder=mcp, item name == env var name (providers-module convention).",
   "harnesses": [
-    { "name": "claude", "install": "curl -fsSL https://claude.ai/install.sh | bash", "updateArgs": "update", "needsNode": false, "candidates": ["~/.local/bin/claude", "~/.claude/local/claude"] },
-    { "name": "codex", "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh", "updateArgs": "update", "needsNode": true, "candidates": [] },
-    { "name": "opencode", "install": "", "updateArgs": "upgrade", "needsNode": false, "candidates": ["~/.opencode/bin/opencode"] },
-    { "name": "agy", "install": "", "updateArgs": "update", "needsNode": false, "candidates": ["~/.local/bin/agy"] },
-    { "name": "hermes", "install": "", "updateArgs": "update --yes", "needsNode": false, "candidates": ["~/.local/bin/hermes"] },
-    { "name": "grok", "install": "", "updateArgs": "update", "needsNode": false, "candidates": ["~/.local/bin/grok", "~/.grok/bin/grok"] },
-    { "name": "kimi", "install": "", "updateArgs": "update", "needsNode": false, "candidates": ["~/.kimi-code/bin/kimi"] },
-    { "name": "muse", "install": "", "updateArgs": "--version", "updateEnv": "MUSE_SYNC_UPDATE=1", "needsNode": false, "candidates": ["~/.local/bin/muse"] },
-    { "name": "t3", "install": "", "updateArgs": "--yes t3@latest service update", "needsNode": true, "viaNpx": true, "candidates": [] }
+    {
+      "name": "claude",
+      "install": "curl -fsSL https://claude.ai/install.sh | bash",
+      "updateArgs": "update",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/claude",
+        "~/.claude/local/claude"
+      ]
+    },
+    {
+      "name": "codex",
+      "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+      "updateArgs": "update",
+      "needsNode": true,
+      "candidates": []
+    },
+    {
+      "name": "opencode",
+      "install": "",
+      "updateArgs": "upgrade",
+      "needsNode": false,
+      "candidates": [
+        "~/.opencode/bin/opencode"
+      ]
+    },
+    {
+      "name": "agy",
+      "install": "",
+      "updateArgs": "update",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/agy"
+      ]
+    },
+    {
+      "name": "hermes",
+      "install": "",
+      "updateArgs": "update --yes",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/hermes"
+      ]
+    },
+    {
+      "name": "grok",
+      "install": "",
+      "updateArgs": "update",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/grok",
+        "~/.grok/bin/grok"
+      ]
+    },
+    {
+      "name": "kimi",
+      "install": "",
+      "updateArgs": "update",
+      "needsNode": false,
+      "candidates": [
+        "~/.kimi-code/bin/kimi"
+      ]
+    },
+    {
+      "name": "muse",
+      "install": "",
+      "updateArgs": "--version",
+      "updateEnv": "MUSE_SYNC_UPDATE=1",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/muse"
+      ]
+    },
+    {
+      "name": "t3",
+      "install": "",
+      "updateArgs": "--yes t3@latest service update",
+      "needsNode": true,
+      "viaNpx": true,
+      "candidates": []
+    }
   ],
   "mcpServers": [
-    { "name": "obsidian", "url": "https://mcp.lost.plus/mcp", "auth": "bearer", "envVar": "OBSIDIAN_MCP_TOKEN", "vaultItem": "OBSIDIAN_MCP_TOKEN" },
-    { "name": "tweet-fetch", "url": "https://tweet.lost.plus/mcp", "auth": "bearer", "envVar": "TWEET_FETCH_TOKEN", "vaultItem": "TWEET_FETCH_TOKEN_1" },
-    { "name": "vaultwarden", "url": "https://vault.lost.plus/mcp", "auth": "bearer", "envVar": "VAULTWARDEN_MCP_TOKEN", "vaultItem": "VAULTWARDEN_MCP_TOKEN" },
-    { "name": "comfyui", "url": "https://comfy.lost.plus/mcp", "auth": "x-api-key", "envVar": "COMFYUI_MCP_TOKEN", "vaultItem": "comfyui-mcp-token" },
-    { "name": "thinqconnect", "url": "https://thinq.lost.plus/mcp", "auth": "bearer", "envVar": "THINQ_MCP_TOKEN", "vaultItem": "thinqconnect-mcp auth token" }
+    {
+      "name": "obsidian",
+      "url": "https://mcp.lost.plus/mcp",
+      "auth": "bearer",
+      "envVar": "OBSIDIAN_MCP_TOKEN",
+      "vaultItem": "OBSIDIAN_MCP_TOKEN"
+    },
+    {
+      "name": "tweet-fetch",
+      "url": "https://tweet.lost.plus/mcp",
+      "auth": "bearer",
+      "envVar": "TWEET_FETCH_TOKEN",
+      "vaultItem": "TWEET_FETCH_TOKEN_1"
+    },
+    {
+      "name": "vaultwarden",
+      "url": "https://vault.lost.plus/mcp",
+      "auth": "bearer",
+      "envVar": "VAULTWARDEN_MCP_TOKEN",
+      "vaultItem": "VAULTWARDEN_MCP_TOKEN"
+    },
+    {
+      "name": "comfyui",
+      "url": "https://comfy.lost.plus/mcp",
+      "auth": "x-api-key",
+      "envVar": "COMFYUI_MCP_TOKEN",
+      "vaultItem": "comfyui-mcp-token"
+    },
+    {
+      "name": "thinqconnect",
+      "url": "https://thinq.lost.plus/mcp",
+      "auth": "bearer",
+      "envVar": "THINQ_MCP_TOKEN",
+      "vaultItem": "thinqconnect-mcp auth token"
+    }
   ],
   "settings": {
     "claude": {
       "comment": "Merged into ~/.claude/settings.json. Scalar/dict keys deep-merge (existing preserved). 'permissionsAllowAdd' is union-merged into permissions.allow so the module can never clobber an operator's existing allow list.",
       "json": {
-        "permissions": { "defaultMode": "auto" },
-        "attribution": { "commit": "", "pr": "" },
+        "permissions": {
+          "defaultMode": "auto"
+        },
+        "attribution": {
+          "commit": "",
+          "pr": ""
+        },
         "effortLevel": "high"
       },
       "permissionsAllowAdd": [
-        "Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch",
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
+        "WebFetch",
+        "WebSearch",
         "mcp__obsidian-direct__*",
         "mcp__vaultwarden-secrets__*",
         "mcp__tweet-fetch__*",
@@ -37,13 +151,52 @@
       ]
     },
     "t3": {
-      "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy.",
+      "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy. A bare {slug,name} entry gets no option descriptors, so t3 shows no reasoning selector for it; declare 'capabilities.optionDescriptors' to get one. List only the efforts the model really accepts.",
       "claudeCustomModels": [
-        { "slug": "kimicode/k3-256k", "name": "Kimi k3 256k" },
-        { "slug": "codex/gpt-6-astra", "name": "GPT-6 Astra" },
-        { "slug": "codex/gpt-5.6-sol", "name": "GPT-5.6 Sol" },
-        { "slug": "codex/gpt-5.6-luna", "name": "GPT-5.6 Luna" },
-        { "slug": "grimoire/qwen3.8-flash-next-uncensored-nvfp4", "name": "Qwen3.8 Flash Next (grimoire)" }
+        {
+          "slug": "kimicode/k3-256k",
+          "name": "Kimi k3 256k"
+        },
+        {
+          "slug": "codex/gpt-6-astra",
+          "name": "GPT-6 Astra"
+        },
+        {
+          "slug": "codex/gpt-5.6-sol",
+          "name": "GPT-5.6 Sol"
+        },
+        {
+          "slug": "codex/gpt-5.6-luna",
+          "name": "GPT-5.6 Luna"
+        },
+        {
+          "slug": "grimoire/qwen3.8-flash-next-uncensored-nvfp4",
+          "name": "Qwen3.8 Flash Next (grimoire)",
+          "capabilities": {
+            "optionDescriptors": [
+              {
+                "id": "effort",
+                "label": "Reasoning",
+                "type": "select",
+                "options": [
+                  {
+                    "id": "low",
+                    "label": "Low"
+                  },
+                  {
+                    "id": "medium",
+                    "label": "Medium"
+                  },
+                  {
+                    "id": "xhigh",
+                    "label": "Extra High",
+                    "isDefault": true
+                  }
+                ]
+              }
+            ]
+          }
+        }
       ]
     }
   }
