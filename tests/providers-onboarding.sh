@@ -10,6 +10,14 @@ cat > "$PROVIDERS_REGISTRY" <<'EOF'
 {"version":1,"providers":{"demo":{"provider_type":"OpenAICompatible","base_url":"http://demo","auth":{"type":"api-key","store":"opencode","key":"demo"},"api_format":"openai","npm":"@ai-sdk/openai-compatible","enabled":true}}}
 EOF
 
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$TMP/bin/systemctl"
+export PATH="$TMP/bin:$PATH"
+
 python3 - <<PY
 import importlib.machinery, importlib.util, os, sys
 path = '$ROOT/files/providers'

@@ -83,24 +83,16 @@ VAULT_TOKEN = os.environ.get("VAULTWARDEN_SECRETS_TOKEN") or os.environ.get(
 AUTH_BLOCK_BEGIN = "# BEGIN setup:api-keys"
 AUTH_BLOCK_END = "# END setup:api-keys"
 
-SERVICE_UNIT = """[Unit]
-Description=Refresh provider model list from configured providers
-
-[Service]
-Type=oneshot
-ExecStart=%s
-"""
-
-TIMER_UNIT = """[Unit]
-Description=Hourly providers check
-
-[Timer]
-OnCalendar=hourly
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-"""
+def _schedule_bin():
+    """Locate the shared schedule helper (sourced tree or installed)."""
+    env = os.environ.get("SCHEDULE_BIN")
+    if env:
+        return env
+    here = pathlib.Path(__file__).resolve()
+    candidate = here.parent.parent / "bin" / "schedule"
+    if candidate.exists():
+        return str(candidate)
+    return os.path.expanduser("~/.local/bin/schedule")
 
 
 def load_json(path):
@@ -1803,15 +1795,22 @@ def cmd_schedule_enable():
             if r.stderr:
                 print(r.stderr.decode().rstrip(), file=sys.stderr)
     else:
-        pathlib.Path(SERVICE_DIR).mkdir(parents=True, exist_ok=True)
-        with open(os.path.join(SERVICE_DIR, "providers.service"), "w") as f:
-            f.write(SERVICE_UNIT % script_path)
-        with open(os.path.join(SERVICE_DIR, "providers.timer"), "w") as f:
-            f.write(TIMER_UNIT)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        subprocess.run(
-            ["systemctl", "--user", "enable", "--now", "providers.timer"], check=True
-        )
+        # Delegate unit render + enable to the shared schedule helper. Run it
+        # directly (not via subprocess.run) so tests that stub subprocess.run
+        # can still intercept the helper's own systemctl calls.
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as tf:
+            tf.write("Persistent=true\n")
+            timer_extra = tf.name
+        try:
+            rc = os.spawnlp(os.P_WAIT, _schedule_bin(), "schedule",
+                            "install-timer", "user", "providers",
+                            "Refresh provider model list from configured providers",
+                            script_path, "hourly", "", timer_extra)
+        finally:
+            os.unlink(timer_extra)
+        if rc:
+            raise SystemExit(rc)
         print("providers schedule enabled (hourly)")
 
     # --- provider onboarding ---
@@ -2186,15 +2185,10 @@ def cmd_schedule_disable():
             os.remove(plist_path)
         print("providers launchd schedule disabled")
     else:
-        subprocess.run(
-            ["systemctl", "--user", "disable", "--now", "providers.timer"],
-            capture_output=True,
-        )
-        for f in ["providers.service", "providers.timer"]:
-            p = os.path.join(SERVICE_DIR, f)
-            if os.path.exists(p):
-                os.remove(p)
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+        rc = os.spawnlp(os.P_WAIT, _schedule_bin(), "schedule",
+                        "uninstall-timer", "user", "providers")
+        if rc:
+            raise SystemExit(rc)
         print("providers schedule disabled")
 
 
@@ -2213,19 +2207,8 @@ def cmd_schedule_status():
         else:
             print("schedule: not installed")
     else:
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", "providers.timer"],
-            capture_output=True, text=True,
-        )
-        state = result.stdout.strip()
-        if state == "active":
-            next_run = subprocess.run(
-                ["systemctl", "--user", "show", "-p", "NextElapseUSecRealtime", "providers.timer"],
-                capture_output=True, text=True,
-            ).stdout.strip().split("=")[-1]
-            print(f"schedule: active (next: {next_run})")
-        else:
-            print(f"schedule: {state}")
+        os.spawnlp(os.P_WAIT, _schedule_bin(), "schedule",
+                   "status", "user", "providers")
 def _parse_capability_command(args):
     provider = None
     model = None
