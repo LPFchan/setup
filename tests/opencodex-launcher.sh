@@ -13,7 +13,7 @@ export TEST_TMP
 # The launcher copies the process env into the harness; inherited provider
 # aliases from the outer shell must not pollute the launch-env assertions.
 while IFS='=' read -r name _; do
-    case "$name" in ANTHROPIC_*|MAX_THINKING_TOKENS) unset "$name" ;; esac
+    case "$name" in ANTHROPIC_*|CLAUDE_CODE_EFFORT_LEVEL) unset "$name" ;; esac
 done < <(env)
 export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
@@ -84,7 +84,7 @@ case "${1:-}" in
     sync) printf 'sync\n' >> "$TEST_TMP/ocx-calls" ;;
     claude)
         printf '%s\n' "$@" > "$TEST_TMP/claude-args"
-        env | grep -E '^(ANTHROPIC_|MAX_THINKING_TOKENS=)' | sort > "$TEST_TMP/claude-env"
+        env | grep -E '^(ANTHROPIC_|CLAUDE_CODE_EFFORT_LEVEL=)' | sort > "$TEST_TMP/claude-env"
         # The launcher records sessions by diffing ~/.claude/projects, so the
         # stub must produce the jsonl a real claude run would.
         sid=""
@@ -177,8 +177,8 @@ grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
     || fail "claude was not launched with --model <routed model>"
 ! grep -q '^ANTHROPIC_DEFAULT_' "$TEST_TMP/claude-env" \
     || fail "launch still set claude alias model env vars"
-grep -Fqx "MAX_THINKING_TOKENS=128000" "$TEST_TMP/claude-env" \
-    || fail "picker effort selection did not set MAX_THINKING_TOKENS"
+grep -Fqx "CLAUDE_CODE_EFFORT_LEVEL=max" "$TEST_TMP/claude-env" \
+    || fail "picker effort selection did not set CLAUDE_CODE_EFFORT_LEVEL"
 jq -e --arg model "commandcode/$cc_opus" '
     .provider == "commandcode" and .harness == "claude"
     and .models.commandcode == $model and .efforts[$model] == "max"
@@ -379,8 +379,8 @@ anthropic_model="claude-sonnet-5"
     || fail "authenticated Anthropic launch repeated sync"
 
 "$ROOT/files/opencodex" run commandcode --effort default --model "$cc_model" claude
-! grep -q '^MAX_THINKING_TOKENS=' "$TEST_TMP/claude-env" \
-    || fail "'default' effort should not set MAX_THINKING_TOKENS"
+! grep -q '^CLAUDE_CODE_EFFORT_LEVEL=' "$TEST_TMP/claude-env" \
+    || fail "'default' effort should not set CLAUDE_CODE_EFFORT_LEVEL"
 
 resume_id="11111111-2222-4333-8444-555555555555"
 "$ROOT/files/opencodex" run commandcode --model "$cc_model" claude --resume "$resume_id"

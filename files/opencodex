@@ -848,13 +848,19 @@ def resumed_model(
 
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
 EFFORT_DEFAULT = "default"  # let the server/harness choose; launcher sends nothing
-EFFORT_THINKING_TOKENS = {
-    "low": "4000",
-    "medium": "16000",
-    "high": "48000",
-    "xhigh": "96000",
-    "max": "128000",
-    "ultra": "128000",
+# Claude Code reads CLAUDE_CODE_EFFORT_LEVEL, which outranks every settings
+# file. The older MAX_THINKING_TOKENS knob only applies in fixed-budget mode,
+# which needs CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 on Opus 4.6 / Sonnet 4.6;
+# everything newer is adaptive and ignores it, and unrecognized gateway model
+# names count as newer. "ultra" is ours, not Claude's: codex-rs collapses it to
+# "max" before any provider request, so match that boundary here.
+EFFORT_CLAUDE_LEVELS = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max",
+    "ultra": "max",
 }
 OCX_MODELS_URL = os.environ.get(
     "OPENCODEX_MODELS_URL", "http://localhost:10100/v1/models"
@@ -1315,11 +1321,11 @@ def launch(
     env = os.environ.copy()
     env["ANTHROPIC_MODEL"] = routed
     if explicit is not None:
-        if explicit not in EFFORT_THINKING_TOKENS:
+        if explicit not in EFFORT_CLAUDE_LEVELS:
             raise UserError(
-                f"reasoning effort {explicit!r} has no Claude token mapping"
+                f"reasoning effort {explicit!r} has no Claude effort mapping"
             )
-        env["MAX_THINKING_TOKENS"] = EFFORT_THINKING_TOKENS[explicit]
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = EFFORT_CLAUDE_LEVELS[explicit]
     command = [str(OCX), "claude"]
     # A settings.json "model" pin outranks ANTHROPIC_MODEL in claude's
     # precedence; the --model flag is the only override that always wins.
