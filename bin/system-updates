@@ -117,6 +117,14 @@ schedule_bin() {
         printf '%s\n' "$candidate"
         return
     fi
+    # Staging runs under sudo, where $HOME may be root's. setup installs
+    # schedule into the operator's ~/.local/bin, so resolve that explicitly.
+    local operator_home
+    operator_home=$(getent passwd "${SUDO_USER:-${USER}}" 2>/dev/null | cut -d: -f6)
+    if [[ -n "$operator_home" && -x "$operator_home/.local/bin/schedule" ]]; then
+        printf '%s\n' "$operator_home/.local/bin/schedule"
+        return
+    fi
     printf '%s\n' "/usr/local/bin/schedule"
 }
 
@@ -130,6 +138,7 @@ stage_payloads() {
     # Render unit skeletons through the shared schedule helper; per-unit
     # content (ordering, persistence, accuracy) arrives as extra-lines files.
     local sched; sched=$(schedule_bin)
+    [[ -x "$sched" ]] || die "schedule helper not found at $sched; run: setup install schedule"
     local ue te
     ue=$(mktemp) || die "mktemp failed"
     printf '%s\n' "After=network-online.target" "Wants=network-online.target" > "$ue"

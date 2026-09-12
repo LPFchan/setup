@@ -506,6 +506,12 @@ schedule_bin() {
     printf '%s\n' "/usr/local/bin/schedule"
 }
 
+require_schedule_bin() {
+    local sched; sched=$(schedule_bin)
+    [[ -x "$sched" ]] || die "schedule helper not found at $sched; run: setup install schedule"
+    printf '%s\n' "$sched"
+}
+
 write_systemd_units() {
     local executable="$1" host="$2"
     mkdir -p "$SYSTEMD_DIR"
@@ -540,14 +546,19 @@ RandomizedDelaySec=15min
 Persistent=false
 EXTRA
 
-    local sched; sched=$(schedule_bin)
-    SCHEDULE_SYSTEM_DIR="$SYSTEMD_DIR" "$sched" render service system backup \
+    local sched; sched=$(require_schedule_bin)
+    local svc_out timer_out
+    svc_out=$(mktemp) || die "mktemp failed"
+    timer_out=$(mktemp) || die "mktemp failed"
+    "$sched" render service system backup \
         "Incremental backup and repository maintenance for ${host} over SFTP" \
-        "${executable} run" "$svc_extra" "$unit_extra" > "$SYSTEMD_DIR/backup.service"
-    SCHEDULE_SYSTEM_DIR="$SYSTEMD_DIR" "$sched" render timer system backup \
+        "${executable} run" "$svc_extra" "$unit_extra" > "$svc_out"
+    "$sched" render timer system backup \
         "Daily incremental backup and repository maintenance" \
-        "*-*-* 09:00:00" "$timer_extra" > "$SYSTEMD_DIR/backup.timer"
-    command rm -f "$svc_extra" "$timer_extra" "$unit_extra"
+        "*-*-* 09:00:00" "$timer_extra" > "$timer_out"
+    install -m 0644 "$svc_out" "$SYSTEMD_DIR/backup.service"
+    install -m 0644 "$timer_out" "$SYSTEMD_DIR/backup.timer"
+    command rm -f "$svc_extra" "$timer_extra" "$unit_extra" "$svc_out" "$timer_out"
 }
 
 remove_legacy_nfs() {

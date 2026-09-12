@@ -104,7 +104,15 @@ schedule_bin() {
         printf '%s\n' "$candidate"
         return
     fi
-    printf '%s\n' "${HOME}/.local/bin/schedule"
+    # kernel-simmer runs under sudo, where $HOME may be root's. setup installs
+    # schedule into the operator's ~/.local/bin, so resolve that explicitly.
+    local operator_home
+    operator_home=$(getent passwd "${SUDO_USER:-${USER}}" | cut -d: -f6)
+    if [[ -n "$operator_home" && -x "$operator_home/.local/bin/schedule" ]]; then
+        printf '%s\n' "$operator_home/.local/bin/schedule"
+        return
+    fi
+    printf '%s\n' "/usr/local/bin/schedule"
 }
 
 # --- daemon check (invoked by systemd timer) --------------------------
@@ -214,19 +222,23 @@ cmd_enable() {
 
     # Render + install both units through the shared schedule helper.
     local sched; sched=$(schedule_bin)
-    local ue se te
+    [[ -x "$sched" ]] || die "schedule helper not found at $sched; run: setup install schedule"
+    local ue se te svc_out timer_out
     ue=$(mktemp); se=$(mktemp); te=$(mktemp)
+    svc_out=$(mktemp); timer_out=$(mktemp)
     printf '%s\n' "After=network-online.target" "Wants=network-online.target" > "$ue"
     printf '%s\n' "Environment=CONFIG_DIR=/etc/kernel-simmer" "StandardOutput=journal" "StandardError=journal" > "$se"
     printf '%s\n' "Persistent=true" "RandomizedDelaySec=1h" > "$te"
+    # Render to temp files, then move into place, so a failed render cannot
+    # leave a live unit in /etc/systemd/system truncated to zero bytes.
     "$sched" render service system kernel-simmer \
         "Check and install delayed kernel updates (kernel-simmer)" \
-        "/usr/local/bin/kernel-simmer check" "$se" "$ue" \
-        > /etc/systemd/system/${SERVICE_NAME}
+        "/usr/local/bin/kernel-simmer check" "$se" "$ue" > "$svc_out"
     "$sched" render timer system kernel-simmer \
-        "Weekly kernel-simmer check" "weekly" "$te" \
-        > /etc/systemd/system/${TIMER_NAME}
-    command rm -f "$ue" "$se" "$te"
+        "Weekly kernel-simmer check" "weekly" "$te" > "$timer_out"
+    install -m 0644 "$svc_out" /etc/systemd/system/${SERVICE_NAME}
+    install -m 0644 "$timer_out" /etc/systemd/system/${TIMER_NAME}
+    command rm -f "$ue" "$se" "$te" "$svc_out" "$timer_out"
     info "installed /etc/systemd/system/${SERVICE_NAME} + ${TIMER_NAME}"
 
     # Ensure default gap
