@@ -124,6 +124,10 @@ status() {
 }
 
 uninstall() {
+    # Tear the schedule down before the binary goes: the timer/agent outlives
+    # an uninstall otherwise and keeps firing at a path that no longer exists.
+    # refresh-models left two launchd agents failing on both Macs that way.
+    [[ -x "$BIN" ]] && python3 "$BIN" schedule disable >/dev/null 2>&1
     rm -f "$BIN" "$REGISTRY"
     remove_script_state "$MODULE"
     echo "providers: uninstalled launcher"
