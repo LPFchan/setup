@@ -97,8 +97,13 @@ grep -q 'TestOwnerKeyOne' "$HOME/.ssh/authorized_keys" \
     || fail "first GitHub owner key was not installed"
 grep -q 'UnmanagedKey' "$HOME/.ssh/authorized_keys" \
     || fail "an unmanaged authorized key was overwritten"
-[[ "$(stat -f '%Lp' "$HOME/.ssh/authorized_keys" 2>/dev/null || stat -c '%a' "$HOME/.ssh/authorized_keys")" == "600" ]] \
-    || fail "authorized_keys permissions are not 600"
+# GNU stat first: it fails cleanly on macOS with nothing on stdout, whereas BSD
+# stat -f prints filesystem info to STDOUT before failing on Linux, so the old
+# order captured that blob followed by the real mode and never equalled 600.
+key_mode=$(stat -c '%a' "$HOME/.ssh/authorized_keys" 2>/dev/null \
+    || stat -f '%Lp' "$HOME/.ssh/authorized_keys")
+[[ "$key_mode" == "600" ]] \
+    || fail "authorized_keys permissions are not 600 (got: $key_mode)"
 
 status >/dev/null || fail "freshly installed GitHub owner keys are not current"
 printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOwnerKeyThree owner-three' >> "$OWNER_KEYS_FILE"

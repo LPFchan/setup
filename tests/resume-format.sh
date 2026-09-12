@@ -79,9 +79,25 @@ row=$(cat "$TEST_TMP/fzf-input")
     || { echo "FAIL: resume included a programmatic Codex exec session" >&2; exit 1; }
 
 jq_bin=$(command -v jq)
+# Dropping the fake fzf is not enough to reach the fzf-multicolumn branch: most
+# fleet machines have a real fzf in /usr/bin, resume finds that one first, and it
+# exits 2 on a missing tty. Build a PATH holding only the tools resume needs, so
+# the absence of fzf is actually absence.
 rm -f "$FAKE_BIN/fzf"
 ln -s "$jq_bin" "$FAKE_BIN/jq"
-cat > "$FAKE_BIN/fzf-multicolumn" <<'EOF'
+NOFZF_BIN="$TEST_TMP/nofzf-bin"
+mkdir -p "$NOFZF_BIN"
+for dir in /usr/bin /bin; do
+    [[ -d "$dir" ]] || continue
+    for path in "$dir"/*; do
+        name=${path##*/}
+        [[ "$name" == fzf ]] && continue
+        [[ -e "$NOFZF_BIN/$name" ]] || ln -s "$path" "$NOFZF_BIN/$name"
+    done
+done
+# Unquoted heredoc on purpose: TEST_TMP is not exported, so a quoted one left
+# the marker path empty in the child and the started-marker was never written.
+cat > "$FAKE_BIN/fzf-multicolumn" <<EOF
 #!/usr/bin/env bash
 touch "$TEST_TMP/fzf-multicolumn-started"
 cat >/dev/null
@@ -90,7 +106,7 @@ EOF
 chmod +x "$FAKE_BIN/fzf-multicolumn"
 rm -f "$TEST_TMP/stderr" "$TEST_TMP/unexpected-dispatch"
 
-if ! PATH="$FAKE_BIN:/usr/bin:/bin" "$ROOT/files/resume" >"$TEST_TMP/stdout" 2>"$TEST_TMP/stderr"; then
+if ! PATH="$FAKE_BIN:$NOFZF_BIN" "$ROOT/files/resume" >"$TEST_TMP/stdout" 2>"$TEST_TMP/stderr"; then
     echo "FAIL: fzf-multicolumn cancellation should exit successfully" >&2
     exit 1
 fi

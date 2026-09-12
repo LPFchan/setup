@@ -17,7 +17,11 @@ MAC_BOOT_USER="${MAC_BOOT_USER:-$(id -un)}"
 
 _render_command() {
     cat <<'EOF'
-#!/bin/sh
+#!/bin/bash
+# bash, not sh: the body uses [[ ]] throughout, including a /dev/disk* pattern
+# match that has no [ equivalent. macOS /bin/sh is bash in POSIX mode and runs
+# it fine, which is why this only ever failed where /bin/sh is dash -- the
+# Linux boxes the test suite runs on.
 set -eu
 
 load_boot_volume() {
