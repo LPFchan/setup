@@ -507,12 +507,6 @@ def provider_config_diff(
         if not isinstance(live, dict):
             reasons.append(f"provider '{name}' is not loaded by the running proxy")
             continue
-        # Without this the ladders land on disk and the running proxy keeps
-        # forwarding an effort the model rejects: the server snapshots config
-        # at startup and never re-reads it.
-        if "modelReasoningEfforts" in live and desired.get("modelReasoningEfforts") is not None:
-            if desired["modelReasoningEfforts"] != live["modelReasoningEfforts"]:
-                reasons.append(f"provider '{name}' reasoning ladders differ")
         for field in ("adapter", "authMode"):
             if field in live and desired.get(field) is not None and desired[field] != live[field]:
                 reasons.append(
@@ -584,6 +578,32 @@ def proxy_version_drift(port: int) -> list[str]:
     return [f"proxy is running ocx {running} but {installed} is installed"]
 
 
+def config_written_after_start() -> list[str]:
+    """Stale because config.json was rewritten after the proxy loaded it.
+
+    The server snapshots config.json at startup and never watches the file, so
+    anything written afterwards is invisible to the running process. Comparing
+    the file against /api/providers only catches fields that view echoes back,
+    and it echoes adapter/authMode/disabled/baseUrl and nothing else -- a
+    reasoning ladder written to disk compared equal forever and the proxy kept
+    forwarding efforts the model rejects.
+
+    So compare timestamps instead of fields. ocx rewrites runtime-port.json
+    every time it starts, which dates the snapshot the process is holding, and
+    apply only writes config.json when the content actually changed. That makes
+    this specific to a real change and blind to which field changed, so the next
+    key we add is covered without anyone remembering to list it here.
+    """
+    try:
+        written = OPENCODEX_CONFIG.stat().st_mtime
+        started = (HOME/".opencodex/runtime-port.json").stat().st_mtime
+    except OSError:
+        return []
+    if written <= started:
+        return []
+    return ["config.json was written after the running proxy loaded it"]
+
+
 def proxy_stale_reasons(port: int, desired_providers: dict[str, Any]) -> list[str]:
     """Human-readable reasons the proxy on `port` must restart to be current.
 
@@ -591,7 +611,8 @@ def proxy_stale_reasons(port: int, desired_providers: dict[str, Any]) -> list[st
     never blind-restart on routing; the proxy's own restart request and the
     version drift are both read from /healthz and each stands on its own.
     """
-    reasons = proxy_self_reported_restart(port) + proxy_version_drift(port)
+    reasons = (proxy_self_reported_restart(port) + proxy_version_drift(port)
+               + config_written_after_start())
     live = live_provider_view(port)
     if live is not None:
         reasons.extend(provider_config_diff(desired_providers, live))
