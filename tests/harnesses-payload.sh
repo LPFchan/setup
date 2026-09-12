@@ -205,8 +205,8 @@ grep -Fqx 'Persistent=true' "$sched_tmp/units/harnesses-update.timer" \
     || { echo "FAIL: harnesses timer is not persistent" >&2; exit 1; }
 # The pass must be 'daily', not 'update': settings are rendered from what the
 # proxy reports, so the proxy has to be converged first, in that order.
-grep -Fqx 'ExecStart=%h/.local/bin/harnesses daily' "$sched_tmp/units/harnesses-update.service" \
-    || { echo "FAIL: harnesses timer does not run the full daily pass" >&2; exit 1; }
+grep -Fqx 'ExecStart=%h/.local/bin/harnesses refresh' "$sched_tmp/units/harnesses-update.service" \
+    || { echo "FAIL: harnesses timer does not run the full refresh pass" >&2; exit 1; }
 grep -q 'enable --now harnesses-update.timer' "$SCHED_LOG" \
     || { echo "FAIL: harnesses timer was not enabled" >&2; exit 1; }
 

@@ -548,7 +548,7 @@ def cmd_proxy(names):
 
 # --- schedule ---------------------------------------------------------
 # The module owns its own update cadence: `harnesses schedule` installs a
-# daily 11:00 timer that runs `harnesses daily`. setup's 06:00 timer no
+# daily 11:00 timer that runs `harnesses refresh`. setup's 06:00 timer no
 # longer touches the harnesses, so this is the only automatic path.
 TIMER_NAME = "harnesses-update"
 PLIST_NAME = "com.lost.plus.harnesses-update"
@@ -601,7 +601,7 @@ def _schedule_enable():
     <key>ProgramArguments</key>
     <array>
         <string>%s</string>
-        <string>daily</string>
+        <string>refresh</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
@@ -646,7 +646,7 @@ def _schedule_enable():
     try:
         rc = _run_schedule("install-timer", "user", TIMER_NAME,
                            "Daily AI harness maintenance",
-                           "%h/.local/bin/harnesses daily",
+                           "%h/.local/bin/harnesses refresh",
                            "*-*-* %02d:00:00" % SCHEDULE_HOUR, "", timer_extra)
     finally:
         os.unlink(timer_extra)
@@ -702,7 +702,7 @@ def _proxy_stop_budget():
     return 0
 
 
-def cmd_daily(names):
+def cmd_refresh(names):
     """The scheduled pass: bring the proxy current, then render, then update.
 
     Order is the point. Settings are generated from what the proxy reports, so
@@ -730,7 +730,7 @@ def cmd_daily(names):
             eprint("  %s failed: %s" % (name, exc))
             failed.append(name)
     if failed:
-        eprint("harnesses daily: %s failed" % ", ".join(failed))
+        eprint("harnesses refresh: %s failed" % ", ".join(failed))
         return 1
     return 0
 
@@ -747,7 +747,7 @@ def cmd_schedule(names):
     return 2
 
 
-ACTIONS = ["install","update","settings","mcp","proxy","daily","schedule"]
+ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule"]
 
 USAGE = """Usage: harnesses [%s] [name...] [--help]
 
@@ -758,9 +758,9 @@ Install, update, and configure the fleet's AI coding harnesses.
   settings [name...]  Render claude + t3 settings from the manifest.
   mcp [name...]       Enroll MCP servers from vaultwarden folder=mcp.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
-  daily               The scheduled pass: proxy apply, settings, mcp, update.
+  refresh             The scheduled pass: proxy apply, settings, mcp, update.
   schedule [enable|disable|status]
-                      Daily 11:00 timer that runs 'harnesses daily'.
+                      Daily 11:00 timer that runs 'harnesses refresh'.
   -h, --help          Show this help.
 
 With no arguments (and a terminal + fzf) it opens the action menu.
@@ -770,7 +770,7 @@ Every action takes optional harness names to narrow the run.""" % "|".join(ACTIO
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses daily;; daily) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
@@ -782,7 +782,7 @@ def menu():
     return dispatch(choice, [])
 
 def dispatch(action, names):
-    if action=="daily": return cmd_daily(names)
+    if action=="refresh": return cmd_refresh(names)
     if action=="install": return cmd_install(names)
     if action=="update": return cmd_update(names)
     if action=="settings": return cmd_settings(names)
