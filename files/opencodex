@@ -285,6 +285,7 @@ def desired_opencodex_config(
     # model catalog. Mirroring it here is what keeps a disabled provider out of
     # the Codex model picker, not just out of launcher selection.
     state = load_provider_state()
+    ladders_by_provider = capability_effort_ladders(registry)
 
     for name in sorted(managed):
         descriptor = registry["providers"][name]
@@ -325,6 +326,16 @@ def desired_opencodex_config(
                 provider["selectedModels"] = narrowed
             else:
                 provider.pop("selectedModels", None)
+            # OAuth providers are excluded on purpose: OpenCodex reconciles
+            # their ladders itself at login, which is what OAUTH_RECONCILE_FIELDS
+            # protects. An api-key provider gets no such reconcile, so setup is
+            # the only thing that can carry the upstream fact across.
+            if name in ladders_by_provider:
+                ladders = ladders_by_provider[name]
+                if ladders:
+                    provider["modelReasoningEfforts"] = ladders
+                else:
+                    provider.pop("modelReasoningEfforts", None)
         # Never pin a model: a launch names the one it wants, and with
         # liveModels the proxy serves each provider's full rotating fleet
         # rather than a profile-mapped subset. Popping rather than merely
@@ -1070,6 +1081,49 @@ def _capability_route_id(provider: str, model_id: str) -> str:
     the id (for example ``openrouter/auto``); preserve that existing route.
     """
     return model_id if model_id.startswith(f"{provider}/") else f"{provider}/{model_id}"
+
+
+def capability_effort_ladders(registry: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
+    """Provider -> {native model id: supported efforts}, from the providers cache.
+
+    OpenCodex never reads `supported_efforts` off an upstream /v1/models, so for
+    an api-key provider nothing fills its reasoning ladder. Without one the
+    proxy has nothing to clamp against and forwards an effort the model rejects
+    verbatim; with one it drops to the nearest level the model does take. The
+    fact is already published upstream and already cached here, so this reads it
+    rather than restating it per model.
+
+    Only providers present in the view are returned. A missing cache leaves the
+    caller's existing ladders untouched instead of erasing them.
+    """
+    view = provider_capability_view()
+    providers = view.get("providers", {}) if isinstance(view, dict) else {}
+    if not isinstance(providers, dict):
+        return {}
+    enrolled = registry.get("providers", {})
+    result: dict[str, dict[str, list[str]]] = {}
+    for provider, snapshot in providers.items():
+        if enrolled.get(provider, {}).get("provider_type") != "OpenAICompatible":
+            continue
+        models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
+        if not isinstance(models, dict):
+            continue
+        ladders: dict[str, list[str]] = {}
+        for native_id, record in models.items():
+            if not isinstance(native_id, str) or not native_id or not isinstance(record, dict):
+                continue
+            reasoning = record.get("reasoning")
+            reasoning = reasoning if isinstance(reasoning, dict) else {}
+            if reasoning.get("support") != "full":
+                continue
+            efforts = reasoning.get("supported_efforts")
+            if not isinstance(efforts, list):
+                continue
+            efforts = [value for value in efforts if isinstance(value, str) and value]
+            if efforts:
+                ladders[native_id] = efforts
+        result[provider] = ladders
+    return result
 
 
 def provider_capability_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:

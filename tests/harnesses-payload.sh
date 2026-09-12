@@ -29,6 +29,7 @@ t3_path.write_text(json.dumps({"providerInstances": {"claudeAgent": {"driver": "
     "enabled": True, "config": {"customModels": [
         {"slug": "grimoire/qwen3.8-flash-next-uncensored-nvfp4", "name": "stale bare row"},
         {"slug": "operator/private-model", "name": "Operator model"},
+        {"slug": "codex/gpt-6-astra", "name": "stale prefixed row"},
     ]}}}}))
 ns["cmd_settings"]([])
 d = json.loads(claude.read_text())
@@ -44,15 +45,15 @@ assert len(allow) == len(set(allow)), "allow list has duplicates"
 t3 = json.loads((HOME/".t3/userdata/settings.json").read_text())
 models = t3["providerInstances"]["claudeAgent"]["config"]["customModels"]
 slugs = {m["slug"] for m in models}
-assert "kimicode/k3-256k" in slugs and "codex/gpt-6-astra" in slugs
-# a model whose real ladder has a hole must ship option descriptors, or t3
-# renders no reasoning selector for it at all
-qwen = next(m for m in models if m["slug"].startswith("grimoire/qwen3.8-flash-next"))
-effort = next(d for d in qwen["capabilities"]["optionDescriptors"] if d["id"] == "effort")
-assert effort["type"] == "select", "effort descriptor is not a select"
-assert [o["id"] for o in effort["options"]] == ["low", "medium", "xhigh"], \
-    "qwen effort options drifted from the levels grimoire accepts"
-assert "high" not in {o["id"] for o in effort["options"]}, "qwen does not accept 'high'"
+assert "kimicode/k3-256k" in slugs and "gpt-6-astra" in slugs
+# a slug naming a provider the proxy does not have cannot route; the retired
+# list is what removes one that an earlier release already wrote out
+assert "codex/gpt-6-astra" not in slugs, "retired custom model slug survived"
+# effort levels are read from the proxy catalog, never written down here: no
+# proxy in the test environment means no descriptors, rather than a guess
+for m in models:
+    for d in (m.get("capabilities") or {}).get("optionDescriptors", []):
+        assert d["id"] != "effort" or d["options"], "effort descriptor with no options"
 # re-run is idempotent (no duplicate models)
 ns["cmd_settings"]([])
 models2 = json.loads((HOME/".t3/userdata/settings.json").read_text())["providerInstances"]["claudeAgent"]["config"]["customModels"]

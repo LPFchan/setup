@@ -201,6 +201,58 @@ def _write_claude_settings():
     save_json_atomic(CLAUDE_SETTINGS, merged)
     print("  wrote %s" % CLAUDE_SETTINGS)
 
+def _effort_descriptors_by_slug():
+    """Model slug -> a t3 'effort' option descriptor, from the proxy's catalog.
+
+    t3 only renders a reasoning selector for a custom model that declares its
+    own option descriptors; a bare {slug,name} entry gets none. The levels a
+    model accepts are not ours to know -- the provider publishes them and the
+    proxy republishes them as reasoning_efforts -- so read them rather than
+    keeping a table that drifts the first time a model is swapped.
+
+    A model the proxy cannot describe is simply left without a selector, which
+    is the honest state: guessing a level the model rejects is how the request
+    fails.
+    """
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:%d/v1/models" % _proxy_port(), timeout=3
+        ) as resp:
+            payload = json.load(resp)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return {}
+    out = {}
+    for row in (payload.get("data") or []) if isinstance(payload, dict) else []:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        levels = row.get("reasoning_efforts")
+        if not isinstance(levels, list):
+            continue
+        options = []
+        for level in levels:
+            if not isinstance(level, dict) or not isinstance(level.get("value"), str):
+                continue
+            label = level.get("label")
+            if not isinstance(label, str) or not label:
+                label = level["value"]
+            # The proxy labels every rung "<Level> Effort"; the column it lands
+            # in is already called Reasoning, so drop the repeat.
+            if label.endswith(" Effort"):
+                label = label[: -len(" Effort")]
+            option = {"id": level["value"], "label": label}
+            if level.get("default") is True:
+                option["isDefault"] = True
+            options.append(option)
+        if options:
+            out[row["id"]] = {
+                "id": "effort",
+                "label": "Reasoning",
+                "type": "select",
+                "options": options,
+            }
+    return out
+
+
 def _write_t3_settings():
     models = MANIFEST["settings"]["t3"]["claudeCustomModels"]
     current = load_json(T3_SETTINGS)
@@ -214,10 +266,20 @@ def _write_t3_settings():
     # 'capabilities' block would otherwise keep its bare shape forever, and t3
     # shows no reasoning selector for a model without option descriptors.
     # Operator-added slugs the manifest does not name are left untouched.
-    by_slug = { m["slug"]: m for m in models }
+    descriptors = _effort_descriptors_by_slug()
+    by_slug = {}
+    for m in models:
+        entry = dict(m)
+        descriptor = descriptors.get(entry["slug"])
+        if descriptor is not None:
+            entry["capabilities"] = {"optionDescriptors": [descriptor]}
+        by_slug[entry["slug"]] = entry
+    retired = set(MANIFEST["settings"]["t3"].get("retiredClaudeCustomModels") or [])
     out = []
     for row in existing:
         slug = row.get("slug") if isinstance(row, dict) else row
+        if slug in retired:
+            continue
         want = by_slug.get(slug)
         if want is None:
             out.append(row)

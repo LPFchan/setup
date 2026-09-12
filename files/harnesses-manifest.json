@@ -151,53 +151,35 @@
       ]
     },
     "t3": {
-      "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy. A bare {slug,name} entry gets no option descriptors, so t3 shows no reasoning selector for it; declare 'capabilities.optionDescriptors' to get one. List only the efforts the model really accepts.",
+      "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy. A slug must be spelled exactly as the proxy's /v1/models publishes it -- some catalogs are provider-prefixed, some are bare, and a prefix naming a provider the proxy does not have fails to route at all. t3 draws a reasoning selector only for entries carrying capabilities.optionDescriptors, so the module generates those from the same catalog at write time. Do not hand-write effort levels here.",
       "claudeCustomModels": [
         {
           "slug": "kimicode/k3-256k",
           "name": "Kimi k3 256k"
         },
         {
-          "slug": "codex/gpt-6-astra",
+          "slug": "gpt-6-astra",
           "name": "GPT-6 Astra"
         },
         {
-          "slug": "codex/gpt-5.6-sol",
+          "slug": "gpt-5.6-sol",
           "name": "GPT-5.6 Sol"
         },
         {
-          "slug": "codex/gpt-5.6-luna",
+          "slug": "gpt-5.6-luna",
           "name": "GPT-5.6 Luna"
         },
         {
           "slug": "grimoire/qwen3.8-flash-next-uncensored-nvfp4",
-          "name": "Qwen3.8 Flash Next (grimoire)",
-          "capabilities": {
-            "optionDescriptors": [
-              {
-                "id": "effort",
-                "label": "Reasoning",
-                "type": "select",
-                "options": [
-                  {
-                    "id": "low",
-                    "label": "Low"
-                  },
-                  {
-                    "id": "medium",
-                    "label": "Medium"
-                  },
-                  {
-                    "id": "xhigh",
-                    "label": "Extra High",
-                    "isDefault": true
-                  }
-                ]
-              }
-            ]
-          }
+          "name": "Qwen3.8 Flash Next (grimoire)"
         }
-      ]
+      ],
+      "retiredClaudeCustomModels": [
+        "codex/gpt-6-astra",
+        "codex/gpt-5.6-sol",
+        "codex/gpt-5.6-luna"
+      ],
+      "retiredComment": "Slugs the module must delete from an existing settings file. These named a 'codex' provider the proxy never had, so they sat in the picker unroutable; the same models are published bare. Entries the manifest has never owned are left alone."
     }
   }
 }
