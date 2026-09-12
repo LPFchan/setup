@@ -66,8 +66,8 @@ Commands:
   status [module...]   Show installed/current/outdated/modified state
   install [module...]  Install module files (copies to ~/.local/bin/)
   update [module...]   Update installed modules; reports new modules available
-                       No arguments also self-updates installed AI harnesses;
-                       'setup update harnesses' updates only those
+                       No arguments also runs each AI harness's self-updater;
+                       'harnesses update' runs just those
   uninstall [module...] Remove managed files
   enable [module...]   Enable service modules (requires sudo)
   disable [module...]  Disable service modules (requires sudo)
@@ -1070,26 +1070,17 @@ cmd_update() {
     configure_shell || true
     local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
-    local want_modules=1 want_harnesses=0 manifest_input
-    # `setup update` covers everything; `setup update harnesses` narrows to the
-    # harnesses; any other module filter keeps harnesses out of the run.
+    local want_harnesses=0 manifest_input
+    # `setup update` updates every module and then runs each harness's own
+    # self-updater. Any filtered run is a plain module update, `harnesses`
+    # included: `setup update harnesses` updates the harnesses module itself,
+    # and `harnesses update` is what drives the per-harness self-updaters.
     for target_module in "$@"; do
-        if [[ "$target_module" == harnesses ]]; then
-            want_harnesses=1
-            continue
-        fi
         filters+=("$target_module")
     done
-    if (($# == 0)); then
-        want_harnesses=1
-    elif ((want_harnesses == 1)) && ((${#filters[@]} == 0)); then
-        want_modules=0
-    fi
-    manifest_input=/dev/null
-    if ((want_modules == 1)); then
-        fetch_manifest || return 1
-        manifest_input="$MANIFEST_FILE"
-    fi
+    (($# == 0)) && want_harnesses=1
+    fetch_manifest || return 1
+    manifest_input="$MANIFEST_FILE"
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if [[ ${#filters[@]} -gt 0 ]]; then
@@ -1178,30 +1169,28 @@ cmd_update() {
             fi
         fi
     done < "$manifest_input"
-    if ((want_modules == 1)); then
-        # Update setup last — self-update exec restarts the process
-        if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
-            if ! install_one setup "$setup_target" "$setup_mode" "$setup_source"; then
-                echo "Warning: setup update failed." >&2
-                failure_count=$((failure_count + 1))
-                failure_names+=(setup)
-            fi
+    # Update setup last — self-update exec restarts the process
+    if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
+        if ! install_one setup "$setup_target" "$setup_mode" "$setup_source"; then
+            echo "Warning: setup update failed." >&2
+            failure_count=$((failure_count + 1))
+            failure_names+=(setup)
         fi
-        # All .zshrc blocks now exist (configure_shell + module loop); enforce order.
-        normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
-        echo
-        if [[ "$new_count" -gt 0 ]]; then
-            echo "$new_count new module(s) available: ${new_names[*]}"
-            echo "Run 'setup' to select what to install."
-        fi
-        if [[ "$failure_count" -gt 0 ]]; then
-            echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
-        fi
-        if [[ "$deferred_count" -gt 0 ]]; then
-            echo "$deferred_count module(s) need an interactive update: ${deferred_names[*]}"
-        elif [[ "$failure_count" -eq 0 && "$new_count" -eq 0 ]]; then
-            echo "All modules up to date."
-        fi
+    fi
+    # All .zshrc blocks now exist (configure_shell + module loop); enforce order.
+    normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+    echo
+    if [[ "$new_count" -gt 0 ]]; then
+        echo "$new_count new module(s) available: ${new_names[*]}"
+        echo "Run 'setup' to select what to install."
+    fi
+    if [[ "$failure_count" -gt 0 ]]; then
+        echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
+    fi
+    if [[ "$deferred_count" -gt 0 ]]; then
+        echo "$deferred_count module(s) need an interactive update: ${deferred_names[*]}"
+    elif [[ "$failure_count" -eq 0 && "$new_count" -eq 0 ]]; then
+        echo "All modules up to date."
     fi
 
     local harness_failed=0

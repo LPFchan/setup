@@ -62,6 +62,7 @@ fetch_manifest() {
     cat > "$MANIFEST_FILE" <<'EOF'
 # module	target	mode	source
 tmux	~/.local/bin/tmux-stub	0755	tmux
+harnesses	~/.local/bin/harnesses	0755	harnesses-stub
 EOF
 }
 installed_hash_for() { printf "installed\n"; }
@@ -79,16 +80,23 @@ grep -qx "harnesses update" "$CALLS" || fail "bare update skipped harnesses"
 
 run_update tmux || fail "module-filtered update failed: $(cat "$TMP/out")"
 grep -qx "module tmux" "$CALLS" || fail "module-filtered update skipped its module"
+if grep -qx "module harnesses" "$CALLS"; then fail "module-filtered update touched other modules"; fi
 if grep -q "harnesses update" "$CALLS"; then fail "module-filtered update pulled in harnesses"; fi
 
-run_update harnesses || fail "harness-filtered update failed: $(cat "$TMP/out")"
-grep -qx "harnesses update" "$CALLS" || fail "harness-filtered update skipped harnesses"
-if grep -q "module " "$CALLS"; then fail "harness-filtered update touched manifest modules"; fi
-[[ ! -s "$FETCHES" ]] || fail "harness-filtered update fetched the manifest"
+# `harnesses` is a module like any other: filtering on it updates the module,
+# not the per-harness self-updaters. Those belong to `harnesses update`.
+run_update harnesses || fail "harnesses-module update failed: $(cat "$TMP/out")"
+grep -qx "module harnesses" "$CALLS" || fail "setup update harnesses skipped the module itself"
+if grep -q "harnesses update" "$CALLS"; then
+    fail "setup update harnesses ran the harness self-updaters instead of the module"
+fi
+[[ -s "$FETCHES" ]] || fail "setup update harnesses did not fetch the manifest"
 
 run_update tmux harnesses || fail "combined update failed: $(cat "$TMP/out")"
 grep -qx "module tmux" "$CALLS" || fail "combined update skipped its module"
-grep -qx "harnesses update" "$CALLS" || fail "combined update skipped harnesses"
+if grep -q "harnesses update" "$CALLS"; then
+    fail "a filtered update still pulled in the harness self-updaters"
+fi
 
 # A harness failure alone must fail `setup update`, so the timer journal shows it.
 make_harnesses_client 1

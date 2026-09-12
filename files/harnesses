@@ -363,13 +363,16 @@ def cmd_proxy(names):
 
 ACTIONS = ["install","update","settings","mcp","proxy"]
 
-USAGE = """usage: harnesses [%s] [name...]
+USAGE = """Usage: harnesses [%s] [name...] [--help]
 
-  install   install/update node, claude, codex
-  update    self-update the installed harnesses
-  settings  render claude + t3 settings from the manifest
-  mcp       enroll MCP servers from vaultwarden folder=mcp
-  proxy     ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL
+Install, update, and configure the fleet's AI coding harnesses.
+
+  install [name...]   Install/update node, claude, codex.
+  update [name...]    Run each installed harness's own self-updater.
+  settings [name...]  Render claude + t3 settings from the manifest.
+  mcp [name...]       Enroll MCP servers from vaultwarden folder=mcp.
+  proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
+  -h, --help          Show this help.
 
 With no arguments (and a terminal + fzf) it opens the action menu.
 Every action takes optional harness names to narrow the run.""" % "|".join(ACTIONS)

@@ -117,7 +117,7 @@ help_out="$TMP/help.out"
 if ! HOME="$HOME" python3 "$ROOT/files/harnesses" --help > "$help_out" 2>&1; then
     echo "FAIL: harnesses --help exited nonzero" >&2; exit 1
 fi
-grep -q "usage: harnesses" "$help_out" || { echo "FAIL: --help did not print usage" >&2; exit 1; }
+grep -qi "usage: harnesses" "$help_out" || { echo "FAIL: --help did not print usage" >&2; exit 1; }
 grep -q "proxy " "$help_out" || { echo "FAIL: --help did not list the actions" >&2; exit 1; }
 
 bogus_out="$TMP/bogus.out"
