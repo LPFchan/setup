@@ -38,6 +38,11 @@ assert d["effortLevel"] == "high", "manifest scalar not applied"
 allow = d["permissions"]["allow"]
 for keep in ("Read", "mcp__custom__*", "Skill"):
     assert keep in allow, f"existing allow entry {keep} clobbered"
+manifest = json.loads(Path(os.environ["HARNESSES_MANIFEST"]).read_text())
+granted = set(manifest["settings"]["claude"]["permissionsAllowAdd"])
+for srv in manifest["mcpServers"]:
+    assert "mcp__%s__*" % srv["name"] in granted, \
+        "mcp server %s enrolls under a name the allow-list does not grant" % srv["name"]
 for added in ("mcp__obsidian-direct__*", "mcp__vaultwarden-secrets__*"):
     assert added in allow, f"manifest allow entry {added} missing"
 assert len(allow) == len(set(allow)), "allow list has duplicates"
@@ -71,15 +76,15 @@ g = ns["cmd_mcp"].__globals__
 g["vault_get"] = ns["vault_get"]
 ns["cmd_mcp"]([])
 codex = (HOME/".codex/config.toml").read_text()
-assert "[mcp_servers.obsidian]" in codex, "codex obsidian block missing"
+assert "[mcp_servers.obsidian-direct]" in codex, "codex obsidian block missing"
 assert "bearer_token_env_var = \"OBSIDIAN_MCP_TOKEN\"" in codex
-assert "[mcp_servers.vaultwarden]" in codex, "codex vaultwarden block missing"
+assert "[mcp_servers.vaultwarden-secrets]" in codex, "codex vaultwarden block missing"
 zshenv = (HOME/".zshenv").read_text()
 assert "export OBSIDIAN_MCP_TOKEN=tok-obsidian" in zshenv
 # re-run: codex blocks not duplicated, zshenv block replaced not stacked
 ns["cmd_mcp"]([])
 codex2 = (HOME/".codex/config.toml").read_text()
-assert codex2.count("[mcp_servers.obsidian]") == 1, "codex block duplicated"
+assert codex2.count("[mcp_servers.obsidian-direct]") == 1, "codex block duplicated"
 zshenv2 = (HOME/".zshenv").read_text()
 assert zshenv2.count("# BEGIN harnesses:mcp-tokens") == 1, "zshenv block stacked"
 

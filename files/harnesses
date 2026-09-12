@@ -329,15 +329,60 @@ def cmd_mcp(names):
         if val: exports.append("export %s=%s" % (envvar, val))
     _mirror_zshenv(exports)
     if shutil.which("claude"):
-        existing = subprocess.run(["claude","mcp","list"], capture_output=True, text=True).stdout
         for s in servers:
-            if s["name"] in existing: continue
-            subprocess.run(_claude_mcp_add(s))
+            _claude_mcp_reconcile(s)
         print("  claude MCP servers enrolled")
     else:
         print("  claude not installed; skipped claude MCP enrollment")
     _write_codex_mcp(servers)
     return 0
+
+def _claude_mcp_registered(name):
+    """(url, header) as claude has it stored, or None when it is not registered.
+
+    'claude mcp list' was the wrong source: it prints every server including the
+    claude.ai connectors, and the old membership test was a substring search over
+    that whole blob. A manifest name that happens to be a prefix of some unrelated
+    connector -- 'obsidian' inside 'obsidian-direct', 'tweet-fetch' inside
+    'claude.ai tweet-fetch-mcp' -- read as already enrolled and was skipped on
+    every run. 'get' names one server and cannot collide.
+    """
+    r = subprocess.run(["claude","mcp","get",name], capture_output=True, text=True)
+    if r.returncode != 0 or "No MCP server named" in (r.stdout + r.stderr):
+        return None
+    url, header = None, None
+    for line in r.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("URL:"):
+            url = stripped[4:].strip()
+        elif ":" in stripped and stripped.split(":", 1)[0] in ("Authorization", "X-API-Key"):
+            header = stripped
+    return (url, header)
+
+
+def _claude_mcp_reconcile(s):
+    """Enroll a server, or re-enroll one whose stored url/header has drifted.
+
+    The token itself never goes stale here: the header stores ${VAR} and claude
+    expands it per request, so a rotation reaches it through the zshenv mirror.
+    What does drift is the manifest -- a url change or a bearer/x-api-key switch
+    -- and a skip-if-present enrollment can never apply either.
+    """
+    argv = _claude_mcp_add(s)
+    want_url = s["url"]
+    want_header = argv[argv.index("--header") + 1]
+    current = _claude_mcp_registered(s["name"])
+    if current is None:
+        subprocess.run(argv)
+        return
+    url, header = current
+    if url == want_url and (header is None or header == want_header):
+        return
+    print("  re-enrolling %s (stored config differs from the manifest)" % s["name"])
+    subprocess.run(["claude","mcp","remove",s["name"],"-s","user"],
+                   capture_output=True)
+    subprocess.run(argv)
+
 
 def _write_codex_mcp(servers):
     text = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
@@ -664,6 +709,10 @@ def cmd_daily(names):
     the proxy has to be serving current config before they are rendered, and
     the restart that gets it there belongs here -- on a daily cadence at an
     hour nothing is running -- rather than in the hourly refresh that feeds it.
+
+    mcp runs after settings: enrollment reconciles against the manifest, so a
+    renamed or re-pointed server heals on the next pass instead of waiting for
+    someone to notice it never enrolled.
     """
     failed = []
     _proxy_stop_budget()
@@ -673,7 +722,7 @@ def cmd_daily(names):
             failed.append("opencodex apply")
     else:
         print("  opencodex module not installed; skipping proxy config apply")
-    for name, fn in (("settings", cmd_settings), ("update", cmd_update)):
+    for name, fn in (("settings", cmd_settings), ("mcp", cmd_mcp), ("update", cmd_update)):
         try:
             if fn([]):
                 failed.append(name)
@@ -709,7 +758,7 @@ Install, update, and configure the fleet's AI coding harnesses.
   settings [name...]  Render claude + t3 settings from the manifest.
   mcp [name...]       Enroll MCP servers from vaultwarden folder=mcp.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
-  daily               The scheduled pass: proxy apply, settings, update.
+  daily               The scheduled pass: proxy apply, settings, mcp, update.
   schedule [enable|disable|status]
                       Daily 07:00 timer that runs 'harnesses update'.
   -h, --help          Show this help.

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Absorbs the retired linux-setup/01-harnesses.md Obsidian doc. The harnesses list mirrors the self-update logic formerly bolted onto bin/setup; mcpServers is the fleet MCP catalog enrolled per harness. Secrets live in vaultwarden folder=mcp, item name == env var name (providers-module convention).",
+  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Absorbs the retired linux-setup/01-harnesses.md Obsidian doc. The harnesses list mirrors the self-update logic formerly bolted onto bin/setup; mcpServers is the fleet MCP catalog enrolled per harness; each name must equal the mcp__<name>__* prefix granted in settings.claude.permissionsAllowAdd, or the server enrolls under a name the allow-list does not cover. Secrets live in vaultwarden folder=mcp, item name == env var name (providers-module convention).",
   "harnesses": [
     {
       "name": "claude",
@@ -86,7 +86,7 @@
   ],
   "mcpServers": [
     {
-      "name": "obsidian",
+      "name": "obsidian-direct",
       "url": "https://mcp.lost.plus/mcp",
       "auth": "bearer",
       "envVar": "OBSIDIAN_MCP_TOKEN",
@@ -100,7 +100,7 @@
       "vaultItem": "TWEET_FETCH_TOKEN_1"
     },
     {
-      "name": "vaultwarden",
+      "name": "vaultwarden-secrets",
       "url": "https://vault.lost.plus/mcp",
       "auth": "bearer",
       "envVar": "VAULTWARDEN_MCP_TOKEN",
