@@ -548,7 +548,7 @@ def cmd_proxy(names):
 
 # --- schedule ---------------------------------------------------------
 # The module owns its own update cadence: `harnesses schedule` installs a
-# daily 07:00 timer that runs `harnesses update`. setup's 06:00 timer no
+# daily 11:00 timer that runs `harnesses daily`. setup's 06:00 timer no
 # longer touches the harnesses, so this is the only automatic path.
 TIMER_NAME = "harnesses-update"
 PLIST_NAME = "com.lost.plus.harnesses-update"
@@ -760,7 +760,7 @@ Install, update, and configure the fleet's AI coding harnesses.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
   daily               The scheduled pass: proxy apply, settings, mcp, update.
   schedule [enable|disable|status]
-                      Daily 07:00 timer that runs 'harnesses update'.
+                      Daily 11:00 timer that runs 'harnesses daily'.
   -h, --help          Show this help.
 
 With no arguments (and a terminal + fzf) it opens the action menu.
@@ -770,7 +770,7 @@ Every action takes optional harness names to narrow the run.""" % "|".join(ACTIO
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 07:00 timer that runs harnesses update;; esac"
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses daily;; daily) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
