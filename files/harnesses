@@ -645,7 +645,7 @@ def _proxy_stop_budget():
     """
     if _is_macos():
         return 0
-    directory = HOME/".config/systemd/user/%s.d" % PROXY_UNIT
+    directory = HOME/(".config/systemd/user/%s.d" % PROXY_UNIT)
     directory.mkdir(parents=True, exist_ok=True)
     override = directory/"50-stop-timeout.conf"
     desired = "[Service]\nTimeoutStopSec=330\n"
