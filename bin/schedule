@@ -1,4 +1,7 @@
 #!/usr/bin/env zsh
+# setup-module: schedule
+# setup-source: bin/schedule
+#
 # schedule — shared systemd timer helper + fzf registry/conductor for the
 # fleet’s scheduled jobs.
 #
