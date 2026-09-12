@@ -438,8 +438,16 @@ def _schedule_enable():
         r = subprocess.run(["launchctl", "bootstrap", "gui/%d" % uid, str(path)],
                            capture_output=True)
         if r.returncode != 0:
-            eprint("  launchctl bootstrap failed: %s"
-                   % (r.stderr.decode(errors="replace").strip() or r.returncode))
+            # 125 means there is no GUI session to bootstrap into, which is
+            # what happens over SSH. The agent is installed either way and
+            # launchd loads it at the next login on the Mac's own screen.
+            if r.returncode == 125:
+                print("harnesses auto-update installed at %s" % path)
+                print("  no GUI session — it loads at the next login on the Mac's screen")
+                return 0
+            eprint("  launchd enable failed (rc=%s)" % r.returncode)
+            if r.stderr:
+                eprint(r.stderr.decode(errors="replace").rstrip())
             return 1
         print("harnesses auto-update scheduled daily at %02d:00 (launchd)" % SCHEDULE_HOUR)
         return 0
