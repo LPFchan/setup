@@ -1417,7 +1417,7 @@ cmd_unschedule() {
         rm -f "$plist" || return 1
         echo "setup auto-update unscheduled"
     else
-        "$(_resolve_bin schedule)" uninstall-timer user setup-update
+        "$(_resolve_bin schedule)" uninstall-timer user setup-update || return 1
         echo "setup auto-update unscheduled"
     fi
 }

@@ -11,18 +11,28 @@ source "$ROOT/bin/setup"
 linux_service="$HOME/.config/systemd/user/setup-update.service"
 linux_timer="$HOME/.config/systemd/user/setup-update.timer"
 uname() { echo Linux; }
-systemctl() {
-    [[ "$*" == *'disable --now'* ]] && return "${SYSTEMCTL_DISABLE_RC:-0}"
-    if [[ "$*" == *'is-active'* ]]; then
-        printf '%s\n' "${SYSTEMCTL_ACTIVE_STATE:-inactive}"
-        return "${SYSTEMCTL_ACTIVE_RC:-0}"
-    fi
-    if [[ "$*" == *'is-enabled'* ]]; then
-        printf '%s\n' "${SYSTEMCTL_ENABLED_STATE:-disabled}"
-        return "${SYSTEMCTL_ENABLED_RC:-0}"
-    fi
-    return 0
-}
+# cmd_unschedule delegates to bin/schedule, a subprocess that cannot see
+# shell functions. Stub systemctl as a PATH executable honoring the same
+# env knobs, and point the helper at the test units dir.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/systemctl" <<'STUB'
+#!/usr/bin/env zsh
+if [[ "$*" == *'disable --now'* ]]; then exit "${SYSTEMCTL_DISABLE_RC:-0}"; fi
+if [[ "$*" == *'is-active'* ]]; then
+    printf '%s\n' "${SYSTEMCTL_ACTIVE_STATE:-inactive}"
+    exit "${SYSTEMCTL_ACTIVE_RC:-0}"
+fi
+if [[ "$*" == *'is-enabled'* ]]; then
+    printf '%s\n' "${SYSTEMCTL_ENABLED_STATE:-disabled}"
+    exit "${SYSTEMCTL_ENABLED_RC:-0}"
+fi
+exit 0
+STUB
+chmod +x "$TMP/bin/systemctl"
+ln -sf "$ROOT/bin/schedule" "$TMP/bin/schedule"
+export PATH="$TMP/bin:$PATH"
+export SCHEDULE_USER_DIR="$HOME/.config/systemd/user"
+export SYSTEMCTL_DISABLE_RC SYSTEMCTL_ACTIVE_RC SYSTEMCTL_ENABLED_RC SYSTEMCTL_ACTIVE_STATE SYSTEMCTL_ENABLED_STATE
 touch "$linux_service" "$linux_timer"
 # All three systemctl operations failing is indeterminate: retain recovery files.
 SYSTEMCTL_DISABLE_RC=1 SYSTEMCTL_ACTIVE_RC=1 SYSTEMCTL_ENABLED_RC=1

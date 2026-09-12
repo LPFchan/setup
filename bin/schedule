@@ -115,12 +115,38 @@ cmd_install_timer() {
 }
 
 # uninstall-timer SCOPE NAME
+# A failed disable --now is only safe to proceed past when follow-up queries
+# explicitly report the desired terminal state (inactive + disabled). Error
+# text like "Failed to connect to bus" is never accepted, so indeterminate
+# failures retain the unit files for recovery instead of deleting them.
+_inactive_state() {
+    local state="$1" rc="$2"
+    [[ "$rc" == 3 || "$rc" == 4 ]] || return 1
+    [[ "$state" == inactive || "$state" == failed ]]
+}
+_disabled_state() {
+    local state="$1" rc="$2"
+    [[ "$rc" == 1 || "$rc" == 0 ]] || return 1
+    [[ "$state" == disabled ]]
+}
+
 cmd_uninstall_timer() {
     local scope="$1" name="$2"
     local dir; dir=$(_scope_dir "$scope") || fail "bad scope: $scope"
-    _systemctl "$scope" disable --now "$name.timer" >/dev/null 2>&1 || true
+    if ! _systemctl "$scope" disable --now "$name.timer" >/dev/null 2>&1; then
+        local active_state enabled_state active_rc enabled_rc
+        if active_state=$(_systemctl "$scope" is-active "$name.timer" 2>/dev/null); then active_rc=0; else active_rc=$?; fi
+        if enabled_state=$(_systemctl "$scope" is-enabled "$name.timer" 2>/dev/null); then enabled_rc=0; else enabled_rc=$?; fi
+        if _inactive_state "$active_state" "$active_rc" \
+           && _disabled_state "$enabled_state" "$enabled_rc"; then
+            :
+        else
+            echo "$prog: failed to disable $name.timer; state indeterminate or still enabled/active; retaining $dir/$name.{service,timer}" >&2
+            return 1
+        fi
+    fi
     rm -f "$dir/$name.service" "$dir/$name.timer" "$dir/timers.target.wants/$name.timer"
-    _systemctl "$scope" daemon-reload || fail "daemon-reload failed"
+    _systemctl "$scope" daemon-reload || fail "removed units but daemon-reload failed"
     echo "$prog: uninstalled $name.timer ($scope)"
 }
 
