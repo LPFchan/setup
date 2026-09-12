@@ -170,12 +170,21 @@ _list_timers() {
     local scope
     for scope in user system; do
         _systemctl "$scope" list-timers --all --no-legend --no-pager 2>/dev/null \
-            | awk -v s="$scope" '{u=$(NF-1); if (u ~ /\.timer$/) print s"\t"u"\t"$1" "$2" "$3"\t"$(NF)}'
+            | awk -v s="$scope" '
+                {
+                    u = $(NF-1)
+                    if (u !~ /\.timer$/) next
+                    # NEXT is "<dow> <date> <time> <tz>", or a bare "-" for a
+                    # loaded-but-dormant timer. The unit columns are counted
+                    # from the right because LEFT/PASSED vary in word count.
+                    next_run = ($1 == "-") ? "-" : $1" "$2" "$3" "$4
+                    print s"\t"u"\t"next_run"\t"$(NF)
+                }'
     done
 }
 
 cmd_list() {
-    printf "%s\t%s\t%s\n" "SCOPE" "TIMER" "NEXT"
+    printf "%s\t%s\t%s\t%s\n" "SCOPE" "TIMER" "NEXT" "ACTIVATES"
     _list_timers
 }
 
@@ -194,7 +203,12 @@ cmd_menu() {
     [[ -n "$unit" ]] || return 0
     case "$key" in
         ctrl-r) _systemctl "$scope" start "${unit%.timer}.service" ;;
-        ctrl-l) _systemctl "$scope" -u "${unit%.timer}.service" </dev/null 2>&1 | ${PAGER:-less} ;;
+        ctrl-l)
+            if [[ "$scope" == user ]]; then
+                journalctl --user -u "${unit%.timer}.service" -n 200 --no-pager 2>&1 | ${PAGER:-less}
+            else
+                journalctl -u "${unit%.timer}.service" -n 200 --no-pager 2>&1 | ${PAGER:-less}
+            fi ;;
         *)      cmd_status "$scope" "${unit%.timer}" ;;
     esac
 }
