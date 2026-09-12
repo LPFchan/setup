@@ -220,7 +220,7 @@ def cmd_settings(names):
     _write_claude_settings()
     _write_t3_settings()
     print("settings applied. t3 custom models appear in the picker; routing them")
-    print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:10101 (a local opencodex proxy).")
+    print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
     return 0
 
 def _claude_mcp_add(s):
@@ -282,7 +282,7 @@ def _mirror_zshenv(exports):
     ZSHENV.write_text(text)
     print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
 
-PROXY_PORT = 10101
+PROXY_DEFAULT_PORT = 10100
 PROXY_UNIT = "opencodex-proxy.service"
 # `ocx service` registers a systemd user unit on Linux and this launchd agent
 # on macOS, so "is the proxy up" is a different question per platform.
@@ -312,10 +312,45 @@ def _proxy_service_name():
     return PROXY_LAUNCHD_LABEL if _is_macos() else PROXY_UNIT
 
 
+def _port_answers(port):
+    """True when an unauthenticated /v1/models on this port is served."""
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:%d/v1/models" % port, timeout=5
+        ) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _proxy_port():
+    """The port a token-less local client should point ANTHROPIC_BASE_URL at.
+
+    ocx serves its main port from runtime-port.json. Where that port requires
+    an API token it also opens a second, unauthenticated loopback listener one
+    port up — grimoire runs that way, the other machines do not. Claude Code
+    sends no token, so prefer the unauthenticated listener when it exists and
+    fall back to the main port rather than hardcoding either.
+    """
+    override = os.environ.get("HARNESSES_PROXY_PORT")
+    if override:
+        return int(override)
+    port = PROXY_DEFAULT_PORT
+    try:
+        port = int(json.loads((HOME/".opencodex/runtime-port.json").read_text())["port"])
+    except Exception:
+        pass
+    for candidate in (port + 1, port):
+        if _port_answers(candidate):
+            return candidate
+    return port
+
+
 def _write_base_url_export():
+    port = _proxy_port()
     begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
     block = (begin + "\n"
-             + "export ANTHROPIC_BASE_URL=http://127.0.0.1:%d\n" % PROXY_PORT
+             + "export ANTHROPIC_BASE_URL=http://127.0.0.1:%d\n" % port
              + end + "\n")
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
     if begin in text and end in text:
@@ -323,14 +358,14 @@ def _write_base_url_export():
     else:
         text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
     ZSHENV.write_text(text)
-    print("  exported ANTHROPIC_BASE_URL=http://127.0.0.1:%d in %s" % (PROXY_PORT, ZSHENV))
+    print("  exported ANTHROPIC_BASE_URL=http://127.0.0.1:%d in %s" % (port, ZSHENV))
 
     # .zshenv only reaches shells. Systemd user services never read it, so a
     # service-spawned claude (T3 Code's claudeAgent provider is one) would
     # still talk to api.anthropic.com and reject every fleet model. The
     # systemd user manager reads environment.d at startup; set-environment
     # covers the manager that is already running.
-    url = "http://127.0.0.1:%d" % PROXY_PORT
+    url = "http://127.0.0.1:%d" % port
     if _is_macos():
         subprocess.run(["launchctl", "setenv", "ANTHROPIC_BASE_URL", url], check=False)
         print("  set ANTHROPIC_BASE_URL for GUI-launched apps (launchctl setenv)")

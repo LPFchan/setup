@@ -83,6 +83,10 @@ class FakeCompleted:
     def __init__(self, rc=0, out=""):
         self.returncode, self.stdout, self.stderr = rc, out, ""
 
+# Pin the resolved proxy port: _proxy_port() probes real loopback ports, and
+# the test machine's own ocx must not decide what this asserts.
+os.environ["HARNESSES_PROXY_PORT"] = "10101"
+
 # stub ocx + systemctl: active service -> export written
 g["shutil"] = type("S", (), {"which": staticmethod(lambda c: "/fake/ocx" if c == "ocx" else None)})
 def run_active(argv, **kw):
