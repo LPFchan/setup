@@ -21,6 +21,7 @@ mkdir -p "$FIXTURE/etc" "$FIXTURE/etc/systemd/system" "$FIXTURE/etc/apt/apt.conf
 LOG="$TEST_TMP/commands.log"
 : > "$LOG"
 export STUB_LOG="$LOG" STUB_STATE="$TEST_TMP/sysstate" STUB_SYSTEMD_DIR="$FIXTURE/etc/systemd/system"
+export SCHEDULE_BIN="$REPO_ROOT/bin/schedule"
 
 cat > "$FAKE_BIN/systemctl" <<'STUB'
 #!/usr/bin/env bash

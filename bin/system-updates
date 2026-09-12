@@ -106,6 +106,20 @@ validate_host_capabilities() {
     done
 }
 
+schedule_bin() {
+    if [[ -n "${SCHEDULE_BIN:-}" ]]; then
+        printf '%s\n' "$SCHEDULE_BIN"
+        return
+    fi
+    local self; self=$(readlink -f "$0")
+    local candidate="$(dirname "$self")/schedule"
+    if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return
+    fi
+    printf '%s\n' "/usr/local/bin/schedule"
+}
+
 stage_payloads() {
     local stage="$1"
     mkdir -p "$stage"
@@ -113,50 +127,28 @@ stage_payloads() {
     install -m 0755 "$SELF_PATH" "$stage/root-copy"
     bash -n "$stage/root-copy"
     printf '%s\n' "$APT_CONFIG_CONTENT" > "$stage/apt-config"
-    cat > "$stage/system-updates.service" <<EOF
-[Unit]
-Description=Install all stable package updates from enabled repositories
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/libexec/system-updates run
-EOF
-    cat > "$stage/system-updates.timer" <<'EOF'
-[Unit]
-Description=Daily system package updates
-
-[Timer]
-OnCalendar=*-*-* 03:00:00
-Persistent=true
-RandomizedDelaySec=30m
-AccuracySec=1s
-
-[Install]
-WantedBy=timers.target
-EOF
-    cat > "$stage/system-updates-reboot.service" <<EOF
-[Unit]
-Description=Reboot after package updates only when required and unattended
-After=system-updates.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/libexec/system-updates reboot-check
-EOF
-    cat > "$stage/system-updates-reboot.timer" <<'EOF'
-[Unit]
-Description=Daily unattended reboot-required check at 07:00 local time
-
-[Timer]
-OnCalendar=*-*-* 07:00:00
-Persistent=false
-AccuracySec=1s
-
-[Install]
-WantedBy=timers.target
-EOF
+    # Render unit skeletons through the shared schedule helper; per-unit
+    # content (ordering, persistence, accuracy) arrives as extra-lines files.
+    local sched; sched=$(schedule_bin)
+    local ue te
+    ue=$(mktemp) || die "mktemp failed"
+    printf '%s\n' "After=network-online.target" "Wants=network-online.target" > "$ue"
+    "$sched" render service system system-updates \
+        "Install all stable package updates from enabled repositories" \
+        "/usr/local/libexec/system-updates run" "" "$ue" > "$stage/system-updates.service"
+    te=$(mktemp) || die "mktemp failed"
+    printf '%s\n' "Persistent=true" "RandomizedDelaySec=30m" "AccuracySec=1s" > "$te"
+    "$sched" render timer system system-updates \
+        "Daily system package updates" "*-*-* 03:00:00" "$te" > "$stage/system-updates.timer"
+    printf '%s\n' "After=system-updates.service" > "$ue"
+    "$sched" render service system system-updates-reboot \
+        "Reboot after package updates only when required and unattended" \
+        "/usr/local/libexec/system-updates reboot-check" "" "$ue" > "$stage/system-updates-reboot.service"
+    printf '%s\n' "Persistent=false" "AccuracySec=1s" > "$te"
+    "$sched" render timer system system-updates-reboot \
+        "Daily unattended reboot-required check at 07:00 local time" \
+        "*-*-* 07:00:00" "$te" > "$stage/system-updates-reboot.timer"
+    command rm -f "$ue" "$te"
     grep -Fqx 'ExecStart=/usr/local/libexec/system-updates run' "$stage/system-updates.service"
     grep -Fqx 'ExecStart=/usr/local/libexec/system-updates reboot-check' "$stage/system-updates-reboot.service"
     grep -Fqx 'Persistent=false' "$stage/system-updates-reboot.timer"
