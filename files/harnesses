@@ -335,7 +335,9 @@ def cmd_mcp(names):
         for name in MANIFEST.get("retiredMcpServers") or []:
             if _claude_mcp_registered(name) is not None:
                 print("  unregistering retired MCP server %s" % name)
-                subprocess.run(["claude", "mcp", "remove", name, "-s", "user"],
+                # No -s: the CLI then removes it from whichever scope holds it.
+                # Passing user silently missed the local-scope copies.
+                subprocess.run(["claude", "mcp", "remove", name],
                                capture_output=True)
         for s in servers:
             _claude_mcp_reconcile(s)
@@ -358,14 +360,16 @@ def _claude_mcp_registered(name):
     r = subprocess.run(["claude","mcp","get",name], capture_output=True, text=True)
     if r.returncode != 0 or "No MCP server named" in (r.stdout + r.stderr):
         return None
-    url, header = None, None
+    url, header, scope = None, None, None
     for line in r.stdout.splitlines():
         stripped = line.strip()
         if stripped.startswith("URL:"):
             url = stripped[4:].strip()
+        elif stripped.startswith("Scope:"):
+            scope = stripped[6:].strip().split()[0].lower()
         elif ":" in stripped and stripped.split(":", 1)[0] in ("Authorization", "X-API-Key"):
             header = stripped
-    return (url, header)
+    return (url, header, scope)
 
 
 def _claude_mcp_reconcile(s):
@@ -383,7 +387,13 @@ def _claude_mcp_reconcile(s):
     if current is None:
         subprocess.run(argv)
         return
-    url, header = current
+    url, header, scope = current
+    if scope not in (None, "user"):
+        # We only ever write user scope. A local or project registration is the
+        # operator's, it takes precedence over ours, and rewriting it at user
+        # scope would not replace it -- it would sit underneath, shadowed.
+        print("  %s is registered at %s scope; leaving it alone" % (s["name"], scope))
+        return
     if url == want_url and (header is None or header == want_header):
         return
     print("  re-enrolling %s (stored config differs from the manifest)" % s["name"])
