@@ -73,6 +73,10 @@ def _heal_path():
     """
     extra = [HOME/".local/bin", HOME/".opencode/bin", HOME/".kimi-code/bin"]
     extra += sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
+    # macOS keeps node and npm under Homebrew, which a launchd agent does not
+    # see either: without these the Macs found claude but not npm, so claude's
+    # self-update kept failing for the very reason this function exists.
+    extra += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     for directory in extra:
         entry = str(directory)
