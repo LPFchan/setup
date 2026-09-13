@@ -71,6 +71,15 @@ models2 = json.loads((HOME/".t3/userdata/settings.json").read_text())["providerI
 assert len(models2) == len(models), "t3 customModels duplicated on re-run"
 assert "operator/private-model" in slugs, "operator-added custom model was dropped"
 
+# A vault item may record how to send the token ("<url> | <Header>: <tok>")
+# rather than holding it bare. Exported whole it is a credential no server
+# accepts, and unquoted it turned .zshenv into a pipeline on every machine.
+tok = ns["mcp_token_value"]
+assert tok("plaintoken123") == "plaintoken123", "a bare token must pass through"
+assert tok("https://x/y | x-api-key: abc123") == "abc123"
+assert tok("https://x/y | Authorization: Bearer tok99") == "tok99"
+assert tok("https://only-a-url/mcp") == "https://only-a-url/mcp", "a url is not a header"
+
 # --- mcp: codex config blocks appended once, zshenv mirror idempotent ---
 # claude is not on PATH in the test env, so enrollment is skipped; only the
 # codex writer and zshenv mirror run. Tokens come from the environment.

@@ -359,6 +359,25 @@ def cmd_settings(names):
     print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
     return 0
 
+def mcp_token_value(raw):
+    """The bare token from a vault item that may also record how to send it.
+
+    Two items are stored as "<url> | <Header>: <token>" -- a note to the
+    operator about the shape, not something usable verbatim. Exported whole it
+    is a credential no server accepts, and unquoted it broke every shell. Take
+    the last field, drop a leading header name and any Bearer prefix, and leave
+    an ordinary token untouched.
+    """
+    value = (raw or "").strip().split("|")[-1].strip()
+    if not value.lower().startswith(("http://", "https://")):
+        match = re.match(r"^([A-Za-z][A-Za-z0-9-]*)\s*:\s*(.+)$", value, re.S)
+        if match:
+            value = match.group(2).strip()
+    if value.lower().startswith("bearer "):
+        value = value[len("bearer "):].strip()
+    return value
+
+
 def mcp_env_var(server):
     """Env var holding this server's token: {NAME}_MCP_TOKEN, derived.
 
@@ -422,6 +441,7 @@ def cmd_mcp(names):
         # servers carry spaces and newlines (they are stored header-shaped), and
         # unquoted they split across lines and left .zshenv unparseable on every
         # machine, which zsh then reports on every new shell.
+        val = mcp_token_value(val)
         if val: exports.append("export %s=%s" % (envvar, shlex.quote(val)))
     _mirror_zshenv(exports)
     if shutil.which("claude"):

@@ -119,7 +119,7 @@
     {
       "name": "exa",
       "url": "https://mcp.exa.ai/mcp",
-      "auth": "bearer"
+      "auth": "x-api-key"
     },
     {
       "name": "korean-law",
@@ -152,7 +152,7 @@
   ],
   "settings": {
     "claude": {
-      "comment": "Merged into ~/.claude/settings.json. Scalar/dict keys deep-merge (existing preserved). 'permissionsAllowAdd' is union-merged into permissions.allow so the module can never clobber an operator's existing allow list.",
+      "comment": "Merged into ~/.claude/settings.json. Scalar/dict keys deep-merge (existing preserved). 'permissionsAllowAdd' is union-merged into permissions.allow so the module can never clobber an operator's existing allow list. disableClaudeAiConnectors stops claude fetching the claude.ai cloud connectors: everything worth keeping is administered here, and the duplicates were showing up twice with different auth shapes.",
       "json": {
         "permissions": {
           "defaultMode": "auto"
@@ -161,7 +161,8 @@
           "commit": "",
           "pr": ""
         },
-        "effortLevel": "high"
+        "effortLevel": "high",
+        "disableClaudeAiConnectors": true
       },
       "permissionsAllowAdd": [
         "Read",
