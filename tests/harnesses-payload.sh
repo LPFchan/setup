@@ -47,6 +47,11 @@ for srv in manifest["mcpServers"]:
 # so nothing else would ever drop it.
 retired = {"mcp__%s__*" % n for n in manifest.get("retiredMcpServers", [])}
 assert not (retired & set(allow)), "a retired server kept its permission grant"
+# A connector granted per tool leaves many rows, not one wildcard; dropping only
+# the wildcard would leave every per-tool grant behind.
+for namespace in manifest.get("retiredMcpGrants", []):
+    leftover = [x for x in allow if x.startswith("mcp__%s__" % namespace)]
+    assert not leftover, "retired grant namespace %s kept %d entries" % (namespace, len(leftover))
 assert not (retired & {"mcp__%s__*" % s["name"] for s in manifest["mcpServers"]}), \
     "a server is declared and retired at the same time"
 for added in ("mcp__obsidian__*", "mcp__vaultwarden-secrets__*"):

@@ -127,8 +127,15 @@ git_pull_ff() {
 }
 
 setup_sha256_string() {
+    # Count the arguments rather than test the value. An explicit empty string
+    # is a request to hash nothing -- _managed_block_hash does exactly that for
+    # a file that does not exist -- but reading it as "no argument" sent us to
+    # the stdin branch with nothing piped in, where sha256sum waits forever.
+    # Interactively stdin gives EOF and it looks fine; under a timer or any
+    # background job it hangs the whole run. The empty case still yields
+    # e3b0c442..., so no recorded hash changes.
     local input="${1:-}"
-    if [[ -n "$input" ]]; then
+    if (( $# > 0 )); then
         printf '%s' "$input" | if command -v sha256sum >/dev/null 2>&1; then
             sha256sum | cut -d' ' -f1
         else

@@ -251,10 +251,19 @@ def _write_claude_settings():
         for entry in allow_add:
             if entry not in seen:
                 existing.append(entry)
-        # Union-merging alone can add a grant but never drop one, so a server
-        # that changed name would keep its old wildcard permanently.
-        retired = {"mcp__%s__*" % n for n in (MANIFEST.get("retiredMcpServers") or [])}
-        merged["permissions"]["allow"] = [e for e in existing if e not in retired]
+        # Union-merging alone can add a grant but never drop one, so a name that
+        # changed -- or a connector that was switched off -- keeps its grants
+        # permanently. Match the whole mcp__<name>__ namespace, not just the
+        # wildcard entry: a connector granted per tool leaves fifteen rows, and
+        # dropping only "mcp__<name>__*" would miss every one of them.
+        retired = tuple(
+            "mcp__%s__" % n
+            for n in ((MANIFEST.get("retiredMcpServers") or [])
+                      + (MANIFEST.get("retiredMcpGrants") or []))
+        )
+        merged["permissions"]["allow"] = [
+            e for e in existing if not (retired and e.startswith(retired))
+        ]
     save_json_atomic(CLAUDE_SETTINGS, merged)
     print("  wrote %s" % CLAUDE_SETTINGS)
 

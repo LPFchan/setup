@@ -222,5 +222,11 @@
   "retiredMcpServers": [
     "obsidian-direct"
   ],
-  "retiredMcpComment": "Server names to unregister and stop granting. The codex writer already reclaims a block whose body matches one we emit, whatever it is named, but claude's registration and the permissions allow-list are additive and will keep a retired name forever unless it is named here."
+  "retiredMcpComment": "Server names to unregister and stop granting. The codex writer already reclaims a block whose body matches one we emit, whatever it is named, but claude's registration and the permissions allow-list are additive and will keep a retired name forever unless it is named here.",
+  "retiredMcpGrants": [
+    "claude_ai_Obsidian_Vault",
+    "claude_ai_Vaultwarden_Secrets",
+    "claude_ai_tweet-fetch-mcp"
+  ],
+  "retiredMcpGrantsComment": "Tool namespaces to withdraw from permissions.allow. Separate from retiredMcpServers because these were never servers this module registered -- they are claude.ai connectors, now switched off, whose grants the allow-list would otherwise keep forever since it only ever unions."
 }
