@@ -86,7 +86,7 @@
   ],
   "mcpServers": [
     {
-      "name": "obsidian-direct",
+      "name": "obsidian",
       "url": "https://mcp.lost.plus/mcp",
       "auth": "bearer",
       "envVar": "OBSIDIAN_MCP_TOKEN",
@@ -143,7 +143,7 @@
         "Grep",
         "WebFetch",
         "WebSearch",
-        "mcp__obsidian-direct__*",
+        "mcp__obsidian__*",
         "mcp__vaultwarden-secrets__*",
         "mcp__tweet-fetch__*",
         "mcp__comfyui__*",
@@ -181,5 +181,9 @@
       ],
       "retiredComment": "Slugs the module must delete from an existing settings file. These named a 'codex' provider the proxy never had, so they sat in the picker unroutable; the same models are published bare. Entries the manifest has never owned are left alone."
     }
-  }
+  },
+  "retiredMcpServers": [
+    "obsidian-direct"
+  ],
+  "retiredMcpComment": "Server names to unregister and stop granting. The codex writer already reclaims a block whose body matches one we emit, whatever it is named, but claude's registration and the permissions allow-list are additive and will keep a retired name forever unless it is named here."
 }

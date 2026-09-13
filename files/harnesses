@@ -197,7 +197,10 @@ def _write_claude_settings():
         for entry in allow_add:
             if entry not in seen:
                 existing.append(entry)
-        merged["permissions"]["allow"] = existing
+        # Union-merging alone can add a grant but never drop one, so a server
+        # that changed name would keep its old wildcard permanently.
+        retired = {"mcp__%s__*" % n for n in (MANIFEST.get("retiredMcpServers") or [])}
+        merged["permissions"]["allow"] = [e for e in existing if e not in retired]
     save_json_atomic(CLAUDE_SETTINGS, merged)
     print("  wrote %s" % CLAUDE_SETTINGS)
 
@@ -329,6 +332,11 @@ def cmd_mcp(names):
         if val: exports.append("export %s=%s" % (envvar, val))
     _mirror_zshenv(exports)
     if shutil.which("claude"):
+        for name in MANIFEST.get("retiredMcpServers") or []:
+            if _claude_mcp_registered(name) is not None:
+                print("  unregistering retired MCP server %s" % name)
+                subprocess.run(["claude", "mcp", "remove", name, "-s", "user"],
+                               capture_output=True)
         for s in servers:
             _claude_mcp_reconcile(s)
         print("  claude MCP servers enrolled")
