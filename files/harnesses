@@ -417,7 +417,11 @@ def cmd_mcp(names):
                 print("  pulled %s from vault item mcp/%s" % (envvar, item))
             except VaultError as exc:
                 eprint("  could not resolve %s (mcp/%s): %s" % (envvar, item, exc)); val = None
-        if val: exports.append("export %s=%s" % (envvar, val))
+        # Quote it. A secret is arbitrary bytes: the values adopted with the new
+        # servers carry spaces and newlines (they are stored header-shaped), and
+        # unquoted they split across lines and left .zshenv unparseable on every
+        # machine, which zsh then reports on every new shell.
+        if val: exports.append("export %s=%s" % (envvar, shlex.quote(val)))
     _mirror_zshenv(exports)
     if shutil.which("claude"):
         for name in MANIFEST.get("retiredMcpServers") or []:
