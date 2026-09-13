@@ -486,7 +486,17 @@ def _write_codex_mcp(servers):
         if len(rest) == 2 and rest[1] in ours:
             text = text.replace(body, "", 1)
 
-    declared = set(_codex_declared_servers(text))
+    # "Declared" means the operator gave the server settings of its own, not just
+    # approval rules hanging off the name. A table holding only sub-tables --
+    # [mcp_servers.x.tools.y] with no [mcp_servers.x] -- is rules for a server
+    # whose address we still owe it. Treating that as declared silently dropped
+    # the url and token and left codex with rules pointing at nothing.
+    declared = {
+        name for name, table in _codex_declared_servers(text).items()
+        if not isinstance(table, dict) or any(
+            not isinstance(value, dict) for value in table.values()
+        )
+    }
     emit = [s for s in servers if s["name"] not in declared]
     for s in servers:
         if s["name"] in declared:

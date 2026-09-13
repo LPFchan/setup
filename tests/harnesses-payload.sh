@@ -93,6 +93,15 @@ assert hand.count("[mcp_servers.comfyui]") == 1, "operator block was duplicated"
 assert "hand.example" in hand, "operator block was overwritten"
 assert "tools.x" in hand, "operator tool rule was dropped"
 
+# Approval rules with no settings are not a declaration -- they are rules for a
+# server whose address we still owe it. Treating them as one stripped the url
+# and token and left codex with rules pointing at nothing.
+cx.write_text('[mcp_servers.comfyui.tools.only_a_rule]\napproval_mode = "approve"\n')
+ns["cmd_mcp"]([])
+rules_only = tomllib.loads(cx.read_text())["mcp_servers"]["comfyui"]
+assert "url" in rules_only, "server lost its url to a bare tool rule"
+assert "only_a_rule" in rules_only.get("tools", {}), "operator tool rule was dropped"
+
 # TOML treats [mcp_servers."x"] and [mcp_servers.x] as one key; a header regex
 # does not. Reading the quoted spelling as undeclared is what emitted a second
 # bare table on oci and left codex unable to start.
