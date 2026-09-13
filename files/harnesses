@@ -33,7 +33,56 @@ MANIFEST_PATH = _find_manifest()
 MANIFEST = json.loads(MANIFEST_PATH.read_text())
 VAULT_URL = os.environ.get("VAULTWARDEN_MCP_URL", os.environ.get("VAULTWARDEN_URL", "https://vault.lost.plus/mcp"))
 VAULT_FOLDER = "mcp"
-VAULT_TOKEN = os.environ.get("VAULTWARDEN_SECRETS_TOKEN") or os.environ.get("VAULTWARDEN_MCP_TOKEN", "")
+def _zshenv_exports():
+    """export NAME=VALUE pairs from ~/.zshenv, whichever block they sit in.
+
+    A timer unit gets the user manager's environment, which has none of this:
+    no vault token, and a PATH without ~/.local/bin. providers already reads
+    the token off disk for the same reason (_read_env_block). Without it the
+    scheduled run resolved no tokens at all and mirrored an empty block over
+    the working one.
+    """
+    path = HOME/".zshenv"
+    if not path.exists():
+        return {}
+    found = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("export ") or "=" not in line:
+            continue
+        name, _, value = line[len("export "):].partition("=")
+        found[name.strip()] = value.strip().strip('"\'')
+    return found
+
+
+def _vault_token():
+    for source in (os.environ, _zshenv_exports()):
+        for name in ("VAULTWARDEN_SECRETS_TOKEN", "VAULTWARDEN_MCP_TOKEN"):
+            if source.get(name):
+                return source[name]
+    return ""
+
+
+def _heal_path():
+    """Put the user's own bin directories back on PATH.
+
+    systemd and launchd start us with a login-less PATH, so claude, codex, npm
+    and ocx are all invisible: the scheduled run reported "claude not installed"
+    and skipped MCP enrolment entirely, and claude's self-update failed with a
+    permissions error that was really npm not being found.
+    """
+    extra = [HOME/".local/bin", HOME/".opencode/bin", HOME/".kimi-code/bin"]
+    extra += sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    for directory in extra:
+        entry = str(directory)
+        if directory.is_dir() and entry not in current:
+            current.insert(0, entry)
+    os.environ["PATH"] = os.pathsep.join(current)
+
+
+_heal_path()
+VAULT_TOKEN = _vault_token()
 CLAUDE_SETTINGS = HOME/".claude/settings.json"
 CODEX_CONFIG = HOME/".codex/config.toml"
 T3_SETTINGS = HOME/".t3/userdata/settings.json"
@@ -537,14 +586,29 @@ def _write_codex_mcp(servers):
     CODEX_CONFIG.write_text(candidate)
     print("  wrote %s (%d codex MCP server(s))" % (CODEX_CONFIG, len(emit)))
 
+def _existing_block(text):
+    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+    match = re.search(re.escape(begin)+r"(.*?)"+re.escape(end), text, re.S)
+    return match.group(1) if match else ""
+
+
 def _mirror_zshenv(exports):
     begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
     block = begin+"\n"+"\n".join(exports)+"\n"+end+"\n"
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    text_before = text
     if begin in text and end in text:
         text = re.sub(re.escape(begin)+r".*?"+re.escape(end)+r"\n?", block, text, flags=re.S)
     else:
         text = text.rstrip("\n")+("\n\n" if text.strip() else "")+block
+    # Never trade a working block for an empty one. A vault that cannot be
+    # reached -- no token, no network -- yields no exports, and writing that
+    # out deletes the tokens every harness then needs.
+    existing = len(re.findall(r"^export ", _existing_block(text_before), re.M))
+    if len(exports) < existing:
+        eprint("  resolved %d of %d token(s); keeping the existing block in %s"
+               % (len(exports), existing, ZSHENV))
+        return
     ZSHENV.write_text(text)
     print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
 
