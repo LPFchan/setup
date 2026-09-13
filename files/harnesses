@@ -408,13 +408,38 @@ def _codex_managed_region(text):
     )
 
 
+def _codex_declared_servers(text):
+    """{name: table} for every declared mcp_server, however it is spelled.
+
+    Read by the TOML parser rather than by matching headers. [mcp_servers.x] and
+    [mcp_servers."x"] are the same key to TOML but not to a regex, and taking
+    the regex's word for it is what produced a duplicate declaration on oci --
+    the quoted spelling was invisible, so a second bare one got emitted. Dotted
+    and inline forms would have failed the same way.
+    """
+    try:
+        import tomllib
+    except ImportError:
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except Exception:
+        return {}
+    servers = data.get("mcp_servers")
+    return servers if isinstance(servers, dict) else {}
+
+
 def _codex_sections(text):
-    """[(name, body_including_header)] for each top-level [mcp_servers.NAME]."""
+    """[(name, body_including_header)] for each top-level mcp_servers table.
+
+    Text surgery still needs byte offsets, so this locates headers -- but the
+    name is unquoted so it lines up with what the parser reports.
+    """
     out = []
     for match in re.finditer(r"^\[mcp_servers\.([^.\]]+)\]\s*$", text, re.M):
         nxt = re.search(r"^\[", text[match.end():], re.M)
         end = match.end() + (nxt.start() if nxt else len(text) - match.end())
-        out.append((match.group(1), text[match.start():end]))
+        out.append((match.group(1).strip('"\''), text[match.start():end]))
     return out
 
 
@@ -454,13 +479,14 @@ def _write_codex_mcp(servers):
     # we have never emitted one -- so those stay, and their rules with them.
     ours = {_codex_mcp_block(s).strip().split("\n", 1)[1] for s in servers}
     for name, body in _codex_sections(text):
-        if re.search(r"^\[mcp_servers\." + re.escape(name) + r"\.", text, re.M):
-            continue
+        table = _codex_declared_servers(text).get(name)
+        if isinstance(table, dict) and any(isinstance(v, dict) for v in table.values()):
+            continue  # carries [.tools.*] rules, so it was never ours to remove
         rest = body.strip().split("\n", 1)
         if len(rest) == 2 and rest[1] in ours:
             text = text.replace(body, "", 1)
 
-    declared = {name for name, _ in _codex_sections(text)}
+    declared = set(_codex_declared_servers(text))
     emit = [s for s in servers if s["name"] not in declared]
     for s in servers:
         if s["name"] in declared:

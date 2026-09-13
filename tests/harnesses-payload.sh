@@ -93,6 +93,17 @@ assert hand.count("[mcp_servers.comfyui]") == 1, "operator block was duplicated"
 assert "hand.example" in hand, "operator block was overwritten"
 assert "tools.x" in hand, "operator tool rule was dropped"
 
+# TOML treats [mcp_servers."x"] and [mcp_servers.x] as one key; a header regex
+# does not. Reading the quoted spelling as undeclared is what emitted a second
+# bare table on oci and left codex unable to start.
+cx.write_text('[mcp_servers."comfyui"]\nurl = "https://quoted.example/mcp"\n'
+              'bearer_token_env_var = "MINE"\n')
+ns["cmd_mcp"]([])
+quoted = cx.read_text()
+tomllib.loads(quoted)
+assert len(tomllib.loads(quoted)["mcp_servers"]) == len(set(tomllib.loads(quoted)["mcp_servers"]))
+assert "quoted.example" in quoted, "quoted operator block was overwritten"
+
 # A file that is already broken must be left alone rather than edited further.
 cx.write_text('[mcp_servers.a]\nurl = "x"\n\n[mcp_servers.a]\nurl = "y"\n')
 broken_before = cx.read_text()
