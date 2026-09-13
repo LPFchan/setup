@@ -15,6 +15,7 @@ VAULTWARDEN_MCP_TOKEN, direct MCP-over-HTTP with a non-default User-Agent.
 from __future__ import annotations
 import json, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.request
+import shlex
 
 HOME = pathlib.Path.home()
 HERE = pathlib.Path(__file__).resolve().parent
