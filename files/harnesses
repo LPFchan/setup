@@ -358,15 +358,48 @@ def cmd_settings(names):
     print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
     return 0
 
+def mcp_env_var(server):
+    """Env var holding this server's token: {NAME}_MCP_TOKEN, derived.
+
+    Mirrors the providers module, where the vault item name *is* the env var
+    and both fall out of the provider name ({PROVIDER}_API_KEY). An explicit
+    envVar overrides it, which exactly one server needs: vaultwarden-secrets
+    carries VAULTWARDEN_MCP_TOKEN, the bootstrap key used to reach the vault
+    in the first place. That one cannot be stored in the vault it unlocks and
+    is read by providers too, so it is named, not derived.
+    """
+    override = server.get("envVar")
+    if override:
+        return override
+    return re.sub(r"[^A-Za-z0-9]+", "_", server["name"]).upper() + "_MCP_TOKEN"
+
+
+def mcp_vault_item(server):
+    return server.get("vaultItem") or mcp_env_var(server)
+
+
+def mcp_surfaces(server):
+    """Which harnesses get this server. Both unless the manifest narrows it."""
+    return server.get("surfaces") or ["claude", "codex"]
+
+
 def _claude_mcp_add(s):
-    envvar = s["envVar"]
+    argv = ["claude","mcp","add","--scope","user",s["name"],"--transport","http",s["url"]]
+    if s["auth"] == "none":
+        # Nothing to send. An OAuth server lands here too: claude negotiates it
+        # interactively, and there is no static token to put in a header.
+        return argv
+    envvar = mcp_env_var(s)
     header = ("Authorization: Bearer ${%s}" % envvar) if s["auth"]=="bearer" else ("X-API-Key: ${%s}" % envvar)
-    return ["claude","mcp","add","--scope","user",s["name"],"--transport","http",s["url"],"--header",header]
+    return argv + ["--header", header]
 
 def _codex_mcp_block(s):
     lines = ["[mcp_servers.%s]" % s["name"], "url = \"%s\"" % s["url"]]
-    if s["auth"]=="bearer": lines.append("bearer_token_env_var = \"%s\"" % s["envVar"])
-    else: lines.append("env_http_headers = { \"X-API-Key\" = \"%s\" }" % s["envVar"])
+    if s["auth"] == "bearer":
+        lines.append("bearer_token_env_var = \"%s\"" % mcp_env_var(s))
+    elif s["auth"] == "x-api-key":
+        lines.append("env_http_headers = { \"X-API-Key\" = \"%s\" }" % mcp_env_var(s))
+    # auth "none": a url-only block, which codex accepts.
     return "\n".join(lines)+"\n"
 
 def cmd_mcp(names):
@@ -374,7 +407,9 @@ def cmd_mcp(names):
     if names: servers = [s for s in servers if s["name"] in names]
     exports = []
     for s in servers:
-        envvar, item = s["envVar"], s["vaultItem"]
+        if s["auth"] == "none":
+            continue
+        envvar, item = mcp_env_var(s), mcp_vault_item(s)
         val = os.environ.get(envvar)
         if not val:
             try:
@@ -393,11 +428,12 @@ def cmd_mcp(names):
                 subprocess.run(["claude", "mcp", "remove", name],
                                capture_output=True)
         for s in servers:
-            _claude_mcp_reconcile(s)
+            if "claude" in mcp_surfaces(s):
+                _claude_mcp_reconcile(s)
         print("  claude MCP servers enrolled")
     else:
         print("  claude not installed; skipped claude MCP enrollment")
-    _write_codex_mcp(servers)
+    _write_codex_mcp([s for s in servers if "codex" in mcp_surfaces(s)])
     return 0
 
 def _claude_mcp_registered(name):
