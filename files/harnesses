@@ -384,16 +384,104 @@ def _claude_mcp_reconcile(s):
     subprocess.run(argv)
 
 
+CODEX_MCP_BEGIN = "# BEGIN harnesses:mcp-servers"
+CODEX_MCP_END = "# END harnesses:mcp-servers"
+
+
+def _codex_toml_error(text):
+    """The parse error in `text`, or None. None also when we cannot parse at all."""
+    try:
+        import tomllib
+    except ImportError:
+        return None
+    try:
+        tomllib.loads(text)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _codex_managed_region(text):
+    return re.search(
+        re.escape(CODEX_MCP_BEGIN) + r".*?" + re.escape(CODEX_MCP_END) + r"\n?",
+        text, re.S,
+    )
+
+
+def _codex_sections(text):
+    """[(name, body_including_header)] for each top-level [mcp_servers.NAME]."""
+    out = []
+    for match in re.finditer(r"^\[mcp_servers\.([^.\]]+)\]\s*$", text, re.M):
+        nxt = re.search(r"^\[", text[match.end():], re.M)
+        end = match.end() + (nxt.start() if nxt else len(text) - match.end())
+        out.append((match.group(1), text[match.start():end]))
+    return out
+
+
 def _write_codex_mcp(servers):
-    text = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
-    changed = False
+    """Render our servers into one replaceable region, never appending blindly.
+
+    The old writer appended a block whenever the name was absent and had no way
+    to mark its own output. Renaming a server in the manifest therefore left the
+    previous name behind as a second entry pointing at the same URL, and a name
+    the operator had already configured by hand got a second top-level table --
+    which is not merely untidy, it is invalid TOML, and codex refuses to start
+    at all rather than ignoring the file.
+
+    So: keep our output inside markers and replace it wholesale, reclaim blocks
+    an older release appended that are still byte-identical to ours, and never
+    emit a name the operator declares outside the region -- their version wins,
+    including any [.tools.*] approval rules hanging off it. Then parse the
+    result before it reaches disk, because the cost of being wrong here is a
+    harness that will not launch.
+    """
+    original = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
+    if original.strip():
+        broken = _codex_toml_error(original)
+        if broken:
+            eprint("  %s does not parse; refusing to edit it: %s"
+                   % (CODEX_CONFIG, broken))
+            return
+
+    region_match = _codex_managed_region(original)
+    text = original[:region_match.start()] + original[region_match.end():] \
+        if region_match else original
+
+    # Reclaim what an older release appended. Match on the body rather than the
+    # name: a rename in the manifest leaves the previous name behind pointing at
+    # the same url with the same env var, and that orphan is ours to remove
+    # whatever it is called. A block with [.tools.*] children is never ours --
+    # we have never emitted one -- so those stay, and their rules with them.
+    ours = {_codex_mcp_block(s).strip().split("\n", 1)[1] for s in servers}
+    for name, body in _codex_sections(text):
+        if re.search(r"^\[mcp_servers\." + re.escape(name) + r"\.", text, re.M):
+            continue
+        rest = body.strip().split("\n", 1)
+        if len(rest) == 2 and rest[1] in ours:
+            text = text.replace(body, "", 1)
+
+    declared = {name for name, _ in _codex_sections(text)}
+    emit = [s for s in servers if s["name"] not in declared]
     for s in servers:
-        if re.search(r"^\[mcp_servers\."+re.escape(s["name"])+r"\]", text, re.M): continue
-        text = text.rstrip("\n")+"\n\n"+_codex_mcp_block(s); changed = True
-    if changed:
-        CODEX_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        CODEX_CONFIG.write_text(text if text.endswith("\n") else text+"\n")
-        print("  wrote %s (codex MCP servers)" % CODEX_CONFIG)
+        if s["name"] in declared:
+            print("  %s is configured in %s already; leaving it alone"
+                  % (s["name"], CODEX_CONFIG.name))
+
+    body = "\n".join(_codex_mcp_block(s) for s in emit)
+    region = CODEX_MCP_BEGIN + "\n" + body + CODEX_MCP_END + "\n" if emit else ""
+    candidate = text.rstrip("\n")
+    candidate = (candidate + "\n\n" + region) if region else candidate + "\n"
+
+    invalid = _codex_toml_error(candidate)
+    if invalid:
+        eprint("  refusing to write %s: the result would not parse: %s"
+               % (CODEX_CONFIG, invalid))
+        return
+    if candidate == original:
+        return
+    CODEX_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CODEX_CONFIG.write_text(candidate)
+    print("  wrote %s (%d codex MCP server(s))" % (CODEX_CONFIG, len(emit)))
 
 def _mirror_zshenv(exports):
     begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"

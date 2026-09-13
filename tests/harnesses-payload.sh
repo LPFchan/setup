@@ -76,6 +76,31 @@ g = ns["cmd_mcp"].__globals__
 g["vault_get"] = ns["vault_get"]
 ns["cmd_mcp"]([])
 codex = (HOME/".codex/config.toml").read_text()
+import tomllib
+tomllib.loads(codex)  # a config codex cannot parse is a harness that will not start
+assert "# BEGIN harnesses:mcp-servers" in codex, "managed region markers missing"
+
+# An operator-declared server must win, and must not gain a second top-level
+# table -- duplicate keys are invalid TOML and codex refuses to start at all.
+cx = HOME/".codex/config.toml"
+cx.write_text('[mcp_servers.comfyui]\nurl = "https://hand.example/mcp"\n'
+              'bearer_token_env_var = "MINE"\n\n'
+              '[mcp_servers.comfyui.tools.x]\napproval_mode = "approve"\n')
+ns["cmd_mcp"]([])
+hand = cx.read_text()
+tomllib.loads(hand)
+assert hand.count("[mcp_servers.comfyui]") == 1, "operator block was duplicated"
+assert "hand.example" in hand, "operator block was overwritten"
+assert "tools.x" in hand, "operator tool rule was dropped"
+
+# A file that is already broken must be left alone rather than edited further.
+cx.write_text('[mcp_servers.a]\nurl = "x"\n\n[mcp_servers.a]\nurl = "y"\n')
+broken_before = cx.read_text()
+ns["cmd_mcp"]([])
+assert cx.read_text() == broken_before, "edited a config that does not parse"
+
+cx.write_text(codex)
+
 assert "[mcp_servers.obsidian-direct]" in codex, "codex obsidian block missing"
 assert "bearer_token_env_var = \"OBSIDIAN_MCP_TOKEN\"" in codex
 assert "[mcp_servers.vaultwarden-secrets]" in codex, "codex vaultwarden block missing"
