@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Absorbs the retired linux-setup/01-harnesses.md Obsidian doc. The harnesses list mirrors the self-update logic formerly bolted onto bin/setup; mcpServers is the fleet MCP catalog enrolled per harness; each name must equal the mcp__<name>__* prefix granted in settings.claude.permissionsAllowAdd, or the server enrolls under a name the allow-list does not cover. Secrets live in vaultwarden folder=mcp, item name == env var name (providers-module convention).",
+  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Absorbs the retired linux-setup/01-harnesses.md Obsidian doc. The harnesses list mirrors the self-update logic formerly bolted onto bin/setup. mcpServers is the fleet MCP catalog enrolled per harness; secrets live in vaultwarden folder=mcp under the derived name {NAME}_MCP_TOKEN, which is also the env var -- same rule the providers module uses for {PROVIDER}_API_KEY. Do not add envVar/vaultItem unless the name genuinely cannot be derived. Each name must equal the mcp__<name>__* prefix granted in settings.claude.permissionsAllowAdd.",
   "harnesses": [
     {
       "name": "claude",
@@ -88,37 +88,66 @@
     {
       "name": "obsidian",
       "url": "https://mcp.lost.plus/mcp",
-      "auth": "bearer",
-      "envVar": "OBSIDIAN_MCP_TOKEN",
-      "vaultItem": "OBSIDIAN_MCP_TOKEN"
+      "auth": "bearer"
     },
     {
       "name": "tweet-fetch",
       "url": "https://tweet.lost.plus/mcp",
-      "auth": "bearer",
-      "envVar": "TWEET_FETCH_TOKEN",
-      "vaultItem": "TWEET_FETCH_TOKEN_1"
+      "auth": "bearer"
     },
     {
       "name": "vaultwarden-secrets",
       "url": "https://vault.lost.plus/mcp",
       "auth": "bearer",
-      "envVar": "VAULTWARDEN_MCP_TOKEN",
-      "vaultItem": "VAULTWARDEN_MCP_TOKEN"
+      "envVar": "VAULTWARDEN_MCP_TOKEN"
     },
     {
       "name": "comfyui",
       "url": "https://comfy.lost.plus/mcp",
-      "auth": "x-api-key",
-      "envVar": "COMFYUI_MCP_TOKEN",
-      "vaultItem": "comfyui-mcp-token"
+      "auth": "x-api-key"
     },
     {
       "name": "thinqconnect",
       "url": "https://thinq.lost.plus/mcp",
-      "auth": "bearer",
-      "envVar": "THINQ_MCP_TOKEN",
-      "vaultItem": "thinqconnect-mcp auth token"
+      "auth": "bearer"
+    },
+    {
+      "name": "jina",
+      "url": "https://mcp.jina.ai/v1",
+      "auth": "bearer"
+    },
+    {
+      "name": "exa",
+      "url": "https://mcp.exa.ai/mcp",
+      "auth": "bearer"
+    },
+    {
+      "name": "korean-law",
+      "url": "https://korean-law-mcp.fly.dev/mcp",
+      "auth": "bearer"
+    },
+    {
+      "name": "joongna",
+      "url": "https://joongna.lost.plus/mcp",
+      "auth": "bearer"
+    },
+    {
+      "name": "heatmap",
+      "url": "https://heatmap.lost.plus/mcp",
+      "auth": "none"
+    },
+    {
+      "name": "daiso",
+      "url": "https://mcp.aka.page",
+      "auth": "none"
+    },
+    {
+      "name": "notion",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": "none",
+      "surfaces": [
+        "claude"
+      ]
     }
   ],
   "settings": {
@@ -144,10 +173,17 @@
         "WebFetch",
         "WebSearch",
         "mcp__obsidian__*",
-        "mcp__vaultwarden-secrets__*",
         "mcp__tweet-fetch__*",
+        "mcp__vaultwarden-secrets__*",
         "mcp__comfyui__*",
-        "mcp__thinqconnect__*"
+        "mcp__thinqconnect__*",
+        "mcp__jina__*",
+        "mcp__exa__*",
+        "mcp__korean-law__*",
+        "mcp__joongna__*",
+        "mcp__heatmap__*",
+        "mcp__daiso__*",
+        "mcp__notion__*"
       ]
     },
     "t3": {

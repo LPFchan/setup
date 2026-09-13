@@ -471,7 +471,8 @@ def _claude_mcp_reconcile(s):
     """
     argv = _claude_mcp_add(s)
     want_url = s["url"]
-    want_header = argv[argv.index("--header") + 1]
+    # A no-auth server has no --header at all; indexing for it threw.
+    want_header = argv[argv.index("--header") + 1] if "--header" in argv else None
     current = _claude_mcp_registered(s["name"])
     if current is None:
         subprocess.run(argv)
@@ -483,7 +484,8 @@ def _claude_mcp_reconcile(s):
         # scope would not replace it -- it would sit underneath, shadowed.
         print("  %s is registered at %s scope; leaving it alone" % (s["name"], scope))
         return
-    if url == want_url and (header is None or header == want_header):
+    if url == want_url and (want_header is None or header is None
+                            or header == want_header):
         return
     print("  re-enrolling %s (stored config differs from the manifest)" % s["name"])
     subprocess.run(["claude","mcp","remove",s["name"],"-s","user"],
