@@ -37,6 +37,9 @@ convergence, then deploy the final commits once.
   inactive-mode, incorrectly scoped, or service-ineligible credentials return
   `401`; never fall back to a cookie or anonymous access.
 - Passkey, Google, and GitHub identities resolve to one Auth account.
+- Revoking an OAuth identity must persistently block that provider subject;
+  verified-email auto-linking must not silently reconnect it. Reconnection
+  requires an explicit action from another live browser session.
 - Auth, not the gateway or backend, enforces the account's service visibility
   and each registry row's `admin_only` flag. Authorization-data read failures
   must fail closed; an empty visibility list means unrestricted access and
