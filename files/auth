@@ -106,7 +106,7 @@ def cmd_login():
     if not all(isinstance(value, str) and value for value in (device_code, user_code, uri)):
         raise AuthError("Auth returned an invalid device authorization response")
     print(f"Open {uri}")
-    print(f"Confirm code: {user_code}")
+    print("Waiting for approval…")
     _open_browser(uri)
     deadline = time.monotonic() + int(device.get("expires_in", 600))
     interval = max(int(device.get("interval", 5)), 1)

@@ -97,7 +97,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
 
-`auth login` performs one browser-approved onboarding for the machine and stores the account's active global token or per-service token set locally with mode `0600`. The browser exchange uses `/api/setup/device` and `/api/setup/device/token`; the latter returns the credential bundle only after the signed-in user approves the displayed device code. `providers` and `harnesses` resolve service scopes through this store and never initiate separate login sessions. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
+`auth login` performs one browser-approved onboarding for the machine and stores the account's active global token or per-service token set locally with mode `0600`. The browser exchange uses `/api/setup/device` and `/api/setup/device/token`; the latter returns the credential bundle only after the signed-in user approves the waiting setup process. `providers` and `harnesses` resolve service scopes through this store and never initiate separate login sessions. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
 
 ---
 
