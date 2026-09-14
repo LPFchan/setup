@@ -1,0 +1,6 @@
+interface:
+  display_name: "INRT"
+  short_description: "Compress the last response to a chosen fraction"
+  default_prompt: "Use $inrt to compress your last response to one quarter of its length."
+policy:
+  allow_implicit_invocation: false
