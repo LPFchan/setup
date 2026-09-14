@@ -162,7 +162,10 @@ available; never assign it to whoever signs in next.
 5. Keep the backend private and point Cloudflare ingress at the machine's
    gateway, normally `127.0.0.1:8740`.
 6. Build the gateway from the exact reviewed Auth commit on the target
-   architecture. Back up config and state before cutover.
+   architecture. Back up config and state before cutover. When a backend
+   migration is not backward-compatible, pin the previous image together with
+   a verified matching database snapshot; crossing that boundary requires
+   preserving the post-cutover database before restoring the pair.
 7. Use dashboard-issued global or per-service tokens for scripts and MCP
    clients. Auth stores new secrets as a SHA-256 validation hash plus
    AES-256-GCM ciphertext whose key stays outside SQLite. Lists stay masked;
