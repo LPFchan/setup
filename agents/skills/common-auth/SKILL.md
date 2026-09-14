@@ -151,7 +151,11 @@ available; never assign it to whoever signs in next.
 6. Build the gateway from the exact reviewed Auth commit on the target
    architecture. Back up config and state before cutover.
 7. Use dashboard-issued global or per-service tokens for scripts and MCP
-   clients. Token secrets are reveal-once and stored by Auth as SHA-256 hashes.
+   clients. Auth stores new secrets as a SHA-256 validation hash plus
+   AES-256-GCM ciphertext whose key stays outside SQLite. Lists stay masked;
+   only the token's owner may retrieve it through a live browser session.
+   Legacy hash-only tokens still authenticate but must be rotated before they
+   can be copied.
 8. Update the application repo's spec/status and the Auth service inventory.
    When the MCP manifest changes, reconcile it with the Auth service registry,
    gateway configs, tests, spec, and this skill.
