@@ -5,7 +5,7 @@
 # Installs the harnesses fzf client at ~/.local/bin/harnesses plus its
 # canonical manifest. The client installs and self-updates AI coding
 # harnesses (claude, codex, t3, ...), renders per-harness settings, and
-# enrolls MCP servers from vaultwarden folder=mcp. Absorbs the harness
+# enrolls MCP servers through Common Auth or vaultwarden as declared. Absorbs the harness
 # self-update logic that used to live in bin/setup.
 
 (( ${+functions[fetch_source_url]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"

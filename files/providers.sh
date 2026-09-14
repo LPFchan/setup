@@ -2,8 +2,8 @@
 # setup-module: providers
 # setup-type: script
 #
-# Installs the providers launcher at ~/.local/bin/providers: vault-owned
-# provider API keys (llm/{PROVIDER}_API_KEY) with a local cache and mirrors
+# Installs the providers launcher at ~/.local/bin/providers: Common Auth for
+# Grimoire plus vault-owned third-party API keys, with a local cache and mirrors
 # into opencode's auth.json and ~/.zshenv, plus hourly model refresh for
 # OpenCode, Hermes, and Pi-based tools such as Miniharness.
 

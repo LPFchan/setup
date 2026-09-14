@@ -88,12 +88,16 @@ assert tok("https://only-a-url/mcp") == "https://only-a-url/mcp", "a url is not 
 # --- mcp: codex config blocks appended once, zshenv mirror idempotent ---
 # claude is not on PATH in the test env, so enrollment is skipped; only the
 # codex writer and zshenv mirror run. Tokens come from the environment.
+for server in manifest["mcpServers"]:
+    os.environ.pop(ns["mcp_env_var"](server), None)
 os.environ["OBSIDIAN_MCP_TOKEN"] = "tok-obsidian"
 os.environ["VAULTWARDEN_MCP_TOKEN"] = "tok-vault"
 # stub the vault so unset tokens do not attempt a network call
 ns["vault_get"] = lambda item: (_ for _ in ()).throw(ns["VaultError"]("no vault in test"))
 g = ns["cmd_mcp"].__globals__
 g["vault_get"] = ns["vault_get"]
+g["common_auth_token"] = lambda scope: "auth-" + scope
+g["shutil"].which = lambda command: None
 ns["cmd_mcp"]([])
 codex = (HOME/".codex/config.toml").read_text()
 import tomllib
@@ -146,6 +150,7 @@ assert "bearer_token_env_var = \"OBSIDIAN_MCP_TOKEN\"" in codex
 assert "[mcp_servers.vaultwarden-secrets]" in codex, "codex vaultwarden block missing"
 zshenv = (HOME/".zshenv").read_text()
 assert "export OBSIDIAN_MCP_TOKEN=tok-obsidian" in zshenv
+assert "export TWEET_FETCH_MCP_TOKEN=auth-tweet-fetch" in zshenv
 # re-run: codex blocks not duplicated, zshenv block replaced not stacked
 ns["cmd_mcp"]([])
 codex2 = (HOME/".codex/config.toml").read_text()

@@ -7,9 +7,8 @@ Absorbs the harness self-update logic formerly bolted onto "setup update"
 Actions: install | update | settings | mcp. With no argument an fzf menu is
 shown when attached to a terminal.
 
-Secret discovery mirrors the providers module: vaultwarden folder=mcp, item
-name == env var name, token from VAULTWARDEN_SECRETS_TOKEN /
-VAULTWARDEN_MCP_TOKEN, direct MCP-over-HTTP with a non-default User-Agent.
+Operated lost.plus services resolve through the shared auth module. External
+service credentials remain in vaultwarden folder=mcp.
 """
 
 from __future__ import annotations
@@ -32,6 +31,16 @@ def _find_manifest():
 
 MANIFEST_PATH = _find_manifest()
 MANIFEST = json.loads(MANIFEST_PATH.read_text())
+AUTH_BIN = os.environ.get("AUTH_BIN", str(HOME/".local/bin/auth"))
+
+for _server in MANIFEST.get("mcpServers", []):
+    if _server.get("auth") == "none":
+        continue
+    _source = _server.get("credentialSource")
+    if _source not in ("common-auth", "vaultwarden"):
+        raise SystemExit("harnesses: %s has no valid credentialSource" % _server.get("name", "server"))
+    if _source == "common-auth" and not _server.get("scope"):
+        raise SystemExit("harnesses: %s has no Common Auth scope" % _server.get("name", "server"))
 VAULT_URL = os.environ.get("VAULTWARDEN_MCP_URL", os.environ.get("VAULTWARDEN_URL", "https://vault.lost.plus/mcp"))
 VAULT_FOLDER = "mcp"
 def _zshenv_exports():
@@ -129,8 +138,23 @@ def deep_merge(base, overlay):
     return out
 
 class VaultError(RuntimeError): pass
+class CommonAuthError(RuntimeError): pass
+
+def common_auth_token(scope):
+    if not os.access(AUTH_BIN, os.X_OK):
+        raise CommonAuthError("auth module not installed; run: setup install auth")
+    result = subprocess.run([AUTH_BIN, "token", scope], capture_output=True,
+                            text=True, timeout=15)
+    token = result.stdout.strip()
+    if result.returncode or not token:
+        raise CommonAuthError(result.stderr.strip() or "credential unavailable")
+    return token
 
 def _vault_call(tool, arguments):
+    global VAULT_TOKEN
+    if not VAULT_TOKEN:
+        try: VAULT_TOKEN = common_auth_token("vaultwarden-secrets")
+        except CommonAuthError as exc: raise VaultError(str(exc)) from exc
     if not VAULT_TOKEN: raise VaultError("vault token not set")
     body = {"jsonrpc":"2.0","id":id(arguments),"method":"tools/call","params":{"name":tool,"arguments":arguments}}
     req = urllib.request.Request(VAULT_URL, data=json.dumps(body).encode(), headers={
@@ -390,12 +414,9 @@ def mcp_token_value(raw):
 def mcp_env_var(server):
     """Env var holding this server's token: {NAME}_MCP_TOKEN, derived.
 
-    Mirrors the providers module, where the vault item name *is* the env var
-    and both fall out of the provider name ({PROVIDER}_API_KEY). An explicit
-    envVar overrides it, which exactly one server needs: vaultwarden-secrets
-    carries VAULTWARDEN_MCP_TOKEN, the bootstrap key used to reach the vault
-    in the first place. That one cannot be stored in the vault it unlocks and
-    is read by providers too, so it is named, not derived.
+    An explicit envVar overrides the derived name. Vaultwarden keeps its
+    established VAULTWARDEN_MCP_TOKEN name because providers consumes the
+    same Common Auth scope.
     """
     override = server.get("envVar")
     if override:
@@ -441,11 +462,19 @@ def cmd_mcp(names):
         envvar, item = mcp_env_var(s), mcp_vault_item(s)
         val = os.environ.get(envvar)
         if not val:
-            try:
-                val = vault_get(item)
-                print("  pulled %s from vault item mcp/%s" % (envvar, item))
-            except VaultError as exc:
-                eprint("  could not resolve %s (mcp/%s): %s" % (envvar, item, exc)); val = None
+            if s.get("credentialSource") == "common-auth":
+                try:
+                    val = common_auth_token(s["scope"])
+                    print("  resolved %s from Common Auth scope %s" % (envvar, s["scope"]))
+                except CommonAuthError as exc:
+                    eprint("  could not resolve %s (Common Auth %s): %s" %
+                           (envvar, s["scope"], exc)); val = None
+            else:
+                try:
+                    val = vault_get(item)
+                    print("  pulled %s from vault item mcp/%s" % (envvar, item))
+                except VaultError as exc:
+                    eprint("  could not resolve %s (mcp/%s): %s" % (envvar, item, exc)); val = None
         # Quote it. A secret is arbitrary bytes: the values adopted with the new
         # servers carry spaces and newlines (they are stored header-shaped), and
         # unquoted they split across lines and left .zshenv unparseable on every
@@ -1038,7 +1067,7 @@ Install, update, and configure the fleet's AI coding harnesses.
   install [name...]   Install/update node, claude, codex.
   update [name...]    Run each installed harness's own self-updater.
   settings [name...]  Render claude + t3 settings from the manifest.
-  mcp [name...]       Enroll MCP servers from vaultwarden folder=mcp.
+  mcp [name...]       Enroll MCP servers through declared credential sources.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
   refresh             The scheduled pass: proxy apply, settings, mcp, update.
   schedule [enable|disable|status]
@@ -1052,7 +1081,7 @@ Every action takes optional harness names to narrow the run.""" % "|".join(ACTIO
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers from vaultwarden folder=mcp;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or Vaultwarden;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.

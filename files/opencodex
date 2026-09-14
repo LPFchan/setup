@@ -128,11 +128,18 @@ def validate_registry(data: Any) -> dict[str, Any]:
         if not valid_base_url(base_url):
             raise UserError(f"invalid base_url for {provider_name}")
         auth = provider.get("auth")
-        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key"}:
+        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key", "common-auth"}:
             raise UserError(f"invalid auth descriptor for {provider_name}")
         if provider["provider_type"] == "OpenAICompatible":
-            if auth.get("type") != "api-key" or auth.get("store") != "opencode":
+            auth_type = auth.get("type")
+            if auth_type == "api-key" and auth.get("store") != "opencode":
                 raise UserError(f"invalid API-key auth descriptor for {provider_name}")
+            if auth_type == "common-auth" and not NAME_RE.fullmatch(
+                _string(auth.get("scope"), f"auth scope for {provider_name}")
+            ):
+                raise UserError(f"invalid Common Auth descriptor for {provider_name}")
+            if auth_type not in {"api-key", "common-auth"}:
+                raise UserError(f"invalid auth descriptor for {provider_name}")
             if not NAME_RE.fullmatch(_string(auth.get("key"), f"auth key for {provider_name}")):
                 raise UserError(f"invalid auth key for {provider_name}")
             if not isinstance(provider.get("enabled"), bool):

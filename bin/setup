@@ -1031,6 +1031,13 @@ shell_status_one() {
 
 cmd_install() {
     local modules=("$@")
+    local requested
+    for requested in "${modules[@]}"; do
+        if [[ "$requested" == providers || "$requested" == harnesses ]]; then
+            (( ${modules[(Ie)auth]} )) || modules=(auth "${modules[@]}")
+            break
+        fi
+    done
     fetch_manifest || return 1
     local found=0 failures=0
     while IFS=$'\t' read -r module target mode source; do
@@ -1134,8 +1141,17 @@ cmd_update() {
                 continue
             fi
             if [[ -z "$local_hash" ]]; then
-                new_count=$((new_count + 1))
-                new_names+=("$module")
+                if [[ "$module" == auth ]] \
+                    && { [[ -x "$HOME/.local/bin/providers" ]] || [[ -x "$HOME/.local/bin/harnesses" ]]; }; then
+                    if ! install_one "$module" "$target" "$mode" "$source"; then
+                        echo "Warning: auth dependency install failed." >&2
+                        failure_count=$((failure_count + 1))
+                        failure_names+=(auth)
+                    fi
+                else
+                    new_count=$((new_count + 1))
+                    new_names+=("$module")
+                fi
             else
                 disk_hash_before=$(sha256 "$target_path" 2>/dev/null || true)
                 was_active=0
@@ -2175,6 +2191,30 @@ cmd_reconfigure() {
     return "$interactive_failed"
 }
 
+_post_auth_setup() {
+    local marker="$STATE_DIR/auth.needs-login"
+    [[ -f "$marker" ]] || return 0
+
+    local auth_bin="$HOME/.local/bin/auth"
+    [[ -x "$auth_bin" ]] || auth_bin=$(command -v auth 2>/dev/null || true)
+    if [[ ! -x "$auth_bin" ]]; then
+        echo "Warning: Common Auth login is pending, but its executable is unavailable." >&2
+        return 1
+    fi
+    if [[ -t 1 && -r /dev/tty ]]; then
+        echo
+        echo "Sign in once for every Common Auth-backed setup module."
+        if "$auth_bin" login </dev/tty >/dev/tty 2>&1; then
+            rm -f "$marker"
+            return 0
+        fi
+        echo "Warning: Common Auth login failed; it will be offered again." >&2
+        return 1
+    fi
+    echo "Warning: Common Auth login is pending. Run '$auth_bin login'." >&2
+    return 1
+}
+
 _post_providers_setup() {
     local marker="$STATE_DIR/providers.needs-provider-setup"
     [[ -f "$marker" ]] || return 0
@@ -2237,6 +2277,7 @@ if [[ -z "$cmd" ]]; then
         echo "Warning: no interactive terminal; running non-interactive update. Use 'setup' in a terminal for module selection." >&2
         cmd_update || main_rc=$?
     fi
+    _post_auth_setup || true
     _post_providers_setup || true
     exit "$main_rc"
 fi
@@ -2247,12 +2288,14 @@ case "$cmd" in
     install)
         command_rc=0
         cmd_install "$@" || command_rc=$?
+        _post_auth_setup || true
         _post_providers_setup || true
         exit "$command_rc"
         ;;
     update)
         command_rc=0
         cmd_update "$@" || command_rc=$?
+        _post_auth_setup || true
         _post_providers_setup || true
         exit "$command_rc"
         ;;

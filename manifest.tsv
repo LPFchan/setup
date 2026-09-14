@@ -8,6 +8,7 @@ kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux
 service-ctl	~/.local/bin/service-ctl	0755	bin/service-ctl	fleet	linux
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
+auth	~/.local/bin/auth	script	files/auth.sh
 providers	~/.local/bin/providers	script	files/providers.sh
 harnesses	~/.local/bin/harnesses	script	files/harnesses.sh
 schedule	~/.local/bin/schedule	0755	bin/schedule		linux

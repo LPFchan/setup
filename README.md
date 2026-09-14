@@ -90,11 +90,14 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `claudex` | Claude Code multi-profile launcher (`~/.local/bin/claudex`) | `files/claudex.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
-| `harnesses` | AI harness install, update (plus its own daily 07:00 update timer), per-harness settings, and MCP enrollment (`~/.local/bin/harnesses`) | `files/harnesses.sh` |
-| `providers` | Vault-owned provider API keys: enrollment, local cache, and mirrors into opencode `auth.json`, `.zshenv`, and Hermes `~/.hermes/config.yaml` (live model discovery where available; registry-owned model lists for compatible endpoints without `/models`) (`~/.local/bin/providers`) | `files/providers.sh` |
+| `auth` | Public Common Auth client: one browser-approved login, a local `0600` global/per-service credential store, and service-token resolution for other modules (`~/.local/bin/auth`) | `files/auth.sh` |
+| `harnesses` | AI harness install/update, settings, and MCP enrollment; operated lost.plus credentials come from `auth`, while external-service credentials remain in Vaultwarden (`~/.local/bin/harnesses`) | `files/harnesses.sh` |
+| `providers` | Provider enrollment, credential mirrors, and model refresh; Grimoire uses `auth`, while third-party provider keys remain in Vaultwarden (`~/.local/bin/providers`) | `files/providers.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
+
+`auth login` performs one browser-approved onboarding for the machine and stores the account's active global token or per-service token set locally with mode `0600`. The browser exchange uses `/api/setup/device` and `/api/setup/device/token`; the latter returns the credential bundle only after the signed-in user approves the displayed device code. `providers` and `harnesses` resolve service scopes through this store and never initiate separate login sessions. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
 
 ---
 

@@ -142,6 +142,29 @@ m.REGISTRY_PATH = original_registry
 # canonical credential reference through the local cache. No volatile model
 # capability metadata is stored in the registry: model refresh is live.
 canonical_servers = m._servers_from_registry(canonical)
+assert canonical_servers['grimoire']['auth'] == {
+    'type': 'common_auth', 'provider': 'grimoire', 'scope': 'chat-v1'
+}
+m.common_auth_token = lambda scope: 'common-' + scope
+m._sync_common_auth(canonical_servers)
+assert m.cache_get('grimoire') == 'common-chat-v1'
+assert m.VAULT_TOKEN == 'common-vaultwarden-secrets'
+
+# Vaultwarden may still contain the pre-migration copy of a provider token.
+# It must not overwrite a provider now owned by Common Auth, while unrelated
+# provider credentials continue to refresh from the vault normally.
+m.vault_available = lambda: True
+m.vault_list_items = lambda: [
+    {'name': 'GRIMOIRE_API_KEY'},
+    {'name': 'OPENROUTER_API_KEY'},
+]
+m.vault_get = lambda name: {
+    'GRIMOIRE_API_KEY': 'stale-vault-grimoire',
+    'OPENROUTER_API_KEY': 'fresh-vault-openrouter',
+}[name]
+m._sync_cache_from_vault(canonical_servers)
+assert m.cache_get('grimoire') == 'common-chat-v1'
+assert m.cache_get('openrouter') == 'fresh-vault-openrouter'
 openrouter_server = canonical_servers['openrouter']
 assert openrouter_server == {
     'baseURL': 'https://openrouter.ai/api/v1',

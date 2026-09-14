@@ -23,8 +23,8 @@
       "api_format": "grimoire",
       "npm": "@ai-sdk/openai-compatible",
       "auth": {
-        "type": "api-key",
-        "store": "opencode",
+        "type": "common-auth",
+        "scope": "chat-v1",
         "key": "grimoire"
       },
       "enabled": true,
