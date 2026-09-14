@@ -137,6 +137,12 @@ these headers only on a private port reached through its local gateway. Default
 standalone listeners to loopback. A container may listen on `0.0.0.0`
 internally only when Docker publishes the host port on `127.0.0.1`.
 
+Auth's own dashboard seeds the signed-in account's immutable `sub` into the
+page. Every private management request from that page sends it as
+`X-Auth-Expected-Subject`; Auth compares it with the request's current
+credential and rejects a mismatch. The page then reloads before reading,
+changing, revealing, revoking, or signing out the newly active account.
+
 Browser-cached identity is display state, not authority. Before replaying or
 submitting private account-bound work, refresh the session and verify the same
 immutable subject. Bind the expected subject into the request and have the
