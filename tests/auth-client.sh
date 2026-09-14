@@ -28,8 +28,10 @@ m["cmd_login"].__globals__["time"].sleep = lambda _: None
 login_output = io.StringIO()
 with contextlib.redirect_stdout(login_output):
     m["cmd_login"]()
-assert "Waiting for approval" in login_output.getvalue()
-assert "Confirm code" not in login_output.getvalue()
+assert login_output.getvalue().splitlines()[:2] == [
+    "Waiting for approval… Open :",
+    "https://auth.lost.plus/device?code=FOX-1234",
+]
 saved = json.load(open(os.environ["LOST_AUTH_STORE"]))
 assert saved["mode"] == "global" and saved["tokens"] == {"*":"global-secret"}
 assert oct(os.stat(os.environ["LOST_AUTH_STORE"]).st_mode & 0o777) == "0o600"

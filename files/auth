@@ -105,8 +105,8 @@ def cmd_login():
     uri = device.get("verification_uri_complete") or device.get("verification_uri")
     if not all(isinstance(value, str) and value for value in (device_code, user_code, uri)):
         raise AuthError("Auth returned an invalid device authorization response")
-    print(f"Open {uri}")
-    print("Waiting for approval…")
+    print("Waiting for approval… Open :")
+    print(uri)
     _open_browser(uri)
     deadline = time.monotonic() + int(device.get("expires_in", 600))
     interval = max(int(device.get("interval", 5)), 1)
