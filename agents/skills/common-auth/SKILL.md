@@ -142,6 +142,9 @@ page. Every private management request from that page sends it as
 `X-Auth-Expected-Subject`; Auth compares it with the request's current
 credential and rejects a mismatch. The page then reloads before reading,
 changing, revealing, revoking, or signing out the newly active account.
+Device-approval forms likewise carry the subject shown on the page; Auth must
+reject the approval if the live session has switched accounts before the
+operator submits it.
 
 Browser-cached identity is display state, not authority. Before replaying or
 submitting private account-bound work, refresh the session and verify the same
