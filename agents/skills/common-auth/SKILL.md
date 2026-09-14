@@ -115,6 +115,11 @@ state-changing management endpoints require the exact `auth.lost.plus` origin.
 The gateway owns MCP `GET`/`HEAD /healthz` and CORS preflight. Other methods on
 `/healthz` return `405` without reaching the MCP dispatcher.
 
+An anonymously reachable MCP backend must enforce a service-appropriate body
+byte limit while streaming, including requests without `Content-Length`, and
+must bound how many parsed bodies remain in flight through dispatch. Use an
+absolute read timeout so slow clients cannot hold every body permit forever.
+
 ## Backend identity boundary
 
 The gateway removes `Authorization`, `X-API-Key`, `lp_auth`, forwarded proxy
