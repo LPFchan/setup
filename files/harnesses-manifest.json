@@ -132,6 +132,11 @@
       "auth": "bearer"
     },
     {
+      "name": "bunjang",
+      "url": "https://bunjang.lost.plus/mcp",
+      "auth": "bearer"
+    },
+    {
       "name": "heatmap",
       "url": "https://heatmap.lost.plus/mcp",
       "auth": "none"
@@ -182,6 +187,7 @@
         "mcp__exa__*",
         "mcp__korean-law__*",
         "mcp__joongna__*",
+        "mcp__bunjang__*",
         "mcp__heatmap__*",
         "mcp__daiso__*",
         "mcp__notion__*"
