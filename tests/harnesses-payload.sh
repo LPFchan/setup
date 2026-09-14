@@ -92,11 +92,21 @@ for server in manifest["mcpServers"]:
     os.environ.pop(ns["mcp_env_var"](server), None)
 os.environ["OBSIDIAN_MCP_TOKEN"] = "tok-obsidian"
 os.environ["VAULTWARDEN_MCP_TOKEN"] = "tok-vault"
-# stub the vault so unset tokens do not attempt a network call
-ns["vault_get"] = lambda item: (_ for _ in ()).throw(ns["VaultError"]("no vault in test"))
+os.environ["JINA_MCP_TOKEN"] = "stale-jina"
+# Authoritative sources replace stale pre-Common-Auth environment values. A
+# failed external lookup still keeps its previous value as an offline fallback.
+vault_calls = []
+def fake_vault_get(item):
+    vault_calls.append(item)
+    assert g["VAULT_TOKEN"] == "auth-vaultwarden-secrets"
+    if item == "JINA_MCP_TOKEN":
+        return "fresh-jina"
+    raise ns["VaultError"]("no vault in test")
+ns["vault_get"] = fake_vault_get
 g = ns["cmd_mcp"].__globals__
 g["vault_get"] = ns["vault_get"]
 g["common_auth_token"] = lambda scope: "auth-" + scope
+g["VAULT_TOKEN"] = "stale-vault-access"
 g["shutil"].which = lambda command: None
 ns["cmd_mcp"]([])
 codex = (HOME/".codex/config.toml").read_text()
@@ -149,8 +159,25 @@ assert "[mcp_servers.obsidian]" in codex, "codex obsidian block missing"
 assert "bearer_token_env_var = \"OBSIDIAN_MCP_TOKEN\"" in codex
 assert "[mcp_servers.vaultwarden-secrets]" in codex, "codex vaultwarden block missing"
 zshenv = (HOME/".zshenv").read_text()
-assert "export OBSIDIAN_MCP_TOKEN=tok-obsidian" in zshenv
+assert "export OBSIDIAN_MCP_TOKEN=auth-obsidian" in zshenv
+assert "export VAULTWARDEN_MCP_TOKEN=auth-vaultwarden-secrets" in zshenv
 assert "export TWEET_FETCH_MCP_TOKEN=auth-tweet-fetch" in zshenv
+assert "export JINA_MCP_TOKEN=fresh-jina" in zshenv
+assert "JINA_MCP_TOKEN" in vault_calls
+
+# If either authority is temporarily unavailable later, preserve the freshly
+# reconciled managed values rather than falling back to stale process exports.
+fresh_zshenv = zshenv
+def common_unavailable(scope):
+    raise ns["CommonAuthError"]("auth offline in test")
+def vault_unavailable(item):
+    raise ns["VaultError"]("vault offline in test")
+g["common_auth_token"] = common_unavailable
+g["vault_get"] = vault_unavailable
+ns["cmd_mcp"]([])
+assert (HOME/".zshenv").read_text() == fresh_zshenv
+g["common_auth_token"] = lambda scope: "auth-" + scope
+g["vault_get"] = fake_vault_get
 # re-run: codex blocks not duplicated, zshenv block replaced not stacked
 ns["cmd_mcp"]([])
 codex2 = (HOME/".codex/config.toml").read_text()

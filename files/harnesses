@@ -453,28 +453,55 @@ def _codex_mcp_block(s):
     return "\n".join(lines)+"\n"
 
 def cmd_mcp(names):
+    global VAULT_TOKEN
     servers = MANIFEST["mcpServers"]
     if names: servers = [s for s in servers if s["name"] in names]
+    existing = {name: value for name, value in os.environ.items() if value}
+    # The managed file is the durable last-known-good snapshot. A shell that
+    # was opened before the latest reconciliation may still carry older
+    # exported values, so the on-disk snapshot wins when both exist.
+    existing.update(_zshenv_exports())
+    common_tokens = {}
+
+    def resolve_common(scope):
+        if scope not in common_tokens:
+            common_tokens[scope] = common_auth_token(scope)
+        return common_tokens[scope]
+
+    # External credentials still live in Vaultwarden, but the credential used
+    # to reach Vaultwarden is itself Common Auth-owned. Refresh it before any
+    # vault reads so a pre-migration environment value cannot remain the
+    # authority after Auth is available.
+    if any(s.get("credentialSource") == "vaultwarden" for s in servers):
+        try:
+            VAULT_TOKEN = resolve_common("vaultwarden-secrets")
+        except CommonAuthError as exc:
+            eprint("  could not refresh Vaultwarden access from Common Auth: %s; using existing access if available" % exc)
+
     exports = []
     for s in servers:
         if s["auth"] == "none":
             continue
         envvar, item = mcp_env_var(s), mcp_vault_item(s)
-        val = os.environ.get(envvar)
-        if not val:
-            if s.get("credentialSource") == "common-auth":
-                try:
-                    val = common_auth_token(s["scope"])
-                    print("  resolved %s from Common Auth scope %s" % (envvar, s["scope"]))
-                except CommonAuthError as exc:
-                    eprint("  could not resolve %s (Common Auth %s): %s" %
-                           (envvar, s["scope"], exc)); val = None
-            else:
-                try:
-                    val = vault_get(item)
-                    print("  pulled %s from vault item mcp/%s" % (envvar, item))
-                except VaultError as exc:
-                    eprint("  could not resolve %s (mcp/%s): %s" % (envvar, item, exc)); val = None
+        val = None
+        if s.get("credentialSource") == "common-auth":
+            try:
+                val = resolve_common(s["scope"])
+                print("  resolved %s from Common Auth scope %s" % (envvar, s["scope"]))
+            except CommonAuthError as exc:
+                val = existing.get(envvar)
+                detail = "keeping existing value" if val else "no existing value available"
+                eprint("  could not resolve %s (Common Auth %s): %s; %s" %
+                       (envvar, s["scope"], exc, detail))
+        else:
+            try:
+                val = vault_get(item)
+                print("  pulled %s from vault item mcp/%s" % (envvar, item))
+            except VaultError as exc:
+                val = existing.get(envvar)
+                detail = "keeping existing value" if val else "no existing value available"
+                eprint("  could not resolve %s (mcp/%s): %s; %s" %
+                       (envvar, item, exc, detail))
         # Quote it. A secret is arbitrary bytes: the values adopted with the new
         # servers carry spaces and newlines (they are stored header-shaped), and
         # unquoted they split across lines and left .zshenv unparseable on every
