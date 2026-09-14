@@ -62,7 +62,7 @@ There are two service-key namespaces:
 - Account visibility, such as `chat`, `api`, `okdam`, or `eastself`.
 - Machine-token scope, such as `chat-v1`, `okdam-mcp`, `obsidian`,
   `tweet-fetch`, `vaultwarden-secrets`, `comfyui`, `thinqconnect`, `joongna`,
-  or `bunjang`.
+  `bunjang`, or `censor`.
 
 The gateway sends `service=<token-scope>` for machine credentials and
 `audience=<visibility-or-service-key>` for admission. Auth accepts registered
@@ -88,7 +88,10 @@ requests receive `401`.
 An `mcp` route may set `allow_anonymous: true` only for intentionally public
 MCP operations. Missing credentials then reach the backend anonymously, while
 an explicit invalid credential still fails. The backend decides which MCP
-methods and tools are public.
+methods and tools are public. Its `token_scope` must still exist in Auth's
+service registry so valid presented global or scoped tokens can authenticate;
+the registry row may use `grp: hidden` when the optional scope should not
+appear on the Apps page.
 
 Treat `public` as a security boundary for the entire matched path. Split public
 reads from protected writes with narrower route matchers, or make the backend
@@ -141,7 +144,9 @@ available; never assign it to whoever signs in next.
    visibility; `mcp` needs token scope; `api` needs both; `public` needs
    neither.
 2. Add the route to the Auth repo's tracked `deploy/<machine>/gateway.json`.
-   Reject duplicate matchers and validate the complete machine config.
+   Register its visibility and token-scope keys in Auth, reject duplicate
+   matchers, and validate the complete machine config. Anonymous-enabled MCP
+   routes still require a registered token scope.
 3. Remove the application's Common Auth credential validation. Parse only
    trusted gateway identity headers and retain domain-specific authorization.
 4. Point browser logout to `/_auth/logout`. The gateway removes the server
