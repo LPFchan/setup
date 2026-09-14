@@ -61,6 +61,7 @@ When requested to deploy a new web service, use cloudflare credentials from vaul
 	- iCloud calendar and mail
 	- all credentials at vaultwarden
 - hosts heatmap at heatmap.lost.plus
+- hosts Muum at muum.lost.plus (repo ~/muum)
 - second RTX 3090 currently vacant due to board-level repair work
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
