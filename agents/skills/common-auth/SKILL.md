@@ -145,6 +145,9 @@ changing, revealing, revoking, or signing out the newly active account.
 Device-approval forms likewise carry the subject shown on the page; Auth must
 reject the approval if the live session has switched accounts before the
 operator submits it.
+Auth's login, dashboard, and device-approval HTML must deny framing with CSP
+`frame-ancestors 'none'` plus `X-Frame-Options: DENY`; shared same-site cookies
+otherwise let a sibling origin clickjack real same-origin management actions.
 
 Browser-cached identity is display state, not authority. Before replaying or
 submitting private account-bound work, refresh the session and verify the same
