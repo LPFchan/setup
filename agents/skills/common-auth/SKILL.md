@@ -141,9 +141,11 @@ Browser-cached identity is display state, not authority. Before replaying or
 submitting private account-bound work, refresh the session and verify the same
 immutable subject. Bind the expected subject into the request and have the
 backend compare it with the gateway identity before writing. Discard a private
-read response if the active subject changed while it was in flight. Quarantine
-legacy email-owned state unless an explicit, verified email-to-sub migration is
-available; never assign it to whoever signs in next.
+read response if the active subject changed while it was in flight. Editable
+drafts and asynchronous results that may be merged into a later write belong to
+the subject that started them; clear or quarantine them after an account switch.
+Quarantine legacy email-owned state unless an explicit, verified email-to-sub
+migration is available; never assign it to whoever signs in next.
 
 ## Integration workflow
 
