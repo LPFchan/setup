@@ -39,7 +39,9 @@ convergence, then deploy the final commits once.
 - Passkey, Google, and GitHub identities resolve to one Auth account.
 - Revoking an OAuth identity must persistently block that provider subject;
   verified-email auto-linking must not silently reconnect it. Reconnection
-  requires an explicit action from another live browser session.
+  requires an explicit action from another live browser session. Reject the
+  revocation atomically if it would remove the account's last usable passkey or
+  OAuth sign-in method.
 - Auth, not the gateway or backend, enforces the account's service visibility
   and each registry row's `admin_only` flag. Authorization-data read failures
   must fail closed; an empty visibility list means unrestricted access and
