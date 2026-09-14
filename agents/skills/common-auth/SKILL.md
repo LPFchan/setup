@@ -148,6 +148,9 @@ operator submits it.
 Auth's login, dashboard, and device-approval HTML must deny framing with CSP
 `frame-ancestors 'none'` plus `X-Frame-Options: DENY`; shared same-site cookies
 otherwise let a sibling origin clickjack real same-origin management actions.
+Apply the same frame denial to every interactive browser application's HTML
+shell and fallback route, even when the shell itself is public; authenticated
+controls inside the framed app still send valid same-origin requests.
 
 Browser-cached identity is display state, not authority. Before replaying or
 submitting private account-bound work, refresh the session and verify the same
