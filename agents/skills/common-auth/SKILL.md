@@ -117,8 +117,11 @@ The gateway owns MCP `GET`/`HEAD /healthz` and CORS preflight. Other methods on
 
 An anonymously reachable MCP backend must enforce a service-appropriate body
 byte limit while streaming, including requests without `Content-Length`, and
-must bound how many parsed bodies remain in flight through dispatch. Use an
-absolute read timeout so slow clients cannot hold every body permit forever.
+must bound how many parsed bodies remain in flight until both the response and
+invoked tool work finish. Transport cancellation must not release a permit
+while its tool still runs. Use an absolute read timeout so slow clients cannot
+hold every body permit forever, and test cancellation with a deliberately
+blocked tool rather than only testing authentication work.
 
 ## Backend identity boundary
 
