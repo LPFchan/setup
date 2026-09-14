@@ -99,6 +99,12 @@ reject every non-public operation by default. In particular, a public catchall
 must not make loopback-only maintenance endpoints writable through the
 gateway.
 
+Gateway policy selection uses a canonical path: percent escapes are decoded,
+backslashes and repeated separators are normalized, and dot segments are
+removed before route matching. The raw request target may still be forwarded
+upstream. Do not implement a second path router or protected-service proxy
+inside a backend reached by a broader public route.
+
 `oauth` and cookie-authenticated `api` mutations require the exact service
 origin. Apply the same check to OAuth-policy WebSocket handshakes.
 Bearer-authenticated API requests do not need browser CSRF checks. Auth's own
