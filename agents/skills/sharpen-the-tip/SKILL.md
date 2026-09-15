@@ -1,4 +1,5 @@
 ---
+audience: public
 name: sharpen-the-tip
 version: 1.0
 description: Iteratively refine an artifact through a structured neutral-subagent review loop until convergence. Trigger on "sharpen", "sharpen the tip", "let's sharpen this", or similar phrasing.

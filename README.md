@@ -203,3 +203,5 @@ git config core.hooksPath hooks
 ```
 
 The hook automatically runs `zsh -n` and `bash -n` syntax checks and updates `checksums.tsv` whenever you make a commit.
+
+Every `SKILL.md` under `agents/skills/` carries an `audience:` line in its front matter. `audience: fleet` installs the skill only on machines whose key appears in the owner key list; `audience: public` installs it everywhere. The `agents` module reads this line when it links skills into each harness's skills directory, so a skill that skips the tag reads as unset rather than intentionally scoped. The pre-commit hook blocks a commit when any `SKILL.md` is missing it.

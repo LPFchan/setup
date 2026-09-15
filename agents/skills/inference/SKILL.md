@@ -1,4 +1,5 @@
 ---
+audience: fleet
 name: inference
 description: "Operate and develop the fleet inference system across Grimoire and Mangchi. Use for chat.lost.plus, /home/yeowool/inference, gateway or remote-backend routing, model lifecycle, presets, registry and model intake, llama.cpp or vLLM engines, ComfyUI co-tenancy, deployment, GPU allocation, or inference incidents."
 ---

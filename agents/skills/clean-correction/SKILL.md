@@ -1,4 +1,5 @@
 ---
+audience: public
 name: clean-correction
 version: "1.0"
 description: "When overwriting existing content, write only the intended replacement — never leave traces of the correction process. Trigger when replacing, deleting, or rewriting content that already exists."

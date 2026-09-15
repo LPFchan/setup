@@ -1,4 +1,5 @@
 ---
+audience: public
 name: housekeeping
 version: 1.0
 description: Read-only adversarial repository-boundary audit. Inventories the complete physical workspace — tracked, ignored, generated, cached, backed-up — challenges every item's right to exist where it lives, and produces a ranked audit, an operator decision sheet, and a gated migration sequence. Never deletes or moves anything. Trigger on "housekeeping", "boundary audit", "repo audit", "audit the workspace", "what can we delete", or similar.

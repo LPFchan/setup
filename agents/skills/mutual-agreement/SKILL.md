@@ -1,4 +1,5 @@
 ---
+audience: public
 name: mutual-agreement
 version: 1.1
 description: "Delegate work to a subagent with mutual review gates. Parent owns the plan and the commit. Subagent owns the implementation — or, if it disagrees, an adversarial review of the plan. Neither proceeds without the other's agreement."

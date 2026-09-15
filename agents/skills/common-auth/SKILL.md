@@ -1,4 +1,5 @@
 ---
+audience: fleet
 name: common-auth
 description: Integrate or operate a lost.plus web service, API, or MCP server behind the per-machine Common Auth gateway using an explicit public, oauth, api, or mcp policy.
 ---

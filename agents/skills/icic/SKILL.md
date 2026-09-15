@@ -1,4 +1,5 @@
 ---
+audience: public
 name: icic
 description: "icic (in case it crashes) wakes you up every few minutes to check on a task you left running in the background, so you never sit waiting forever for a finish signal that never comes — a silent crash, a hang, or a watcher that misses the exit. Trigger: /icic <minutes>."
 argument-hint: "interval in minutes (e.g. 10), or 'stop'"

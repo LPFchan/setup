@@ -1,4 +1,5 @@
 ---
+audience: public
 name: inrt
 description: Compress the assistant's immediately preceding response when the user explicitly invokes $inrt or says INRT.
 ---

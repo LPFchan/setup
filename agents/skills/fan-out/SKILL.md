@@ -1,4 +1,5 @@
 ---
+audience: public
 name: fan-out
 description: Delegate implementation across parallel subagents in isolated worktrees. Use when the operator asks to fan out, parallelize, split up, or distribute implementation work. Apply mutual-agreement to every slice. The coordinator must not implement.
 ---

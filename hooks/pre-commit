@@ -24,5 +24,13 @@ for f in files/auth files/harnesses files/providers files/opencodex; do
     python3 -c "import py_compile; py_compile.compile('$f', doraise=True)" || exit 1
 done
 
+# Every skill must declare its visibility with an audience line, so the agents
+# installer can decide whether the skill lands on a given machine. A missing
+# line silently hides nothing today but reads as "unset", which is how skills
+# drift into the wrong audience; fail the commit instead.
+while IFS= read -r f; do
+    grep -q '^audience:' "$f" || { echo "missing audience: tag in $f — commit blocked" >&2; exit 1; }
+done < <(find agents/skills -name SKILL.md -type f | sort)
+
 scripts/checksums
 git add checksums.tsv

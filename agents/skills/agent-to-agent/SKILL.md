@@ -1,4 +1,5 @@
 ---
+audience: public
 name: agent-to-agent
 description: Agent-to-agent (a2a) delegation invokes another coding-agent harness as a subagent and continues the same delegated conversation across turns. Use when an agent needs to summon Codex, Claude Code, OpenCode, Antigravity CLI, Hermes Agent, Grok Build, Kimi Code CLI, Muse Code, or OpenCodex (routing a child onto another provider's model) through a shell or terminal tool, retain the child session, send follow-up instructions, or coordinate ongoing agent-to-agent work.
 ---

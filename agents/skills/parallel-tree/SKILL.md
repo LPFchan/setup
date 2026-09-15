@@ -1,4 +1,5 @@
 ---
+audience: public
 name: parallel-tree
 description: "Mint a worktree in a temporary location, do the requested work there, merge onto main, purge the worktree. Use when other agents are working concurrently in the same checkout, or when the operator says parallel-tree, work in your own tree, or don't touch this checkout."
 argument-hint: "the change to make (optional — defaults to the work already requested)"

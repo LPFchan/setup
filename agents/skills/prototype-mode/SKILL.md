@@ -1,4 +1,5 @@
 ---
+audience: public
 name: prototype-mode
 version: 1.0
 description: Activates when the user is prototyping, building greenfield projects, or explicitly working pre-MVP. Trigger phrases: "we're just prototyping", "greenfield", "pre-MVP", "from scratch", "new project", "spike", "throw it away", "rewrite not refactor", "stop shimming", "just break it". Deactivation: "exit prototype mode", "stop prototype mode".
