@@ -78,6 +78,7 @@ each run its gateway from `~/auth` on :8740; load the `common-auth` skill for it
 
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
+- hosts agent-with-agent at awa.lost.plus (repo `~/agent-with-agent`)
 - hosts MCP servers: obsidian/marble, joongna-price-search, tweet-fetch, thinqconnect, vaultwarden, comfyui-mcp
 - hosts lost.plus homepage (repo `~/lost.plus`)
 - hosts Songbook at okdam.lost.plus (repo `~/okdam-songbook`)
