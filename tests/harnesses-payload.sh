@@ -10,8 +10,9 @@ export HARNESSES_MANIFEST="$ROOT/files/harnesses-manifest.json"
 mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.t3/userdata"
 
 python3 - "$ROOT/files/harnesses" <<'PY'
-import json, os, runpy, subprocess, sys, tempfile
+import io, json, os, runpy, subprocess, sys, tempfile
 from pathlib import Path
+from unittest import mock
 
 payload = sys.argv[1]
 HOME = Path(os.environ["HOME"])
@@ -31,6 +32,26 @@ t3_path.write_text(json.dumps({"providerInstances": {"claudeAgent": {"driver": "
         {"slug": "operator/private-model", "name": "Operator model"},
         {"slug": "codex/gpt-6-astra", "name": "stale prefixed row"},
     ]}}}}))
+catalog = {"data": [{
+    "id": "grimoire/qwen3.8-flash-next",
+    "reasoning_efforts": [
+        {"value": "low", "label": "Low Effort"},
+        {"value": "medium", "label": "Medium Effort", "default": True},
+        {"value": "xhigh", "label": "Xhigh Effort"},
+    ],
+}]}
+os.environ["HARNESSES_PROXY_PORT"] = "10100"
+with mock.patch.object(
+    ns["urllib"].request,
+    "urlopen",
+    side_effect=lambda *_args, **_kwargs: io.BytesIO(json.dumps(catalog).encode()),
+) as catalog_request:
+    descriptors = ns["_effort_descriptors_by_slug"]()
+catalog_request.assert_called_once_with(
+    "http://127.0.0.1:10100/v1/models",
+    timeout=15,
+)
+ns["_write_t3_settings"].__globals__["_effort_descriptors_by_slug"] = lambda: descriptors
 ns["cmd_settings"]([])
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
@@ -65,6 +86,9 @@ slugs = set(by_slug)
 assert "kimicode/k3-256k" in slugs and "gpt-6-astra" in slugs
 assert by_slug["kimicode/k3-256k"]["name"] == "kimi-k3-256k"
 assert by_slug["grimoire/qwen3.8-flash-next"]["name"] == "qwen3.8-flash-next"
+qwen_options = by_slug["grimoire/qwen3.8-flash-next"]["capabilities"]["optionDescriptors"][0]["options"]
+assert [option["id"] for option in qwen_options] == ["low", "medium", "xhigh"]
+assert next(option for option in qwen_options if option["id"] == "medium")["isDefault"] is True
 # a slug naming a provider the proxy does not have cannot route; the retired
 # list is what removes one that an earlier release already wrote out
 assert "codex/gpt-6-astra" not in slugs, "retired custom model slug survived"

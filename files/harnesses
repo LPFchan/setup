@@ -32,6 +32,7 @@ def _find_manifest():
 MANIFEST_PATH = _find_manifest()
 MANIFEST = json.loads(MANIFEST_PATH.read_text())
 AUTH_BIN = os.environ.get("AUTH_BIN", str(HOME/".local/bin/auth"))
+T3_MODEL_CATALOG_TIMEOUT_SECONDS = 15
 
 for _server in MANIFEST.get("mcpServers", []):
     if _server.get("auth") == "none":
@@ -306,7 +307,8 @@ def _effort_descriptors_by_slug():
     """
     try:
         with urllib.request.urlopen(
-            "http://127.0.0.1:%d/v1/models" % _proxy_port(), timeout=3
+            "http://127.0.0.1:%d/v1/models" % _proxy_port(),
+            timeout=T3_MODEL_CATALOG_TIMEOUT_SECONDS,
         ) as resp:
             payload = json.load(resp)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
