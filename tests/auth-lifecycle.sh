@@ -22,6 +22,7 @@ print '{"version":1,"mode":"global","tokens":{"*":"secret"}}' \
 chmod 600 "$HOME/.local/share/lost-plus/auth.json"
 update
 status >/dev/null
+[[ ! -e "$XDG_STATE_HOME/setup/auth.needs-login" ]]
 
 uninstall
 [[ ! -e "$AUTH_BIN" ]]

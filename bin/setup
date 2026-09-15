@@ -2201,6 +2201,10 @@ _post_auth_setup() {
         echo "Warning: Common Auth login is pending, but its executable is unavailable." >&2
         return 1
     fi
+    if "$auth_bin" status >/dev/null 2>&1; then
+        rm -f "$marker"
+        return 0
+    fi
     if [[ -t 1 && -r /dev/tty ]]; then
         echo
         echo "Sign in once for every Common Auth-backed setup module."

@@ -43,7 +43,9 @@ _apply() {
     mv "$temporary" "$BIN"
     record_script_state "$MODULE" "auth" "$hash" "$hash"
     marker="${XDG_STATE_HOME:-$HOME/.local/state}/setup/auth.needs-login"
-    if ! "$BIN" status >/dev/null 2>&1; then
+    if "$BIN" status >/dev/null 2>&1; then
+        rm -f "$marker"
+    else
         mkdir -p "${marker:h}"
         touch "$marker"
     fi

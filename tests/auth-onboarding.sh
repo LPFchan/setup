@@ -34,8 +34,10 @@ run_driver() {
 
 AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1 || true
 [[ -e "$marker" ]]
-[[ $(cat "$TMP/auth.log") == login ]]
+[[ $(cat "$TMP/auth.log") == $'status\nlogin' ]]
 
+: > "$TMP/auth.log"
 AUTH_LOG="$TMP/auth.log" AUTH_RC=0 run_driver >/dev/null 2>&1
 [[ ! -e "$marker" ]]
+[[ $(cat "$TMP/auth.log") == status ]]
 echo "auth onboarding tests passed"
