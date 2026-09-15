@@ -467,6 +467,15 @@ grep -q 'pass --model to launch commandcode' "$TEST_TMP/foreign-resume-error" \
 ! grep -Fq 'deepseek-v4-flash-0731' "$TEST_TMP/claude-env" \
     || fail "a foreign provider's transcript model reached the harness"
 
+# Provider capability records also carry each model's real context window,
+# and apply mirrors them into the proxy's per-model context map so the
+# harness compacts against that window instead of its fallback constant.
+cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"context":400000,"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}'
+EOF
+chmod +x "$OPENCODEX_PROVIDERS_BIN"
+
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
 # Codex Desktop resume-history sync is a macOS behaviour, so the rendered flag
 # tracks the host platform rather than a fixed value.
@@ -481,6 +490,10 @@ jq -e '.providers.anthropic.adapter == "anthropic"
     || fail "Anthropic subscription OAuth provider was not rendered"
 jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "OpenCodex provider credentials were not rendered"
+jq -e --arg model "$cc_model" '
+    .providers.commandcode.modelContextWindows[$model] == 400000
+' "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "provider context windows were not fed to the OpenCodex proxy config"
 "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
     || fail "freshly applied OpenCodex config was not current"
 

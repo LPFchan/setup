@@ -293,6 +293,7 @@ def desired_opencodex_config(
     # the Codex model picker, not just out of launcher selection.
     state = load_provider_state()
     ladders_by_provider = capability_effort_ladders(registry)
+    contexts_by_provider = capability_context_windows(registry)
 
     for name in sorted(managed):
         descriptor = registry["providers"][name]
@@ -343,6 +344,12 @@ def desired_opencodex_config(
                     provider["modelReasoningEfforts"] = ladders
                 else:
                     provider.pop("modelReasoningEfforts", None)
+            if name in contexts_by_provider:
+                contexts = contexts_by_provider[name]
+                if contexts:
+                    provider["modelContextWindows"] = contexts
+                else:
+                    provider.pop("modelContextWindows", None)
         # Never pin a model: a launch names the one it wants, and with
         # liveModels the proxy serves each provider's full rotating fleet
         # rather than a profile-mapped subset. Popping rather than merely
@@ -1163,6 +1170,40 @@ def capability_effort_ladders(registry: dict[str, Any]) -> dict[str, dict[str, l
             if efforts:
                 ladders[native_id] = efforts
         result[provider] = ladders
+    return result
+
+
+def capability_context_windows(registry: dict[str, Any]) -> dict[str, dict[str, int]]:
+    """Provider -> {native model id: context window}, from the providers cache.
+
+    OpenCodex fills a routed model's context window from provider config or
+    its own fallback constant, and the constant is what every grimoire model
+    was getting: the proxy compacts a 393k window at 115k. The upstream
+    /v1/models answer and the registry both already carry the real number,
+    and the shared cache mirrors it, so read it from there instead of
+    restating it per model. Same cache-only boundary as the effort ladders.
+    """
+    view = provider_capability_view()
+    providers = view.get("providers", {}) if isinstance(view, dict) else {}
+    if not isinstance(providers, dict):
+        return {}
+    enrolled = registry.get("providers", {})
+    result: dict[str, dict[str, int]] = {}
+    for provider, snapshot in providers.items():
+        if enrolled.get(provider, {}).get("provider_type") != "OpenAICompatible":
+            continue
+        models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
+        if not isinstance(models, dict):
+            continue
+        windows: dict[str, int] = {}
+        for native_id, record in models.items():
+            if not isinstance(native_id, str) or not native_id or not isinstance(record, dict):
+                continue
+            context = record.get("context")
+            if isinstance(context, int) and context > 0:
+                windows[native_id] = context
+        if windows:
+            result[provider] = windows
     return result
 
 
