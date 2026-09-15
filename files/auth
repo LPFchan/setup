@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ STORE = pathlib.Path(os.path.expanduser(os.environ.get(
     "LOST_AUTH_STORE", "~/.local/share/lost-plus/auth.json"
 )))
 LOCK = STORE.with_name(STORE.name + ".lock")
+DEVICE_NAME = socket.gethostname()
 
 
 class AuthError(RuntimeError):
@@ -198,7 +200,8 @@ def _refresh(data):
         )
     try:
         bundle = _request(
-            "/api/setup/session/token", json_body={"refresh_token": refresh_token}
+            "/api/setup/session/token",
+            json_body={"refresh_token": refresh_token, "device_name": DEVICE_NAME},
         )
     except AuthError as exc:
         if exc.status in (401, 403):
@@ -259,7 +262,9 @@ def _open_browser(uri):
 
 
 def cmd_login():
-    device = _request("/api/setup/device", form={"client": "setup-auth"})
+    device = _request(
+        "/api/setup/device", form={"client": "setup-auth", "device_name": DEVICE_NAME}
+    )
     device_code = device.get("device_code")
     user_code = device.get("user_code")
     uri = device.get("verification_uri_complete") or device.get("verification_uri")

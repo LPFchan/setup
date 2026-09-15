@@ -22,6 +22,9 @@ server = {
 def request(path, **kwargs):
     calls.append((path, kwargs))
     if path == "/api/setup/device":
+        assert kwargs["form"] == {
+            "client":"setup-auth", "device_name":m["DEVICE_NAME"],
+        }
         return {"device_code":"device", "user_code":"FOX-1234",
                 "verification_uri_complete":"https://auth.lost.plus/device?code=FOX-1234",
                 "expires_in":30, "interval":1}
@@ -30,7 +33,9 @@ def request(path, **kwargs):
             "id":"dev_one", "refresh_token":"refresh-secret", "expires_at":9999999999,
         }}
     if path == "/api/setup/session/token":
-        assert kwargs["json_body"] == {"refresh_token":"refresh-secret"}
+        assert kwargs["json_body"] == {
+            "refresh_token":"refresh-secret", "device_name":m["DEVICE_NAME"],
+        }
         return dict(server)
     raise AssertionError(path)
 
