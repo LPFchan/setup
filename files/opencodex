@@ -1202,8 +1202,7 @@ def capability_context_windows(registry: dict[str, Any]) -> dict[str, dict[str, 
             context = record.get("context")
             if isinstance(context, int) and context > 0:
                 windows[native_id] = context
-        if windows:
-            result[provider] = windows
+        result[provider] = windows
     return result
 
 

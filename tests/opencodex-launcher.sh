@@ -494,6 +494,18 @@ jq -e --arg model "$cc_model" '
     .providers.commandcode.modelContextWindows[$model] == 400000
 ' "$OPENCODEX_CONFIG" >/dev/null \
     || fail "provider context windows were not fed to the OpenCodex proxy config"
+
+# When the shared cache later reports no windows at all, the apply pops the
+# map instead of leaving a stale one behind beside live effort ladders.
+cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
+#!/usr/bin/env bash
+printf "%s\n" '{"version":1,"providers":{"commandcode":{"models":{}}}}'
+EOF
+chmod +x "$OPENCODEX_PROVIDERS_BIN"
+"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY" --no-restart
+jq -e "(.providers.commandcode | has(\"modelContextWindows\")) | not" "$OPENCODEX_CONFIG" >/dev/null \
+    || fail "an empty capability cache kept a stale modelContextWindows map"
+
 "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
     || fail "freshly applied OpenCodex config was not current"
 
