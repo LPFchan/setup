@@ -24,7 +24,7 @@ Commands:
   help                         Show usage
 """
 
-import contextlib, datetime, getpass, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, datetime, fcntl, getpass, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 
 PROVIDER_STATE_VERSION = 1
@@ -55,6 +55,8 @@ OPENCODEX_BIN = os.environ.get(
     "OPENCODEX_LAUNCHER", os.path.expanduser("~/.local/bin/opencodex")
 )
 AUTH_BIN = os.environ.get("AUTH_BIN", os.path.expanduser("~/.local/bin/auth"))
+CONSUMER_SYNC_LOCK = os.path.expanduser("~/.config/auth/consumer-sync.lock")
+_SYNC_LOCK_DEPTH = 0
 SETUP_REPO = os.environ.get("PROVIDER_SETUP_REPO", "git@github.com:LPFchan/setup.git")
 SETUP_BIN = os.environ.get("PROVIDER_SETUP_BIN", "setup")
 RAW_REPO = os.environ.get(
@@ -184,40 +186,181 @@ class VaultError(RuntimeError):
 
 
 class CommonAuthError(RuntimeError):
+    def __init__(self, message, authoritative=False):
+        super().__init__(message)
+        self.authoritative = authoritative
+
+
+class CommonAuthContextChanged(CommonAuthError):
     pass
 
 
-def common_auth_token(scope):
+@contextlib.contextmanager
+def _consumer_sync_lock():
+    global _SYNC_LOCK_DEPTH
+    if _SYNC_LOCK_DEPTH:
+        _SYNC_LOCK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _SYNC_LOCK_DEPTH -= 1
+        return
+    pathlib.Path(CONSUMER_SYNC_LOCK).parent.mkdir(parents=True, exist_ok=True)
+    with open(CONSUMER_SYNC_LOCK, "a+") as handle:
+        os.chmod(CONSUMER_SYNC_LOCK, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _SYNC_LOCK_DEPTH = 1
+        try:
+            yield
+        finally:
+            _SYNC_LOCK_DEPTH = 0
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def common_auth_token(scope, context=None):
     """Resolve one lost.plus service credential through the auth module."""
     if not os.access(AUTH_BIN, os.X_OK):
         raise CommonAuthError(f"auth module not installed at {AUTH_BIN}; run: setup install auth")
-    result = subprocess.run(
-        [AUTH_BIN, "token", scope], capture_output=True, text=True, timeout=15
-    )
+    try:
+        command = [AUTH_BIN, "token", scope]
+        if context is not None:
+            command.extend([
+                "--expect-context",
+                json.dumps(context, sort_keys=True, separators=(",", ":")),
+            ])
+        result = subprocess.run(command, capture_output=True, text=True, timeout=45)
+    except subprocess.TimeoutExpired as exc:
+        raise CommonAuthError(f"{scope}: credential refresh timed out") from exc
     token = result.stdout.strip()
+    if result.returncode == 5:
+        raise CommonAuthContextChanged(f"{scope}: setup login changed during sync")
     if result.returncode or not token:
         detail = result.stderr.strip() or "credential unavailable"
-        raise CommonAuthError(f"{scope}: {detail}")
+        raise CommonAuthError(
+            f"{scope}: {detail}", authoritative=result.returncode in (3, 4)
+        )
     return token
 
 
+def common_auth_context():
+    """Return the non-secret Auth origin/account binding for managed copies."""
+    if not os.access(AUTH_BIN, os.X_OK):
+        raise CommonAuthError(f"auth module not installed at {AUTH_BIN}; run: setup install auth")
+    try:
+        result = subprocess.run(
+            [AUTH_BIN, "context"], capture_output=True, text=True, timeout=10
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CommonAuthError("Auth context lookup timed out") from exc
+    if result.returncode:
+        raise CommonAuthError(result.stderr.strip() or "Auth context unavailable")
+    try:
+        context = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise CommonAuthError("Auth returned an invalid account context") from exc
+    if (
+        not isinstance(context, dict)
+        or not isinstance(context.get("origin"), str)
+        or not context["origin"]
+        or not isinstance(context.get("subject"), str)
+        or not context["subject"]
+    ):
+        raise CommonAuthError("Auth returned an invalid account context")
+    return {"origin": context["origin"], "subject": context["subject"]}
+
+
 def _sync_common_auth(servers):
+    with _consumer_sync_lock():
+        for attempt in range(2):
+            try:
+                return _sync_common_auth_once(servers)
+            except CommonAuthContextChanged:
+                if attempt:
+                    print("  Common Auth login kept changing; sync deferred", file=sys.stderr)
+                    return
+
+
+def _sync_common_auth_once(servers):
     """Refresh Common Auth entries without deleting the last good local copy."""
     global VAULT_TOKEN
+    managed = {
+        auth.get("provider", name)
+        for name, cfg in servers.items()
+        for auth in [cfg.get("auth", {})]
+        if auth.get("type") == "common_auth"
+    }
+    # A process environment has no account binding and may come from a shell
+    # opened before the current Auth login. Only reconciled disk stores may be
+    # used as Common Auth fallbacks.
+    for provider in managed:
+        os.environ.pop(_env_name(provider), None)
+    os.environ.pop("VAULTWARDEN_SECRETS_TOKEN", None)
+    os.environ.pop("VAULTWARDEN_MCP_TOKEN", None)
+    VAULT_TOKEN = ""
+    rejected = set()
     try:
-        VAULT_TOKEN = common_auth_token("vaultwarden-secrets")
-        cache_remove("_vault_token")
+        context = common_auth_context()
     except CommonAuthError as exc:
-        if not VAULT_TOKEN:
+        print(f"  Common Auth context unavailable ({exc}); keeping bound credentials", file=sys.stderr)
+        # A token fetched without a context could belong to a login that
+        # changed while context lookup was blocked or timing out. Preserve the
+        # account-bound cache, but do not perform any Auth or vault reads.
+        return
+    cache = _load_cache()
+    previous_context = cache.get("_common_auth_context")
+    context_changed = context is not None and previous_context != context
+    if context_changed:
+        for provider in managed:
+            cache.pop(provider, None)
+            os.environ.pop(_env_name(provider), None)
+        cache.pop("_vault_token", None)
+        VAULT_TOKEN = ""
+        os.environ.pop("VAULTWARDEN_SECRETS_TOKEN", None)
+        os.environ.pop("VAULTWARDEN_MCP_TOKEN", None)
+        rejected.update(managed)
+        _save_cache(cache)
+        _sync_mirrors(managed_absent=managed)
+        _sync_hermes_mirror(servers, {}, authoritative_missing=managed)
+        cache["_common_auth_context"] = context
+        _save_cache(cache)
+    authoritative_removed = False
+    try:
+        VAULT_TOKEN = common_auth_token("vaultwarden-secrets", context)
+        cache_remove("_vault_token")
+    except CommonAuthContextChanged:
+        raise
+    except CommonAuthError as exc:
+        if exc.authoritative:
+            VAULT_TOKEN = ""
+            os.environ.pop("VAULTWARDEN_SECRETS_TOKEN", None)
+            os.environ.pop("VAULTWARDEN_MCP_TOKEN", None)
+            cache_remove("_vault_token")
+            authoritative_removed = True
+        elif not VAULT_TOKEN:
             print(f"  Common Auth unavailable ({exc}); vault sync skipped", file=sys.stderr)
     for name, cfg in servers.items():
         auth = cfg.get("auth", {})
         if auth.get("type") != "common_auth":
             continue
         try:
-            cache_set(auth.get("provider", name), common_auth_token(auth["scope"]))
+            provider = auth.get("provider", name)
+            cache_set(provider, common_auth_token(auth["scope"], context))
+            rejected.discard(provider)
+        except CommonAuthContextChanged:
+            raise
         except CommonAuthError as exc:
-            print(f"  Common Auth unavailable ({exc}); keeping cached {name} credential", file=sys.stderr)
+            if exc.authoritative:
+                provider = auth.get("provider", name)
+                cache_remove(provider)
+                os.environ.pop(_env_name(provider), None)
+                rejected.add(provider)
+                authoritative_removed = True
+                print(f"  Common Auth removed {name} credential ({exc})", file=sys.stderr)
+            else:
+                print(f"  Common Auth unavailable ({exc}); keeping cached {name} credential", file=sys.stderr)
+    if context_changed or authoritative_removed or rejected:
+        _sync_mirrors(managed_absent=rejected)
+        _sync_hermes_mirror(servers, {}, authoritative_missing=rejected)
 
 
 def vault_available():
@@ -225,22 +368,25 @@ def vault_available():
 
 
 def _ensure_vault_token(interactive):
-    """Resolve Vaultwarden through Common Auth, with existing env as migration fallback."""
+    """Resolve Vaultwarden through the current, context-bound Common Auth login."""
     global VAULT_TOKEN
-    if VAULT_TOKEN:
-        return VAULT_TOKEN
-    try:
-        VAULT_TOKEN = common_auth_token("vaultwarden-secrets")
-        return VAULT_TOKEN
-    except CommonAuthError as exc:
-        token = _read_env_block().get("VAULTWARDEN_SECRETS_TOKEN", "")
-        if token:
-            VAULT_TOKEN = token
-            return token
+    VAULT_TOKEN = ""
+    for attempt in range(2):
+        try:
+            context = common_auth_context()
+            VAULT_TOKEN = common_auth_token("vaultwarden-secrets", context)
+            return VAULT_TOKEN
+        except CommonAuthContextChanged:
+            if not attempt:
+                continue
+            error = "setup login kept changing"
+        except CommonAuthError as exc:
+            error = str(exc)
         if interactive:
-            print(f"providers needs Common Auth access to Vaultwarden ({exc}).", file=sys.stderr)
+            print(f"providers needs Common Auth access to Vaultwarden ({error}).", file=sys.stderr)
             print("Run: auth login", file=sys.stderr)
         return ""
+    return ""
 
 
 def _vault_call(tool, arguments):
@@ -772,19 +918,26 @@ def cache_get(provider):
 
 
 def cache_set(provider, key):
-    data = _load_cache()
-    data[provider] = key
-    _save_cache(data)
-
-
-def cache_remove(provider):
-    data = _load_cache()
-    if provider in data:
-        del data[provider]
+    with _consumer_sync_lock():
+        data = _load_cache()
+        data[provider] = key
         _save_cache(data)
 
 
+def cache_remove(provider):
+    with _consumer_sync_lock():
+        data = _load_cache()
+        if provider in data:
+            del data[provider]
+            _save_cache(data)
+
+
 def _sync_cache_from_vault(servers):
+    with _consumer_sync_lock():
+        return _sync_cache_from_vault_once(servers)
+
+
+def _sync_cache_from_vault_once(servers):
     """Pull the whole vault llm/ folder into the local cache, not just the
     registry-listed servers: the vault is canonical, so every conforming
     {PROVIDER}_API_KEY item becomes a cached provider (the 4 extra live
@@ -904,19 +1057,30 @@ def _write_env_block(lines):
             f.write(f"{AUTH_BLOCK_END}\n")
 
 
-def _sync_zsenv_to_cache():
+def _sync_zsenv_to_cache(servers=None):
+    with _consumer_sync_lock():
+        return _sync_zsenv_to_cache_once(servers)
+
+
+def _sync_zsenv_to_cache_once(servers=None):
     """Ensure the local cache reflects the .zshenv api-keys block.
     Never deletes entries that exist only in the cache."""
     block = _read_env_block()
     if not block:
         return
     cache = _load_cache()
+    common_auth_providers = {
+        auth.get("provider", name)
+        for name, cfg in (servers or {}).items()
+        for auth in [cfg.get("auth", {})]
+        if auth.get("type") == "common_auth"
+    }
     changed = False
     for env_name, value in block.items():
         if env_name == "VAULTWARDEN_SECRETS_TOKEN":
             continue
         provider = _provider_from_env(env_name)
-        if not provider:
+        if not provider or provider in common_auth_providers:
             continue
         if env_name.endswith("_API_KEY"):
             if cache.get(provider) != value:
@@ -926,7 +1090,7 @@ def _sync_zsenv_to_cache():
         _save_cache(cache)
 
 
-def _write_auth_mirror(cache):
+def _write_auth_mirror(cache, managed_absent=None):
     """Write opencode's native auth.json from the cache (api-type entries only).
 
     Mirrors only providers that appear in the cache; never deletes OAuth or
@@ -940,8 +1104,15 @@ def _write_auth_mirror(cache):
             existing = {}
     if not isinstance(existing, dict):
         existing = {}
+    for provider in managed_absent or ():
+        entry = existing.get(provider)
+        if isinstance(entry, dict) and entry.get("type") == "api":
+            del existing[provider]
     for provider, value in cache.items():
         if not value or provider.startswith("_"):
+            continue
+        entry = existing.get(provider)
+        if isinstance(entry, dict) and entry.get("type") == "oauth":
             continue
         if provider not in existing or existing.get(provider, {}).get("key") != value:
             existing[provider] = {"type": "api", "key": value}
@@ -973,12 +1144,13 @@ def _write_env_mirror(cache):
     _write_env_block(lines)
 
 
-def _sync_mirrors():
+def _sync_mirrors(managed_absent=None):
     """cache -> opencode auth.json + .zshenv. Both mirrors are one-way;
     the cache (from vault) is authoritative for api keys."""
-    cache = _load_cache()
-    _write_auth_mirror(cache)
-    _write_env_mirror(cache)
+    with _consumer_sync_lock():
+        cache = _load_cache()
+        _write_auth_mirror(cache, managed_absent)
+        _write_env_mirror(cache)
 
 
 def _hermes_models(refreshed_models):
@@ -988,16 +1160,144 @@ def _hermes_models(refreshed_models):
     return [value for value in ids if value] or None
 
 
-def _sync_hermes_mirror(servers, refreshed):
+def _sync_hermes_credentials_without_yaml(servers, authoritative_missing=None):
+    """Update managed Hermes credentials without needing a YAML package.
+
+    This deliberately touches only simple top-level custom_providers list
+    entries and their api_key field. Unknown structure is left unchanged,
+    except that a matched rejected credential is always stripped.
+    """
+    if not os.path.exists(HERMES_CONFIG):
+        return
+    try:
+        lines = pathlib.Path(HERMES_CONFIG).read_text().splitlines(keepends=True)
+    except OSError:
+        return
+    missing = authoritative_missing or set()
+    managed = {name: cfg for name, cfg in servers.items()}
+    spans = []
+    in_custom = False
+    item_indent = None
+    current_start = None
+    for index, line in enumerate(lines):
+        if re.match(r"^custom_providers:\s*(?:#.*)?$", line.rstrip("\r\n")):
+            in_custom = True
+            continue
+        if (in_custom and line and not line[0].isspace()
+                and not line.startswith("-") and not line.lstrip().startswith("#")):
+            if current_start is not None:
+                spans.append((current_start, item_indent, index))
+                current_start = None
+            break
+        if not in_custom:
+            continue
+        match = re.match(r"^(\s*)-\s+", line)
+        if not match:
+            continue
+        if item_indent is None:
+            item_indent = match.group(1)
+        if match.group(1) != item_indent:
+            continue
+        if current_start is not None:
+            spans.append((current_start, item_indent, index))
+        current_start = index
+    else:
+        if current_start is not None:
+            spans.append((current_start, item_indent, len(lines)))
+
+    changed = False
+    for start, indent, end in reversed(spans):
+        name = None
+        for index in range(start, end):
+            prefix = r"^" + re.escape(indent)
+            field = re.match(
+                prefix + (r"-\s*" if index == start else r"\s+")
+                + r"name\s*:\s*([^#\r\n]+?)\s*(?:#.*)?(?:\r?\n)?$",
+                lines[index],
+            )
+            if field:
+                name = field.group(1).strip()
+                if len(name) >= 2 and name[0] == name[-1] and name[0] in "\"'":
+                    name = name[1:-1]
+                break
+        cfg = managed.get(name)
+        if cfg is None:
+            continue
+        auth_provider = _auth_provider(name, cfg)
+        key_indexes = [
+            index for index in range(start, end)
+            if re.match(
+                r"^" + re.escape(indent)
+                + (r"-\s*" if index == start else r"\s+") + r"api_key\s*:",
+                lines[index],
+            )
+        ]
+        if auth_provider in missing:
+            for index in reversed(key_indexes):
+                if index == start and index + 1 < end:
+                    lines[index + 1] = re.sub(
+                        r"^" + re.escape(indent) + r"\s+",
+                        indent + "- ", lines[index + 1], count=1,
+                    )
+                del lines[index]
+                changed = True
+            continue
+        if not _provider_enabled(name, cfg):
+            del lines[start:end]
+            changed = True
+            continue
+        key = (
+            _get_common_auth_key(auth_provider)
+            if cfg.get("auth", {}).get("type") == "common_auth"
+            else _get_key(auth_provider)
+        )
+        if not key:
+            continue
+        if key_indexes:
+            first = key_indexes[0]
+            replacement = indent + (
+                "- api_key: " if first == start else "  api_key: "
+            ) + json.dumps(key) + "\n"
+            if lines[first] != replacement:
+                lines[first] = replacement
+                changed = True
+            for index in reversed(key_indexes[1:]):
+                del lines[index]
+                changed = True
+        else:
+            replacement = indent + "  api_key: " + json.dumps(key) + "\n"
+            lines.insert(start + 1, replacement)
+            changed = True
+    if not changed:
+        return
+    path = pathlib.Path(HERMES_CONFIG)
+    fd, tmp_name = tempfile.mkstemp(prefix=".providers.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.writelines(lines)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, HERMES_CONFIG)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _sync_hermes_mirror(servers, refreshed, authoritative_missing=None):
+    with _consumer_sync_lock():
+        return _sync_hermes_mirror_once(servers, refreshed, authoritative_missing)
+
+
+def _sync_hermes_mirror_once(servers, refreshed, authoritative_missing=None):
     """Reconcile Hermes config (~/.hermes/config.yaml) custom_providers[]
     against provider enablement.
 
-    Enabled providers with a refreshed model list get an entry upserted
-    (created when missing, updated with the live models, base_url and
-    api_key from the local credential cache via _get_key); disabled
-    providers get their entry removed. Enabled providers without
-    refreshed data this run (offline, fetch failure) are left untouched —
-    never removed, never clobbered with a stale list. Unknown providers
+    Enabled providers with a refreshed model list get an entry upserted.
+    Existing entries receive current credentials and base URLs even when the
+    model request fails; their last-known-good model list remains untouched.
+    Disabled providers get their entry removed. Unknown providers
     (not in the registry) are never touched. The registry stays the
     source of provider routing while live /v1/models fetches stay the
     source of model availability. Network-optional: missing PyYAML or an
@@ -1007,6 +1307,7 @@ def _sync_hermes_mirror(servers, refreshed):
     try:
         import yaml  # PyYAML is optional: skip silently when absent.
     except ImportError:
+        _sync_hermes_credentials_without_yaml(servers, authoritative_missing)
         return
     if not os.path.exists(HERMES_CONFIG):
         return
@@ -1021,38 +1322,60 @@ def _sync_hermes_mirror(servers, refreshed):
     if not isinstance(custom, list):
         return
     changed = False
+    authoritative_missing = authoritative_missing or set()
     for name, cfg in servers.items():
-        if _provider_enabled(name, cfg):
-            if name in refreshed:
-                entry = next(
-                    (
-                        item
-                        for item in custom
-                        if isinstance(item, dict) and item.get("name") == name
-                    ),
-                    None,
-                )
-                if entry is None:
-                    entry = {"name": name}
-                    custom.append(entry)
+        auth_provider = _auth_provider(name, cfg)
+        if auth_provider in authoritative_missing:
+            # Keep non-secret routing/model metadata so a later successful
+            # credential refresh can restore this provider without /models.
+            entry = next(
+                (item for item in custom
+                 if isinstance(item, dict) and item.get("name") == name), None
+            )
+            if entry is not None and "api_key" in entry:
+                del entry["api_key"]
+                changed = True
+            continue
+        if _provider_enabled(name, cfg) and auth_provider not in authoritative_missing:
+            key = (
+                _get_common_auth_key(auth_provider)
+                if cfg.get("auth", {}).get("type") == "common_auth"
+                else _get_key(auth_provider)
+            )
+            entry = next(
+                (
+                    item
+                    for item in custom
+                    if isinstance(item, dict) and item.get("name") == name
+                ),
+                None,
+            )
+            if entry is not None:
+                if key and entry.get("api_key") != key:
+                    entry["api_key"] = key
                     changed = True
-                models = _hermes_models(refreshed[name])
-                if models:
-                    if entry.get("models") != models:
+                base_url = cfg["baseURL"]
+                if entry.get("base_url") != base_url:
+                    entry["base_url"] = base_url
+                    changed = True
+                if name in refreshed:
+                    models = _hermes_models(refreshed[name])
+                    if models and entry.get("models") != models:
                         entry["models"] = models
                         changed = True
-                    base_url = cfg["baseURL"]
-                    if entry.get("base_url") != base_url:
-                        entry["base_url"] = base_url
-                        changed = True
-                    key = _get_key(name)
-                    if key and entry.get("api_key") != key:
-                        entry["api_key"] = key
-                        changed = True
                 continue
-            # Enabled but no refreshed data this run: leave the entry as-is.
+            if name in refreshed and key:
+                models = _hermes_models(refreshed[name])
+                if models:
+                    custom.append({
+                        "name": name,
+                        "models": models,
+                        "base_url": cfg["baseURL"],
+                        "api_key": key,
+                    })
+                    changed = True
             continue
-        # Disabled: remove the entry if present.
+        # Disabled providers are removed.
         before = len(custom)
         custom[:] = [
             item
@@ -1079,7 +1402,7 @@ def _sync_hermes_mirror(servers, refreshed):
             pass
     upserted = [
         name
-        for name in servers
+    for name in servers
         if name in refreshed and _provider_enabled(name, servers[name])
     ]
     removed = [
@@ -1237,7 +1560,7 @@ def _sync_pi_models_mirror(servers, refreshed):
             )
 
 
-def _fallback_auth_json(provider):
+def _fallback_auth_json(provider, api_only=False):
     """Last-resort read of opencode's old auth.json for providers the vault
     does not (yet) manage. Kept for backward compatibility with OAuth entries."""
     if not os.path.exists(OLD_AUTH_PATH):
@@ -1254,7 +1577,7 @@ def _fallback_auth_json(provider):
     etype = entry.get("type", "")
     if etype == "api":
         return entry.get("key", "")
-    if etype == "oauth":
+    if etype == "oauth" and not api_only:
         return entry.get("access", "")
     return ""
 
@@ -1274,6 +1597,11 @@ def _get_key(provider):
     return _fallback_auth_json(provider)
 
 
+def _get_common_auth_key(provider):
+    """Resolve only from stores reconciled under the persisted Auth context."""
+    return cache_get(provider) or _fallback_auth_json(provider, api_only=True)
+
+
 # --- registry / servers ------------------------------------------------
 
 
@@ -1288,7 +1616,7 @@ def get_auth(auth_cfg):
             return "api_key", key
     elif atype == "common_auth":
         provider = auth_cfg.get("provider", "")
-        key = _get_key(provider)
+        key = _get_common_auth_key(provider)
         if key:
             return "api_key", key
     elif atype == "api_key":
@@ -1767,18 +2095,19 @@ def _set_provider_enabled(provider, enabled):
 
 def _set_key(provider, key):
     """Enroll a key: write to vault (canonical), refresh cache, then mirrors."""
-    cache_set(provider, key)
-    if vault_available():
-        try:
-            items = {item["name"] for item in vault_list_items()}
-            env_name = _env_name(provider)
-            if env_name not in items:
-                vault_add(env_name, key)
-            else:
-                vault_call_edit(env_name, key)
-        except VaultError as exc:
-            print(f"  vault write failed ({exc}); key cached locally", file=sys.stderr)
-    _sync_mirrors()
+    with _consumer_sync_lock():
+        cache_set(provider, key)
+        if vault_available():
+            try:
+                items = {item["name"] for item in vault_list_items()}
+                env_name = _env_name(provider)
+                if env_name not in items:
+                    vault_add(env_name, key)
+                else:
+                    vault_call_edit(env_name, key)
+            except VaultError as exc:
+                print(f"  vault write failed ({exc}); key cached locally", file=sys.stderr)
+        _sync_mirrors()
     print(f"Saved {_env_name(provider)} to vault (llm/) and mirrors")
 
 
@@ -1790,8 +2119,11 @@ def cmd_ls():
     servers = _load_servers()
     if servers is None:
         sys.exit(1)
-    _sync_common_auth(servers)
-    cache = _load_cache()
+    with _consumer_sync_lock():
+        _sync_common_auth(servers)
+        _sync_mirrors()
+        _sync_hermes_mirror(servers, {})
+        cache = _load_cache()
     print(f"providers configured: {len(servers)}")
     for name, provider in servers.items():
         auth_provider = _auth_provider(name, provider)
@@ -1802,8 +2134,11 @@ def cmd_ls():
 
 def cmd_schedule_enable():
     servers = _load_servers() or {}
-    _sync_common_auth(servers)
-    _sync_cache_from_vault(servers)
+    with _consumer_sync_lock():
+        _sync_common_auth(servers)
+        _sync_cache_from_vault(servers)
+        _sync_mirrors()
+        _sync_hermes_mirror(servers, {})
 
     script_path = os.path.abspath(sys.argv[0])
     cfg_dir = os.path.dirname(STATE_PATH)
@@ -2472,19 +2807,23 @@ def main():
             print("Usage: providers refresh [name]", file=sys.stderr)
             sys.exit(1)
         _source_zsenv()
-        _sync_zsenv_to_cache()
         servers = _load_servers()
         if servers is None:
             sys.exit(1)
-        _sync_common_auth(servers)
-        _sync_cache_from_vault(servers)
-        _sync_mirrors()
-        _sync_opencode_provider_statuses(servers)
-        if len(args) == 2:
-            refreshed = _refresh_one(servers, args[1])
-        else:
-            refreshed = _refresh_all(servers)
-        _sync_hermes_mirror(servers, refreshed)
+        # Keep one cache snapshot and its mirrors together. Vault reads may be
+        # slow; without this outer lock another refresh can revoke a key while
+        # the first process later saves an older snapshot and revives it.
+        with _consumer_sync_lock():
+            _sync_zsenv_to_cache(servers)
+            _sync_common_auth(servers)
+            _sync_cache_from_vault(servers)
+            _sync_mirrors()
+            _sync_opencode_provider_statuses(servers)
+            if len(args) == 2:
+                refreshed = _refresh_one(servers, args[1])
+            else:
+                refreshed = _refresh_all(servers)
+            _sync_hermes_mirror(servers, refreshed)
         _sync_pi_models_mirror(servers, refreshed)
         # A refresh is the moment the capability cache changes, so it is the
         # moment OpenCodex's derived config goes stale. Push it to disk here

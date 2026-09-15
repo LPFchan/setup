@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import pathlib
@@ -21,10 +23,15 @@ ORIGIN = os.environ.get("LOST_AUTH_ORIGIN", "https://auth.lost.plus").rstrip("/"
 STORE = pathlib.Path(os.path.expanduser(os.environ.get(
     "LOST_AUTH_STORE", "~/.local/share/lost-plus/auth.json"
 )))
+LOCK = STORE.with_name(STORE.name + ".lock")
 
 
 class AuthError(RuntimeError):
-    pass
+    def __init__(self, message, status=None, transient=False, exit_code=1):
+        super().__init__(message)
+        self.status = status
+        self.transient = transient
+        self.exit_code = exit_code
 
 
 def _request(path, *, form=None, json_body=None, token=None):
@@ -49,9 +56,15 @@ def _request(path, *, form=None, json_body=None, token=None):
             detail = json.loads(exc.read()).get("error")
         except Exception:
             detail = None
-        raise AuthError(detail or f"Auth returned HTTP {exc.code}") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise AuthError(f"cannot reach {ORIGIN}: {exc}") from exc
+        raise AuthError(
+            detail or f"Auth returned HTTP {exc.code}",
+            exc.code,
+            transient=exc.code >= 500,
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise AuthError(f"Auth returned invalid JSON: {exc}") from exc
+    except OSError as exc:
+        raise AuthError(f"cannot reach {ORIGIN}: {exc}", transient=True) from exc
 
 
 def _load():
@@ -61,11 +74,148 @@ def _load():
         return None
     except (OSError, json.JSONDecodeError) as exc:
         raise AuthError(f"cannot read {STORE}: {exc}") from exc
-    if not isinstance(data, dict) or data.get("version") != 1:
+    if not isinstance(data, dict) or data.get("version") not in (1, 2):
         raise AuthError(f"unsupported credential store at {STORE}")
     if data.get("mode") not in ("global", "per-service") or not isinstance(data.get("tokens"), dict):
         raise AuthError(f"invalid credential store at {STORE}")
     return data
+
+
+def _validate_bundle(bundle):
+    subject = bundle.get("subject")
+    mode = bundle.get("mode")
+    tokens = bundle.get("tokens")
+    active_scopes = bundle.get("active_scopes")
+    unavailable_scopes = bundle.get("unavailable_scopes", [])
+    if not isinstance(subject, str) or not subject:
+        raise AuthError("Auth returned an invalid account identity")
+    if mode not in ("global", "per-service"):
+        raise AuthError("Auth returned an invalid credential mode")
+    if not isinstance(tokens, dict) or not all(
+        isinstance(scope, str) and isinstance(secret, str) and secret
+        for scope, secret in tokens.items()
+    ):
+        raise AuthError("Auth returned an invalid credential bundle")
+    if not isinstance(active_scopes, list) or not all(
+        isinstance(scope, str) and scope for scope in active_scopes
+    ):
+        raise AuthError("Auth returned an invalid active-scope list")
+    if not isinstance(unavailable_scopes, list) or not all(
+        isinstance(scope, str) and scope for scope in unavailable_scopes
+    ):
+        raise AuthError("Auth returned an invalid unavailable-scope list")
+    if len(active_scopes) != len(set(active_scopes)) or len(unavailable_scopes) != len(set(unavailable_scopes)):
+        raise AuthError("Auth returned duplicate credential scopes")
+    if not set(tokens).issubset(active_scopes):
+        raise AuthError("Auth returned a credential outside its active scopes")
+    if not set(unavailable_scopes).issubset(active_scopes):
+        raise AuthError("Auth returned an unavailable credential outside its active scopes")
+    return subject, mode, tokens, active_scopes, unavailable_scopes
+
+
+def _updated_store(current, bundle, session=None):
+    subject, mode, tokens, active_scopes, unavailable_scopes = _validate_bundle(bundle)
+    same_account = (
+        isinstance(current, dict)
+        and current.get("version") == 2
+        and current.get("origin") == ORIGIN
+        and current.get("account_sub") == subject
+    )
+    previous = current.get("tokens", {}) if same_account else {}
+    merged = {
+        scope: previous[scope]
+        for scope in active_scopes
+        if scope in unavailable_scopes and isinstance(previous.get(scope), str)
+    }
+    merged.update(tokens)
+    renewing = session is None
+    if renewing:
+        session = current.get("session") if isinstance(current, dict) else None
+    if not isinstance(session, dict):
+        raise AuthError("Auth did not return a renewable device session")
+    session = dict(session)
+    refresh_token = session.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise AuthError("Auth returned an invalid device session")
+    renewed_expiry = bundle.get("session_expires_at")
+    if renewed_expiry is not None:
+        if isinstance(renewed_expiry, bool) or not isinstance(renewed_expiry, int):
+            raise AuthError("Auth returned an invalid device-session expiry")
+        session["expires_at"] = renewed_expiry
+    expiry = session.get("expires_at")
+    if isinstance(expiry, bool) or not isinstance(expiry, int) or expiry <= 0:
+        raise AuthError("Auth returned an invalid device-session expiry")
+    if renewing and renewed_expiry is None:
+        raise AuthError("Auth did not renew the device-session expiry")
+    return {
+        "version": 2,
+        "origin": ORIGIN,
+        "account_sub": subject,
+        "session": session,
+        "session_state": "active",
+        "mode": mode,
+        "tokens": merged,
+        "active_scopes": active_scopes,
+        "unavailable_scopes": unavailable_scopes,
+        "updated_at": int(time.time()),
+    }
+
+
+def _refresh(data):
+    if data.get("version") != 2:
+        raise AuthError("saved login cannot refresh; run: auth login")
+    saved_origin = data.get("origin")
+    if saved_origin != ORIGIN:
+        raise AuthError(
+            f"saved login belongs to {saved_origin or 'an unknown Auth origin'}; "
+            "restore LOST_AUTH_ORIGIN or run: auth login"
+        )
+    if data.get("session_state") == "invalid":
+        raise AuthError(
+            "setup session is invalid, expired, or revoked; run: auth login",
+            401,
+            exit_code=4,
+        )
+    session = data.get("session")
+    if not isinstance(session, dict):
+        raise AuthError("saved device session is invalid; run: auth login")
+    refresh_token = session.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token:
+        raise AuthError("saved device session is invalid; run: auth login")
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+        raise AuthError("saved device session has no valid expiry; run: auth login")
+    if expires_at <= int(time.time()):
+        invalid = dict(data)
+        invalid["session_state"] = "invalid"
+        invalid["tokens"] = {}
+        invalid["active_scopes"] = []
+        invalid["unavailable_scopes"] = []
+        invalid["invalidated_at"] = int(time.time())
+        _save(invalid)
+        raise AuthError(
+            "setup session has expired; run: auth login", 401, exit_code=4
+        )
+    try:
+        bundle = _request(
+            "/api/setup/session/token", json_body={"refresh_token": refresh_token}
+        )
+    except AuthError as exc:
+        if exc.status in (401, 403):
+            invalid = dict(data)
+            invalid["session_state"] = "invalid"
+            invalid["tokens"] = {}
+            invalid["active_scopes"] = []
+            invalid["unavailable_scopes"] = []
+            invalid["invalidated_at"] = int(time.time())
+            _save(invalid)
+            raise AuthError(str(exc), exc.status, exit_code=4) from exc
+        raise
+    updated = _updated_store(data, bundle)
+    if data.get("account_sub") != updated.get("account_sub"):
+        raise AuthError("Auth returned a different account for this setup session")
+    _save(updated)
+    return updated
 
 
 def _save(data):
@@ -84,6 +234,16 @@ def _save(data):
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+@contextlib.contextmanager
+def _store_lock():
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    os.chmod(LOCK, 0o600)
+    with os.fdopen(fd, "r+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 def _open_browser(uri):
@@ -127,37 +287,98 @@ def cmd_login():
             break
     if bundle is None:
         raise AuthError("authorization expired before it was approved")
-    mode = bundle.get("mode")
-    tokens = bundle.get("tokens")
-    if not isinstance(tokens, dict) or not all(
-        isinstance(scope, str) and isinstance(secret, str) and secret
-        for scope, secret in tokens.items()
-    ):
-        raise AuthError("Auth returned an invalid credential bundle")
-    if not tokens:
-        raise AuthError("no active machine token is configured in Auth")
-    _save({"version": 1, "origin": ORIGIN, "mode": mode, "tokens": tokens})
-    print(f"Saved {mode} credentials to {STORE}")
+    session = bundle.get("session")
+    with _store_lock():
+        saved = _updated_store(_load(), bundle, session)
+        _save(saved)
+    print(f"Saved renewable {saved['mode']} credentials to {STORE}")
 
 
-def cmd_token(scope):
-    data = _load()
-    if data is None:
-        raise AuthError("not logged in; run: auth login")
-    key = "*" if data["mode"] == "global" else scope
-    token = data["tokens"].get(key)
+def _refresh_or_cached(data):
+    try:
+        return _refresh(data), None
+    except AuthError as exc:
+        if not exc.transient:
+            raise
+        return data, exc
+
+
+def cmd_token(scope, expected_context=None):
+    with _store_lock():
+        data = _load()
+        if data is None:
+            raise AuthError("not logged in; run: auth login")
+        if expected_context is not None:
+            actual_context = {
+                "origin": data.get("origin"),
+                "subject": data.get("account_sub"),
+            }
+            if actual_context != expected_context:
+                raise AuthError("setup login changed during credential sync", exit_code=5)
+        if data.get("version") == 1:
+            print("auth: saved login cannot refresh; run: auth login", file=sys.stderr)
+            refreshed = data
+        else:
+            refreshed, refresh_error = _refresh_or_cached(data)
+            if refresh_error is not None:
+                print(f"auth: refresh unavailable; using cached credential: {refresh_error}", file=sys.stderr)
+        key = "*" if refreshed["mode"] == "global" else scope
+        token = refreshed["tokens"].get(key)
     if not isinstance(token, str) or not token:
-        raise AuthError(f"no credential for {scope}; run: auth login")
+        if key in refreshed.get("unavailable_scopes", []):
+            raise AuthError(
+                f"active credential for {scope} cannot currently be retrieved from Auth"
+            )
+        raise AuthError(
+            f"no active credential for {scope}",
+            exit_code=3 if refreshed.get("version") == 2 else 1,
+        )
     print(token)
 
 
+def cmd_refresh():
+    with _store_lock():
+        data = _load()
+        if data is None:
+            raise AuthError("not logged in; run: auth login")
+        refreshed = _refresh(data)
+    scopes = ", ".join(refreshed["active_scopes"]) or "no active bearer tokens"
+    print(f"auth: refreshed ({refreshed['mode']}; {scopes})")
+
+
+def cmd_context():
+    """Expose the non-secret account binding for credential consumers."""
+    with _store_lock():
+        data = _load()
+    if data is None or data.get("version") != 2:
+        raise AuthError("no renewable setup login; run: auth login")
+    origin = data.get("origin")
+    subject = data.get("account_sub")
+    if not isinstance(origin, str) or not origin or not isinstance(subject, str) or not subject:
+        raise AuthError("saved setup login has no valid account binding; run: auth login")
+    print(json.dumps({"origin": origin, "subject": subject}, separators=(",", ":")))
+
+
 def cmd_status():
-    data = _load()
-    if data is None:
-        print("auth: logged out")
-        return 1
-    scopes = "all services" if data["mode"] == "global" else ", ".join(sorted(data["tokens"]))
-    print(f"auth: logged in ({data['mode']}; {scopes})")
+    with _store_lock():
+        data = _load()
+        if data is None:
+            print("auth: logged out")
+            return 1
+        if data.get("version") == 1:
+            print("auth: login needs renewal; run: auth login")
+            return 1
+        try:
+            data = _refresh(data)
+            freshness = "current"
+        except AuthError as exc:
+            if not exc.transient:
+                state = "logged out" if exc.status in (401, 403) else "refresh failed"
+                print(f"auth: {state} ({exc})")
+                return 1
+            freshness = f"cached; refresh unavailable: {exc}"
+    scopes = "all services" if data["mode"] == "global" and "*" in data["tokens"] else ", ".join(sorted(data["tokens"])) or "no bearer tokens"
+    print(f"auth: logged in ({data['mode']}; {scopes}; {freshness})")
     return 0
 
 
@@ -169,12 +390,31 @@ def main():
     if len(args) == 2 and args[0] == "token":
         cmd_token(args[1])
         return 0
+    if len(args) == 4 and args[0] == "token" and args[2] == "--expect-context":
+        try:
+            expected_context = json.loads(args[3])
+        except json.JSONDecodeError as exc:
+            raise AuthError(f"invalid expected Auth context: {exc}") from exc
+        if (
+            not isinstance(expected_context, dict)
+            or set(expected_context) != {"origin", "subject"}
+            or not all(isinstance(value, str) and value for value in expected_context.values())
+        ):
+            raise AuthError("invalid expected Auth context")
+        cmd_token(args[1], expected_context)
+        return 0
+    if args == ["refresh"]:
+        cmd_refresh()
+        return 0
+    if args == ["context"]:
+        cmd_context()
+        return 0
     if args == ["status"]:
         return cmd_status()
     if args in (["help"], ["--help"], ["-h"]):
-        print("Usage: auth login | auth token <service> | auth status")
+        print("Usage: auth login | auth refresh | auth token <service> | auth status | auth context")
         return 0
-    print("Usage: auth login | auth token <service> | auth status", file=sys.stderr)
+    print("Usage: auth login | auth refresh | auth token <service> | auth status | auth context", file=sys.stderr)
     return 2
 
 
@@ -183,4 +423,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except AuthError as exc:
         print(f"auth: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(exc.exit_code)

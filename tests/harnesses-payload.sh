@@ -133,7 +133,10 @@ def fake_vault_get(item):
 ns["vault_get"] = fake_vault_get
 g = ns["cmd_mcp"].__globals__
 g["vault_get"] = ns["vault_get"]
-g["common_auth_token"] = lambda scope: "auth-" + scope
+g["common_auth_token"] = lambda scope, context=None: "auth-" + scope
+g["common_auth_context"] = lambda: {
+    "origin": "https://auth.lost.plus", "subject": "account-a",
+}
 g["VAULT_TOKEN"] = "stale-vault-access"
 g["shutil"].which = lambda command: None
 ns["cmd_mcp"]([])
@@ -196,7 +199,7 @@ assert "JINA_MCP_TOKEN" in vault_calls
 # If either authority is temporarily unavailable later, preserve the freshly
 # reconciled managed values rather than falling back to stale process exports.
 fresh_zshenv = zshenv
-def common_unavailable(scope):
+def common_unavailable(scope, context=None):
     raise ns["CommonAuthError"]("auth offline in test")
 def vault_unavailable(item):
     raise ns["VaultError"]("vault offline in test")
@@ -204,7 +207,51 @@ g["common_auth_token"] = common_unavailable
 g["vault_get"] = vault_unavailable
 ns["cmd_mcp"]([])
 assert (HOME/".zshenv").read_text() == fresh_zshenv
-g["common_auth_token"] = lambda scope: "auth-" + scope
+
+# A failed context lookup must make no unbound token or Vaultwarden reads.
+unbound_calls = []
+vault_call_count = len(vault_calls)
+g["common_auth_context"] = lambda: (_ for _ in ()).throw(
+    ns["CommonAuthError"]("context timed out in test")
+)
+def contextless_common(scope, context=None):
+    unbound_calls.append(scope)
+    return "wrong-account-" + scope
+g["common_auth_token"] = contextless_common
+ns["cmd_mcp"]([])
+assert unbound_calls == [], "token lookup ran without an account context"
+assert len(vault_calls) == vault_call_count, "vault read ran without an account context"
+assert (HOME/".zshenv").read_text() == fresh_zshenv
+g["common_auth_context"] = lambda: {
+    "origin": "https://auth.lost.plus", "subject": "account-a",
+}
+
+# An authoritative Common Auth rejection removes its managed mirrors. It is
+# distinct from an outage, so stale process or on-disk values cannot survive.
+def common_rejected(scope, context=None):
+    raise ns["CommonAuthError"]("credential revoked in test", authoritative=True)
+g["common_auth_token"] = common_rejected
+# A selective sync removes the rejected selected credential without erasing or
+# relying on unrelated entries to make the old managed block win wholesale.
+ns["cmd_mcp"](["obsidian"])
+selective_zshenv = (HOME/".zshenv").read_text()
+assert "OBSIDIAN_MCP_TOKEN" not in selective_zshenv
+assert "TWEET_FETCH_MCP_TOKEN=auth-tweet-fetch" in selective_zshenv
+assert "JINA_MCP_TOKEN=fresh-jina" in selective_zshenv
+
+# A full authoritative rejection then removes every Common Auth entry while
+# preserving the independently managed Vaultwarden entry.
+ns["cmd_mcp"]([])
+revoked_zshenv = (HOME/".zshenv").read_text()
+for server in manifest["mcpServers"]:
+    if server.get("credentialSource") == "common-auth":
+        assert ns["mcp_env_var"](server) not in revoked_zshenv
+assert "export JINA_MCP_TOKEN=fresh-jina" in revoked_zshenv
+
+g["common_auth_token"] = lambda scope, context=None: "auth-" + scope
+g["common_auth_context"] = lambda: {
+    "origin": "https://auth.lost.plus", "subject": "account-a",
+}
 g["vault_get"] = fake_vault_get
 # re-run: codex blocks not duplicated, zshenv block replaced not stacked
 ns["cmd_mcp"]([])
@@ -212,6 +259,74 @@ codex2 = (HOME/".codex/config.toml").read_text()
 assert codex2.count("[mcp_servers.obsidian]") == 1, "codex block duplicated"
 zshenv2 = (HOME/".zshenv").read_text()
 assert zshenv2.count("# BEGIN harnesses:mcp-tokens") == 1, "zshenv block stacked"
+
+# A selective external-server sync still refreshes its Vaultwarden dependency.
+# If that Common Auth bearer was revoked, its managed export must disappear
+# even though the Vaultwarden MCP server was not itself selected.
+def vault_access_rejected(scope, context=None):
+    if scope == "vaultwarden-secrets":
+        raise ns["CommonAuthError"]("vault access revoked in test", authoritative=True)
+    return "auth-" + scope
+g["common_auth_token"] = vault_access_rejected
+g["vault_get"] = vault_unavailable
+ns["cmd_mcp"](["jina"])
+selective_vault_rejection = (HOME/".zshenv").read_text()
+assert "VAULTWARDEN_MCP_TOKEN" not in ns["_existing_block"](selective_vault_rejection)
+assert "JINA_MCP_TOKEN=fresh-jina" in selective_vault_rejection
+
+# A new account context cannot inherit account A's exported Common Auth
+# credentials when account B's active values are currently unreadable.
+g["common_auth_context"] = lambda: {
+    "origin": "https://auth.lost.plus", "subject": "account-b",
+}
+g["common_auth_token"] = common_unavailable
+g["VAULT_TOKEN"] = "account-a-vaultwarden-access"
+g["vault_get"] = vault_unavailable
+ns["cmd_mcp"]([])
+switched_zshenv = (HOME/".zshenv").read_text()
+assert not g["VAULT_TOKEN"]
+for server in manifest["mcpServers"]:
+    if server.get("credentialSource") == "common-auth":
+        assert ns["mcp_env_var"](server) not in switched_zshenv
+assert "JINA_MCP_TOKEN=fresh-jina" in switched_zshenv
+assert '"subject":"account-b"' in switched_zshenv
+
+# A later invocation from account A's already-open shell is still unbound and
+# cannot override account B's persisted context.
+os.environ["OBSIDIAN_MCP_TOKEN"] = "account-a-old-shell"
+g["VAULT_TOKEN"] = "account-a-old-shell-vault"
+ns["cmd_mcp"]([])
+later_zshenv = (HOME/".zshenv").read_text()
+assert "account-a-old-shell" not in later_zshenv
+assert not g["VAULT_TOKEN"]
+
+# Only values inside the context-tagged managed block are eligible fallbacks.
+# An unrelated export elsewhere in .zshenv has no account binding.
+outside = HOME/".zshenv"
+outside.write_text("export OBSIDIAN_MCP_TOKEN=unbound-outside\n" + outside.read_text())
+ns["cmd_mcp"](["obsidian"])
+managed = ns["_existing_block"](outside.read_text())
+assert "unbound-outside" not in managed
+
+# If login changes between the context read and a token read, retry the entire
+# reconciliation and bind only the new account's values.
+contexts = [
+    {"origin": "https://auth.lost.plus", "subject": "account-a"},
+    {"origin": "https://auth.lost.plus", "subject": "account-b"},
+]
+g["common_auth_context"] = lambda: contexts.pop(0) if contexts else {
+    "origin": "https://auth.lost.plus", "subject": "account-b",
+}
+def raced_common(scope, context=None):
+    if context["subject"] == "account-a":
+        raise ns["CommonAuthContextChanged"]("login changed in test")
+    return "account-b-" + scope
+g["common_auth_token"] = raced_common
+ns["cmd_mcp"](["obsidian"])
+raced_block = ns["_existing_block"](outside.read_text())
+assert "account-b-obsidian" in raced_block
+assert '"subject":"account-b"' in raced_block
+assert "account-a-obsidian" not in raced_block
 
 print("payload ok")
 PY

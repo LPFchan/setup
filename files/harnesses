@@ -12,7 +12,7 @@ service credentials remain in vaultwarden folder=mcp.
 """
 
 from __future__ import annotations
-import json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, fcntl, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.request
 import shlex
 
@@ -66,6 +66,25 @@ def _zshenv_exports():
     return found
 
 
+def _managed_zshenv_exports():
+    """Exports from the account-bound harnesses block only."""
+    path = HOME/".zshenv"
+    if not path.exists():
+        return {}
+    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+    match = re.search(re.escape(begin) + r"(.*?)" + re.escape(end), path.read_text(), re.S)
+    if not match:
+        return {}
+    found = {}
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("export ") or "=" not in line:
+            continue
+        name, _, value = line[len("export "):].partition("=")
+        found[name.strip()] = value.strip().strip('"\'')
+    return found
+
+
 def _vault_token():
     for source in (os.environ, _zshenv_exports()):
         for name in ("VAULTWARDEN_SECRETS_TOKEN", "VAULTWARDEN_MCP_TOKEN"):
@@ -103,8 +122,20 @@ CODEX_CONFIG = HOME/".codex/config.toml"
 T3_SETTINGS = HOME/".t3/userdata/settings.json"
 ZSHENV = HOME/".zshenv"
 ENVIRONMENT_D = HOME/".config/environment.d/10-harnesses-anthropic.conf"
+CONSUMER_SYNC_LOCK = HOME/".config/auth/consumer-sync.lock"
 
 def eprint(*a): print(*a, file=sys.stderr)
+
+@contextlib.contextmanager
+def _consumer_sync_lock():
+    CONSUMER_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONSUMER_SYNC_LOCK, "a+") as handle:
+        os.chmod(CONSUMER_SYNC_LOCK, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 def load_json(path):
     if not os.path.exists(path): return {}
@@ -139,23 +170,56 @@ def deep_merge(base, overlay):
     return out
 
 class VaultError(RuntimeError): pass
-class CommonAuthError(RuntimeError): pass
+class CommonAuthError(RuntimeError):
+    def __init__(self, message, authoritative=False):
+        super().__init__(message)
+        self.authoritative = authoritative
 
-def common_auth_token(scope):
+class CommonAuthContextChanged(CommonAuthError): pass
+
+def common_auth_token(scope, context=None):
     if not os.access(AUTH_BIN, os.X_OK):
         raise CommonAuthError("auth module not installed; run: setup install auth")
-    result = subprocess.run([AUTH_BIN, "token", scope], capture_output=True,
-                            text=True, timeout=15)
+    try:
+        command = [AUTH_BIN, "token", scope]
+        if context is not None:
+            command.extend(["--expect-context", json.dumps(
+                context, sort_keys=True, separators=(",", ":"))])
+        result = subprocess.run(command, capture_output=True, text=True, timeout=45)
+    except subprocess.TimeoutExpired as exc:
+        raise CommonAuthError("credential refresh timed out") from exc
     token = result.stdout.strip()
+    if result.returncode == 5:
+        raise CommonAuthContextChanged("setup login changed during sync")
     if result.returncode or not token:
-        raise CommonAuthError(result.stderr.strip() or "credential unavailable")
+        raise CommonAuthError(
+            result.stderr.strip() or "credential unavailable",
+            authoritative=result.returncode in (3, 4),
+        )
     return token
 
+def common_auth_context():
+    """Return the non-secret Auth origin/account binding for managed copies."""
+    if not os.access(AUTH_BIN, os.X_OK):
+        raise CommonAuthError("auth module not installed; run: setup install auth")
+    try:
+        result = subprocess.run([AUTH_BIN, "context"], capture_output=True,
+                                text=True, timeout=10)
+    except subprocess.TimeoutExpired as exc:
+        raise CommonAuthError("Auth context lookup timed out") from exc
+    if result.returncode:
+        raise CommonAuthError(result.stderr.strip() or "Auth context unavailable")
+    try:
+        context = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise CommonAuthError("Auth returned an invalid account context") from exc
+    if (not isinstance(context, dict)
+            or not isinstance(context.get("origin"), str) or not context["origin"]
+            or not isinstance(context.get("subject"), str) or not context["subject"]):
+        raise CommonAuthError("Auth returned an invalid account context")
+    return {"origin": context["origin"], "subject": context["subject"]}
+
 def _vault_call(tool, arguments):
-    global VAULT_TOKEN
-    if not VAULT_TOKEN:
-        try: VAULT_TOKEN = common_auth_token("vaultwarden-secrets")
-        except CommonAuthError as exc: raise VaultError(str(exc)) from exc
     if not VAULT_TOKEN: raise VaultError("vault token not set")
     body = {"jsonrpc":"2.0","id":id(arguments),"method":"tools/call","params":{"name":tool,"arguments":arguments}}
     req = urllib.request.Request(VAULT_URL, data=json.dumps(body).encode(), headers={
@@ -455,19 +519,57 @@ def _codex_mcp_block(s):
     return "\n".join(lines)+"\n"
 
 def cmd_mcp(names):
+    with _consumer_sync_lock():
+        for attempt in range(2):
+            try:
+                return _cmd_mcp_once(names)
+            except CommonAuthContextChanged:
+                if attempt:
+                    eprint("  Common Auth login kept changing; MCP sync deferred")
+                    return 0
+
+
+def _cmd_mcp_once(names):
     global VAULT_TOKEN
+    VAULT_TOKEN = ""
     servers = MANIFEST["mcpServers"]
     if names: servers = [s for s in servers if s["name"] in names]
+    bound_existing = _managed_zshenv_exports()
     existing = {name: value for name, value in os.environ.items() if value}
     # The managed file is the durable last-known-good snapshot. A shell that
     # was opened before the latest reconciliation may still carry older
     # exported values, so the on-disk snapshot wins when both exist.
-    existing.update(_zshenv_exports())
+    existing.update(bound_existing)
     common_tokens = {}
+    authoritative_missing = set()
+    try:
+        auth_context = common_auth_context()
+    except CommonAuthError as exc:
+        auth_context = None
+        eprint("  could not resolve Common Auth account context: %s; keeping bound credentials" % exc)
+    # Without a context, a successful token lookup could belong to a login
+    # that changed while the context command was blocked or timing out. Do not
+    # make any Auth or Vaultwarden reads until an account can be bound.
+    context_error = CommonAuthError("Common Auth account context unavailable")
+    previous_context = _existing_common_auth_context()
+    if auth_context is not None:
+        VAULT_TOKEN = bound_existing.get("VAULTWARDEN_MCP_TOKEN", "")
+    if auth_context is not None and previous_context != auth_context:
+        VAULT_TOKEN = ""
+        authoritative_missing.update(
+            mcp_env_var(server)
+            for server in MANIFEST["mcpServers"]
+            if server.get("credentialSource") == "common-auth"
+        )
+        for envvar in authoritative_missing:
+            existing.pop(envvar, None)
+            bound_existing.pop(envvar, None)
 
     def resolve_common(scope):
+        if auth_context is None:
+            raise context_error
         if scope not in common_tokens:
-            common_tokens[scope] = common_auth_token(scope)
+            common_tokens[scope] = common_auth_token(scope, auth_context)
         return common_tokens[scope]
 
     # External credentials still live in Vaultwarden, but the credential used
@@ -477,8 +579,14 @@ def cmd_mcp(names):
     if any(s.get("credentialSource") == "vaultwarden" for s in servers):
         try:
             VAULT_TOKEN = resolve_common("vaultwarden-secrets")
+        except CommonAuthContextChanged:
+            raise
         except CommonAuthError as exc:
-            eprint("  could not refresh Vaultwarden access from Common Auth: %s; using existing access if available" % exc)
+            if exc.authoritative:
+                VAULT_TOKEN = ""
+                authoritative_missing.add("VAULTWARDEN_MCP_TOKEN")
+            detail = "removing managed access" if exc.authoritative else "using existing access if available"
+            eprint("  could not refresh Vaultwarden access from Common Auth: %s; %s" % (exc, detail))
 
     exports = []
     for s in servers:
@@ -490,8 +598,12 @@ def cmd_mcp(names):
             try:
                 val = resolve_common(s["scope"])
                 print("  resolved %s from Common Auth scope %s" % (envvar, s["scope"]))
+            except CommonAuthContextChanged:
+                raise
             except CommonAuthError as exc:
-                val = existing.get(envvar)
+                val = None if exc.authoritative else bound_existing.get(envvar)
+                if exc.authoritative:
+                    authoritative_missing.add(envvar)
                 detail = "keeping existing value" if val else "no existing value available"
                 eprint("  could not resolve %s (Common Auth %s): %s; %s" %
                        (envvar, s["scope"], exc, detail))
@@ -510,7 +622,7 @@ def cmd_mcp(names):
         # machine, which zsh then reports on every new shell.
         val = mcp_token_value(val)
         if val: exports.append("export %s=%s" % (envvar, shlex.quote(val)))
-    _mirror_zshenv(exports)
+    _mirror_zshenv(exports, authoritative_missing, auth_context)
     if shutil.which("claude"):
         for name in MANIFEST.get("retiredMcpServers") or []:
             if _claude_mcp_registered(name) is not None:
@@ -726,23 +838,54 @@ def _existing_block(text):
     return match.group(1) if match else ""
 
 
-def _mirror_zshenv(exports):
-    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
-    block = begin+"\n"+"\n".join(exports)+"\n"+end+"\n"
+def _existing_common_auth_context():
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
-    text_before = text
+    match = re.search(r"^# common-auth-context (\{.*\})$", _existing_block(text), re.M)
+    if not match:
+        return None
+    try:
+        context = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(context, dict):
+        return None
+    return {"origin": context.get("origin"), "subject": context.get("subject")}
+
+
+def _mirror_zshenv(exports, authoritative_missing=None, auth_context=None):
+    authoritative_missing = authoritative_missing or set()
+    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    existing_exports = {}
+    for line in _existing_block(text).splitlines():
+        match = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=", line)
+        if match:
+            existing_exports[match.group(1)] = line
+    emitted_names = set()
+    for line in exports:
+        match = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=", line)
+        if match:
+            emitted_names.add(match.group(1))
+    exports.extend(
+        line for name, line in existing_exports.items()
+        if name not in emitted_names and name not in authoritative_missing
+    )
+    context_line = ""
+    if auth_context is not None:
+        context_line = "# common-auth-context " + json.dumps(
+            auth_context, sort_keys=True, separators=(",", ":")
+        ) + "\n"
+    else:
+        previous = _existing_common_auth_context()
+        if previous is not None:
+            context_line = "# common-auth-context " + json.dumps(
+                previous, sort_keys=True, separators=(",", ":")
+            ) + "\n"
+    block = begin+"\n"+context_line+"\n".join(exports)+"\n"+end+"\n"
     if begin in text and end in text:
         text = re.sub(re.escape(begin)+r".*?"+re.escape(end)+r"\n?", block, text, flags=re.S)
     else:
         text = text.rstrip("\n")+("\n\n" if text.strip() else "")+block
-    # Never trade a working block for an empty one. A vault that cannot be
-    # reached -- no token, no network -- yields no exports, and writing that
-    # out deletes the tokens every harness then needs.
-    existing = len(re.findall(r"^export ", _existing_block(text_before), re.M))
-    if len(exports) < existing:
-        eprint("  resolved %d of %d token(s); keeping the existing block in %s"
-               % (len(exports), existing, ZSHENV))
-        return
     ZSHENV.write_text(text)
     print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
 
@@ -811,6 +954,11 @@ def _proxy_port():
 
 
 def _write_base_url_export():
+    with _consumer_sync_lock():
+        _write_base_url_export_locked()
+
+
+def _write_base_url_export_locked():
     port = _proxy_port()
     begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
     block = (begin + "\n"
@@ -844,6 +992,11 @@ def _write_base_url_export():
 
 
 def _remove_base_url_export():
+    with _consumer_sync_lock():
+        _remove_base_url_export_locked()
+
+
+def _remove_base_url_export_locked():
     begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
     if _is_macos():
         subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)

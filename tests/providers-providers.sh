@@ -49,11 +49,29 @@ printf '{"servers":{"demo":{"baseURL":"http://old-demo","enabled":true},"unused"
 printf '{"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models-state.json"
 
 python3 - <<PY
-import copy, importlib.machinery, importlib.util, json, os, sys
+import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, time
 path = '$ROOT/files/providers'
 loader = importlib.machinery.SourceFileLoader('providers_test', path)
 spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+
+# Credential reconciliation is serialized across provider/harness processes,
+# while nested cache helpers in one process reuse the outer lock.
+with m._consumer_sync_lock():
+    with m._consumer_sync_lock():
+        pass
+locker = subprocess.Popen([
+    sys.executable, '-c',
+    'import fcntl,sys,time; f=open(sys.argv[1],"a+"); '
+    'fcntl.flock(f.fileno(),fcntl.LOCK_EX); print("locked",flush=True); time.sleep(.3)',
+    m.CONSUMER_SYNC_LOCK,
+], stdout=subprocess.PIPE, text=True)
+assert locker.stdout.readline().strip() == 'locked'
+started = time.monotonic()
+with m._consumer_sync_lock():
+    pass
+assert time.monotonic() - started >= .2
+assert locker.wait() == 0
 
 # Network-optional: no vault token means the local cache is authoritative.
 m.vault_available = lambda: False
@@ -145,10 +163,224 @@ canonical_servers = m._servers_from_registry(canonical)
 assert canonical_servers['grimoire']['auth'] == {
     'type': 'common_auth', 'provider': 'grimoire', 'scope': 'chat-v1'
 }
-m.common_auth_token = lambda scope: 'common-' + scope
+m.common_auth_context = lambda: {
+    'origin': 'https://auth.lost.plus', 'subject': 'account-a',
+}
+m.common_auth_token = lambda scope, context=None: 'common-' + scope
 m._sync_common_auth(canonical_servers)
 assert m.cache_get('grimoire') == 'common-chat-v1'
 assert m.VAULT_TOKEN == 'common-vaultwarden-secrets'
+
+# The hourly timer invokes the bare/list command. A successful Common Auth
+# rotation must therefore flow from cache into every credential mirror there.
+real_load_servers = m._load_servers
+real_sync_common_auth = m._sync_common_auth
+real_sync_mirrors = m._sync_mirrors
+real_sync_hermes_mirror = m._sync_hermes_mirror
+published = []
+m._load_servers = lambda: canonical_servers
+m._sync_common_auth = lambda current: published.append('auth')
+m._sync_mirrors = lambda: published.append('mirrors')
+m._sync_hermes_mirror = lambda current, refreshed: published.append('hermes')
+m.cmd_ls()
+assert published == ['auth', 'mirrors', 'hermes']
+m._load_servers = real_load_servers
+m._sync_common_auth = real_sync_common_auth
+m._sync_mirrors = real_sync_mirrors
+m._sync_hermes_mirror = real_sync_hermes_mirror
+
+# A separately managed OpenCode OAuth session is not a Common Auth API bearer.
+# Preserve the OAuth record, but never use its access token as a fallback.
+m.cache_remove('grimoire')
+m.save_json_atomic(m.OLD_AUTH_PATH, {
+    'grimoire': {'type': 'api', 'key': 'stale-common-auth-bearer'},
+})
+m._write_auth_mirror({}, managed_absent={'grimoire'})
+assert 'grimoire' not in m.load_json(m.OLD_AUTH_PATH)
+m.save_json_atomic(m.OLD_AUTH_PATH, {
+    'grimoire': {'type': 'oauth', 'access': 'separate-oauth-session'},
+})
+assert m._get_common_auth_key('grimoire') == ''
+assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
+assert m.load_json(m.OLD_AUTH_PATH)['grimoire']['access'] == 'separate-oauth-session'
+m.cache_set('grimoire', 'common-chat-v1')
+m._sync_mirrors()
+preserved_oauth = m.load_json(m.OLD_AUTH_PATH)['grimoire']
+assert preserved_oauth == {'type': 'oauth', 'access': 'separate-oauth-session'}
+mirrored_env = open(m.ZSENV_PATH).read()
+assert 'GRIMOIRE_API_KEY=common-chat-v1' in mirrored_env
+assert 'GRIMOIRE_OAUTH_TOKEN=separate-oauth-session' in mirrored_env
+
+# If account context cannot be read, do not fetch a potentially different
+# login's tokens and then save them under the previous account binding.
+contextless_calls = []
+m.common_auth_context = lambda: (_ for _ in ()).throw(
+    m.CommonAuthError('context timed out in test')
+)
+def contextless_common(scope, context=None):
+    contextless_calls.append((scope, context))
+    return 'wrong-account-' + scope
+m.common_auth_token = contextless_common
+m._sync_common_auth(canonical_servers)
+assert contextless_calls == []
+assert m.cache_get('grimoire') == 'common-chat-v1'
+m.common_auth_context = lambda: {
+    'origin': 'https://auth.lost.plus', 'subject': 'account-a',
+}
+m.common_auth_token = lambda scope, context=None: 'common-' + scope
+
+# Confirmed Common Auth rejection removes managed cached credentials. A
+# temporary exception without this flag continues to preserve them. Rejection
+# also dominates inherited process values and every setup-managed mirror.
+os.environ['GRIMOIRE_API_KEY'] = 'stale-environment-grimoire'
+os.environ['VAULTWARDEN_SECRETS_TOKEN'] = 'stale-environment-vault'
+m.save_json_atomic(m.OLD_AUTH_PATH, {
+    'demo': {'type': 'api', 'key': 'demo-key'},
+    'grimoire': {'type': 'oauth', 'access': 'separate-oauth-session'},
+})
+with open(m.ZSENV_PATH, 'w') as handle:
+    handle.write(f'{m.AUTH_BLOCK_BEGIN}\nexport GRIMOIRE_API_KEY=stale-zshenv-grimoire\n{m.AUTH_BLOCK_END}\n')
+with open(m.HERMES_CONFIG, 'a') as handle:
+    handle.write('  - name: grimoire\n    api_key: stale-hermes-grimoire\n    models: [stale]\n')
+def rejected_common(scope, context=None):
+    raise m.CommonAuthError('credential revoked in test', authoritative=True)
+m.common_auth_token = rejected_common
+m._sync_common_auth(canonical_servers)
+assert m.cache_get('grimoire') == ''
+assert not m.VAULT_TOKEN
+assert 'GRIMOIRE_API_KEY' not in os.environ
+assert 'VAULTWARDEN_SECRETS_TOKEN' not in os.environ
+assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
+assert 'GRIMOIRE_API_KEY' not in open(m.ZSENV_PATH).read()
+assert m.load_json(m.OLD_AUTH_PATH)['grimoire'] == {
+    'type': 'oauth', 'access': 'separate-oauth-session',
+}
+try:
+    import yaml
+except ImportError:
+    yaml = None
+if yaml:
+    with open(m.HERMES_CONFIG) as handle:
+        hermes = yaml.safe_load(handle) or {}
+    grimoire = next(entry for entry in hermes.get('custom_providers', [])
+                    if entry.get('name') == 'grimoire')
+    assert 'api_key' not in grimoire and grimoire['models'] == ['stale']
+m.cache_set('grimoire', 'common-chat-v1')
+m.common_auth_token = lambda scope, context=None: 'common-' + scope
+m._sync_common_auth(canonical_servers)
+
+# Consumer fallbacks are scoped to the Auth account and origin that produced
+# them. Account B cannot inherit account A's cache or process environment when
+# B's active bearer is currently unreadable.
+os.environ['GRIMOIRE_API_KEY'] = 'account-a-environment'
+m.common_auth_context = lambda: {
+    'origin': 'https://auth.lost.plus', 'subject': 'account-b',
+}
+def unavailable_common(scope, context=None):
+    if scope == 'vaultwarden-secrets':
+        return 'account-b-vault'
+    raise m.CommonAuthError('active credential unreadable in test')
+m.common_auth_token = unavailable_common
+m._sync_common_auth(canonical_servers)
+assert m.cache_get('grimoire') == ''
+assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
+assert m._load_cache()['_common_auth_context']['subject'] == 'account-b'
+os.environ['GRIMOIRE_API_KEY'] = 'account-a-old-shell'
+m._sync_common_auth(canonical_servers)
+assert 'GRIMOIRE_API_KEY' not in os.environ
+assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
+
+# One rejected scope must not erase another scope that is merely unavailable.
+state_before_mixed = copy.deepcopy(m._load_provider_state())
+mixed_state = copy.deepcopy(state_before_mixed)
+mixed_state.setdefault('providers', {})['grimoire'] = {'enabled': True}
+m.save_json_atomic(m.STATE_PATH, mixed_state)
+m.save_json_atomic(m.OLD_AUTH_PATH, {
+    'grimoire': {'type': 'api', 'key': 'bound-account-b-grimoire'},
+})
+if yaml:
+    with open(m.HERMES_CONFIG) as handle:
+        hermes = yaml.safe_load(handle) or {}
+    entries = hermes.setdefault('custom_providers', [])
+    grimoire_entry = next((entry for entry in entries
+                           if entry.get('name') == 'grimoire'), None)
+    if grimoire_entry is None:
+        grimoire_entry = {'name': 'grimoire'}
+        entries.append(grimoire_entry)
+    grimoire_entry.update({
+        'api_key': 'bound-account-b-grimoire', 'models': ['bound-model'],
+    })
+    with open(m.HERMES_CONFIG, 'w') as handle:
+        yaml.safe_dump(hermes, handle, sort_keys=False)
+def mixed_common(scope, context=None):
+    if scope == 'vaultwarden-secrets':
+        raise m.CommonAuthError('vault credential revoked in test', authoritative=True)
+    raise m.CommonAuthError('active credential unreadable in test')
+m.common_auth_token = mixed_common
+m._sync_common_auth(canonical_servers)
+assert m.load_json(m.OLD_AUTH_PATH)['grimoire']['key'] == 'bound-account-b-grimoire'
+if yaml:
+    m.save_json_atomic(m.OLD_AUTH_PATH, {})
+    m._sync_common_auth(canonical_servers)
+    with open(m.HERMES_CONFIG) as handle:
+        hermes = yaml.safe_load(handle) or {}
+    grimoire = next(entry for entry in hermes['custom_providers'] if entry.get('name') == 'grimoire')
+    assert grimoire['api_key'] == 'bound-account-b-grimoire'
+    m._sync_hermes_mirror(canonical_servers, {}, authoritative_missing={'grimoire'})
+    with open(m.HERMES_CONFIG) as handle:
+        hermes = yaml.safe_load(handle) or {}
+    grimoire = next(entry for entry in hermes['custom_providers'] if entry.get('name') == 'grimoire')
+    assert 'api_key' not in grimoire and grimoire['models'] == ['bound-model']
+    hermes['custom_providers'] = [
+        entry for entry in hermes['custom_providers'] if entry.get('name') != 'grimoire'
+    ]
+    with open(m.HERMES_CONFIG, 'w') as handle:
+        yaml.safe_dump(hermes, handle, sort_keys=False)
+m.save_json_atomic(m.STATE_PATH, state_before_mixed)
+
+m.common_auth_token = lambda scope, context=None: 'common-' + scope
+m._sync_common_auth(canonical_servers)
+
+# A token is accepted only for the context read in the same reconciliation.
+# If login changes in between, the whole operation retries under the new one.
+contexts = [
+    {'origin': 'https://auth.lost.plus', 'subject': 'account-a'},
+    {'origin': 'https://auth.lost.plus', 'subject': 'account-b'},
+]
+m.common_auth_context = lambda: contexts.pop(0) if contexts else {
+    'origin': 'https://auth.lost.plus', 'subject': 'account-b',
+}
+def raced_common(scope, context=None):
+    if context['subject'] == 'account-a':
+        raise m.CommonAuthContextChanged('login changed in test')
+    return 'account-b-' + scope
+m.common_auth_token = raced_common
+m._sync_common_auth(canonical_servers)
+assert m.cache_get('grimoire') == 'account-b-chat-v1'
+assert m._load_cache()['_common_auth_context']['subject'] == 'account-b'
+
+# Provider commands never trust a Vaultwarden token inherited from an old
+# shell; they resolve a current context-bound token before using the vault.
+os.environ['VAULTWARDEN_MCP_TOKEN'] = 'old-shell-vault'
+m.VAULT_TOKEN = 'old-shell-vault'
+m.common_auth_context = lambda: {
+    'origin': 'https://auth.lost.plus', 'subject': 'account-b',
+}
+m.common_auth_token = lambda scope, context=None: 'fresh-bound-vault'
+assert m._ensure_vault_token(interactive=False) == 'fresh-bound-vault'
+assert m.VAULT_TOKEN == 'fresh-bound-vault'
+
+# Importing the old .zshenv mirror cannot put Common Auth-owned keys back into
+# the cache before context reconciliation runs.
+with open(m.ZSENV_PATH, 'w') as handle:
+    handle.write(f'{m.AUTH_BLOCK_BEGIN}\nexport GRIMOIRE_API_KEY=unbound-old\n'
+                 f'export OPENROUTER_API_KEY=independent-key\n{m.AUTH_BLOCK_END}\n')
+m.cache_remove('grimoire')
+m.cache_remove('openrouter')
+m._sync_zsenv_to_cache(canonical_servers)
+assert m.cache_get('grimoire') == ''
+assert m.cache_get('openrouter') == 'independent-key'
+m.cache_set('grimoire', 'common-chat-v1')
 
 # Vaultwarden may still contain the pre-migration copy of a provider token.
 # It must not overwrite a provider now owned by Common Auth, while unrelated
@@ -269,7 +501,7 @@ empty_reasoning = m.normalize_model_row(
 )
 assert empty_reasoning['reasoning']['support'] == 'unknown'
 # Kimi names the level list think_efforts.valid_efforts. Reading only the
-# `values` spelling made a model advertising low/high/max look like it had no
+# The values spelling made a model advertising low/high/max look like it had no
 # levels at all, which is indistinguishable from a model that has none.
 kimi_row = m.normalize_model_row(
     'demo', 'k3-256k', {
@@ -625,6 +857,16 @@ assert mirrored['custom_providers'][2] == {
 }
 assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
 
+# Credential rotation is independent from model refresh. A failed /models
+# request keeps the known inventory but must still replace an old Hermes key.
+m.cache_set('demo', 'rotated-demo-key')
+m._sync_hermes_mirror(servers, {})
+rotated_entry = _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]
+assert rotated_entry['api_key'] == 'rotated-demo-key'
+assert rotated_entry['models'] == ['fresh-1', 'fresh-2', 'stale-1']
+m.cache_set('demo', 'demo-key')
+m._sync_hermes_mirror(servers, {})
+
 # Miniharness/Pi receives the same successful live inventory. Unrelated
 # providers and provider-owned defaults/tiers survive the projection.
 os.makedirs(os.path.dirname(m.PI_MODELS_PATH), exist_ok=True)
@@ -672,9 +914,8 @@ before_mtime = _os.stat(m.HERMES_CONFIG).st_mtime
 m._sync_hermes_mirror(servers, {'demo': {'fresh-1': {}, 'fresh-2': {}, 'stale-1': {}}})
 assert _os.stat(m.HERMES_CONFIG).st_mtime == before_mtime
 
-# A refreshed list without models leaves the entry untouched: demo is enabled
-# but has no refreshed data this run — the entry keeps its previous models
-# (offline tolerance; never clobbered, never removed).
+# A refresh without models keeps the previous model list (offline tolerance;
+# never clobbered or removed), while credential updates remain independent.
 m.cache_remove('demo')
 m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
 m.cache_set('demo', 'demo-key')
@@ -682,9 +923,15 @@ m._sync_hermes_mirror(servers, {})
 assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
     'fresh-1', 'fresh-2', 'stale-1'
 ]
-# Missing PyYAML skips silently instead of crashing the mirror.
+# Missing PyYAML still replaces and revokes credentials through the supported
+# line-oriented fallback; non-secret YAML content remains intact.
 m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
-m.cache_set('demo', 'demo-key')
+m.cache_set('demo', 'fallback-rotated-key')
+with open(m.HERMES_CONFIG, 'w') as handle:
+    handle.write('custom_providers:\n'
+                 '- api_key: account-a-old-key\n'
+                 '  name: demo\n'
+                 '  models: [fresh-1, fresh-2, stale-1]\n')
 import builtins
 real_import = __import__
 def fake_import(name, *args, **kwargs):
@@ -692,12 +939,27 @@ def fake_import(name, *args, **kwargs):
         raise ImportError('no PyYAML')
     return real_import(name, *args, **kwargs)
 builtins.__dict__['__import__'] = fake_import
-m._sync_hermes_mirror(servers, {'demo': {'fresh-3': {}}})  # mirror skipped
+m._sync_hermes_mirror(servers, {})
+fallback_text = open(m.HERMES_CONFIG).read()
+assert 'fallback-rotated-key' in fallback_text
+assert 'fresh-1' in fallback_text and 'fresh-3' not in fallback_text
+m._sync_hermes_mirror(servers, {}, authoritative_missing={'demo'})
+fallback_revoked = open(m.HERMES_CONFIG).read()
+assert 'fallback-rotated-key' not in fallback_revoked
+assert 'fresh-1' in fallback_revoked
+m.cache_set('demo', 'fallback-restored-key')
+m._sync_hermes_mirror(servers, {})
+fallback_restored = open(m.HERMES_CONFIG).read()
+assert 'fallback-restored-key' in fallback_restored
+assert 'fresh-1' in fallback_restored
 builtins.__dict__['__import__'] = real_import
-# The file content is still the previous mirrored list (mirror skipped).
+# PyYAML can attach a later successful credential to the preserved metadata.
+m.cache_set('demo', 'demo-key')
+m._sync_hermes_mirror(servers, {})
 assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
     'fresh-1', 'fresh-2', 'stale-1'
 ]
+assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['api_key'] == 'demo-key'
 
 # An unparseable Hermes config skips silently and is never overwritten.
 with open(m.HERMES_CONFIG, 'w') as handle:
@@ -884,7 +1146,7 @@ assert demo['model'] == 'old-model'  # unrelated fields preserved
 assert mirrored['custom_providers'][1]['name'] == 'ghost'
 assert mirrored['custom_providers'][1]['models'] == ['ghost-model']
 
-# Enabled + no refreshed data this run: the entry is left untouched (the
+# Enabled + no refreshed data this run: the model list is left untouched (the
 # provider may simply be offline), not removed and not clobbered.
 m._sync_hermes_mirror(full_servers, {})
 mirrored = _load_yaml(m.HERMES_CONFIG)

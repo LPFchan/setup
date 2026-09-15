@@ -6,6 +6,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state"
 export AUTH_BIN="$HOME/.local/bin/auth"
 export AUTH_SOURCE="$ROOT/files/auth"
+export LOST_AUTH_ORIGIN="http://127.0.0.1:1"
 mkdir -p "$XDG_STATE_HOME"
 
 source "$ROOT/lib/script-helpers.sh"
@@ -17,7 +18,7 @@ install
 status >/dev/null
 
 mkdir -p "$HOME/.local/share/lost-plus"
-print '{"version":1,"mode":"global","tokens":{"*":"secret"}}' \
+print '{"version":2,"origin":"http://127.0.0.1:1","account_sub":"42","session_state":"active","mode":"global","tokens":{"*":"secret"},"session":{"id":"dev_test","refresh_token":"refresh-secret","expires_at":9999999999},"active_scopes":["*"],"unavailable_scopes":[]}' \
     > "$HOME/.local/share/lost-plus/auth.json"
 chmod 600 "$HOME/.local/share/lost-plus/auth.json"
 update
