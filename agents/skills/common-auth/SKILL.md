@@ -13,7 +13,8 @@ the `mcp` manifest of `LPFchan/setup`.
 ## Architecture
 
 - `auth.lost.plus` owns accounts, passkey and Google/GitHub login, shared
-  browser sessions, machine tokens, roles, service visibility, and admission.
+  browser sessions, machine tokens, the MCP OAuth authorization server, roles,
+  service visibility, and admission.
 - One stateless `auth-gateway` runs on each backend machine. It validates every
   protected request with Auth and forwards trusted identity to a private local
   backend.
@@ -31,8 +32,11 @@ convergence, then deploy the final commits once.
 
 - Browsers use the `lp_auth` cookie: `HttpOnly`, `Secure`, `SameSite=Lax`,
   `Domain=.lost.plus`, with a server-side one-year session.
-- API and MCP clients use `Authorization: Bearer <token>` or
-  `X-API-Key: <token>`.
+- API clients and static MCP clients use `Authorization: Bearer <token>` or
+  `X-API-Key: <token>`. Public OAuth MCP clients discover Auth through the
+  gateway's RFC 9728 metadata, register dynamically, and use authorization
+  code with PKCE S256 to obtain a resource-bound access token and rotating
+  refresh token.
 - An explicit machine credential is authoritative. Invalid, revoked,
   inactive-mode, incorrectly scoped, or service-ineligible credentials return
   `401`; never fall back to a cookie or anonymous access.
@@ -83,7 +87,7 @@ Every route has one explicit policy:
 | `public` | None | Deliberately public page or API | Backend response |
 | `oauth` | Shared browser session only | Browser app and protected same-origin API | Navigation redirects; API-style request `401` |
 | `api` | Machine token or browser session | HTTP API usable by scripts and browsers | `401`; Auth outage `503` |
-| `mcp` | Scoped machine token only | Streamable HTTP MCP server | MCP-shaped `401`; Auth outage `503` |
+| `mcp` | Scoped machine token or resource-bound OAuth access token | Streamable HTTP MCP server | OAuth-aware `401`; Auth outage `503` |
 
 An `oauth` route rejects machine-credential headers even when a valid cookie is
 also present. An unsigned OAuth request redirects only for GET/HEAD browser
@@ -97,6 +101,14 @@ methods and tools are public. Its `token_scope` must still exist in Auth's
 service registry so valid presented global or scoped tokens can authenticate;
 the registry row may use `grp: hidden` when the optional scope should not
 appear on the Apps page.
+
+Protected MCP routes publish
+`/.well-known/oauth-protected-resource/mcp`. The metadata's `resource` is the
+exact canonical `https://<host>/mcp` identifier, and `authorization_servers`
+points to `https://auth.lost.plus`. Challenges include `resource_metadata` and
+the route's required scope. OAuth access tokens are opaque, short-lived, bound
+to that resource and scope, and introspected by the local gateway; static
+machine credentials continue through the existing `/api/whoami` path.
 
 Treat `public` as a security boundary for the entire matched path. Split public
 reads from protected writes with narrower route matchers, or make the backend
@@ -196,8 +208,10 @@ migration is available; never assign it to whoever signs in next.
    migration is not backward-compatible, pin the previous image together with
    a verified matching database snapshot; crossing that boundary requires
    preserving the post-cutover database before restoring the pair.
-7. Use dashboard-issued global or per-service tokens for scripts and MCP
-   clients. Auth stores new secrets as a SHA-256 validation hash plus
+7. Use dashboard-issued global or per-service tokens for scripts and static
+   MCP clients. OAuth-capable MCP clients should use protected-resource
+   discovery and Auth's dynamic registration plus PKCE flow. Auth stores new
+   static secrets as a SHA-256 validation hash plus
    AES-256-GCM ciphertext whose key stays outside SQLite. Lists stay masked;
    only the token's owner may retrieve it through a live browser session.
    Legacy hash-only tokens still authenticate but must be rotated before they
@@ -231,8 +245,10 @@ build as one coordinated rollout:
 10. Switching the shared browser session between accounts cannot transfer
     private reads, writes, queues, favorites, or idempotency state. An email
     change on the same subject keeps that state.
-11. MCP health, rejected POST-to-health, preflight, optional anonymous calls,
-    initialize, invalid token, scope mismatch, and revocation behave correctly.
+11. MCP protected-resource metadata, OAuth challenges, dynamic registration,
+    PKCE login handoff, health, rejected POST-to-health, preflight, optional
+    anonymous calls, initialize, invalid token, scope mismatch, refresh, and
+    revocation behave correctly.
 12. Global mode works across registered scopes; per-service mode works only for
     its scope; switching modes twice reactivates preserved tokens without
     rotation.
