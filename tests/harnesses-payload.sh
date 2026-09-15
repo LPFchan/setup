@@ -60,11 +60,15 @@ assert len(allow) == len(set(allow)), "allow list has duplicates"
 
 t3 = json.loads((HOME/".t3/userdata/settings.json").read_text())
 models = t3["providerInstances"]["claudeAgent"]["config"]["customModels"]
-slugs = {m["slug"] for m in models}
+by_slug = {m["slug"]: m for m in models}
+slugs = set(by_slug)
 assert "kimicode/k3-256k" in slugs and "gpt-6-astra" in slugs
+assert by_slug["kimicode/k3-256k"]["name"] == "kimi-k3-256k"
+assert by_slug["grimoire/qwen3.8-flash-next"]["name"] == "qwen3.8-flash-next"
 # a slug naming a provider the proxy does not have cannot route; the retired
 # list is what removes one that an earlier release already wrote out
 assert "codex/gpt-6-astra" not in slugs, "retired custom model slug survived"
+assert "grimoire/qwen3.8-flash-next-uncensored-nvfp4" not in slugs, "retired qwen slug survived"
 # effort levels are read from the proxy catalog, never written down here: no
 # proxy in the test environment means no descriptors, rather than a guess
 for m in models:

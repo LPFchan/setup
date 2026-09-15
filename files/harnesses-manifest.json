@@ -215,7 +215,7 @@
       "claudeCustomModels": [
         {
           "slug": "kimicode/k3-256k",
-          "name": "Kimi k3 256k"
+          "name": "kimi-k3-256k"
         },
         {
           "slug": "gpt-6-astra",
@@ -230,14 +230,15 @@
           "name": "GPT-5.6 Luna"
         },
         {
-          "slug": "grimoire/qwen3.8-flash-next-uncensored-nvfp4",
-          "name": "Qwen3.8 Flash Next (grimoire)"
+          "slug": "grimoire/qwen3.8-flash-next",
+          "name": "qwen3.8-flash-next"
         }
       ],
       "retiredClaudeCustomModels": [
         "codex/gpt-6-astra",
         "codex/gpt-5.6-sol",
-        "codex/gpt-5.6-luna"
+        "codex/gpt-5.6-luna",
+        "grimoire/qwen3.8-flash-next-uncensored-nvfp4"
       ],
       "retiredComment": "Slugs the module must delete from an existing settings file. These named a 'codex' provider the proxy never had, so they sat in the picker unroutable; the same models are published bare. Entries the manifest has never owned are left alone."
     }
