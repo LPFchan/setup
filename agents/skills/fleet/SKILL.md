@@ -86,5 +86,6 @@ read its Common Auth reference for it.
 - hosts gswtools at gsw.lost.plus (repo `~/gswtools`)
 - hosts artmu-bench at artmu.lost.plus (repo `~/artmu-bench`)
 - hosts censor at censor.lost.plus (repo `~/censor`)
+- hosts onedrive MCP at onedrive.lost.plus (repo `~/onedrive-mcp`)
 - hosts Photopeace at photopeace.lost.plus (repo `~/photopeace`)
 - hosts Coverse at coverse.lost.plus (repo `~/coverse`)
