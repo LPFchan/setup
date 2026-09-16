@@ -1,5 +1,5 @@
-/* Accessible lost.plus starting tokens. Copy this file; do not import it as a
-   fleet-wide dependency. Adapt the accent to the service and re-test contrast. */
+/* Copy this accessible starter into a service. Adapt the accent and re-test
+   contrast. */
 :root {
   color-scheme: light dark;
   --bg: #f7f7f5;
