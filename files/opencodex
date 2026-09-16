@@ -147,7 +147,11 @@ def validate_registry(data: Any) -> dict[str, Any]:
             if provider.get("api_format") not in {"grimoire", "crofai", "openai"}:
                 raise UserError(f"invalid api_format for {provider_name}")
             _string(provider.get("npm"), f"npm package for {provider_name}")
-            for field in ("model_allow_ids", "model_allow_suffixes"):
+            for field in (
+                "model_allow_ids",
+                "model_allow_suffixes",
+                "model_no_reasoning_suffixes",
+            ):
                 values = provider.get(field, [])
                 if not isinstance(values, list):
                     raise UserError(f"{field} for {provider_name} must be a list")
@@ -349,6 +353,15 @@ def desired_opencodex_config(
                 provider["selectedModels"] = narrowed
             else:
                 provider.pop("selectedModels", None)
+            no_reasoning = _registry_no_reasoning_models(
+                descriptor,
+                narrowed or [],
+                ladders_by_provider.get(name, {}),
+            )
+            if no_reasoning:
+                provider["noReasoningModels"] = no_reasoning
+            elif "model_no_reasoning_suffixes" in descriptor:
+                provider.pop("noReasoningModels", None)
             # OAuth providers are excluded on purpose: OpenCodex reconciles
             # their ladders itself at login, which is what OAUTH_RECONCILE_FIELDS
             # protects. An api-key provider gets no such reconcile, so setup is
@@ -1005,6 +1018,35 @@ def _registry_selected_models(descriptor: dict[str, Any]) -> list[str] | None:
         return None
     selected = sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
     return selected or None
+
+
+def _registry_no_reasoning_models(
+    descriptor: dict[str, Any],
+    selected: list[str],
+    ladders: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """Return selected models whose registry policy has no effort control.
+
+    OpenCodex's catalog fallback synthesizes a generic reasoning ladder when a
+    model has no advertised levels. A provider may explicitly say that a model
+    family has no selectable reasoning control, while a refreshed capability
+    ladder takes precedence if the provider later publishes one.
+    """
+    suffixes = tuple(
+        value.casefold()
+        for value in descriptor.get("model_no_reasoning_suffixes", [])
+        if isinstance(value, str) and value
+    )
+    known_ladders = set(ladders or {})
+    if not suffixes:
+        return []
+    return sorted(
+        model_id
+        for model_id in selected
+        if isinstance(model_id, str)
+        and model_id not in known_ladders
+        and model_id.casefold().endswith(suffixes)
+    )
 
 
 def model_efforts(info: dict[str, Any]) -> list[str]:

@@ -55,6 +55,17 @@ assert zen_config["disabled"] is False
 assert zen_config["selectedModels"] == sorted(
     registry["providers"]["opencode-zen"]["model_allow_ids"]
 )
+assert zen_config["noReasoningModels"] == ["union-alpha"]
+assert namespace["_registry_no_reasoning_models"](
+    {"model_no_reasoning_suffixes": ["alpha"]},
+    ["big-pickle", "Ox-Alpha", "union-alpha"],
+    {},
+) == ["Ox-Alpha", "union-alpha"]
+assert namespace["_registry_no_reasoning_models"](
+    {"model_no_reasoning_suffixes": ["alpha"]},
+    ["union-alpha"],
+    {"union-alpha": ["low", "high"]},
+) == []
 state_path.write_text(json.dumps({
     "version": 1,
     "providers": {"commandcode": {"enabled": True}},

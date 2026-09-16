@@ -136,6 +136,9 @@
         "-free",
         "alpha"
       ],
+      "model_no_reasoning_suffixes": [
+        "alpha"
+      ],
       "model_allow_ids": [
         "big-pickle",
         "deepseek-v4-flash-free",

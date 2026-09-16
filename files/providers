@@ -10,7 +10,8 @@ credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi tools.
 Provider descriptors may restrict a live catalog with model_allow_suffixes and
 model_allow_ids; OpenCode Zen uses these to keep paid models out of every
 consumer while still admitting newly published *-free IDs and time-limited IDs
-ending in alpha.
+ending in alpha. Zen alpha models also opt out of the generic reasoning ladder
+until the provider advertises model-specific effort levels.
 
 Commands:
   (no args)                    List providers and key status (never the key)
