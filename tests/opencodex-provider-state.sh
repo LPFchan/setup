@@ -43,9 +43,18 @@ assert namespace["provider_model_options"](
 
 # Local status reaches the OpenCodex config, which is what `ocx sync` filters on
 # when it rebuilds the Codex model catalog the desktop picker reads.
-auth = {"commandcode": {"key": "secret"}}
+auth = {
+    "commandcode": {"key": "secret"},
+    # Zen and Go intentionally share this credential reference.
+    "opencode-go": {"key": "zen-secret"},
+}
 desired, _ = namespace["desired_opencodex_config"](registry, {}, auth)
 assert desired["providers"]["commandcode"]["disabled"] is True
+zen_config = desired["providers"]["opencode-zen"]
+assert zen_config["disabled"] is False
+assert zen_config["selectedModels"] == sorted(
+    registry["providers"]["opencode-zen"]["model_allow_ids"]
+)
 state_path.write_text(json.dumps({
     "version": 1,
     "providers": {"commandcode": {"enabled": True}},

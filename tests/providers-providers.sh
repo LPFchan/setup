@@ -83,7 +83,7 @@ fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
     'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter'
+    'cloudflare', 'openrouter', 'opencode-zen'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
@@ -141,6 +141,15 @@ assert openrouter == {
     'auth': {'type': 'api-key', 'store': 'opencode', 'key': 'openrouter'},
     'enabled': True,
 }
+zen = canonical['providers']['opencode-zen']
+assert zen['base_url'] == 'https://opencode.ai/zen/v1'
+assert zen['auth'] == {
+    'type': 'api-key', 'store': 'opencode', 'key': 'opencode-go'
+}
+assert zen['model_allow_suffixes'] == ['-free', 'alpha']
+assert 'big-pickle' in zen['model_allow_ids']
+assert 'union-alpha' in zen['model_allow_ids']
+assert 'x-preview-f-free' in zen['model_allow_ids']
 serialized = json.dumps(canonical).lower()
 for legacy_field in ('default_model', 'haiku', 'sonnet', 'opus'):
     assert legacy_field not in serialized
@@ -152,7 +161,7 @@ m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
     'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter'
+    'cloudflare', 'openrouter', 'opencode-zen'
 }
 m.REGISTRY_PATH = original_registry
 
@@ -406,6 +415,8 @@ assert openrouter_server == {
     'registry_enabled': True,
     'models': [],
     'model_exclude_prefixes': [],
+    'model_allow_suffixes': [],
+    'model_allow_ids': [],
 }
 m.cache_set('openrouter', 'fixture-openrouter-token')
 assert m.get_auth(openrouter_server['auth']) == ('api_key', 'fixture-openrouter-token')
@@ -712,6 +723,30 @@ failed_refresh = __import__('subprocess').run(
 assert CapabilityHandler.calls == 2, CapabilityHandler.calls
 assert open('$HOME/.config/providers/capabilities.json', 'rb').read() == capability_bytes_before_failed_refresh
 server.shutdown()
+# OpenCode Zen admits newly published -free IDs and known free stealth IDs,
+# while paid and unknown IDs never reach a consumer mirror.
+zen_rows = [
+    {'id': 'big-pickle'},
+    {'id': 'union-alpha'},
+    {'id': 'x-preview-f-free'},
+    {'id': 'new-model-free'},
+    {'id': 'ox-alpha'},
+    {'id': 'future-stealth-alpha'},
+    {'id': 'OX-ALPHA'},
+    {'id': 'minimax-m3'},
+    {'id': 'unknown-stealth'},
+]
+assert [row['id'] for row in m._filter_models(
+    'opencode-zen', canonical_servers['opencode-zen'], zen_rows
+)] == [
+    'big-pickle', 'union-alpha', 'x-preview-f-free', 'new-model-free',
+    'ox-alpha', 'future-stealth-alpha', 'OX-ALPHA'
+]
+# The same allow policy applies to static model inventories.
+assert m._filter_models(
+    'opencode-zen', canonical_servers['opencode-zen'],
+    [{'id': 'paid-model'}, {'id': 'mimo-v2.5-free'}],
+) == [{'id': 'mimo-v2.5-free'}]
 # Registry-owned model_exclude_prefixes removes matching ids from a live
 # refresh before any mirror sees them. The provider's other models pass
 # through unchanged.

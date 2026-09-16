@@ -147,6 +147,19 @@ def validate_registry(data: Any) -> dict[str, Any]:
             if provider.get("api_format") not in {"grimoire", "crofai", "openai"}:
                 raise UserError(f"invalid api_format for {provider_name}")
             _string(provider.get("npm"), f"npm package for {provider_name}")
+            for field in ("model_allow_ids", "model_allow_suffixes"):
+                values = provider.get(field, [])
+                if not isinstance(values, list):
+                    raise UserError(f"{field} for {provider_name} must be a list")
+                if any(
+                    not isinstance(value, str)
+                    or not value
+                    or any(ord(character) < 32 for character in value)
+                    for value in values
+                ):
+                    raise UserError(f"invalid {field} entry for {provider_name}")
+                if len(values) != len(set(values)):
+                    raise UserError(f"duplicate {field} entry for {provider_name}")
         elif auth.get("type") != "oauth":
             raise UserError(f"invalid OAuth descriptor for {provider_name}")
         else:
@@ -330,6 +343,8 @@ def desired_opencodex_config(
                 }
             )
             narrowed = _catalog_selected_models(name)
+            if narrowed is None:
+                narrowed = _registry_selected_models(descriptor)
             if narrowed is not None:
                 provider["selectedModels"] = narrowed
             else:
@@ -965,8 +980,8 @@ def _catalog_selected_models(provider: str) -> list[str] | None:
     (the grimoire eastself checkpoints). Feeding the providers-owned,
     already-filtered inventory back as the proxy's selectedModels allowlist
     narrows what ships to Codex's catalog and /v1/models to the same set.
-    None means no usable snapshot, so the caller drops the key and the proxy
-    exposes its full live catalog instead of emptying it.
+    None means no usable snapshot. Providers with an admission policy then use
+    their registry bootstrap list instead of exposing the full live catalog.
     """
     view = provider_capability_view()
     providers = view.get("providers", {})
@@ -975,6 +990,21 @@ def _catalog_selected_models(provider: str) -> list[str] | None:
     if not isinstance(models, dict) or not models:
         return None
     return sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
+
+
+def _registry_selected_models(descriptor: dict[str, Any]) -> list[str] | None:
+    """Return a safe static fallback for providers with an admission policy.
+
+    A live provider without a refreshed capability cache would otherwise make
+    OpenCodex expose its entire upstream catalog. The registry list is only a
+    bootstrap floor; a successful providers refresh replaces it with the
+    current filtered inventory.
+    """
+    models = descriptor.get("model_allow_ids")
+    if not isinstance(models, list):
+        return None
+    selected = sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
+    return selected or None
 
 
 def model_efforts(info: dict[str, Any]) -> list[str]:

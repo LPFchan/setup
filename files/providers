@@ -7,6 +7,10 @@ Grimoire resolves through the shared auth module. Third-party credentials live
 in vaultwarden (folder llm, items named {PROVIDER}_API_KEY). A local 0600 cache
 serves offline/headless contexts. This tool maintains the OpenCode and shell
 credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi tools.
+Provider descriptors may restrict a live catalog with model_allow_suffixes and
+model_allow_ids; OpenCode Zen uses these to keep paid models out of every
+consumer while still admitting newly published *-free IDs and time-limited IDs
+ending in alpha.
 
 Commands:
   (no args)                    List providers and key status (never the key)
@@ -1674,6 +1678,55 @@ def fetch_models(base_url, auth_cfg):
         return None
 
 
+def _model_matches_allow_policy(model_id, cfg):
+    """Return whether one model id passes a registry-owned allow policy."""
+    allow_ids = {
+        value.casefold()
+        for value in cfg.get("model_allow_ids", [])
+        if isinstance(value, str) and value
+    }
+    allow_suffixes = tuple(
+        value.casefold()
+        for value in cfg.get("model_allow_suffixes", [])
+        if isinstance(value, str) and value
+    )
+    if not allow_ids and not allow_suffixes:
+        return True
+    lowered = model_id.casefold()
+    return lowered in allow_ids or lowered.endswith(allow_suffixes)
+
+
+def _filter_models(name, cfg, models_list):
+    """Apply registry model admission before writing any consumer mirror."""
+    allow_ids = cfg.get("model_allow_ids", [])
+    allow_suffixes = cfg.get("model_allow_suffixes", [])
+    if allow_ids or allow_suffixes:
+        before = len(models_list)
+        models_list = [
+            model for model in models_list
+            if isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and _model_matches_allow_policy(model["id"], cfg)
+        ]
+        excluded = before - len(models_list)
+        if excluded:
+            print(f"  {name}: {excluded} models excluded by registry allowlist", file=sys.stderr)
+    exclude_prefixes = tuple(
+        prefix for prefix in cfg.get("model_exclude_prefixes", []) if prefix
+    )
+    if exclude_prefixes:
+        before = len(models_list)
+        models_list = [
+            model for model in models_list
+            if isinstance(model, dict)
+            and not str(model.get("id", "")).startswith(exclude_prefixes)
+        ]
+        excluded = before - len(models_list)
+        if excluded:
+            print(f"  {name}: {excluded} models excluded by registry prefix", file=sys.stderr)
+    return models_list
+
+
 def _grimoire_price_per_token(value):
     return as_number(value) / 1_000_000
 
@@ -1765,21 +1818,10 @@ def refresh_server(name, cfg):
     if not models_list:
         print(f"  Warning: no models returned for {name}", file=sys.stderr)
         return False
-    exclude_prefixes = tuple(
-        prefix for prefix in cfg.get("model_exclude_prefixes", []) if prefix
-    )
-    if exclude_prefixes:
-        before = len(models_list)
-        models_list = [
-            m for m in models_list
-            if not str(m.get("id", "")).startswith(exclude_prefixes)
-        ]
-        excluded = before - len(models_list)
-        if excluded:
-            print(f"  {name}: {excluded} models excluded by registry prefix", file=sys.stderr)
-        if not models_list:
-            print(f"  Warning: all models excluded by prefix for {name}", file=sys.stderr)
-            return False
+    models_list = _filter_models(name, cfg, models_list)
+    if not models_list:
+        print(f"  Warning: all models excluded by registry policy for {name}", file=sys.stderr)
+        return False
     models = {}
     for m in models_list:
         model_id = m.get("id", "")
@@ -1834,6 +1876,7 @@ PROVIDER_URLS = {
     "deepseek": "https://platform.deepseek.com/api_keys",
     # META_API_KEY is the same Model API key muse reads for headless runs.
     "meta": "https://dev.meta.ai",
+    "opencode-zen": "https://opencode.ai/auth (shared with OpenCode Go)",
 }
 
 
@@ -1883,6 +1926,8 @@ def _servers_from_registry(registry):
             "registry_enabled": provider.get("enabled") is True,
             "models": provider.get("models", []),
             "model_exclude_prefixes": provider.get("model_exclude_prefixes", []),
+            "model_allow_suffixes": provider.get("model_allow_suffixes", []),
+            "model_allow_ids": provider.get("model_allow_ids", []),
         }
     return servers
 
@@ -2294,6 +2339,17 @@ def _validate_registry(data):
                 model_ids.append(model["id"])
             if len(model_ids) != len(set(model_ids)):
                 raise ValueError(f"duplicate static model for {provider_name}")
+            for field in ("model_allow_ids", "model_allow_suffixes"):
+                values = provider.get(field, [])
+                if not isinstance(values, list):
+                    raise ValueError(f"{field} for {provider_name} must be a list")
+                if any(
+                    not isinstance(value, str) or not value or any(ord(c) < 32 for c in value)
+                    for value in values
+                ):
+                    raise ValueError(f"invalid {field} entry for {provider_name}")
+                if len(values) != len(set(values)):
+                    raise ValueError(f"duplicate {field} entry for {provider_name}")
             exclude_prefixes = provider.get("model_exclude_prefixes", [])
             if not isinstance(exclude_prefixes, list):
                 raise ValueError(f"model_exclude_prefixes for {provider_name} must be a list")

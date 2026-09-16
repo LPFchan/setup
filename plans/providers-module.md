@@ -110,7 +110,7 @@ TUI: reuse opencodex's fzf-based picker (`opencodex:599-621`).
 
 ## Open items
 1. `VAST.ai`: no live provider — leave in vault, exclude from presets unless you want it.
-2. The extra live `auth.json` providers `alibaba`, `ollama-cloud`, and `opencode-go` remain to be considered as `providers` presets. OpenRouter is enrolled in the canonical provider registry, enabled by default, with live model discovery. The extra providers are not added to the retired `claudex-profiles.json` asset unless you say so.
+2. The extra live `auth.json` providers `alibaba` and `ollama-cloud` remain to be considered as `providers` presets. OpenCode Zen is enrolled in the canonical provider registry and deliberately reuses the existing `opencode-go` credential; OpenRouter is also enrolled with live model discovery. The extra providers are not added to the retired `claudex-profiles.json` asset unless you say so.
 3. `empty_trash` on `crofai_api_key_guest` and `ANTHROPIC_API_KEY` — your call (soft-deleted items expire in 30 days anyway).
 
 ## Capability cache contract
