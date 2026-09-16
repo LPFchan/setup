@@ -16,6 +16,7 @@ export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_LAUNCHER_SOURCE="$ROOT/files/opencodex"
 export OPENCODEX_REGISTRY_SOURCE="$ROOT/files/provider-registry.json"
+export OPENCODEX_ZEN_SESSION_PATCH_SOURCE="$ROOT/files/opencodex-zen-session.patch"
 export OPENCODEX_RELEASE_VERSION="2.7.42"
 mkdir -p "${OPENCODEX_LAUNCHER:h}" "${OPENCODEX_REGISTRY:h}" "$XDG_STATE_HOME"
 
@@ -49,14 +50,25 @@ npm() {
     done
     mkdir -p "$prefix/node_modules/.bin"
     print '#!/bin/sh\necho opencodex 9.8.7' > "$prefix/node_modules/.bin/ocx"
+    mkdir -p "$prefix/node_modules/@bitkyc08/opencodex/src/providers" \
+        "$prefix/node_modules/@bitkyc08/opencodex/src/types"
+    cp "$ROOT/tests/fixtures/opencodex-opencode-go-transport.ts" \
+        "$prefix/node_modules/@bitkyc08/opencodex/src/providers/opencode-go-transport.ts"
+    cp "$ROOT/tests/fixtures/opencodex-wire.ts" \
+        "$prefix/node_modules/@bitkyc08/opencodex/src/types/wire.ts"
     chmod +x "$prefix/node_modules/.bin/ocx"
 }
-_ensure_runtime "9.8.7"
+_ensure_runtime "9.8.7" "$ROOT/files/opencodex-zen-session.patch"
 [[ "$npm_args" == *"@bitkyc08/opencodex@9.8.7"* ]] || fail "resolved OpenCodex package was not installed"
 [[ "$npm_args" != *"--allow-scripts"* ]] || fail "project install used the rejected allow-scripts CLI flag"
 grep -q '"bun": true' "$OPENCODEX_ROOT/package.json" \
     || fail "OpenCodex runtime package did not approve Bun's install script"
 [[ "$(_installed_version)" == "9.8.7" ]] || fail "resolved OpenCodex runtime version is wrong"
+grep -q 'destinationId !== "opencode-zen"' \
+    "$OPENCODEX_ROOT/node_modules/@bitkyc08/opencodex/src/providers/opencode-go-transport.ts" \
+    || fail "Zen session compatibility patch was not applied to the runtime"
+[[ -f "$OPENCODEX_ROOT/.setup-opencodex-zen-session.patch.sha256" ]] \
+    || fail "Zen session compatibility patch did not leave its integrity marker"
 unfunction npm
 rm -f "$OPENCODEX_BIN"
 rm -rf "$OPENCODEX_ROOT"

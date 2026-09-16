@@ -23,6 +23,7 @@ OPENCODEX_RELEASE_VERSION="${OPENCODEX_RELEASE_VERSION:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${OPENCODEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/opencodex}"
 REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}}"
+ZEN_SESSION_PATCH_SOURCE="${OPENCODEX_ZEN_SESSION_PATCH_SOURCE:-$SOURCE_BASE/files/opencodex-zen-session.patch}"
 
 _installed_version() {
     "$OPENCODEX_BIN" --version 2>/dev/null | awk '{print $NF; exit}'
@@ -83,13 +84,60 @@ _stage_assets() {
         echo "opencodex: could not fetch registry from $REGISTRY_SOURCE" >&2
         return 1
     }
+    _fetch_file "$ZEN_SESSION_PATCH_SOURCE" "$directory/opencodex-zen-session.patch" || {
+        echo "opencodex: could not fetch Zen session compatibility patch from $ZEN_SESSION_PATCH_SOURCE" >&2
+        return 1
+    }
     chmod +x "$directory/opencodex"
     OPENCODEX_AUTH_JSON="$AUTH_JSON" python3 "$directory/opencodex" __validate "$directory/provider-registry.json" || return 1
 }
 
+_runtime_patch_hash() {
+    setup_sha256_string < "$1"
+}
+
+_runtime_patch_current() {
+    local runtime_root="$1" patch_file="$2" marker expected
+    [[ ! -e "$runtime_root" ]] && return 0
+    marker="$runtime_root/.setup-opencodex-zen-session.patch.sha256"
+    [[ -f "$marker" ]] || return 1
+    expected=$(_runtime_patch_hash "$patch_file") || return 1
+    [[ "$(<"$marker")" == "$expected" ]] || return 1
+    patch --dry-run --reverse -d "$runtime_root" -p0 < "$patch_file" >/dev/null 2>&1
+}
+
+_apply_runtime_patch() {
+    local runtime_root="$1" patch_file="$2" marker expected
+    _require_safe_runtime_root || return 1
+    command -v patch >/dev/null 2>&1 || {
+        echo "opencodex: patch is required for the Zen session compatibility fix" >&2
+        return 1
+    }
+    [[ -f "$patch_file" ]] || {
+        echo "opencodex: missing Zen session compatibility patch: $patch_file" >&2
+        return 1
+    }
+    marker="$runtime_root/.setup-opencodex-zen-session.patch.sha256"
+    expected=$(_runtime_patch_hash "$patch_file") || return 1
+    if [[ -f "$marker" && "$(<"$marker")" == "$expected" ]] \
+        && patch --dry-run --reverse -d "$runtime_root" -p0 < "$patch_file" >/dev/null 2>&1; then
+        return 0
+    fi
+    if patch --dry-run -d "$runtime_root" -p0 < "$patch_file" >/dev/null 2>&1; then
+        patch -d "$runtime_root" -p0 < "$patch_file" >/dev/null || return 1
+    elif ! patch --dry-run --reverse -d "$runtime_root" -p0 < "$patch_file" >/dev/null 2>&1; then
+        echo "opencodex: installed OpenCodex does not match the Zen session compatibility patch" >&2
+        return 1
+    fi
+    printf '%s\n' "$expected" > "$marker"
+}
+
 _ensure_runtime() {
-    local version="$1"
-    [[ "$(_installed_version)" == "$version" ]] && return 0
+    local version="$1" patch_file="${2:-}"
+    if [[ "$(_installed_version)" == "$version" ]]; then
+        [[ -z "$patch_file" ]] || _apply_runtime_patch "$OPENCODEX_ROOT" "$patch_file"
+        return 0
+    fi
     _require_safe_runtime_root || return 1
     command -v npm >/dev/null 2>&1 || {
         echo "opencodex: npm is required to install OpenCodex" >&2
@@ -112,6 +160,10 @@ _ensure_runtime() {
     fi
     [[ -x "$staged/root/node_modules/.bin/ocx" ]] || {
         echo "opencodex: OpenCodex package did not install its CLI" >&2
+        rm -rf "$staged"
+        return 1
+    }
+    [[ -z "$patch_file" ]] || _apply_runtime_patch "$staged/root" "$patch_file" || {
         rm -rf "$staged"
         return 1
     }
@@ -164,6 +216,7 @@ _desired_hash_from() {
         printf '%s\n' "$version"
         cat "$staged/opencodex"
         cat "$staged/provider-registry.json"
+        cat "$staged/opencodex-zen-session.patch"
     } | setup_sha256_string
 }
 
@@ -181,6 +234,7 @@ _assets_current_from() {
     local staged="$1" rc=0
     cmp -s "$staged/opencodex" "$BIN" || rc=1
     cmp -s "$staged/provider-registry.json" "$REGISTRY" || rc=1
+    _runtime_patch_current "$OPENCODEX_ROOT" "$staged/opencodex-zen-session.patch" || rc=1
     return $rc
 }
 
@@ -255,7 +309,7 @@ _apply() {
     version=$(_resolve_release_version) || return 1
     staged=$(mktemp -d)
     _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    _ensure_runtime "$version" || { rm -rf "$staged"; return 1; }
+    _ensure_runtime "$version" "$staged/opencodex-zen-session.patch" || { rm -rf "$staged"; return 1; }
     hash=$(_desired_hash_from "$staged" "$version")
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
