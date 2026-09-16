@@ -178,7 +178,7 @@ m.common_auth_context = lambda: {
 m.common_auth_token = lambda scope, context=None: 'common-' + scope
 m._sync_common_auth(canonical_servers)
 assert m.cache_get('grimoire') == 'common-chat-v1'
-assert m.VAULT_TOKEN == 'common-vaultwarden-secrets'
+assert m.VAULT_TOKEN == 'common-passage'
 
 # The hourly timer invokes the bare/list command. A successful Common Auth
 # rotation must therefore flow from cache into every credential mirror there.
@@ -242,7 +242,7 @@ m.common_auth_token = lambda scope, context=None: 'common-' + scope
 # temporary exception without this flag continues to preserve them. Rejection
 # also dominates inherited process values and every setup-managed mirror.
 os.environ['GRIMOIRE_API_KEY'] = 'stale-environment-grimoire'
-os.environ['VAULTWARDEN_SECRETS_TOKEN'] = 'stale-environment-vault'
+os.environ['PASSAGE_MCP_TOKEN'] = 'stale-environment-vault'
 m.save_json_atomic(m.OLD_AUTH_PATH, {
     'demo': {'type': 'api', 'key': 'demo-key'},
     'grimoire': {'type': 'oauth', 'access': 'separate-oauth-session'},
@@ -258,7 +258,7 @@ m._sync_common_auth(canonical_servers)
 assert m.cache_get('grimoire') == ''
 assert not m.VAULT_TOKEN
 assert 'GRIMOIRE_API_KEY' not in os.environ
-assert 'VAULTWARDEN_SECRETS_TOKEN' not in os.environ
+assert 'PASSAGE_MCP_TOKEN' not in os.environ
 assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
 assert 'GRIMOIRE_API_KEY' not in open(m.ZSENV_PATH).read()
 assert m.load_json(m.OLD_AUTH_PATH)['grimoire'] == {
@@ -286,7 +286,7 @@ m.common_auth_context = lambda: {
     'origin': 'https://auth.lost.plus', 'subject': 'account-b',
 }
 def unavailable_common(scope, context=None):
-    if scope == 'vaultwarden-secrets':
+    if scope == 'passage':
         return 'account-b-vault'
     raise m.CommonAuthError('active credential unreadable in test')
 m.common_auth_token = unavailable_common
@@ -322,7 +322,7 @@ if yaml:
     with open(m.HERMES_CONFIG, 'w') as handle:
         yaml.safe_dump(hermes, handle, sort_keys=False)
 def mixed_common(scope, context=None):
-    if scope == 'vaultwarden-secrets':
+    if scope == 'passage':
         raise m.CommonAuthError('vault credential revoked in test', authoritative=True)
     raise m.CommonAuthError('active credential unreadable in test')
 m.common_auth_token = mixed_common
@@ -368,9 +368,9 @@ m._sync_common_auth(canonical_servers)
 assert m.cache_get('grimoire') == 'account-b-chat-v1'
 assert m._load_cache()['_common_auth_context']['subject'] == 'account-b'
 
-# Provider commands never trust a Vaultwarden token inherited from an old
+# Provider commands never trust a passage token inherited from an old
 # shell; they resolve a current context-bound token before using the vault.
-os.environ['VAULTWARDEN_MCP_TOKEN'] = 'old-shell-vault'
+os.environ['PASSAGE_MCP_TOKEN'] = 'old-shell-vault'
 m.VAULT_TOKEN = 'old-shell-vault'
 m.common_auth_context = lambda: {
     'origin': 'https://auth.lost.plus', 'subject': 'account-b',
@@ -391,7 +391,7 @@ assert m.cache_get('grimoire') == ''
 assert m.cache_get('openrouter') == 'independent-key'
 m.cache_set('grimoire', 'common-chat-v1')
 
-# Vaultwarden may still contain the pre-migration copy of a provider token.
+# passage may still contain the pre-migration copy of a provider token.
 # It must not overwrite a provider now owned by Common Auth, while unrelated
 # provider credentials continue to refresh from the vault normally.
 m.vault_available = lambda: True

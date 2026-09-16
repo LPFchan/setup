@@ -52,7 +52,7 @@ Do not recreate `inference/` notes for these facts.
   leave “see the repo” stubs.
 - **Keep operator notes to residue.** Remove copied command help, implementation
   detail, changelogs, and post-mortem forensics.
-- **Keep secrets in Vaultwarden.** Documentation may name a secret item, never
+- **Keep secrets in passage.** Documentation may name a secret item, never
   contain its value.
 - **Preserve research snapshots.** Point-in-time benchmarks, audits, and packet
   captures are historical rather than living documentation.

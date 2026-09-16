@@ -75,7 +75,7 @@ for namespace in manifest.get("retiredMcpGrants", []):
     assert not leftover, "retired grant namespace %s kept %d entries" % (namespace, len(leftover))
 assert not (retired & {"mcp__%s__*" % s["name"] for s in manifest["mcpServers"]}), \
     "a server is declared and retired at the same time"
-for added in ("mcp__obsidian__*", "mcp__vaultwarden-secrets__*"):
+for added in ("mcp__obsidian__*", "mcp__passage__*"):
     assert added in allow, f"manifest allow entry {added} missing"
 assert len(allow) == len(set(allow)), "allow list has duplicates"
 
@@ -119,14 +119,14 @@ assert tok("https://only-a-url/mcp") == "https://only-a-url/mcp", "a url is not 
 for server in manifest["mcpServers"]:
     os.environ.pop(ns["mcp_env_var"](server), None)
 os.environ["OBSIDIAN_MCP_TOKEN"] = "tok-obsidian"
-os.environ["VAULTWARDEN_MCP_TOKEN"] = "tok-vault"
+os.environ["PASSAGE_MCP_TOKEN"] = "tok-vault"
 os.environ["JINA_MCP_TOKEN"] = "stale-jina"
 # Authoritative sources replace stale pre-Common-Auth environment values. A
 # failed external lookup still keeps its previous value as an offline fallback.
 vault_calls = []
 def fake_vault_get(item):
     vault_calls.append(item)
-    assert g["VAULT_TOKEN"] == "auth-vaultwarden-secrets"
+    assert g["VAULT_TOKEN"] == "auth-passage"
     if item == "JINA_MCP_TOKEN":
         return "fresh-jina"
     raise ns["VaultError"]("no vault in test")
@@ -188,10 +188,10 @@ cx.write_text(codex)
 
 assert "[mcp_servers.obsidian]" in codex, "codex obsidian block missing"
 assert "bearer_token_env_var = \"OBSIDIAN_MCP_TOKEN\"" in codex
-assert "[mcp_servers.vaultwarden-secrets]" in codex, "codex vaultwarden block missing"
+assert "[mcp_servers.passage]" in codex, "codex passage block missing"
 zshenv = (HOME/".zshenv").read_text()
 assert "export OBSIDIAN_MCP_TOKEN=auth-obsidian" in zshenv
-assert "export VAULTWARDEN_MCP_TOKEN=auth-vaultwarden-secrets" in zshenv
+assert "export PASSAGE_MCP_TOKEN=auth-passage" in zshenv
 assert "export TWEET_FETCH_MCP_TOKEN=auth-tweet-fetch" in zshenv
 assert "export JINA_MCP_TOKEN=fresh-jina" in zshenv
 assert "JINA_MCP_TOKEN" in vault_calls
@@ -208,7 +208,7 @@ g["vault_get"] = vault_unavailable
 ns["cmd_mcp"]([])
 assert (HOME/".zshenv").read_text() == fresh_zshenv
 
-# A failed context lookup must make no unbound token or Vaultwarden reads.
+# A failed context lookup must make no unbound token or passage reads.
 unbound_calls = []
 vault_call_count = len(vault_calls)
 g["common_auth_context"] = lambda: (_ for _ in ()).throw(
@@ -240,7 +240,7 @@ assert "TWEET_FETCH_MCP_TOKEN=auth-tweet-fetch" in selective_zshenv
 assert "JINA_MCP_TOKEN=fresh-jina" in selective_zshenv
 
 # A full authoritative rejection then removes every Common Auth entry while
-# preserving the independently managed Vaultwarden entry.
+# preserving the independently managed passage entry.
 ns["cmd_mcp"]([])
 revoked_zshenv = (HOME/".zshenv").read_text()
 for server in manifest["mcpServers"]:
@@ -260,18 +260,18 @@ assert codex2.count("[mcp_servers.obsidian]") == 1, "codex block duplicated"
 zshenv2 = (HOME/".zshenv").read_text()
 assert zshenv2.count("# BEGIN harnesses:mcp-tokens") == 1, "zshenv block stacked"
 
-# A selective external-server sync still refreshes its Vaultwarden dependency.
+# A selective external-server sync still refreshes its passage dependency.
 # If that Common Auth bearer was revoked, its managed export must disappear
-# even though the Vaultwarden MCP server was not itself selected.
+# even though the passage MCP server was not itself selected.
 def vault_access_rejected(scope, context=None):
-    if scope == "vaultwarden-secrets":
+    if scope == "passage":
         raise ns["CommonAuthError"]("vault access revoked in test", authoritative=True)
     return "auth-" + scope
 g["common_auth_token"] = vault_access_rejected
 g["vault_get"] = vault_unavailable
 ns["cmd_mcp"](["jina"])
 selective_vault_rejection = (HOME/".zshenv").read_text()
-assert "VAULTWARDEN_MCP_TOKEN" not in ns["_existing_block"](selective_vault_rejection)
+assert "PASSAGE_MCP_TOKEN" not in ns["_existing_block"](selective_vault_rejection)
 assert "JINA_MCP_TOKEN=fresh-jina" in selective_vault_rejection
 
 # A new account context cannot inherit account A's exported Common Auth
@@ -280,7 +280,7 @@ g["common_auth_context"] = lambda: {
     "origin": "https://auth.lost.plus", "subject": "account-b",
 }
 g["common_auth_token"] = common_unavailable
-g["VAULT_TOKEN"] = "account-a-vaultwarden-access"
+g["VAULT_TOKEN"] = "account-a-passage-access"
 g["vault_get"] = vault_unavailable
 ns["cmd_mcp"]([])
 switched_zshenv = (HOME/".zshenv").read_text()

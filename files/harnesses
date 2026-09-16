@@ -8,7 +8,7 @@ Actions: install | update | settings | mcp. With no argument an fzf menu is
 shown when attached to a terminal.
 
 Operated lost.plus services resolve through the shared auth module. External
-service credentials remain in vaultwarden folder=mcp.
+service credentials remain in the passage MCP, folder=mcp.
 """
 
 from __future__ import annotations
@@ -38,11 +38,11 @@ for _server in MANIFEST.get("mcpServers", []):
     if _server.get("auth") == "none":
         continue
     _source = _server.get("credentialSource")
-    if _source not in ("common-auth", "vaultwarden"):
+    if _source not in ("common-auth", "passage"):
         raise SystemExit("harnesses: %s has no valid credentialSource" % _server.get("name", "server"))
     if _source == "common-auth" and not _server.get("scope"):
         raise SystemExit("harnesses: %s has no Common Auth scope" % _server.get("name", "server"))
-VAULT_URL = os.environ.get("VAULTWARDEN_MCP_URL", os.environ.get("VAULTWARDEN_URL", "https://vault.lost.plus/mcp"))
+VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://vault.lost.plus/mcp")
 VAULT_FOLDER = "mcp"
 def _zshenv_exports():
     """export NAME=VALUE pairs from ~/.zshenv, whichever block they sit in.
@@ -87,9 +87,8 @@ def _managed_zshenv_exports():
 
 def _vault_token():
     for source in (os.environ, _zshenv_exports()):
-        for name in ("VAULTWARDEN_SECRETS_TOKEN", "VAULTWARDEN_MCP_TOKEN"):
-            if source.get(name):
-                return source[name]
+        if source.get("PASSAGE_MCP_TOKEN"):
+            return source["PASSAGE_MCP_TOKEN"]
     return ""
 
 
@@ -480,9 +479,8 @@ def mcp_token_value(raw):
 def mcp_env_var(server):
     """Env var holding this server's token: {NAME}_MCP_TOKEN, derived.
 
-    An explicit envVar overrides the derived name. Vaultwarden keeps its
-    established VAULTWARDEN_MCP_TOKEN name because providers consumes the
-    same Common Auth scope.
+    An explicit envVar overrides the derived name. providers consumes the
+    passage server's PASSAGE_MCP_TOKEN under the same Common Auth scope.
     """
     override = server.get("envVar")
     if override:
@@ -549,11 +547,11 @@ def _cmd_mcp_once(names):
         eprint("  could not resolve Common Auth account context: %s; keeping bound credentials" % exc)
     # Without a context, a successful token lookup could belong to a login
     # that changed while the context command was blocked or timing out. Do not
-    # make any Auth or Vaultwarden reads until an account can be bound.
+    # make any Auth or passage reads until an account can be bound.
     context_error = CommonAuthError("Common Auth account context unavailable")
     previous_context = _existing_common_auth_context()
     if auth_context is not None:
-        VAULT_TOKEN = bound_existing.get("VAULTWARDEN_MCP_TOKEN", "")
+        VAULT_TOKEN = bound_existing.get("PASSAGE_MCP_TOKEN", "")
     if auth_context is not None and previous_context != auth_context:
         VAULT_TOKEN = ""
         authoritative_missing.update(
@@ -572,21 +570,21 @@ def _cmd_mcp_once(names):
             common_tokens[scope] = common_auth_token(scope, auth_context)
         return common_tokens[scope]
 
-    # External credentials still live in Vaultwarden, but the credential used
-    # to reach Vaultwarden is itself Common Auth-owned. Refresh it before any
+    # External credentials still live in passage, but the credential used
+    # to reach passage is itself Common Auth-owned. Refresh it before any
     # vault reads so a pre-migration environment value cannot remain the
     # authority after Auth is available.
-    if any(s.get("credentialSource") == "vaultwarden" for s in servers):
+    if any(s.get("credentialSource") == "passage" for s in servers):
         try:
-            VAULT_TOKEN = resolve_common("vaultwarden-secrets")
+            VAULT_TOKEN = resolve_common("passage")
         except CommonAuthContextChanged:
             raise
         except CommonAuthError as exc:
             if exc.authoritative:
                 VAULT_TOKEN = ""
-                authoritative_missing.add("VAULTWARDEN_MCP_TOKEN")
+                authoritative_missing.add("PASSAGE_MCP_TOKEN")
             detail = "removing managed access" if exc.authoritative else "using existing access if available"
-            eprint("  could not refresh Vaultwarden access from Common Auth: %s; %s" % (exc, detail))
+            eprint("  could not refresh passage access from Common Auth: %s; %s" % (exc, detail))
 
     exports = []
     for s in servers:
@@ -1264,7 +1262,7 @@ Every action takes optional names to narrow the run: harness names, except
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or Vaultwarden;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.

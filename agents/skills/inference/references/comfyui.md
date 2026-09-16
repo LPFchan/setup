@@ -28,7 +28,7 @@ tail -n 200 /var/log/comfyui/comfyui.err
 ```
 
 Do not dump `comfyui-mcp.service` or its startup log: both contain its token.
-Use `vaultwarden_secrets.get_secret({"folder":"mcp","item_name":"comfyui-mcp-token"})`.
+Use `passage.get_secret({"folder":"mcp","item_name":"comfyui-mcp-token"})`.
 Migrate the unit to credential loading and rotate the plaintext token.
 
 The MCP service runs `npx -y comfyui-mcp@latest --tunnel`: its code, public

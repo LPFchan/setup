@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Operated lost.plus services declare credentialSource=common-auth plus their gateway scope. External secrets default to vaultwarden folder=mcp under the derived name {NAME}_MCP_TOKEN. Wire transport remains in auth because bearer versus x-api-key is independent of credential ownership. Do not add envVar/vaultItem unless the name genuinely cannot be derived. Each name must equal the mcp__<name>__* prefix granted in settings.claude.permissionsAllowAdd.",
+  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Operated lost.plus services declare credentialSource=common-auth plus their gateway scope. External secrets default to passage folder=mcp under the derived name {NAME}_MCP_TOKEN. Wire transport remains in auth because bearer versus x-api-key is independent of credential ownership. Do not add envVar/vaultItem unless the name genuinely cannot be derived. Each name must equal the mcp__<name>__* prefix granted in settings.claude.permissionsAllowAdd.",
   "harnesses": [
     {
       "name": "claude",
@@ -100,12 +100,11 @@
       "scope": "tweet-fetch"
     },
     {
-      "name": "vaultwarden-secrets",
+      "name": "passage",
       "url": "https://vault.lost.plus/mcp",
       "auth": "bearer",
       "credentialSource": "common-auth",
-      "scope": "vaultwarden-secrets",
-      "envVar": "VAULTWARDEN_MCP_TOKEN"
+      "scope": "passage"
     },
     {
       "name": "comfyui",
@@ -125,19 +124,19 @@
       "name": "jina",
       "url": "https://mcp.jina.ai/v1",
       "auth": "bearer",
-      "credentialSource": "vaultwarden"
+      "credentialSource": "passage"
     },
     {
       "name": "exa",
       "url": "https://mcp.exa.ai/mcp",
       "auth": "x-api-key",
-      "credentialSource": "vaultwarden"
+      "credentialSource": "passage"
     },
     {
       "name": "korean-law",
       "url": "https://korean-law-mcp.fly.dev/mcp",
       "auth": "bearer",
-      "credentialSource": "vaultwarden"
+      "credentialSource": "passage"
     },
     {
       "name": "joongna",
@@ -204,7 +203,7 @@
         "WebSearch",
         "mcp__obsidian__*",
         "mcp__tweet-fetch__*",
-        "mcp__vaultwarden-secrets__*",
+        "mcp__passage__*",
         "mcp__comfyui__*",
         "mcp__thinqconnect__*",
         "mcp__jina__*",
@@ -252,7 +251,8 @@
     }
   },
   "retiredMcpServers": [
-    "obsidian-direct"
+    "obsidian-direct",
+    "passage-secrets"
   ],
   "retiredMcpComment": "Server names to unregister and stop granting. The codex writer already reclaims a block whose body matches one we emit, whatever it is named, but claude's registration and the permissions allow-list are additive and will keep a retired name forever unless it is named here.",
   "retiredMcpGrants": [

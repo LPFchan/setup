@@ -4,7 +4,7 @@
 """providers — credential and model registry for AI providers.
 
 Grimoire resolves through the shared auth module. Third-party credentials live
-in vaultwarden (folder llm, items named {PROVIDER}_API_KEY). A local 0600 cache
+in the passage MCP (folder llm, items named {PROVIDER}_API_KEY). A local 0600 cache
 serves offline/headless contexts. This tool maintains the OpenCode and shell
 credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi tools.
 Provider descriptors may restrict a live catalog with model_allow_suffixes and
@@ -80,12 +80,8 @@ SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
 OLD_AUTH_PATH = os.path.expanduser("~/.local/share/opencode/auth.json")
 # canonical vault store (folder + item-name convention)
 VAULT_FOLDER = "llm"
-VAULT_URL = os.environ.get(
-    "VAULTWARDEN_MCP_URL", os.environ.get("VAULTWARDEN_URL", "https://vault.lost.plus/mcp")
-)
-VAULT_TOKEN = os.environ.get("VAULTWARDEN_SECRETS_TOKEN") or os.environ.get(
-    "VAULTWARDEN_MCP_TOKEN", ""
-)
+VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://vault.lost.plus/mcp")
+VAULT_TOKEN = os.environ.get("PASSAGE_MCP_TOKEN", "")
 
 AUTH_BLOCK_BEGIN = "# BEGIN setup:api-keys"
 AUTH_BLOCK_END = "# END setup:api-keys"
@@ -299,8 +295,7 @@ def _sync_common_auth_once(servers):
     # used as Common Auth fallbacks.
     for provider in managed:
         os.environ.pop(_env_name(provider), None)
-    os.environ.pop("VAULTWARDEN_SECRETS_TOKEN", None)
-    os.environ.pop("VAULTWARDEN_MCP_TOKEN", None)
+    os.environ.pop("PASSAGE_MCP_TOKEN", None)
     VAULT_TOKEN = ""
     rejected = set()
     try:
@@ -320,8 +315,7 @@ def _sync_common_auth_once(servers):
             os.environ.pop(_env_name(provider), None)
         cache.pop("_vault_token", None)
         VAULT_TOKEN = ""
-        os.environ.pop("VAULTWARDEN_SECRETS_TOKEN", None)
-        os.environ.pop("VAULTWARDEN_MCP_TOKEN", None)
+        os.environ.pop("PASSAGE_MCP_TOKEN", None)
         rejected.update(managed)
         _save_cache(cache)
         _sync_mirrors(managed_absent=managed)
@@ -330,15 +324,14 @@ def _sync_common_auth_once(servers):
         _save_cache(cache)
     authoritative_removed = False
     try:
-        VAULT_TOKEN = common_auth_token("vaultwarden-secrets", context)
+        VAULT_TOKEN = common_auth_token("passage", context)
         cache_remove("_vault_token")
     except CommonAuthContextChanged:
         raise
     except CommonAuthError as exc:
         if exc.authoritative:
             VAULT_TOKEN = ""
-            os.environ.pop("VAULTWARDEN_SECRETS_TOKEN", None)
-            os.environ.pop("VAULTWARDEN_MCP_TOKEN", None)
+            os.environ.pop("PASSAGE_MCP_TOKEN", None)
             cache_remove("_vault_token")
             authoritative_removed = True
         elif not VAULT_TOKEN:
@@ -373,13 +366,13 @@ def vault_available():
 
 
 def _ensure_vault_token(interactive):
-    """Resolve Vaultwarden through the current, context-bound Common Auth login."""
+    """Resolve passage access through the current, context-bound Common Auth login."""
     global VAULT_TOKEN
     VAULT_TOKEN = ""
     for attempt in range(2):
         try:
             context = common_auth_context()
-            VAULT_TOKEN = common_auth_token("vaultwarden-secrets", context)
+            VAULT_TOKEN = common_auth_token("passage", context)
             return VAULT_TOKEN
         except CommonAuthContextChanged:
             if not attempt:
@@ -388,17 +381,17 @@ def _ensure_vault_token(interactive):
         except CommonAuthError as exc:
             error = str(exc)
         if interactive:
-            print(f"providers needs Common Auth access to Vaultwarden ({error}).", file=sys.stderr)
+            print(f"providers needs Common Auth access to passage ({error}).", file=sys.stderr)
             print("Run: auth login", file=sys.stderr)
         return ""
     return ""
 
 
 def _vault_call(tool, arguments):
-    """Call a vaultwarden MCP tool over direct HTTP. Raises VaultError on
+    """Call a passage MCP tool over direct HTTP. Raises VaultError on
     transport/protocol failure; returns the tool's text payload on success."""
     if not VAULT_TOKEN:
-        raise VaultError("vault token not set (VAULTWARDEN_SECRETS_TOKEN / VAULTWARDEN_MCP_TOKEN)")
+        raise VaultError("vault token not set (PASSAGE_MCP_TOKEN)")
     body = {
         "jsonrpc": "2.0",
         "id": id(arguments),
@@ -1082,8 +1075,6 @@ def _sync_zsenv_to_cache_once(servers=None):
     }
     changed = False
     for env_name, value in block.items():
-        if env_name == "VAULTWARDEN_SECRETS_TOKEN":
-            continue
         provider = _provider_from_env(env_name)
         if not provider or provider in common_auth_providers:
             continue

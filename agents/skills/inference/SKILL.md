@@ -21,7 +21,7 @@ description: "Operate and develop the fleet inference system across Grimoire and
 | OpenAI base | `<origin>/v1` |
 | Internal manager | `127.0.0.1:9000`; never use as a client endpoint |
 
-Use `vaultwarden_secrets.get_secret({"folder":"llm","item_name":"GRIMOIRE_API_KEY"})`; never print or persist it.
+Use `passage.get_secret({"folder":"llm","item_name":"GRIMOIRE_API_KEY"})`; never print or persist it.
 
 ```bash
 GRIMOIRE_ORIGIN=http://localhost:9001
