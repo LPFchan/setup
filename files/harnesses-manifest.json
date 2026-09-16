@@ -170,6 +170,13 @@
       "surfaces": [
         "claude"
       ]
+    },
+    {
+      "name": "onedrive",
+      "url": "https://onedrive.lost.plus/mcp",
+      "auth": "bearer",
+      "credentialSource": "common-auth",
+      "scope": "onedrive"
     }
   ],
   "settings": {
@@ -207,7 +214,8 @@
         "mcp__bunjang__*",
         "mcp__heatmap__*",
         "mcp__daiso__*",
-        "mcp__notion__*"
+        "mcp__notion__*",
+        "mcp__onedrive__*"
       ]
     },
     "t3": {
