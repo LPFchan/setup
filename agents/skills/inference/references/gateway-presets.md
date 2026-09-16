@@ -79,7 +79,11 @@ A gateway preset is a saved workload topology in host `state/presets.json` (cont
 
 It is unrelated to webui system-prompt presets. `free` releases manual control;
 `single-gpu` keeps Grimoire off GPU 1; `embed-rerank` locks retrieval
-replicas; `eastself` locks chat/retrieval to GPU 0. Query `/presets/{name}`
+replicas; `eastself` locks chat/retrieval to GPU 0; `training` stops all
+models and locks cold loads (409) with an empty GPU mask to reserve the GPUs
+for training runs — the empty `gpus: []` mask is load-bearing, since a preset
+with no models/fixed/mask clears the lock on activation. Mangchi remote models
+still serve, so stop them first if their load matters. Query `/presets/{name}`
 for current aliases and pins.
 
 ## Switching vs Modifying
