@@ -25,7 +25,8 @@ terminal, such as entering an admin password manually.
 When requested to deploy a new web service, use cloudflare credentials from vaultwarden MCP to edit DNS records.
 
 Common Auth lives on OCI (`auth.lost.plus`, `~/auth`, :8730). OCI and Grimoire
-each run its gateway from `~/auth` on :8740; load the `common-auth` skill for it.
+each run its gateway from `~/auth` on :8740; load the `lost-plus` skill and
+read its Common Auth reference for it.
 
 ## NanoPi R3S LTS — OpenWrt router
 - 10.0.0.1 · user root (SSH pubkey + LuCI creds in vaultwarden)

@@ -1,0 +1,148 @@
+/* Accessible lost.plus starting tokens. Copy this file; do not import it as a
+   fleet-wide dependency. Adapt the accent to the service and re-test contrast. */
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5;
+  --surface: #fff;
+  --surface-2: #efefed;
+  --hair: rgb(0 0 0 / 8%);
+  --line: #8b929a;
+  --hover: rgb(0 0 0 / 5%);
+  --text: #1a1a1a;
+  --text-muted: #555c64;
+  --text-meta: #686f77;
+  --accent: #3151c6;
+  --accent-soft: rgb(49 81 198 / 12%);
+  --accent-solid: #3151c6;
+  --on-accent-solid: #fff;
+  --ok: #247737;
+  --warn: #8a5a12;
+  --danger: #b4232a;
+  --danger-soft: rgb(180 35 42 / 8%);
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", "Apple SD Gothic Neo", Pretendard, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151619;
+    --surface: #1b1c20;
+    --surface-2: #222327;
+    --hair: rgb(255 255 255 / 8%);
+    --line: #69717c;
+    --hover: rgb(255 255 255 / 5%);
+    --text: #e8eaed;
+    --text-muted: #afb5bd;
+    --text-meta: #969da7;
+    --accent: #9aabff;
+    --accent-soft: rgb(154 171 255 / 16%);
+    --accent-solid: #9aabff;
+    --on-accent-solid: #111318;
+    --ok: #58d080;
+    --warn: #efbd5b;
+    --danger: #ff8a8f;
+    --danger-soft: rgb(255 138 143 / 10%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn.primary {
+  border-color: var(--accent-solid);
+  color: var(--on-accent-solid);
+  background: var(--accent-solid);
+}
+
+.btn.quiet {
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.btn.quiet:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.btn.danger {
+  color: var(--danger);
+}
+
+.pill {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  font-size: 12px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-meta);
+}
+
+.section-label {
+  margin: 20px 0 6px;
+  color: var(--text-meta);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
