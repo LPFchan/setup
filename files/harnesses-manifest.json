@@ -252,7 +252,7 @@
   },
   "retiredMcpServers": [
     "obsidian-direct",
-    "passage-secrets"
+    "vaultwarden-secrets"
   ],
   "retiredMcpComment": "Server names to unregister and stop granting. The codex writer already reclaims a block whose body matches one we emit, whatever it is named, but claude's registration and the permissions allow-list are additive and will keep a retired name forever unless it is named here.",
   "retiredMcpGrants": [
@@ -260,5 +260,10 @@
     "claude_ai_Vaultwarden_Secrets",
     "claude_ai_tweet-fetch-mcp"
   ],
-  "retiredMcpGrantsComment": "Tool namespaces to withdraw from permissions.allow. Separate from retiredMcpServers because these were never servers this module registered -- they are claude.ai connectors, now switched off, whose grants the allow-list would otherwise keep forever since it only ever unions."
+  "retiredMcpGrantsComment": "Tool namespaces to withdraw from permissions.allow. Separate from retiredMcpServers because these were never servers this module registered -- they are claude.ai connectors, now switched off, whose grants the allow-list would otherwise keep forever since it only ever unions.",
+  "retiredEnvVars": [
+    "VAULTWARDEN_MCP_TOKEN",
+    "VAULTWARDEN_SECRETS_TOKEN"
+  ],
+  "retiredEnvVarsComment": "Token exports to strip from ~/.zshenv wherever they sit. A retired server's derived {NAME}_MCP_TOKEN is dropped automatically; list here the names that were set through an explicit envVar or by an older release, since those cannot be derived from the retired name."
 }

@@ -196,6 +196,25 @@ assert "export TWEET_FETCH_MCP_TOKEN=auth-tweet-fetch" in zshenv
 assert "export JINA_MCP_TOKEN=fresh-jina" in zshenv
 assert "JINA_MCP_TOKEN" in vault_calls
 
+# A retired server's orphan codex block goes away even though its body (old
+# env var) no longer matches what we emit, and its dead token exports are
+# stripped from wherever they sit in .zshenv, not only from our block.
+cx.write_text('[mcp_servers."vaultwarden-secrets"]\nurl = "https://vault.lost.plus/mcp"\n'
+              'bearer_token_env_var = "VAULTWARDEN_SECRETS_TOKEN"\n\n' + codex)
+zpath = HOME/".zshenv"
+zpath.write_text("export VAULTWARDEN_SECRETS_TOKEN=dead\n" + zpath.read_text().replace(
+    "# END harnesses:mcp-tokens", "export VAULTWARDEN_MCP_TOKEN=dead\n# END harnesses:mcp-tokens"))
+ns["cmd_mcp"]([])
+after = cx.read_text()
+tomllib.loads(after)
+assert "vaultwarden-secrets" not in after, "retired codex block survived"
+assert "[mcp_servers.passage]" in after, "codex passage block missing after retirement"
+z = zpath.read_text()
+assert "VAULTWARDEN_SECRETS_TOKEN" not in z and "VAULTWARDEN_MCP_TOKEN" not in z, \
+    "retired token export survived"
+assert "export PASSAGE_MCP_TOKEN=auth-passage" in z
+cx.write_text(codex)
+
 # If either authority is temporarily unavailable later, preserve the freshly
 # reconciled managed values rather than falling back to stale process exports.
 fresh_zshenv = zshenv

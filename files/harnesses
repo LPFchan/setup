@@ -786,15 +786,19 @@ def _write_codex_mcp(servers):
     # Reclaim what an older release appended. Match on the body rather than the
     # name: a rename in the manifest leaves the previous name behind pointing at
     # the same url with the same env var, and that orphan is ours to remove
-    # whatever it is called. A block with [.tools.*] children is never ours --
-    # we have never emitted one -- so those stay, and their rules with them.
+    # whatever it is called. A retired name goes too even when its body no
+    # longer matches: a rename that also changed the env var leaves a block
+    # the body match cannot see. A block with [.tools.*] children is never
+    # ours -- we have never emitted one -- so those stay, and their rules
+    # with them.
     ours = {_codex_mcp_block(s).strip().split("\n", 1)[1] for s in servers}
+    retired_names = set(MANIFEST.get("retiredMcpServers") or [])
     for name, body in _codex_sections(text):
         table = _codex_declared_servers(text).get(name)
         if isinstance(table, dict) and any(isinstance(v, dict) for v in table.values()):
             continue  # carries [.tools.*] rules, so it was never ours to remove
         rest = body.strip().split("\n", 1)
-        if len(rest) == 2 and rest[1] in ours:
+        if name in retired_names or (len(rest) == 2 and rest[1] in ours):
             text = text.replace(body, "", 1)
 
     # "Declared" means the operator gave the server settings of its own, not just
@@ -830,6 +834,14 @@ def _write_codex_mcp(servers):
     CODEX_CONFIG.write_text(candidate)
     print("  wrote %s (%d codex MCP server(s))" % (CODEX_CONFIG, len(emit)))
 
+def _retired_env_vars():
+    derived = {
+        re.sub(r"[^A-Za-z0-9]+", "_", name).upper() + "_MCP_TOKEN"
+        for name in (MANIFEST.get("retiredMcpServers") or [])
+    }
+    return derived | set(MANIFEST.get("retiredEnvVars") or [])
+
+
 def _existing_block(text):
     begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
     match = re.search(re.escape(begin)+r"(.*?)"+re.escape(end), text, re.S)
@@ -864,9 +876,13 @@ def _mirror_zshenv(exports, authoritative_missing=None, auth_context=None):
         match = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=", line)
         if match:
             emitted_names.add(match.group(1))
+    # A retired server's token is a dead credential: drop it from our block
+    # and from anywhere else in the file an older release or module left it.
+    retired_vars = _retired_env_vars()
     exports.extend(
         line for name, line in existing_exports.items()
         if name not in emitted_names and name not in authoritative_missing
+        and name not in retired_vars
     )
     context_line = ""
     if auth_context is not None:
@@ -884,6 +900,8 @@ def _mirror_zshenv(exports, authoritative_missing=None, auth_context=None):
         text = re.sub(re.escape(begin)+r".*?"+re.escape(end)+r"\n?", block, text, flags=re.S)
     else:
         text = text.rstrip("\n")+("\n\n" if text.strip() else "")+block
+    for name in retired_vars:
+        text = re.sub(r"^export\s+%s=.*\n?" % re.escape(name), "", text, flags=re.M)
     ZSHENV.write_text(text)
     print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
 
