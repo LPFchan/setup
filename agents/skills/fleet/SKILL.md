@@ -22,14 +22,14 @@ When accessing a remote machine, use the `main` tmux session. Do not open a new
 separate tmux session. This allows the operator to see and interact with the
 terminal, such as entering an admin password manually.
 
-When requested to deploy a new web service, use cloudflare credentials from vaultwarden MCP to edit DNS records.
+When requested to deploy a new web service, use cloudflare credentials from the `passage` MCP to edit DNS records.
 
 Common Auth lives on OCI (`auth.lost.plus`, `~/auth`, :8730). OCI and Grimoire
 each run its gateway from `~/auth` on :8740; load the `lost-plus` skill and
 read its Common Auth reference for it.
 
 ## NanoPi R3S LTS — OpenWrt router
-- 10.0.0.1 · user root (SSH pubkey + LuCI creds in vaultwarden)
+- 10.0.0.1 · user root (SSH pubkey + LuCI creds in passage)
 - OpenWrt 24.10.2, Rockchip SoC, ~1 GB RAM
 - gateway for the 10.0.0.0/24 LAN (Cloudflare → this → Tailscale)
 - persistent log at /etc/logpersist.log — procd svc /etc/init.d/logpersist, 1 MB rolling, survives reboots
@@ -63,7 +63,7 @@ read its Common Auth reference for it.
 	- google cloud CLI, oracle cloud CLI
 	- discord, twitter, instagram DM using Beeper Desktop Linux
 	- iCloud calendar and mail
-	- all credentials at vaultwarden
+	- all credentials in passage
 - hosts heatmap at heatmap.lost.plus
 - hosts Muum at muum.lost.plus (repo ~/muum)
 - second RTX 3090 currently vacant due to board-level repair work
@@ -80,7 +80,7 @@ read its Common Auth reference for it.
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
 - hosts agent-with-agent at awa.lost.plus (repo `~/agent-with-agent`)
-- hosts MCP servers: obsidian/marble, joongna-price-search, tweet-fetch, thinqconnect, vaultwarden, comfyui-mcp
+- hosts MCP servers: obsidian/marble, joongna-price-search, tweet-fetch, thinqconnect, passage (passage.lost.plus, repo `~/passage-mcp`), comfyui-mcp
 - hosts lost.plus homepage (repo `~/lost.plus`)
 - hosts Songbook at okdam.lost.plus (repo `~/okdam-songbook`)
 - hosts gswtools at gsw.lost.plus (repo `~/gswtools`)
