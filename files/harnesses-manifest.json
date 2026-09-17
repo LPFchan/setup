@@ -101,7 +101,7 @@
     },
     {
       "name": "passage",
-      "url": "https://vault.lost.plus/mcp",
+      "url": "https://passage.lost.plus/mcp",
       "auth": "bearer",
       "credentialSource": "common-auth",
       "scope": "passage"

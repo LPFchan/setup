@@ -42,7 +42,7 @@ for _server in MANIFEST.get("mcpServers", []):
         raise SystemExit("harnesses: %s has no valid credentialSource" % _server.get("name", "server"))
     if _source == "common-auth" and not _server.get("scope"):
         raise SystemExit("harnesses: %s has no Common Auth scope" % _server.get("name", "server"))
-VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://vault.lost.plus/mcp")
+VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://passage.lost.plus/mcp")
 VAULT_FOLDER = "mcp"
 def _zshenv_exports():
     """export NAME=VALUE pairs from ~/.zshenv, whichever block they sit in.

@@ -80,7 +80,7 @@ SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
 OLD_AUTH_PATH = os.path.expanduser("~/.local/share/opencode/auth.json")
 # canonical vault store (folder + item-name convention)
 VAULT_FOLDER = "llm"
-VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://vault.lost.plus/mcp")
+VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://passage.lost.plus/mcp")
 VAULT_TOKEN = os.environ.get("PASSAGE_MCP_TOKEN", "")
 
 AUTH_BLOCK_BEGIN = "# BEGIN setup:api-keys"
