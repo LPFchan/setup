@@ -215,6 +215,51 @@ assert "VAULTWARDEN_SECRETS_TOKEN" not in z and "VAULTWARDEN_MCP_TOKEN" not in z
 assert "export PASSAGE_MCP_TOKEN=auth-passage" in z
 cx.write_text(codex)
 
+# --- hermes: manifest entries are rewritten in place inside mcp_servers:,
+# operator entries and entries pointing elsewhere stay byte for byte, retired
+# names go, tokens mirror into ~/.hermes/.env, and keys after the block survive.
+hdir = HOME/".hermes"; hdir.mkdir(exist_ok=True)
+hcfg, henv = hdir/"config.yaml", hdir/".env"
+notion = "  notion:\n    url: https://mcp.notion.com/mcp\n    auth: oauth\n    connect_timeout: 120\n"
+hcfg.write_text(
+    "model:\n  default: x\n"
+    "mcp_servers:\n"
+    "  obsidian:\n    type: remote\n    url: https://mcp.lost.plus/mcp\n    oauth: false\n"
+    "    headers:\n      Authorization: Bearer ${MCP_OBSIDIAN_TOKEN}\n"
+    "  vaultwarden-secrets:\n    type: remote\n    url: https://vault.lost.plus/mcp\n    oauth: false\n"
+    "    headers:\n      Authorization: Bearer ${MCP_VAULTWARDEN_SECRETS_TOKEN}\n"
+    + notion +
+    "  jina:\n    type: remote\n    url: https://elsewhere.example/mcp\n    oauth: false\n"
+    "\n"
+    "trailing_key: keep\n")
+henv.write_text("# hermes env\nMCP_OBSIDIAN_TOKEN=old\nVAULTWARDEN_MCP_TOKEN=dead\n")
+ns["cmd_mcp"]([])
+hc = hcfg.read_text()
+assert "vaultwarden-secrets" not in hc, "retired hermes entry survived"
+assert notion in hc, "operator hermes entry was touched"
+assert "elsewhere.example" in hc and hc.count("  jina:") == 1, "foreign-url entry was replaced or duplicated"
+assert "      Authorization: Bearer ${OBSIDIAN_MCP_TOKEN}" in hc, "obsidian header not rewritten"
+assert ("  passage:\n    type: remote\n    url: https://passage.lost.plus/mcp\n    oauth: false\n"
+        "    headers:\n      Authorization: Bearer ${PASSAGE_MCP_TOKEN}\n") in hc, "passage entry missing"
+assert "      X-API-Key: ${EXA_MCP_TOKEN}" in hc, "x-api-key header shape"
+assert "  heatmap:\n    type: remote\n    url: https://heatmap.lost.plus/mcp\n    oauth: false\n" in hc, "auth-none entry"
+assert "\ntrailing_key: keep\n" in hc and hc.index("trailing_key") > hc.index("  passage:"), "key after the block was lost or additions landed outside it"
+assert "  notion:" in hc and hc.count("  obsidian:") == 1
+try:
+    import yaml
+    parsed = yaml.safe_load(hc)
+    assert parsed["trailing_key"] == "keep" and "passage" in parsed["mcp_servers"] and "notion" in parsed["mcp_servers"]
+except ImportError:
+    pass
+he = henv.read_text()
+assert "# hermes env\n" in he and "MCP_OBSIDIAN_TOKEN=old" in he, "hand-written env lines were lost"
+assert "VAULTWARDEN_MCP_TOKEN" not in he, "retired token survived in hermes env"
+assert "PASSAGE_MCP_TOKEN=auth-passage" in he and "OBSIDIAN_MCP_TOKEN=auth-obsidian" in he, "hermes env block missing tokens"
+assert oct(henv.stat().st_mode & 0o777) == "0o600", "hermes env not private"
+before = (hcfg.read_text(), henv.read_text())
+ns["cmd_mcp"]([])
+assert (hcfg.read_text(), henv.read_text()) == before, "hermes writer is not idempotent"
+
 # If either authority is temporarily unavailable later, preserve the freshly
 # reconciled managed values rather than falling back to stale process exports.
 fresh_zshenv = zshenv

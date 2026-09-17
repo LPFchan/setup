@@ -493,8 +493,9 @@ def mcp_vault_item(server):
 
 
 def mcp_surfaces(server):
-    """Which harnesses get this server. Both unless the manifest narrows it."""
-    return server.get("surfaces") or ["claude", "codex"]
+    """Which harnesses get this server. All three unless the manifest narrows
+    it; hermes only matters where ~/.hermes/config.yaml exists."""
+    return server.get("surfaces") or ["claude", "codex", "hermes"]
 
 
 def _claude_mcp_add(s):
@@ -636,6 +637,8 @@ def _cmd_mcp_once(names):
     else:
         print("  claude not installed; skipped claude MCP enrollment")
     _write_codex_mcp([s for s in servers if "codex" in mcp_surfaces(s)])
+    _write_hermes_mcp([s for s in servers if "hermes" in mcp_surfaces(s)],
+                      exports, authoritative_missing)
     return 0
 
 def _claude_mcp_registered(name):
@@ -904,6 +907,144 @@ def _mirror_zshenv(exports, authoritative_missing=None, auth_context=None):
         text = re.sub(r"^export\s+%s=.*\n?" % re.escape(name), "", text, flags=re.M)
     ZSHENV.write_text(text)
     print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
+
+# --- hermes -------------------------------------------------------------
+# Hermes reads MCP servers from ~/.hermes/config.yaml (mcp_servers:) and
+# expands ${VAR} in headers from ~/.hermes/.env. Its gateway is a systemd
+# user service that does not source .zshenv, so tokens must land in that
+# .env. The block is edited line by line: entries the manifest does not name
+# (notion, beeper, ...) are the operator's and stay byte for byte.
+
+HERMES_CONFIG = pathlib.Path(os.environ.get("HERMES_CONFIG", str(HOME/".hermes/config.yaml")))
+HERMES_ENV = pathlib.Path(os.environ.get("HERMES_ENV", str(HOME/".hermes/.env")))
+
+
+def _hermes_mcp_entry(s):
+    var = mcp_env_var(s)
+    lines = ["  %s:" % s["name"], "    type: remote", "    url: %s" % s["url"], "    oauth: false"]
+    if s["auth"] == "bearer":
+        lines += ["    headers:", "      Authorization: Bearer ${%s}" % var]
+    elif s["auth"] == "x-api-key":
+        lines += ["    headers:", "      X-API-Key: ${%s}" % var]
+    return lines
+
+
+def _hermes_mcp_block(lines):
+    """(start, end) line indexes of the top-level mcp_servers block, end
+    exclusive; (None, None) when the file has no such block."""
+    for i, line in enumerate(lines):
+        if re.match(r"^mcp_servers:\s*(#.*)?$", line):
+            j = i + 1
+            while j < len(lines) and (lines[j].strip() == "" or lines[j][0] in " \t"
+                                      or lines[j].startswith("#")):
+                j += 1
+            return i, j
+    return None, None
+
+
+def _hermes_entries(lines, start, end):
+    """[(name, first, stop)] for each two-space-indented entry in the block.
+    Blank separator lines are left outside every span."""
+    heads = [k for k in range(start + 1, end) if re.match(r"^  [^\s#][^:]*:\s*$", lines[k])]
+    out = []
+    for n, k in enumerate(heads):
+        stop = heads[n + 1] if n + 1 < len(heads) else end
+        while stop > k + 1 and lines[stop - 1].strip() == "":
+            stop -= 1
+        out.append((lines[k].strip()[:-1], k, stop))
+    return out
+
+
+def _write_hermes_mcp(servers, exports, authoritative_missing=None):
+    if not HERMES_CONFIG.exists():
+        return
+    original = HERMES_CONFIG.read_text()
+    lines = original.split("\n")
+    start, end = _hermes_mcp_block(lines)
+    if start is None:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.append("mcp_servers:")
+        start, end = len(lines) - 1, len(lines)
+    retired = set(MANIFEST.get("retiredMcpServers") or [])
+    wanted = {s["name"]: _hermes_mcp_entry(s) for s in servers}
+    urls = {s["name"]: "    url: %s" % s["url"] for s in servers}
+    seen = set()
+    # Walk bottom-up so earlier spans keep their indexes through edits.
+    for name, k, stop in reversed(_hermes_entries(lines, start, end)):
+        if name in retired:
+            print("  hermes: removing retired MCP server %s" % name)
+            del lines[k:stop]
+            continue
+        if name not in wanted:
+            continue  # the operator's own server; never ours to touch
+        seen.add(name)
+        body = lines[k:stop]
+        if body == wanted[name]:
+            continue
+        if urls[name] not in body:
+            print("  hermes: %s points somewhere else; leaving it alone" % name)
+            continue
+        lines[k:stop] = wanted[name]
+    start, end = _hermes_mcp_block(lines)
+    insert_at = end
+    while insert_at > start + 1 and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+    lines[insert_at:insert_at] = [l for s in servers if s["name"] not in seen for l in wanted[s["name"]]]
+    text = "\n".join(lines)
+    changed = text != original
+    if changed:
+        HERMES_CONFIG.write_text(text)
+        print("  wrote %s (%d hermes MCP server(s))" % (HERMES_CONFIG, len(servers)))
+    if _mirror_hermes_env(exports, authoritative_missing) or changed:
+        _restart_hermes()
+
+
+def _dotenv_value(value):
+    if re.fullmatch(r"[A-Za-z0-9_./:=+@,-]+", value):
+        return value
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _mirror_hermes_env(exports, authoritative_missing=None):
+    """Managed NAME=value block in ~/.hermes/.env from the same exports the
+    zshenv mirror gets. Retired and revoked names are stripped wherever an
+    older release or a hand edit left them."""
+    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+    original = HERMES_ENV.read_text() if HERMES_ENV.exists() else ""
+    body = []
+    for line in exports:
+        match = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+        if not match:
+            continue
+        parts = shlex.split(match.group(2))
+        body.append("%s=%s" % (match.group(1), _dotenv_value(parts[0] if parts else "")))
+    block = begin + "\n" + "\n".join(body) + "\n" + end + "\n"
+    text = original
+    if begin in text and end in text:
+        text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", block, text, flags=re.S)
+    else:
+        text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
+    for name in _retired_env_vars() | set(authoritative_missing or ()):
+        text = re.sub(r"^%s=.*\n?" % re.escape(name), "", text, flags=re.M)
+    if text == original:
+        return False
+    HERMES_ENV.parent.mkdir(parents=True, exist_ok=True)
+    HERMES_ENV.write_text(text)
+    os.chmod(HERMES_ENV, 0o600)
+    print("  mirrored %d token(s) into %s" % (len(body), HERMES_ENV))
+    return True
+
+
+def _restart_hermes():
+    if shutil.which("systemctl"):
+        r = subprocess.run(["systemctl", "--user", "try-restart", "hermes-gateway.service"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            print("  hermes gateway restarted")
+            return
+    print("  hermes config changed; restart hermes to pick it up")
+
 
 PROXY_DEFAULT_PORT = 10100
 PROXY_UNIT = "opencodex-proxy.service"
