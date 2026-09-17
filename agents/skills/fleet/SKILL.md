@@ -65,8 +65,11 @@ read its Common Auth reference for it.
 	- iCloud calendar and mail
 	- all credentials in passage
 - hosts heatmap at heatmap.lost.plus
-- hosts Muum at muum.lost.plus (repo ~/muum)
-- second RTX 3090 currently vacant due to board-level repair work
+  - hosts Muum at muum.lost.plus (repo ~/muum)
+  - second RTX 3090 currently vacant due to board-level repair work
+- auth.lost.plus warm standby (failover only):
+  - auth-standby.service, auth-standby-refresh.timer, auth-failover-watchdog.timer
+  - see lost-plus/common-auth reference § Failover
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
