@@ -109,33 +109,15 @@ account switch.
 Keep secrets out of configuration, documentation, commits, logs, and review
 prompts.
 
-## Failover
+## Failover and recovery
 
-auth.lost.plus has a warm standby on Grimoire, kept current by Litestream
-(5-min refresh from the OCI Object Storage replica). A watchdog on Grimoire
-probes auth.lost.plus every minute; after 5 consecutive failures, it:
+auth.lost.plus has a warm standby on Grimoire, kept current by Litestream.
+A watchdog on Grimoire detects sustained OCI outages and fails over
+automatically, alerting via Telegram. Failback is manual.
 
-1. Checks other OCI-hosted services via Cloudflare DNS (all CNAMEs pointing
-   at the OCI tunnel) to distinguish auth-specific issues from OCI outages.
-   If any other OCI service is up, it treats this as an auth bug and does
-   not fail over.
-2. Fences the OCI instance via the OCI API (stops it).
-3. Restores the standby DB from Litestream.
-4. Starts `auth-standby.service` on Grimoire.
-5. Adds auth.lost.plus ingress to Grimoire's Cloudflare tunnel config.
-6. Repoints the auth.lost.plus DNS CNAME to Grimoire's tunnel.
-7. Points Grimoire's gateway at the local standby.
-8. Alerts the operator via Telegram (hermes).
-
-If fencing fails (OCI API unreachable), the watchdog alerts but does not
-promote — split-brain is worse than downtime.
-
-Failback is manual: `sudo auth-failover-watchdog failback` on Grimoire.
-This starts OCI, waits for auth health, reverts DNS/tunnel/gateway, and
-stops the standby.
-
-Implementation: `deploy/grimoire/auth-failover-watchdog.sh` in LPFchan/auth.
-Rebuild runbook: `deploy/RUNBOOK.md` in the same repo.
+The full failover and recovery procedures are in
+`deploy/RUNBOOK.md` in LPFchan/auth. Read that before making changes to
+the watchdog, standby, or DNS configuration.
 
 ## Verification
 
