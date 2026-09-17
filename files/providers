@@ -2193,6 +2193,7 @@ def cmd_schedule_enable():
     <key>ProgramArguments</key>
     <array>
         <string>{script_path}</string>
+        <string>refresh</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
@@ -2230,7 +2231,7 @@ def cmd_schedule_enable():
             rc = _run_schedule(
                 "install-timer", "user", "providers",
                 "Refresh provider model list from configured providers",
-                script_path, "hourly", "", timer_extra,
+                f"{script_path} refresh", "hourly", "", timer_extra,
             )
         finally:
             os.unlink(timer_extra)

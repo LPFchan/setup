@@ -33,7 +33,8 @@ m.cmd_schedule_enable()
 service_path = os.path.join(m.SERVICE_DIR, 'providers.service')
 with open(service_path) as f:
     service_unit = f.read()
-assert f'ExecStart={os.path.abspath(path)}\n' in service_unit
+# The hourly timer must refresh, not list: a bare providers run only lists.
+assert f'ExecStart={os.path.abspath(path)} refresh\n' in service_unit
 assert 'EnvironmentFile' not in service_unit
 assert '.zshenv' not in service_unit
 assert m._load_servers()['demo']['baseURL'] == 'http://demo'
