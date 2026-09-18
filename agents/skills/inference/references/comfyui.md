@@ -5,7 +5,7 @@
 | Item | Current owner |
 | --- | --- |
 | UI | `comfyui.service`; `/home/yeowool/comfyui`; port `8188` |
-| MCP companion | `comfyui-mcp.service`; local port `9100`; Quick Tunnel |
+| MCP companion | `comfyui-mcp.service`; `127.0.0.1:9100`; reached as `comfy.lost.plus` through Grimoire's Common Auth gateway (scope `comfyui`) |
 | Models | `/home/yeowool/comfyui/models/<type>/` |
 | Workflows | `/home/yeowool/comfyui/workflows/` |
 | UI logs | `/var/log/comfyui/comfyui.{log,err}` |
@@ -31,16 +31,13 @@ Do not dump `comfyui-mcp.service` or its startup log: both contain its token.
 Use `passage.get_secret({"folder":"mcp","item_name":"comfyui-mcp-token"})`.
 Migrate the unit to credential loading and rotate the plaintext token.
 
-The MCP service runs `npx -y comfyui-mcp@latest --tunnel`: its code, public
-Quick Tunnel URL, and auto-managed `custom_nodes/comfyui-mcp-panel` can change
-on restart. Find only the URL with:
-
-```bash
-rg 'Public MCP URL' /var/log/comfyui-mcp/comfyui-mcp.err | tail -n 1
-```
-
-Pin the package before requiring reproducibility. Never copy the token from
-unit or log output.
+The unit's drop-in `/etc/systemd/system/comfyui-mcp.service.d/common-auth.conf`
+(from `LPFchan/auth` `deploy/grimoire/`) overrides the packaged `--tunnel`
+start with a pinned `comfyui-mcp@<version> --http --host 127.0.0.1 --port
+9100`. Public ingress is `comfy.lost.plus` → OCI tunnel → Grimoire Tailscale
+Serve → local gateway `127.0.0.1:8740` → `:9100`; there is no Quick Tunnel
+and no public URL in the log. Bump the pinned version in the drop-in, not
+`@latest`. Never copy the token from unit or log output.
 
 ## GPU Contract
 

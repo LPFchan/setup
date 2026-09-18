@@ -22,11 +22,16 @@ When accessing a remote machine, use the `main` tmux session. Do not open a new
 separate tmux session. This allows the operator to see and interact with the
 terminal, such as entering an admin password manually.
 
-When requested to deploy a new web service, use cloudflare credentials from the `passage` MCP to edit DNS records.
+When requested to deploy a new web service, use cloudflare credentials from the `passage` MCP (`infra/CF_MASTER_TOKEN`) to edit DNS records and Worker routes.
 
-Common Auth lives on OCI (`auth.lost.plus`, `~/auth`, :8730). OCI and Grimoire
-each run its gateway from `~/auth` on :8740; load the `lost-plus` skill and
-read its Common Auth reference for it.
+Most live services now run on Cloudflare Workers, not on a machine: the
+Common Auth hub (`auth.lost.plus`), its cloud gateway, awa, okdam, coverse,
+censor, and the tweet/joongna/bunjang/thinq MCPs. The per-service registry —
+hostname, where it runs, which gateway fronts it — is the `lost-plus` skill's
+`registry` reference; load that instead of guessing from this file. OCI and
+Grimoire each still run a local Common Auth gateway (`auth-gateway.service`,
+`127.0.0.1:8740`, config from `LPFchan/auth` `deploy/<machine>/`) for the
+services that remain on that machine.
 
 ## NanoPi R3S LTS — OpenWrt router
 - 10.0.0.1 · user root (SSH pubkey + LuCI creds in passage)
@@ -65,11 +70,9 @@ read its Common Auth reference for it.
 	- iCloud calendar and mail
 	- all credentials in passage
 - hosts heatmap at heatmap.lost.plus
-  - hosts Muum at muum.lost.plus (repo ~/muum)
-  - second RTX 3090 currently vacant due to board-level repair work
-- auth.lost.plus warm standby (failover only):
-  - auth-standby.service, auth-standby-refresh.timer, auth-failover-watchdog.timer
-  - see lost-plus/common-auth reference § Failover
+- hosts Muum at muum.lost.plus (repo ~/muum), behind the local gateway
+- fronts the ComfyUI MCP for comfy.lost.plus behind the local gateway (ingress is the OCI tunnel → Grimoire Tailscale Serve)
+- second RTX 3090 currently vacant due to board-level repair work
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
@@ -82,13 +85,7 @@ read its Common Auth reference for it.
 
 ## oci-ubuntu — always-free Oracle Cloud VPS
 - oci.lost.plus · user ubuntu
-- hosts agent-with-agent at awa.lost.plus (repo `~/agent-with-agent`)
-- hosts MCP servers: obsidian/marble, joongna-price-search, tweet-fetch, thinqconnect, passage (passage.lost.plus, repo `~/passage-mcp`), comfyui-mcp
-- hosts lost.plus homepage (repo `~/lost.plus`)
-- hosts Songbook at okdam.lost.plus (repo `~/okdam-songbook`)
-- hosts gswtools at gsw.lost.plus (repo `~/gswtools`)
-- hosts artmu-bench at artmu.lost.plus (repo `~/artmu-bench`)
-- hosts censor at censor.lost.plus (repo `~/censor`)
-- hosts onedrive MCP at onedrive.lost.plus (repo `~/onedrive-mcp`)
-- hosts Photopeace at photopeace.lost.plus (repo `~/photopeace`)
-- hosts Coverse at coverse.lost.plus (repo `~/coverse`)
+- runs the `obsidian-sync` Cloudflare tunnel (`/etc/cloudflared/config.yml`) and the local Common Auth gateway (`auth-gateway.service`)
+- behind the local gateway: obsidian MCP at mcp.lost.plus (repo `~/mcp`), passage MCP at passage.lost.plus (`~/passage-mcp`), onedrive MCP at onedrive.lost.plus (`~/onedrive-mcp`), Marble at marble.lost.plus (`~/Marble`)
+- direct (no gateway): lost.plus homepage (`~/lost.plus`), artmu-bench at artmu.lost.plus (`~/artmu-bench-site`), Photopeace at photopeace.lost.plus (`~/photopeace`), upstream tracker at upstream.lost.plus (`~/upstream`)
+- checkouts of the Workers-hosted repos (`~/auth`, `~/agent-with-agent`, `~/okdam-songbook`, `~/coverse`, `~/censor`, `~/tweet-fetch-mcp`, `~/joongna-mcp`, `~/bunjang-mcp`, `~/thinqconnect-mcp`) live here as deploy sources; nothing from them runs on this box any more

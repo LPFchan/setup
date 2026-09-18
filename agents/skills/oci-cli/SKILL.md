@@ -14,8 +14,8 @@ a chat message, or a committed file.
 
 ## When to Use
 
-- Asked to touch OCI: compute instances, Object Storage (e.g. litestream
-  S3-compatible buckets), DNS, IAM, the oci-ubuntu host itself.
+- Asked to touch OCI: compute instances, Object Storage, DNS, IAM, the
+  oci-ubuntu host itself.
 - `oci` fails with a config/signing error and `~/.oci` is missing or stale.
 - Don't use for: hosts listed in the `fleet` skill (SSH there instead);
   billing/quota questions (console-only).
@@ -39,8 +39,7 @@ a chat message, or a committed file.
 | `oci_api_key_pem` | `~/.oci/oci_api_key.pem` |
 
 Related items in the same folder: `oci_console_ssh_key` (SSH to instances via
-the console), `litestream S3 *` (customer secret keys for the S3-compatible
-Object Storage API — not for `oci` itself).
+the console).
 
 ## Procedure
 
@@ -73,5 +72,6 @@ Object Storage API — not for `oci` itself).
 - Several fleet hosts already have a working `~/.oci` — bootstrap only what
   is broken, and diff against passage if auth fails (a rotated key in
   passage beats a stale local PEM).
-- Object Storage for litestream uses the S3 compatibility API with customer
-  secret keys, not the `oci` CLI session — don't conflate the two.
+- The S3 compatibility API (customer secret keys) is separate from the `oci`
+  CLI session — don't conflate the two. The `auth-litestream` bucket and its
+  keys were deleted on 2026-09-18; the account holds no customer secret keys.
