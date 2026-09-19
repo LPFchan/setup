@@ -118,14 +118,34 @@ account switch.
 
 ## WebSockets and other bypasses
 
-The cloud gateway does not proxy WebSocket upgrades. A Workers service that
-needs one serves it on a **direct zone route** of its own for that path only,
-authorizes it by capability (a room token in the URL, checked by the service)
-rather than by identity headers, and keeps every identity-bearing path behind
-the gateway. The Worker must partition the two: the default entrypoint serves
-the direct paths and must ignore `x-lost-plus-*`; the gateway-facing
-entrypoint (a named export the binding targets) serves the rest. Record such
-splits in the service's records and in [registry](registry.md).
+The gateway proxies WebSocket upgrades on every policy, with the same
+authentication and the same identity injection as an ordinary request
+(DEC-20260919-004 in `LPFchan/auth`). Serve a WebSocket on the service's
+normal gateway route; there is no bypass to ask for. What the backend sees on
+a handshake:
+
+- A `GET` carrying `Upgrade: websocket` and `Connection: Upgrade`, with every
+  `Sec-WebSocket-*` header the client sent (the runtime regenerates `Key` and
+  `Version`; `Protocol` and `Extensions` arrive as sent). The backend answers
+  with its own `WebSocketPair` (or a Durable Object's) and a 101; the gateway
+  returns that response unchanged, which is what hands the socket to the
+  client. Any other status the backend answers passes through as an ordinary
+  response.
+- `x-lost-plus-*` exactly as on HTTP: injected after verification, never from
+  the client. Read it with `@lost-plus/gateway-identity` as for any request.
+- No `Authorization`, no `x-api-key`, no `lp_auth` cookie. `mcp` routes
+  receive no cookie at all.
+- Refusals are the usual 401, 403 and 503. A handshake is never redirected to
+  the login page; a browser client sees the handshake fail. An `oauth`
+  handshake must carry the exact service `Origin`, and so must an `api`
+  handshake that relies on the session cookie rather than a machine
+  credential.
+
+A **direct zone route** is now only for a path that must avoid the gateway for
+another reason -- a capability URL that has to work with no identity at all,
+say -- never because it carries a WebSocket. If a service keeps one, it still
+partitions the two entrypoints (the direct one must ignore `x-lost-plus-*`),
+and records the split in its records and in [registry](registry.md).
 
 ## MCP
 
