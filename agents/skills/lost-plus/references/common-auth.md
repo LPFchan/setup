@@ -77,10 +77,11 @@ as `%20`, never `+`. Decode with `decodeURIComponent`. Require the encoding
 header; treat a missing, empty, or undecodable field as "no identity", and
 refuse rather than guess.
 
-Do not write that decoder again. Use the shared package, pinned to a tag:
+Do not write that decoder again. Use the shared package from npm (source:
+LPFchan/auth `packages/gateway-identity`):
 
 ```json
-"@lost-plus/gateway-identity": "github:LPFchan/gateway-identity#v1.0.0"
+"@lpfchan/gateway-identity": "^1.0.0"
 ```
 
 `identityFrom(headers)` returns `{ sub, email, name, role }` or `null` with
@@ -132,7 +133,7 @@ a handshake:
   client. Any other status the backend answers passes through as an ordinary
   response.
 - `x-lost-plus-*` exactly as on HTTP: injected after verification, never from
-  the client. Read it with `@lost-plus/gateway-identity` as for any request.
+  the client. Read it with `@lpfchan/gateway-identity` as for any request.
 - No `Authorization`, no `x-api-key`, no `lp_auth` cookie. `mcp` routes
   receive no cookie at all.
 - Refusals are the usual 401, 403 and 503. A handshake is never redirected to
