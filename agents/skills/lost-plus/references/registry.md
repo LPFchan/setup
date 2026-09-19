@@ -22,7 +22,7 @@ at deploy time via the `passage` setup module:
 | Hostname | Service | Worker · state | Gateway · policy | Repo |
 | --- | --- | --- | --- | --- |
 | `auth.lost.plus` | Common Auth hub | `auth-lost-plus` · D1 `auth` | none (it is the hub) | `LPFchan/auth` `workers/` |
-| `awa.lost.plus` | agent-with-agent chatrooms | `awa` · Durable Objects | cloud · `/` oauth, `/api/manage` api (scope `awa-v1`); direct routes `/api/rooms/*` (WebSocket), `/r/*`, `/assets/*`, `/skill.md`, `/icon.svg`, `/healthz` | `LPFchan/agent-with-agent` |
+| `awa.lost.plus` | agent-with-agent chatrooms | `awa` · Durable Objects | cloud · `/` oauth, `/api/manage` api (scope `awa-v1`), `/api/rooms` public (WebSocket, `X-AWA-Participant-Token`), `/r` + `/assets` + `/skill.md` + `/icon.svg` + `/healthz` public GET | `LPFchan/agent-with-agent` |
 | `okdam.lost.plus` | Songbook | `okdam-songbook` · D1 `okdam-songbook` | cloud · `/` public, `/api/catalog` public GET, `/api` oauth, `/mcp` mcp (scope `okdam-mcp`) | `LPFchan/okdam-songbook` |
 | `coverse.lost.plus` | Coverse | `coverse` | cloud · `/` public, `/api/project` + `PUT /api/draft` oauth | `LPFchan/coverse` |
 | `censor.lost.plus` | Censor PWA + MCP | `censor` · static assets | cloud · `/` public, `/mcp` mcp anonymous-allowed (scope `censor`) | `LPFchan/censor` |
