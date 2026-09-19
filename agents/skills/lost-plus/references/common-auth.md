@@ -77,6 +77,20 @@ as `%20`, never `+`. Decode with `decodeURIComponent`. Require the encoding
 header; treat a missing, empty, or undecodable field as "no identity", and
 refuse rather than guess.
 
+Do not write that decoder again. Use the shared package, pinned to a tag:
+
+```json
+"@lost-plus/gateway-identity": "github:LPFchan/gateway-identity#v1.0.0"
+```
+
+`identityFrom(headers)` returns `{ sub, email, name, role }` or `null` with
+exactly the rules above; `identityFrom(headers, { maxNameLength: 80, roles:
+["administrator", "user"] })` adds the two restrictions some services want;
+`requireIdentity(headers)` throws an `IdentityError` (status 500) instead of
+returning `null`. The package decodes headers and never validates a credential
+(LPFchan/auth DEC-20260919-003). It is only safe to call where the trust rule
+below holds.
+
 Where a service may trust those headers:
 
 - **Workers service**: only when invoked through the gateway's service
