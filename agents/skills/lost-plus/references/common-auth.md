@@ -6,13 +6,13 @@ roles, service visibility, and admission. It is a Cloudflare Worker
 
 Services never validate a credential themselves. A **gateway** authenticates
 each request against the hub and forwards a trusted identity to the service.
-There are two gateway kinds, both from `LPFchan/auth`, both implementing the
-same contract:
+There is one TypeScript gateway, `LPFchan/auth` `gateway/`, deployed in two
+places:
 
 | Gateway | Runs | Fronts | Reaches the hub via | Reaches the service via |
 | --- | --- | --- | --- | --- |
-| cloud gateway (`auth-gateway` Worker, `gateway/`) | Cloudflare | services hosted on Workers | `AUTH_HUB` service binding | a service binding per service |
-| local gateway (Rust `auth-gateway`, `src/bin/`) | one process per machine, `127.0.0.1:8740` | services hosted on that machine | HTTPS to `auth.lost.plus` | loopback upstream URL |
+| cloud gateway (`auth-gateway` Worker) | Cloudflare | services hosted on Workers | `AUTH_HUB` service binding | a service binding per service |
+| machine gateway (same code under `workerd`, `auth-gateway.service`) | one process per machine, `127.0.0.1:8740` | services hosted on that machine | HTTPS to `auth.lost.plus` | a workerd `external` service per loopback upstream |
 
 A service is fronted by the gateway of the place it runs. A Workers service
 never calls a machine gateway; a machine service never calls the cloud
@@ -185,8 +185,10 @@ Decide first where the service runs; that decides the gateway.
    Point the hostname's DNS at a proxied placeholder (`A 192.0.2.1` or
    `AAAA 100::`), not at a tunnel.
    **Machine**: add the route with an `upstream` to
-   `deploy/<machine>/gateway.json`, install it at `/etc/auth/gateway.json`,
-   restart `auth-gateway.service`, and route the hostname's tunnel ingress to
+   `deploy/<machine>/gateway.json`, commit, run
+   `~/auth/gateway/scripts/deploy-machine.sh <machine>` on that machine (it
+   renders, boot-checks, installs under `/etc/auth/`, restarts and runs the
+   smoke matrix), and route the hostname's tunnel ingress to
    `127.0.0.1:8740`.
 3. Let the service read the identity headers and enforce its own domain
    authorization (record ownership, tool permissions). Point browser logout
@@ -206,8 +208,9 @@ prompts. Worker secrets go in `wrangler secret`, never `[vars]`.
 - Cloud gateway: `wrangler rollback` for the code; for a single service, remove
   its routes from `cloudflare.gateway.json` and redeploy, or move the zone
   route back to the service Worker with the API.
-- Local gateway: the previous image tag in `auth-gateway.service`'s
-  `ExecStart`; config backups sit next to `/etc/auth/gateway.json`.
+- Machine gateway: check out the commit to return to in `~/auth` and run
+  `gateway/scripts/deploy-machine.sh <machine> --no-pull`, then go back to
+  `main`.
 
 ## Verification
 

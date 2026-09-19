@@ -6,8 +6,8 @@ moves, adds, or retires a service. The `fleet` skill describes the machines;
 this file describes the services.
 
 "Gateway" values: `cloud` = the `auth-gateway` Worker; `oci` / `grimoire` =
-that machine's local Rust gateway on `127.0.0.1:8740`; `none` = reached
-directly, no Common Auth.
+the same gateway code under `workerd` on that machine, `127.0.0.1:8740`;
+`none` = reached directly, no Common Auth.
 
 ## Cloudflare Workers
 
