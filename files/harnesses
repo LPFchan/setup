@@ -7,8 +7,12 @@ Absorbs the harness self-update logic formerly bolted onto "setup update"
 Actions: install | update | settings | mcp. With no argument an fzf menu is
 shown when attached to a terminal.
 
-Operated lost.plus services resolve through the shared auth module. External
-service credentials remain in the passage MCP, folder=mcp.
+The lost.plus MCP set is read from the Common Auth hub (GET /api/services:
+every registry row the account is admitted to that carries an mcp_url), so
+a service goes live for every harness by being registered there. The manifest
+lists only third-party MCPs. Operated lost.plus credentials resolve through
+the shared auth module; external service credentials remain in the passage
+MCP, folder=mcp.
 """
 
 from __future__ import annotations
@@ -40,8 +44,11 @@ for _server in MANIFEST.get("mcpServers", []):
     _source = _server.get("credentialSource")
     if _source not in ("common-auth", "passage"):
         raise SystemExit("harnesses: %s has no valid credentialSource" % _server.get("name", "server"))
-    if _source == "common-auth" and not _server.get("scope"):
-        raise SystemExit("harnesses: %s has no Common Auth scope" % _server.get("name", "server"))
+    if _source == "common-auth":
+        # lost.plus MCPs come from the hub's registry now; a hand-written copy
+        # would be the drift this module stopped carrying.
+        raise SystemExit("harnesses: %s is a lost.plus MCP; register it in Common Auth, not the manifest"
+                         % _server.get("name", "server"))
 VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://passage.lost.plus/mcp")
 VAULT_FOLDER = "mcp"
 def _zshenv_exports():
@@ -218,6 +225,83 @@ def common_auth_context():
         raise CommonAuthError("Auth returned an invalid account context")
     return {"origin": context["origin"], "subject": context["subject"]}
 
+HUB_SERVICES_PATH = "/api/services"
+HUB_SUFFIX = ".lost.plus"
+
+def hub_services(context):
+    """Registry rows the signed-in account is admitted to, from the hub.
+
+    The credential is the account's global machine token, fetched through the
+    auth module like every other Common Auth credential: the hub accepts it on
+    this route without a service key because a global token is already valid
+    for every service. A per-service login holds no such token, and the hub
+    refuses a scoped one here, so that login cannot enumerate the registry --
+    it fails with a clear message rather than enrolling a partial set.
+    """
+    try:
+        token = common_auth_token("*", context)
+    except CommonAuthContextChanged:
+        raise
+    except CommonAuthError as exc:
+        raise CommonAuthError(
+            "no global machine token to read the service registry with (%s)" % exc,
+            authoritative=exc.authoritative) from exc
+    request = urllib.request.Request(context["origin"] + HUB_SERVICES_PATH, headers={
+        "Authorization": "Bearer " + token, "Accept": "application/json",
+        "User-Agent": "harnesses/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            rows = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        raise CommonAuthError("service registry returned HTTP %d" % exc.code,
+                              authoritative=exc.code in (401, 403)) from exc
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise CommonAuthError("service registry unreachable: %s" % exc) from exc
+    if not isinstance(rows, list) or not all(
+            isinstance(row, dict) and all(isinstance(row.get(k), str) for k in ("key", "mcp_url", "token_key"))
+            for row in rows):
+        raise CommonAuthError("service registry returned an invalid row list")
+    return rows
+
+
+def hub_mcp_servers(context):
+    """The lost.plus MCP set, in the shape a manifest entry has.
+
+    Every admitted row with an mcp_url is one server. The name is the registry
+    key with .lost.plus stripped, so okdam.lost.plus enrolls as okdam beside
+    the third-party names. A row with a token_key is a bearer server under
+    that scope; one without is anonymous. Rows without an mcp_url are apps,
+    not MCPs, and are skipped.
+    """
+    servers = []
+    for row in hub_services(context):
+        if not row["mcp_url"]:
+            continue
+        key = row["key"]
+        name = key[:-len(HUB_SUFFIX)] if key.endswith(HUB_SUFFIX) else key
+        if row["token_key"]:
+            servers.append({"name": name, "url": row["mcp_url"], "auth": "bearer",
+                            "credentialSource": "common-auth", "scope": row["token_key"]})
+        else:
+            servers.append({"name": name, "url": row["mcp_url"], "auth": "none"})
+    return servers
+
+
+def all_mcp_servers(context):
+    """Hub servers first, then the manifest's third-party ones."""
+    hub = hub_mcp_servers(context)
+    taken = {s["name"] for s in hub}
+    clash = sorted(taken & {s["name"] for s in MANIFEST["mcpServers"]})
+    if clash:
+        raise CommonAuthError("manifest names servers the registry already provides: %s"
+                              % ", ".join(clash))
+    return hub + list(MANIFEST["mcpServers"])
+
+
+def mcp_grants(servers):
+    """The claude permission namespace each enrolled server needs."""
+    return ["mcp__%s__*" % s["name"] for s in servers if "claude" in mcp_surfaces(s)]
+
 def _vault_call(tool, arguments):
     if not VAULT_TOKEN: raise VaultError("vault token not set")
     body = {"jsonrpc":"2.0","id":id(arguments),"method":"tools/call","params":{"name":tool,"arguments":arguments}}
@@ -325,14 +409,17 @@ def cmd_update(names):
         eprint("harness(es) could not be updated: "+" ".join(failed))
     return 0 if not failed else 1
 
-def _write_claude_settings():
+def _write_claude_settings(servers):
     spec = MANIFEST["settings"]["claude"]
     overlay = spec["json"]
     current = load_json(CLAUDE_SETTINGS)
     merged = deep_merge(current, overlay)
     # permissions.allow is union-merged, never replaced, so the module cannot
-    # clobber an operator's existing (often longer) allow list.
-    allow_add = spec.get("permissionsAllowAdd", [])
+    # clobber an operator's existing (often longer) allow list. The MCP tool
+    # namespaces are derived from the servers being enrolled rather than listed
+    # by hand, so a server cannot enroll under a name the allow-list does not
+    # grant.
+    allow_add = list(spec.get("permissionsAllowAdd", [])) + mcp_grants(servers)
     if allow_add:
         existing = merged.setdefault("permissions", {}).get("allow", [])
         seen = set(existing)
@@ -451,11 +538,21 @@ def _write_t3_settings():
     print("  wrote %s (%d claude customModels)" % (T3_SETTINGS, len(existing)))
 
 def cmd_settings(names):
-    _write_claude_settings()
+    # The MCP grants need the enrolled set, which needs the hub. Without it the
+    # rest of the settings still render -- grants are additive, so none is
+    # lost -- but the run is reported as failed so the gap is not silent.
+    rc = 0
+    try:
+        servers = all_mcp_servers(common_auth_context())
+    except CommonAuthError as exc:
+        eprint("  cannot read the lost.plus service registry from Common Auth: %s; "
+               "MCP permission grants not rendered" % exc)
+        servers, rc = [], 1
+    _write_claude_settings(servers)
     _write_t3_settings()
     print("settings applied. t3 custom models appear in the picker; routing them")
     print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
-    return 0
+    return rc
 
 def mcp_token_value(raw):
     """The bare token from a vault item that may also record how to send it.
@@ -531,7 +628,21 @@ def cmd_mcp(names):
 def _cmd_mcp_once(names):
     global VAULT_TOKEN
     VAULT_TOKEN = ""
-    servers = MANIFEST["mcpServers"]
+    # The account context binds every read that follows, and the hub's
+    # registry is the lost.plus server set. Without either there is nothing
+    # correct to reconcile against: the codex region is rewritten wholesale
+    # and a short list would drop live servers from it. Stop here, loudly,
+    # and leave the last reconciliation on disk.
+    try:
+        auth_context = common_auth_context()
+        all_servers = all_mcp_servers(auth_context)
+    except CommonAuthContextChanged:
+        raise
+    except CommonAuthError as exc:
+        eprint("  cannot read the lost.plus service registry from Common Auth: %s; "
+               "MCP enrollment not run" % exc)
+        return 1
+    servers = all_servers
     if names: servers = [s for s in servers if s["name"] in names]
     bound_existing = _managed_zshenv_exports()
     existing = {name: value for name, value in os.environ.items() if value}
@@ -541,23 +652,13 @@ def _cmd_mcp_once(names):
     existing.update(bound_existing)
     common_tokens = {}
     authoritative_missing = set()
-    try:
-        auth_context = common_auth_context()
-    except CommonAuthError as exc:
-        auth_context = None
-        eprint("  could not resolve Common Auth account context: %s; keeping bound credentials" % exc)
-    # Without a context, a successful token lookup could belong to a login
-    # that changed while the context command was blocked or timing out. Do not
-    # make any Auth or passage reads until an account can be bound.
-    context_error = CommonAuthError("Common Auth account context unavailable")
     previous_context = _existing_common_auth_context()
-    if auth_context is not None:
-        VAULT_TOKEN = bound_existing.get("PASSAGE_MCP_TOKEN", "")
-    if auth_context is not None and previous_context != auth_context:
+    VAULT_TOKEN = bound_existing.get("PASSAGE_MCP_TOKEN", "")
+    if previous_context != auth_context:
         VAULT_TOKEN = ""
         authoritative_missing.update(
             mcp_env_var(server)
-            for server in MANIFEST["mcpServers"]
+            for server in all_servers
             if server.get("credentialSource") == "common-auth"
         )
         for envvar in authoritative_missing:
@@ -565,8 +666,6 @@ def _cmd_mcp_once(names):
             bound_existing.pop(envvar, None)
 
     def resolve_common(scope):
-        if auth_context is None:
-            raise context_error
         if scope not in common_tokens:
             common_tokens[scope] = common_auth_token(scope, auth_context)
         return common_tokens[scope]

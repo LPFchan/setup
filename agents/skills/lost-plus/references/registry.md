@@ -90,6 +90,11 @@ registered on the hub but no gateway references them (pending adoptions).
 
 ## MCP client registry
 
-Which MCP servers the harnesses enroll, and with which scope, is
-`files/harnesses-manifest.json` in `LPFchan/setup` (`mcpServers`). Add a row
-there when an MCP goes live, and here.
+The harnesses read the hub: `files/harnesses` in `LPFchan/setup` calls
+`GET /api/services` and enrolls every admitted registry row with an
+`mcp_url`, using its `token_key` as the Common Auth scope (a row with an
+`mcp_url` and no `token_key` enrolls as an anonymous MCP). A lost.plus MCP
+goes live for every harness by getting its hub row right; nothing is added
+by hand in setup. Only third-party MCPs (jina, exa, korean-law, daiso,
+notion, heatmap) are listed by hand, in `files/harnesses-manifest.json`
+(`mcpServers`).

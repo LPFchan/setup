@@ -52,18 +52,64 @@ catalog_request.assert_called_once_with(
     timeout=15,
 )
 ns["_write_t3_settings"].__globals__["_effort_descriptors_by_slug"] = lambda: descriptors
-ns["cmd_settings"]([])
+
+# The lost.plus MCP set comes from the hub's registry, not the manifest. Stand
+# in for GET /api/services with the rows the live hub returns for an admitted
+# administrator: apps without an mcp_url (skipped), bearer MCPs under their
+# token_key, a .lost.plus key that must lose its suffix, and an anonymous MCP.
+HUB_ROWS = [
+    {"key": "chat.lost.plus", "label": "chat.lost.plus", "group": "app", "url": "https://chat.lost.plus",
+     "mcp_url": "", "token_key": "chat-v1", "admin_only": False, "alias": "chat"},
+    {"key": "okdam.lost.plus", "label": "okdam.lost.plus", "group": "app", "url": "https://okdam.lost.plus",
+     "mcp_url": "https://okdam.lost.plus/mcp", "token_key": "okdam-mcp", "admin_only": False, "alias": "okdam"},
+    {"key": "tweet-fetch", "label": "tweet-fetch", "group": "mcp", "url": "https://tweet.lost.plus",
+     "mcp_url": "https://tweet.lost.plus/mcp", "token_key": "tweet-fetch", "admin_only": False, "alias": ""},
+    {"key": "obsidian", "label": "obsidian", "group": "mcp", "url": "https://mcp.lost.plus",
+     "mcp_url": "https://mcp.lost.plus/mcp", "token_key": "obsidian", "admin_only": True, "alias": ""},
+    {"key": "passage", "label": "passage", "group": "mcp", "url": "https://passage.lost.plus",
+     "mcp_url": "https://passage.lost.plus/mcp", "token_key": "passage", "admin_only": True, "alias": ""},
+    {"key": "comfyui", "label": "comfyui", "group": "mcp", "url": "https://comfy.lost.plus",
+     "mcp_url": "https://comfy.lost.plus/mcp", "token_key": "comfyui", "admin_only": True, "alias": ""},
+    {"key": "censor", "label": "censor", "group": "hidden", "url": "https://censor.lost.plus",
+     "mcp_url": "https://censor.lost.plus/mcp", "token_key": "", "admin_only": False, "alias": ""},
+    {"key": "onedrive.lost.plus", "label": "onedrive.lost.plus", "group": "mcp", "url": "https://onedrive.lost.plus",
+     "mcp_url": "https://onedrive.lost.plus/mcp", "token_key": "onedrive", "admin_only": True, "alias": ""},
+]
+g = ns["cmd_mcp"].__globals__
+g["common_auth_context"] = lambda: {
+    "origin": "https://auth.lost.plus", "subject": "account-a",
+}
+g["hub_services"] = lambda context: HUB_ROWS
+hub_servers = ns["hub_mcp_servers"]({"origin": "https://auth.lost.plus", "subject": "account-a"})
+assert [s["name"] for s in hub_servers] == \
+    ["okdam", "tweet-fetch", "obsidian", "passage", "comfyui", "censor", "onedrive"], \
+    "hub rows mapped to the wrong names: %r" % [s["name"] for s in hub_servers]
+by_name = {s["name"]: s for s in hub_servers}
+assert by_name["okdam"] == {"name": "okdam", "url": "https://okdam.lost.plus/mcp", "auth": "bearer",
+                            "credentialSource": "common-auth", "scope": "okdam-mcp"}
+assert by_name["censor"] == {"name": "censor", "url": "https://censor.lost.plus/mcp", "auth": "none"}, \
+    "a row without a token_key is an anonymous MCP"
+assert "chat" not in by_name and "chat.lost.plus" not in by_name, "an app without an mcp_url enrolled"
+manifest = json.loads(Path(os.environ["HARNESSES_MANIFEST"]).read_text())
+assert not any(s.get("credentialSource") == "common-auth" for s in manifest["mcpServers"]), \
+    "the manifest still hand-lists a lost.plus MCP"
+assert not any(a.startswith("mcp__") for a in manifest["settings"]["claude"]["permissionsAllowAdd"]), \
+    "MCP grants are derived from the enrolled set; the manifest must not list them"
+
+assert ns["cmd_settings"]([]) == 0
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
 assert d["effortLevel"] == "high", "manifest scalar not applied"
 allow = d["permissions"]["allow"]
 for keep in ("Read", "mcp__custom__*", "Skill"):
     assert keep in allow, f"existing allow entry {keep} clobbered"
-manifest = json.loads(Path(os.environ["HARNESSES_MANIFEST"]).read_text())
-granted = set(manifest["settings"]["claude"]["permissionsAllowAdd"])
-for srv in manifest["mcpServers"]:
-    assert "mcp__%s__*" % srv["name"] in granted, \
-        "mcp server %s enrolls under a name the allow-list does not grant" % srv["name"]
+all_servers = hub_servers + manifest["mcpServers"]
+for srv in all_servers:
+    if "claude" in ns["mcp_surfaces"](srv):
+        assert "mcp__%s__*" % srv["name"] in allow, \
+            "mcp server %s enrolls under a name the allow-list does not grant" % srv["name"]
+for hub_only in ("mcp__okdam__*", "mcp__censor__*"):
+    assert hub_only in allow, "hub-provided server %s not granted" % hub_only
 # A renamed server must lose its old wildcard: the allow list is union-merged,
 # so nothing else would ever drop it.
 retired = {"mcp__%s__*" % n for n in manifest.get("retiredMcpServers", [])}
@@ -73,7 +119,7 @@ assert not (retired & set(allow)), "a retired server kept its permission grant"
 for namespace in manifest.get("retiredMcpGrants", []):
     leftover = [x for x in allow if x.startswith("mcp__%s__" % namespace)]
     assert not leftover, "retired grant namespace %s kept %d entries" % (namespace, len(leftover))
-assert not (retired & {"mcp__%s__*" % s["name"] for s in manifest["mcpServers"]}), \
+assert not (retired & {"mcp__%s__*" % s["name"] for s in all_servers}), \
     "a server is declared and retired at the same time"
 for added in ("mcp__obsidian__*", "mcp__passage__*"):
     assert added in allow, f"manifest allow entry {added} missing"
@@ -98,6 +144,12 @@ assert "grimoire/qwen3.8-flash-next-uncensored-nvfp4" not in slugs, "retired qwe
 for m in models:
     for d in (m.get("capabilities") or {}).get("optionDescriptors", []):
         assert d["id"] != "effort" or d["options"], "effort descriptor with no options"
+# Without the hub, settings still render but the run is reported as failed,
+# and the grants already written survive: the allow list only ever unions.
+g["hub_services"] = lambda context: (_ for _ in ()).throw(ns["CommonAuthError"]("hub offline in test"))
+assert ns["cmd_settings"]([]) == 1, "settings without the registry must report failure"
+assert "mcp__okdam__*" in json.loads(claude.read_text())["permissions"]["allow"]
+g["hub_services"] = lambda context: HUB_ROWS
 # re-run is idempotent (no duplicate models)
 ns["cmd_settings"]([])
 models2 = json.loads((HOME/".t3/userdata/settings.json").read_text())["providerInstances"]["claudeAgent"]["config"]["customModels"]
@@ -116,7 +168,7 @@ assert tok("https://only-a-url/mcp") == "https://only-a-url/mcp", "a url is not 
 # --- mcp: codex config blocks appended once, zshenv mirror idempotent ---
 # claude is not on PATH in the test env, so enrollment is skipped; only the
 # codex writer and zshenv mirror run. Tokens come from the environment.
-for server in manifest["mcpServers"]:
+for server in all_servers:
     os.environ.pop(ns["mcp_env_var"](server), None)
 os.environ["OBSIDIAN_MCP_TOKEN"] = "tok-obsidian"
 os.environ["PASSAGE_MCP_TOKEN"] = "tok-vault"
@@ -131,7 +183,6 @@ def fake_vault_get(item):
         return "fresh-jina"
     raise ns["VaultError"]("no vault in test")
 ns["vault_get"] = fake_vault_get
-g = ns["cmd_mcp"].__globals__
 g["vault_get"] = ns["vault_get"]
 g["common_auth_token"] = lambda scope, context=None: "auth-" + scope
 g["common_auth_context"] = lambda: {
@@ -144,6 +195,19 @@ codex = (HOME/".codex/config.toml").read_text()
 import tomllib
 tomllib.loads(codex)  # a config codex cannot parse is a harness that will not start
 assert "# BEGIN harnesses:mcp-servers" in codex, "managed region markers missing"
+assert "[mcp_servers.okdam]" in codex and "[mcp_servers.censor]" in codex, "hub-provided servers not enrolled"
+assert "bearer_token_env_var = \"OKDAM_MCP_TOKEN\"" in codex
+assert "[mcp_servers.censor]\nurl = \"https://censor.lost.plus/mcp\"\n" in codex, "anonymous hub server carries a token"
+assert "bearer_token_env_var = \"COMFYUI_MCP_TOKEN\"" in codex, "comfyui enrolls as bearer from the registry"
+
+# The hub unreachable is a loud failure that rewrites nothing: the codex region
+# is replaced wholesale, so a short list would drop live servers from it.
+snapshot = (codex, (HOME/".zshenv").read_text())
+g["hub_services"] = lambda context: (_ for _ in ()).throw(ns["CommonAuthError"]("hub offline in test"))
+assert ns["cmd_mcp"]([]) == 1, "mcp without the registry must report failure"
+assert ((HOME/".codex/config.toml").read_text(), (HOME/".zshenv").read_text()) == snapshot, \
+    "an unreachable registry changed the enrolled set"
+g["hub_services"] = lambda context: HUB_ROWS
 
 # An operator-declared server must win, and must not gain a second top-level
 # table -- duplicate keys are invalid TOML and codex refuses to start at all.
@@ -307,7 +371,7 @@ assert "JINA_MCP_TOKEN=fresh-jina" in selective_zshenv
 # preserving the independently managed passage entry.
 ns["cmd_mcp"]([])
 revoked_zshenv = (HOME/".zshenv").read_text()
-for server in manifest["mcpServers"]:
+for server in all_servers:
     if server.get("credentialSource") == "common-auth":
         assert ns["mcp_env_var"](server) not in revoked_zshenv
 assert "export JINA_MCP_TOKEN=fresh-jina" in revoked_zshenv
@@ -349,7 +413,7 @@ g["vault_get"] = vault_unavailable
 ns["cmd_mcp"]([])
 switched_zshenv = (HOME/".zshenv").read_text()
 assert not g["VAULT_TOKEN"]
-for server in manifest["mcpServers"]:
+for server in all_servers:
     if server.get("credentialSource") == "common-auth":
         assert ns["mcp_env_var"](server) not in switched_zshenv
 assert "JINA_MCP_TOKEN=fresh-jina" in switched_zshenv

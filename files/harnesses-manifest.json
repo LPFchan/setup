@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "comment": "Canonical harness + MCP registry for the 'harnesses' module. Operated lost.plus services declare credentialSource=common-auth plus their gateway scope. External secrets default to passage folder=mcp under the derived name {NAME}_MCP_TOKEN. Wire transport remains in auth because bearer versus x-api-key is independent of credential ownership. Do not add envVar/vaultItem unless the name genuinely cannot be derived. Each name must equal the mcp__<name>__* prefix granted in settings.claude.permissionsAllowAdd.",
+  "comment": "Canonical harness + third-party MCP registry for the 'harnesses' module. lost.plus MCPs are NOT listed here: the module reads them from the Common Auth hub (GET /api/services, every admitted registry row with an mcp_url) and resolves each row's token_key as its Common Auth scope, so registering a service in the hub enrolls it everywhere. External secrets default to passage folder=mcp under the derived name {NAME}_MCP_TOKEN. Wire transport (bearer versus x-api-key) is declared per server here. Do not add envVar/vaultItem unless the name genuinely cannot be derived. The mcp__<name>__* claude grant for every enrolled server (hub and manifest) is derived at write time; settings.claude.permissionsAllowAdd carries only the non-MCP grants.",
   "harnesses": [
     {
       "name": "claude",
@@ -86,41 +86,6 @@
   ],
   "mcpServers": [
     {
-      "name": "obsidian",
-      "url": "https://mcp.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "obsidian"
-    },
-    {
-      "name": "tweet-fetch",
-      "url": "https://tweet.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "tweet-fetch"
-    },
-    {
-      "name": "passage",
-      "url": "https://passage.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "passage"
-    },
-    {
-      "name": "comfyui",
-      "url": "https://comfy.lost.plus/mcp",
-      "auth": "x-api-key",
-      "credentialSource": "common-auth",
-      "scope": "comfyui"
-    },
-    {
-      "name": "thinqconnect",
-      "url": "https://thinq.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "thinqconnect"
-    },
-    {
       "name": "jina",
       "url": "https://mcp.jina.ai/v1",
       "auth": "bearer",
@@ -139,20 +104,6 @@
       "credentialSource": "passage"
     },
     {
-      "name": "joongna",
-      "url": "https://joongna.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "joongna"
-    },
-    {
-      "name": "bunjang",
-      "url": "https://bunjang.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "bunjang"
-    },
-    {
       "name": "heatmap",
       "url": "https://heatmap.lost.plus/mcp",
       "auth": "none"
@@ -169,13 +120,6 @@
       "surfaces": [
         "claude"
       ]
-    },
-    {
-      "name": "onedrive",
-      "url": "https://onedrive.lost.plus/mcp",
-      "auth": "bearer",
-      "credentialSource": "common-auth",
-      "scope": "onedrive"
     }
   ],
   "settings": {
@@ -200,21 +144,7 @@
         "Glob",
         "Grep",
         "WebFetch",
-        "WebSearch",
-        "mcp__obsidian__*",
-        "mcp__tweet-fetch__*",
-        "mcp__passage__*",
-        "mcp__comfyui__*",
-        "mcp__thinqconnect__*",
-        "mcp__jina__*",
-        "mcp__exa__*",
-        "mcp__korean-law__*",
-        "mcp__joongna__*",
-        "mcp__bunjang__*",
-        "mcp__heatmap__*",
-        "mcp__daiso__*",
-        "mcp__notion__*",
-        "mcp__onedrive__*"
+        "WebSearch"
       ]
     },
     "t3": {
