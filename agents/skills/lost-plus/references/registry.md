@@ -35,6 +35,16 @@ The cloud gateway's route table is `gateway/config/cloudflare.gateway.json`
 and its bindings and zone routes are `gateway/wrangler.toml`, both in
 `LPFchan/auth`. Those two files are the source of truth for this section.
 
+## Public Cloudflare static sites
+
+These sites use Workers Static Assets with a direct custom domain. They have
+no Common Auth gateway or identity-dependent endpoints. Their service repos
+own the domain and asset configuration.
+
+| Hostname | Service | Worker · state | Gateway · policy | Repo |
+| --- | --- | --- | --- | --- |
+| `2benches.lost.plus` | Apple silicon benchmark explorer | `2benches` · static assets | none · public | `LPFchan/2benches` (private source) |
+
 ## oci-ubuntu (Oracle Cloud VPS)
 
 Reached through the `obsidian-sync` Cloudflare tunnel (`/etc/cloudflared/
