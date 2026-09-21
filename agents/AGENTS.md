@@ -101,6 +101,8 @@ let's say you've been grinding on a hard problem for a long time, and have tried
 
 ## other logistics
 
+never refer to the time in UTC, always use GMT+9 when directly talking to me.
+
 when installing python packages, always use the repo-local `.venv` and its pip. never `--break-system-packages` on system-wide Python. use `pipx` if a global install is needed.
 
 for long-running terminal tasks (such as builds, file downloads, training, data processing, etc):
