@@ -49,8 +49,20 @@ Setup automatically filters available modules based on your machine:
 
 1. **Audience Filter:** Compares your public SSH key (`~/.ssh/*.pub`) against the team key list at `https://github.com/LPFchan.keys`. If your key matches, fleet-only modules are made available.
 2. **Platform Filter:** Checks your operating system (`Linux` or `macOS`) and shows only modules that work on your system.
+3. **Dependency Filter:** A module whose dependency the first two filters hid is hidden too, since installing it could never complete.
 
 For each online run, setup resolves the repository's `main` branch to one exact commit before fetching module metadata and payloads. This keeps status checks and installs on the same repository snapshot even while GitHub's raw-file caches are refreshing.
+
+### Dependencies
+
+A module names what it needs in the manifest's `requires` column (comma-separated module names):
+
+- Installing a module installs its dependencies first, and prints what it pulled in.
+- Uninstalling is refused while another installed module still needs it — with a yes/no prompt when there is a terminal, and a hard refusal when there is not.
+- A module installed only as a dependency is remembered, so removing the last thing that needed it offers to take it away too.
+- A dependency cycle is a hard error naming the module it runs through.
+
+Only unconditional dependencies belong in the column. `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, which one column cannot express, so they keep their own runtime check instead.
 
 ---
 

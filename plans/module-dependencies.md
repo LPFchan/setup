@@ -1,6 +1,6 @@
 # Plan: module dependencies in `setup`
 
-**Status:** design approved. Workstreams A (`service-ctl` retirement) and B (passage retirement) complete 2026-09-21; C not started.
+**Status:** complete 2026-09-21 — A (`service-ctl` retirement), B (passage retirement), and C (the dependency feature).
 
 ## Goal
 
@@ -43,13 +43,31 @@ After D6 and D7: the `service-ctl` and `passage` rows disappear. What remains is
 
 **Orphan tracking (D3).** A fourth column in `installed.tsv` recording whether the module was requested directly or pulled in. Script modules record the same in `script-state.tsv`.
 
-## Implementation cost
+## Implementation cost — revised during the work
 
-The sort is small. The plumbing is not:
+The original plan was to widen the cached manifest to five columns and update
+all eight read loops. **That plan was wrong and was abandoned.** The cached
+manifest is a wire format between `setup` versions: a machine that has not
+self-updated yet reads it with a four-field read, and a fifth column lands in
+`source`, corrupting the payload URL of every module that declares a
+dependency. The fleet self-updates overnight, so there is no moment where all
+machines agree.
 
-- `fetch_manifest` trims the cached manifest to exactly four columns, and **eight** loops read it as `read -r module target mode source`. A fifth field silently lands in `source`, which is the variable used to fetch payloads. All eight change together.
-- `tests/manifest-atomicity.sh` and `tests/catalog-retired.sh` assert the current shape.
-- New tests: cycle detection, install ordering, hidden-dependency filtering, uninstall refusal, orphan offer.
+The column stays in the repository's `manifest.tsv`, but the cache is split:
+the manifest cache keeps its four columns and dependencies go to a sibling
+`requires.tsv`, the same shape `checksums.tsv` already uses. No read loop
+changed, and old `setup` binaries simply ignore the new file.
+
+Two bugs found while building it, both worth remembering:
+
+- **Tab is IFS whitespace**, so a run of tabs collapses into one delimiter.
+  Reading a six-field row whose fifth field is empty yields five fields and
+  shifts `requires` into `mod_status`. The dependency cache is built with awk
+  for that reason, not a shell `read`.
+- **`${array[(Ie)value]}` reports a match's index**, and under `KSH_ARRAYS`
+  the first element is index 0, which tests as false. `_list_contains` does
+  the comparison directly. The hardcoded `auth` prepend had the same latent
+  bug.
 
 ## Workstreams
 
@@ -87,17 +105,26 @@ Every consumer is one npm script line: `passage run --env CLOUDFLARE_API_TOKEN=i
 5. Delete the manifest row, `files/passage`, `files/passage.sh`, `tests/passage-client.sh`, `tests/passage-lifecycle.sh`.
 6. Update docs: setup README, `oci-cli/SKILL.md`, `lost-plus/references/registry.md`, `auth/deploy/RUNBOOK.md`, `agent-with-agent/records/OPERATIONS.md`, `okdam-songbook/docs/deployment.md`, `thinqconnect-mcp/README.md`, `tweet-fetch-mcp/README.md`.
 
-### C — the dependency feature
+### C — the dependency feature — DONE 2026-09-21
 
-Land after A and B, against the smaller graph.
+Declared edges: `providers → auth`, `harnesses → auth`, and `backup`,
+`system-updates`, `kernel-simmer` → `schedule`. The five `schedule_bin`
+resolvers stay — they answer "where is it", which the manifest does not — and
+`providers`/`harnesses` keep theirs because their need for `schedule` is
+Linux-only.
 
-1. Widen the manifest and all eight read loops.
-2. Topological sort, cycle detection, hidden-dependency filtering.
-3. D1 auto-install with a printed note; delete the hardcoded `auth` prepend.
-4. D2 uninstall refusal, interactive prompt, non-interactive failure.
-5. D3 orphan tracking and offer.
-6. D5 bare `setup install` enables.
-7. Replace the five `schedule_bin` resolvers' error messages with a declared dependency. The resolvers themselves stay — they answer "where is it", which the manifest does not.
+`setup → schedule` is deliberately not declared: `setup` works fully without
+it apart from the optional `setup schedule` command, so its runtime message is
+the right response. `backup` and friends cannot function at all without it.
+
+Both hardcoded `auth` special cases are gone — the one in `cmd_install` and
+the one in `cmd_update` that installed `auth` when `providers` or `harnesses`
+was present. The update path now asks `installed_dependents_of` instead.
+
+Covered by `tests/module-dependencies.sh`: ordering, duplicate requests,
+cycles, a dependency outside the catalog, dependency marking, uninstall
+refusal, the hidden-dependency prune, and an assertion that the cached
+manifest is still four columns.
 
 ## Duplicates found while mapping this
 

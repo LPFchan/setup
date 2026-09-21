@@ -1,20 +1,20 @@
-# module	target	mode	source	audience	platform	status
+# module	target	mode	source	audience	platform	status	requires
 setup	~/.local/bin/setup	0755	bin/setup
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
 claudex	~/.local/bin/claudex	script	files/claudex.sh			retired
 opencodex	~/.local/bin/opencodex	script	files/opencodex.sh
-kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux
+kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux		schedule
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
 auth	~/.local/bin/auth	script	files/auth.sh
-providers	~/.local/bin/providers	script	files/providers.sh
-harnesses	~/.local/bin/harnesses	script	files/harnesses.sh
+providers	~/.local/bin/providers	script	files/providers.sh				auth
+harnesses	~/.local/bin/harnesses	script	files/harnesses.sh				auth
 schedule	~/.local/bin/schedule	0755	bin/schedule		linux
 browser-use-chrome	~/.config/systemd/user/browser-use-chrome.service	script	files/browser-use-chrome.sh	fleet	linux
 refresh-models	~/.local/bin/refresh-models	script	files/refresh-models.sh			retired
-backup	~/.local/bin/backup	0755	bin/backup	fleet	linux
-system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux
+backup	~/.local/bin/backup	0755	bin/backup	fleet	linux		schedule
+system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux		schedule
 zsh-autocomplete	~/.zsh/zsh-autocomplete	script	files/zsh-autocomplete.sh
 zsh-syntax-highlighting	~/.zsh/zsh-syntax-highlighting	script	files/zsh-syntax-highlighting.sh
 starship	~/.local/bin/starship	script	files/starship.sh

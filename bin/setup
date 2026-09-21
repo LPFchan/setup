@@ -32,6 +32,8 @@ MANIFEST_FILE="$STATE_DIR/manifest.tsv"
 HASH_FILE="$STATE_DIR/installed.tsv"
 SCRIPT_STATE_FILE="$STATE_DIR/script-state.tsv"
 RETIRED_FILE="$STATE_DIR/retired.txt"
+REQUIRES_FILE="$STATE_DIR/requires.tsv"
+DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
@@ -234,10 +236,156 @@ module_is_retired() {
     grep -qx -- "$1" "$RETIRED_FILE"
 }
 
+# --- module dependencies ---------------------------------------------
+#
+# A module declares what it needs in the manifest's `requires` column
+# (comma-separated module names). Dependencies are installed automatically and
+# a module cannot be uninstalled while something that needs it is installed.
+#
+# Only unconditional dependencies belong here. `providers` and `harnesses`
+# need `schedule` on Linux but use launchd on macOS, and one column cannot say
+# that, so they keep their own runtime check instead.
+
+# Membership test. The array subscript flag (Ie) reports a match's index, and
+# under KSH_ARRAYS the first element is index 0, which reads as "absent" --
+# so compare the values directly instead.
+_list_contains() {
+    local needle="$1" item
+    shift
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+module_in_catalog() {
+    local wanted="$1" module rest
+    [[ -f "$MANIFEST_FILE" ]] || return 1
+    while IFS=$'\t' read -r module rest; do
+        [[ "$module" == "$wanted" ]] && return 0
+    done < "$MANIFEST_FILE"
+    return 1
+}
+
+# Space-separated dependencies of one module.
+module_requires() {
+    local wanted="$1" module requires
+    [[ -f "$REQUIRES_FILE" ]] || return 0
+    while IFS=$'\t' read -r module requires; do
+        [[ "$module" == "$wanted" ]] || continue
+        printf '%s\n' "${requires//,/ }"
+        return 0
+    done < "$REQUIRES_FILE"
+}
+
+# Installed modules that declare $1 as a dependency.
+installed_dependents_of() {
+    local wanted="$1" module requires dep target mode
+    [[ -f "$REQUIRES_FILE" ]] || return 0
+    while IFS=$'\t' read -r module requires; do
+        [[ -n "${module:-}" ]] || continue
+        for dep in ${=${requires//,/ }}; do
+            [[ "$dep" == "$wanted" ]] || continue
+            IFS=$'\t' read -r target mode < <(
+                awk -F '\t' -v m="$module" '$1 == m { print $2 "\t" $3; exit }' "$MANIFEST_FILE"
+            )
+            [[ -n "${target:-}" ]] || continue
+            module_is_installed "$module" "$target" "$mode" \
+                && printf '%s\n' "$module"
+        done
+    done < "$REQUIRES_FILE"
+}
+
+_dep_visit() {
+    local module="$1" dep deps state
+    state="${_dep_state[$module]:-0}"
+    [[ "$state" == 2 ]] && return 0
+    if [[ "$state" == 1 ]]; then
+        echo "setup: dependency cycle involving '$module'" >&2
+        return 1
+    fi
+    _dep_state[$module]=1
+    deps=$(module_requires "$module")
+    for dep in ${=deps}; do
+        [[ -n "$dep" ]] || continue
+        if ! module_in_catalog "$dep"; then
+            echo "setup: $module requires '$dep', which this machine's catalog does not offer" >&2
+            return 1
+        fi
+        _dep_visit "$dep" || return 1
+    done
+    _dep_state[$module]=2
+    _dep_order+=("$module")
+    return 0
+}
+
+# Print the requested modules and everything they need, dependencies first.
+resolve_install_order() {
+    typeset -gA _dep_state
+    typeset -ga _dep_order
+    _dep_state=()
+    _dep_order=()
+    local wanted
+    for wanted in "$@"; do
+        _dep_visit "$wanted" || return 1
+    done
+    printf '%s\n' ${_dep_order[@]+"${_dep_order[@]}"}
+}
+
+# Modules present only because something else needed them.
+dep_mark() {
+    mkdir -p "$STATE_DIR"
+    grep -qxF -- "$1" "$DEP_FILE" 2>/dev/null && return 0
+    printf '%s\n' "$1" >> "$DEP_FILE"
+}
+
+dep_unmark() {
+    local tmp
+    [[ -f "$DEP_FILE" ]] || return 0
+    tmp=$(mktemp) || return 1
+    grep -vxF -- "$1" "$DEP_FILE" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$DEP_FILE"
+}
+
+dep_is_marked() {
+    [[ -f "$DEP_FILE" ]] || return 1
+    grep -qxF -- "$1" "$DEP_FILE"
+}
+
+# Remove catalog rows whose declared dependencies are not themselves in the
+# catalog, repeating until the set stops shrinking so that a module depending
+# on a dropped dependent goes too. Operates on the six-column filtered file.
+prune_hidden_dependents() {
+    local file="$1" tmp before after
+    tmp=$(mktemp) || return 1
+    while true; do
+        before=$(awk -F '\t' '!/^#/ && $1 != "" { n++ } END { print n+0 }' "$file")
+        awk -F '\t' 'BEGIN { OFS="\t" }
+            NR == FNR { if ($0 !~ /^#/ && $1 != "") present[$1] = 1; next }
+            /^#/ { print; next }
+            $1 == "" { next }
+            {
+                keep = 1
+                n = split($6, deps, ",")
+                for (i = 1; i <= n; i++) {
+                    gsub(/^[ \t]+|[ \t]+$/, "", deps[i])
+                    if (deps[i] != "" && !(deps[i] in present)) keep = 0
+                }
+                if (keep) print
+            }
+        ' "$file" "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+        after=$(awk -F '\t' '!/^#/ && $1 != "" { n++ } END { print n+0 }' "$tmp")
+        cat "$tmp" > "$file" || { rm -f "$tmp"; return 1; }
+        [[ "$before" == "$after" ]] && break
+    done
+    rm -f "$tmp"
+    return 0
+}
+
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    local trust_rc=0 tmp filtered retired platform
-    local module target mode source mod_status
+    local trust_rc=0 tmp filtered retired deps platform
+    local module target mode source mod_status requires
     setup_machine_is_trusted || trust_rc=$?
     # Manifest platform column uses lowercase uname -s values (linux, darwin).
     # Empty/missing platform means the module is available on every OS.
@@ -247,17 +395,45 @@ fetch_manifest() {
        && grep -q '^# module' "$tmp"; then
         filtered="${tmp}.visible"
         retired="${tmp}.retired"
-        # Carry the status column through this pass; the loop below drops it so
-        # the cached manifest keeps its four-column shape.
+        # Carry status and requires through this pass. The loop below drops
+        # both, so the cached manifest keeps its four-column shape: an older
+        # `setup` on a machine that has not self-updated yet reads this same
+        # file with a four-field read, and a fifth column would be folded into
+        # `source` and corrupt its payload URLs. Dependencies are cached
+        # beside it in REQUIRES_FILE instead.
         awk -F '\t' \
             -v include_fleet="$(( trust_rc == 0 ))" \
             -v platform="$platform" \
             'BEGIN { OFS="\t" }
-            /^#/ { print $1, $2, $3, $4, ""; next }
+            /^#/ { print $1, $2, $3, $4, "", ""; next }
             NF && ($5 != "fleet" || include_fleet) && ($6 == "" || $6 == platform) {
-                print $1, $2, $3, $4, $7
+                print $1, $2, $3, $4, $7, $8
             }
         ' "$tmp" > "$filtered"
+        # A module whose dependency the audience/platform filter just hid can
+        # never be completed, so drop it too. Repeat until nothing more falls
+        # away, which also removes anything depending on a dropped dependent.
+        prune_hidden_dependents "$filtered" || {
+            rm -f "$tmp" "$filtered" "$retired"
+            echo "Failed to resolve manifest dependencies" >&2
+            return 1
+        }
+        # Build the dependency cache with awk, not a shell read: tab is IFS
+        # whitespace, so a run of tabs collapses into one delimiter and a row
+        # with an empty status column would shift `requires` one field left.
+        deps="${tmp}.requires"
+        awk -F '\t' 'BEGIN { OFS="\t" }
+            $1 != "" && $1 !~ /^#/ && $6 != "" { print $1, $6 }
+        ' "$filtered" > "$deps"
+        # Project back to the five-column shape the retired pass reads, where
+        # the possibly-empty status column is last and cannot be shifted into.
+        awk -F '\t' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, $5 }' \
+            "$filtered" > "${filtered}.narrow" \
+            && mv "${filtered}.narrow" "$filtered" || {
+            rm -f "$tmp" "$filtered" "${filtered}.narrow" "$retired" "$deps"
+            echo "Failed to narrow the fetched manifest" >&2
+            return 1
+        }
         : > "$retired"
         while IFS=$'\t' read -r module target mode source mod_status; do
             if [[ -n "${module:-}" && "$module" != \#* && "$mod_status" == "retired" ]]; then
@@ -282,9 +458,13 @@ fetch_manifest() {
                 rm -f "$retired"
                 echo "Warning: could not record retired catalog entries" >&2
             }
+            mv "$deps" "$REQUIRES_FILE" || {
+                rm -f "$deps"
+                echo "Warning: could not record module dependencies" >&2
+            }
             return 0
         fi
-        rm -f "$tmp" "$retired"
+        rm -f "$tmp" "$retired" "$deps"
         echo "Failed to install fetched manifest at $MANIFEST_FILE" >&2
         return 1
     fi
@@ -1027,27 +1207,60 @@ shell_status_one() {
 }
 
 cmd_install() {
-    local modules=("$@")
-    local requested
-    for requested in "${modules[@]}"; do
-        if [[ "$requested" == providers || "$requested" == harnesses ]]; then
-            (( ${modules[(Ie)auth]} )) || modules=(auth "${modules[@]}")
-            break
+    fetch_manifest || return 1
+    local -a requested order pulled
+    requested=("$@")
+    local module target mode source requires failures=0 found=0
+
+    # No arguments means the whole catalog; naming it explicitly lets the
+    # ordering and enable passes below treat both cases the same way.
+    if (( ${#requested[@]} == 0 )); then
+        while IFS=$'\t' read -r module target mode source; do
+            [[ -z "${module:-}" || "$module" == \#* ]] && continue
+            requested+=("$module")
+        done < "$MANIFEST_FILE"
+    else
+        for module in "${requested[@]}"; do
+            module_in_catalog "$module" || { echo "No matching modules." >&2; return 1; }
+        done
+    fi
+    (( ${#requested[@]} > 0 )) || { echo "No matching modules." >&2; return 1; }
+
+    # Dependencies first, and anything pulled in that the operator did not ask
+    # for is announced and remembered so uninstall can offer to take it back.
+    order=(${(f)"$(resolve_install_order "${requested[@]}")"}) || return 1
+    (( ${#order[@]} > 0 )) || { echo "No matching modules." >&2; return 1; }
+    pulled=()
+    for module in "${order[@]}"; do
+        _list_contains "$module" ${requested[@]+"${requested[@]}"} && continue
+        pulled+=("$module")
+    done
+    if (( ${#pulled[@]} > 0 )); then
+        echo "Also installing required by your selection: ${pulled[*]}"
+    fi
+
+    for module in "${order[@]}"; do
+        IFS=$'\t' read -r target mode source < <(
+            awk -F '\t' -v m="$module" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+        )
+        [[ -n "${target:-}" ]] || continue
+        found=1
+        if install_one "$module" "$target" "$mode" "$source"; then
+            if _list_contains "$module" ${pulled[@]+"${pulled[@]}"}; then
+                dep_mark "$module"
+            else
+                dep_unmark "$module"
+            fi
+        else
+            failures=$((failures + 1))
+            echo "Failed: install $module" >&2
         fi
     done
-    fetch_manifest || return 1
-    local found=0 failures=0
-    while IFS=$'\t' read -r module target mode source; do
-        [[ -z "${module:-}" || "$module" == \#* ]] && continue
-        if module_selected "$module" "${modules[@]}"; then
-            found=1
-            install_one "$module" "$target" "$mode" "$source" || { failures=$((failures + 1)); echo "Failed: install $module" >&2; }
-        fi
-    done < "$MANIFEST_FILE"
     ((found == 1)) || { echo "No matching modules." >&2; return 1; }
 
-    # Explicitly selected real service modules are enabled after installation.
-    for module in "${modules[@]}"; do
+    # Every installed service module is enabled, whether it was named or
+    # reached through the catalog.
+    for module in "${order[@]}"; do
         is_service_module "$module" || continue
         [[ "$(module_service_unit "$module")" != tool ]] || continue
         module_service_transition enable "$module" || failures=$((failures + 1))
@@ -1138,12 +1351,18 @@ cmd_update() {
                 continue
             fi
             if [[ -z "$local_hash" ]]; then
-                if [[ "$module" == auth ]] \
-                    && { [[ -x "$HOME/.local/bin/providers" ]] || [[ -x "$HOME/.local/bin/harnesses" ]]; }; then
-                    if ! install_one "$module" "$target" "$mode" "$source"; then
-                        echo "Warning: auth dependency install failed." >&2
+                # A dependency of something already installed is not a "new
+                # module available" — it is missing, so bring it in now.
+                local needed_by
+                needed_by=$(installed_dependents_of "$module" | tr '\n' ' ')
+                if [[ -n "${needed_by// /}" ]]; then
+                    echo "Installing $module, required by: ${needed_by% }"
+                    if install_one "$module" "$target" "$mode" "$source"; then
+                        dep_mark "$module"
+                    else
+                        echo "Warning: $module dependency install failed." >&2
                         failure_count=$((failure_count + 1))
-                        failure_names+=(auth)
+                        failure_names+=("$module")
                     fi
                 else
                     new_count=$((new_count + 1))
@@ -1201,9 +1420,40 @@ cmd_update() {
     (( failure_count == 0 ))
 }
 
+# Dependents of $1 that are installed and are not themselves being removed in
+# this same command.
+_surviving_dependents() {
+    local wanted="$1" dependent
+    shift
+    for dependent in $(installed_dependents_of "$wanted"); do
+        module_selected "$dependent" "$@" && continue
+        printf '%s\n' "$dependent"
+    done
+}
+
 cmd_uninstall() {
     fetch_manifest || return 1
     local found=0 failures=0 target_path
+
+    # Removing something another installed module needs breaks that module
+    # silently, so refuse non-interactively and ask when there is a terminal.
+    # A bare uninstall removes everything, so nothing can be left stranded.
+    if (($# > 0)); then
+        local blocked blocking
+        for blocked in "$@"; do
+            blocking=$(_surviving_dependents "$blocked" "$@" | tr '\n' ' ')
+            [[ -n "${blocking// /}" ]] || continue
+            if (( BATCH == 1 )) || [[ ! -t 0 ]]; then
+                echo "Refusing to uninstall $blocked: still required by ${blocking% }" >&2
+                return 1
+            fi
+            confirm_action "Uninstall $blocked? Still required by ${blocking% }." \
+                || { echo "Keeping $blocked." >&2; return 1; }
+        done
+    fi
+
+    local -a removed
+    removed=()
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if module_selected "$module" "$@"; then
@@ -1222,6 +1472,8 @@ cmd_uninstall() {
                     target_path=$(expand_path "$target")
                     if [[ -e "$target_path" ]]; then failures=$((failures + 1)); echo "Failed: uninstall $module (target retained)" >&2; fi
                 fi
+                dep_unmark "$module"
+                removed+=("$module")
             else
                 failures=$((failures + 1)); echo "Failed: uninstall $module" >&2
             fi
@@ -1229,9 +1481,35 @@ cmd_uninstall() {
     done < "$MANIFEST_FILE"
     ((found == 1)) || { echo "No matching modules." >&2; return 1; }
 
+    # Offer to take back anything that is only here because one of the
+    # modules just removed needed it.
+    if (($# > 0)) && (( ${#removed[@]} > 0 )); then
+        local gone dep orphan_target orphan_mode orphan_source
+        for gone in "${removed[@]}"; do
+            for dep in ${=$(module_requires "$gone")}; do
+                [[ -n "$dep" ]] || continue
+                dep_is_marked "$dep" || continue
+                [[ -z "$(installed_dependents_of "$dep")" ]] || continue
+                IFS=$'\t' read -r orphan_target orphan_mode orphan_source < <(
+                    awk -F '\t' -v m="$dep" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+                )
+                [[ -n "${orphan_target:-}" ]] || continue
+                module_is_installed "$dep" "$orphan_target" "$orphan_mode" || continue
+                if (( BATCH == 1 )) || [[ ! -t 0 ]]; then
+                    echo "$dep was installed for $gone and nothing needs it now; remove with: setup uninstall $dep"
+                    continue
+                fi
+                confirm_action "$dep was installed for $gone and nothing needs it now. Remove it?" \
+                    || continue
+                uninstall_one "$dep" "$orphan_target" "$orphan_mode" "$orphan_source" \
+                    && dep_unmark "$dep"
+            done
+        done
+    fi
+
     if (($# == 0)); then
         remove_shell_config
-        rm -f "$MANIFEST_FILE" "$HASH_FILE"
+        rm -f "$MANIFEST_FILE" "$HASH_FILE" "$DEP_FILE"
         rmdir "$STATE_DIR" 2>/dev/null || true
     fi
     (( failures == 0 ))
