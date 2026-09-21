@@ -84,15 +84,45 @@ exit "${STUB_FLOCK_RC:-0}"
 STUB
 cat > "$FAKE_BIN/loginctl" <<'STUB'
 #!/usr/bin/env bash
-case "$1" in
- list-sessions) [[ ${STUB_SESSION:-none} == none ]] || echo '7 1000 user seat0 tty1' ;;
- show-session)
-   case "${STUB_SESSION:-none}" in
-     active) [[ $* == *' Class '* ]] && printf 'user\n' || printf 'active\n' ;;
-     background) [[ $* == *' Class '* ]] && printf 'background\n' || printf 'active\n' ;;
-     error) exit 1 ;;
-   esac ;;
+# Retained only so validate_host_capabilities still finds it; the module no
+# longer decides anything from login sessions.
+exit 0
+STUB
+# Stands in for the reboot advisor. STUB_ADVICE picks the envelope it prints:
+# a verdict, malformed output, or a nonzero exit matching a miniharness code.
+cat > "$FAKE_BIN/miniharness" <<'STUB'
+#!/usr/bin/env bash
+printf 'miniharness %s\n' "$*" >> "$STUB_LOG"
+case "${STUB_ADVICE:-reboot}" in
+  reboot) printf '{"output":"{\\"decision\\": \\"reboot\\", \\"reason\\": \\"nothing is running\\"}","session_id":"s1"}\n' ;;
+  hold)   printf '{"output":"{\\"decision\\": \\"hold\\", \\"reason\\": \\"a training run is 6 hours in\\"}","session_id":"s1"}\n' ;;
+  prose)  printf '{"output":"I think you should probably reboot, honestly.","session_id":"s1"}\n' ;;
+  garbage) printf 'not an envelope at all\n' ;;
+  bad-decision) printf '{"output":"{\\"decision\\": \\"maybe\\", \\"reason\\": \\"unsure\\"}","session_id":"s1"}\n' ;;
+  exit2)  echo 'error: provider not configured' >&2; exit 2 ;;
+  timeout) exit 124 ;;
 esac
+exit 0
+STUB
+cat > "$FAKE_BIN/hermes" <<'STUB'
+#!/usr/bin/env bash
+printf 'hermes %s\n' "$*" >> "$STUB_LOG"
+exit "${STUB_HERMES_RC:-0}"
+STUB
+cat > "$FAKE_BIN/timeout" <<'STUB'
+#!/usr/bin/env bash
+# Pass through, preserving the child's exit code so 124 can be simulated.
+shift
+exec "$@"
+STUB
+cat > "$FAKE_BIN/runuser" <<'STUB'
+#!/usr/bin/env bash
+printf 'runuser %s\n' "$*" >> "$STUB_LOG"
+while [[ ${1:-} == -* || ${1:-} == "$STUB_OPERATOR" ]]; do
+  [[ ${1:-} == "--" ]] && { shift; break; }
+  shift
+done
+exec "$@"
 STUB
 chmod +x "$FAKE_BIN"/*
 export PATH="$FAKE_BIN:/usr/bin:/bin"
@@ -217,19 +247,65 @@ if (cmd_run >/dev/null 2>&1); then fail 'lock-file symlink was accepted'; fi
 [[ $(cat "$TEST_TMP/lock-target") == 'lock target' ]] || fail 'lock symlink target was modified'
 rm -f "$LOCK_FILE"
 
-# Reboot re-checks current sessions at 07:00, suppresses active/unknown users, and skips during update.
-STUB_DNF_REBOOT_RC=1 STUB_SESSION=active; export STUB_DNF_REBOOT_RC STUB_SESSION
-: > "$LOG"; cmd_reboot_check >/dev/null
-! grep -q 'systemctl reboot' "$LOG" || fail 'active user did not suppress reboot'
-STUB_SESSION=error; export STUB_SESSION
-: > "$LOG"; cmd_reboot_check >/dev/null
-! grep -q 'systemctl reboot' "$LOG" || fail 'unknown sessions did not fail safe'
-STUB_SESSION=none; export STUB_SESSION
-: > "$LOG"; cmd_reboot_check >/dev/null
+# The 07:00 check asks the advisor; only an explicit "reboot" verdict reboots.
+mkdir -p "$STATE_DIR"
+printf '%s\n' "$(id -un)" > "$OPERATOR_FILE"
+printf 'miniharness\t%s\nhermes\t%s\n' "$FAKE_BIN/miniharness" "$FAKE_BIN/hermes" > "$TOOLING_FILE"
+printf 'advisor prompt fixture\n' > "$ADVISOR_PROMPT"
+export STUB_OPERATOR="$(id -un)"
+STUB_DNF_REBOOT_RC=1; export STUB_DNF_REBOOT_RC
+
+STUB_ADVICE=reboot; export STUB_ADVICE
+: > "$LOG"; rm -f "$LAST_ADVICE_FILE"; cmd_reboot_check >/dev/null
 assert_contains "$LOG" 'systemctl reboot'
+assert_contains "$LOG" '--allow-bash'
+assert_contains "$LOG" '--purpose system-updates'
+assert_contains "$LAST_ADVICE_FILE" $'decision\treboot'
+grep -q "hermes send" "$LOG" || fail 'reboot verdict did not notify'
+# Sessions must land in the module state dir, never miniharness's default.
+grep -q -- "--session-dir $STATE_DIR/sessions" "$LOG" \
+  || fail 'advisor did not pin its session directory inside the state dir'
+
+STUB_ADVICE=hold; export STUB_ADVICE
+: > "$LOG"; cmd_reboot_check >/dev/null
+! grep -q 'systemctl reboot' "$LOG" || fail 'hold verdict rebooted anyway'
+assert_contains "$LAST_ADVICE_FILE" $'decision\thold'
+grep -q 'a training run is 6 hours in' "$LOG" || fail 'hold reason was not passed to the alert'
+[[ $(cat "$HOLD_COUNT_FILE") == 1 ]] || fail 'hold was not counted'
+
+# Every failure mode holds the machine and still alerts.
+for advice in prose garbage bad-decision exit2 timeout; do
+  STUB_ADVICE=$advice; export STUB_ADVICE
+  : > "$LOG"; cmd_reboot_check >/dev/null
+  ! grep -q 'systemctl reboot' "$LOG" || fail "advisor '$advice' rebooted instead of holding"
+  grep -q 'hermes send' "$LOG" || fail "advisor '$advice' did not alert"
+done
+assert_contains "$LAST_ADVICE_FILE" $'decision\tunavailable'
+
+# A failing alert must not change the decision or fail the check.
+STUB_ADVICE=hold STUB_HERMES_RC=1; export STUB_ADVICE STUB_HERMES_RC
+: > "$LOG"; cmd_reboot_check >/dev/null || fail 'a failed telegram alert failed the check'
+! grep -q 'systemctl reboot' "$LOG" || fail 'hold verdict rebooted when the alert failed'
+STUB_HERMES_RC=0; export STUB_HERMES_RC
+
+# A missing advisor holds rather than falling back to rebooting.
+mv "$TOOLING_FILE" "$TOOLING_FILE.bak"
+STUB_ADVICE=reboot; export STUB_ADVICE
+: > "$LOG"; cmd_reboot_check >/dev/null
+! grep -q 'systemctl reboot' "$LOG" || fail 'missing advisor tooling rebooted anyway'
+mv "$TOOLING_FILE.bak" "$TOOLING_FILE"
+
+# No reboot required: the advisor is never invoked.
+STUB_DNF_REBOOT_RC=0; export STUB_DNF_REBOOT_RC
+: > "$LOG"; cmd_reboot_check >/dev/null
+! grep -q 'miniharness' "$LOG" || fail 'advisor ran when no reboot was required'
+STUB_DNF_REBOOT_RC=1; export STUB_DNF_REBOOT_RC
+
+# An active update run suppresses the check before the advisor is consulted.
 STUB_FLOCK_RC=1; export STUB_FLOCK_RC
 : > "$LOG"; cmd_reboot_check >/dev/null
 ! grep -q 'systemctl reboot' "$LOG" || fail 'active update did not suppress reboot'
+! grep -q 'miniharness' "$LOG" || fail 'advisor ran during an active update'
 STUB_FLOCK_RC=0; export STUB_FLOCK_RC
 
 # Mid-enable systemctl failure rolls module artifacts back and restores native timer state.

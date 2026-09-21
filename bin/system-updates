@@ -20,6 +20,18 @@ APT_LEGACY="$APT_CONF_DIR/52unattended-upgrades-reboot"
 BACKEND_FILE="$STATE_DIR/backend"
 TIMER_STATE_FILE="$STATE_DIR/native-timers.tsv"
 LAST_RUN_FILE="$STATE_DIR/last-run.tsv"
+OPERATOR_FILE="$STATE_DIR/operator"
+TOOLING_FILE="$STATE_DIR/tooling.tsv"
+LAST_ADVICE_FILE="$STATE_DIR/last-advice.tsv"
+HOLD_COUNT_FILE="$STATE_DIR/consecutive-holds"
+ADVISOR_SESSION_DIR="$STATE_DIR/sessions"
+ADVISOR_PROMPT="${SYSTEM_UPDATES_ADVISOR_PROMPT:-${ROOT}/usr/local/libexec/system-updates-advisor-prompt}"
+# The advisor is one bounded summon. miniharness owns no timeout by contract
+# (DEC-20260808-001), so the deadline is ours to enforce.
+ADVISOR_TIMEOUT="${SYSTEM_UPDATES_ADVISOR_TIMEOUT:-180}"
+ADVISOR_PROVIDER="${SYSTEM_UPDATES_ADVISOR_PROVIDER:-opencode-go}"
+ADVISOR_MODEL="${SYSTEM_UPDATES_ADVISOR_MODEL:-deepseek-v4.1-flash}"
+ADVISOR_PURPOSE=system-updates
 TEST_MODE="${SYSTEM_UPDATES_TEST_MODE:-0}"
 SELF_PATH="${SYSTEM_UPDATES_SELF_PATH:-$0}"
 
@@ -39,6 +51,31 @@ Unattended-Upgrade::Automatic-Reboot-WithUsers "false";'
 APT_LEGACY_CONTENT='Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";'
+
+# System prompt for the reboot advisor. Deliberately describes the judgment and
+# not a checklist: what counts as work worth protecting differs per machine, and
+# working that out is the whole reason a model is here instead of a rule.
+ADVISOR_PROMPT_CONTENT='You decide whether rebooting this Linux machine right now would destroy work in progress.
+
+The package manager has already confirmed a reboot is required. Your only question is whether this is a safe moment.
+
+You have a shell. Use it. Work out what this machine is and what it is doing before you answer. Things worth knowing: how long it has been up, what long-running processes exist and how long they have run, whether a GPU is busy, what containers or virtual machines are running, whether any file transfer, build, backup or database operation is mid-flight, who is logged in and how long they have been idle, and which systemd services matter on this host.
+
+Do not assume a login session means someone is working, and do not assume an empty login list means the machine is idle. Long-running jobs are often started by a service or detached from any terminal.
+
+Judge this specific machine. A host whose whole job is serving requests is not busy merely because it is serving them; a host part-way through a training run or a backup is.
+
+When you are unsure, hold. A delayed reboot costs a day. A reboot through live work costs the work.
+
+Reply with exactly one JSON object and nothing else, in this shape:
+
+{"decision": "reboot", "reason": "one sentence"}
+
+or
+
+{"decision": "hold", "reason": "one sentence"}
+
+The reason is read by a human on a phone. State the actual finding that drove your decision, not a restatement of these instructions.'
 
 info() { printf '%s\n' "$*"; }
 warn() { printf 'warn: %s\n' "$*" >&2; }
@@ -135,6 +172,7 @@ stage_payloads() {
     install -m 0755 "$SELF_PATH" "$stage/root-copy"
     bash -n "$stage/root-copy"
     printf '%s\n' "$APT_CONFIG_CONTENT" > "$stage/apt-config"
+    printf '%s\n' "$ADVISOR_PROMPT_CONTENT" > "$stage/advisor-prompt"
     # Render unit skeletons through the shared schedule helper; per-unit
     # content (ordering, persistence, accuracy) arrives as extra-lines files.
     local sched; sched=$(schedule_bin)
@@ -307,7 +345,7 @@ snapshot_artifacts() {
     local snapshot="$1" path key
     mkdir -p "$snapshot/files"
     : > "$snapshot/index"
-    for path in "$ROOT_COPY" "$APT_CONFIG" "$APT_LEGACY" "$UPDATE_SERVICE" "$UPDATE_TIMER" "$REBOOT_SERVICE" "$REBOOT_TIMER" "$BACKEND_FILE" "$TIMER_STATE_FILE"; do
+    for path in "$ROOT_COPY" "$APT_CONFIG" "$APT_LEGACY" "$UPDATE_SERVICE" "$UPDATE_TIMER" "$REBOOT_SERVICE" "$REBOOT_TIMER" "$BACKEND_FILE" "$TIMER_STATE_FILE" "$ADVISOR_PROMPT" "$OPERATOR_FILE" "$TOOLING_FILE"; do
         key=$(printf '%s' "$path" | sha256sum | cut -c1-16)
         if [[ -e "$path" || -L "$path" ]]; then
             cp -a -- "$path" "$snapshot/files/$key"
@@ -324,6 +362,39 @@ restore_artifacts() {
         rm -rf -- "$path"
         if [[ "$state" == present ]]; then mkdir -p "$(dirname "$path")"; cp -a -- "$snapshot/files/$key" "$path"; fi
     done < "$snapshot/index"
+}
+
+# Resolve a tool inside the operator's environment. Root's PATH cannot see
+# nvm-installed binaries or ~/.local/bin, and at timer-fire time there is no
+# SUDO_USER left to consult, so both are pinned here at enable time.
+resolve_operator_tool() {
+    local operator="$1" tool="$2" path
+    if [[ "$TEST_MODE" == 1 ]]; then
+        path=$(command -v "$tool" 2>/dev/null) || return 1
+    else
+        path=$(runuser -u "$operator" -- bash -lc "command -v $tool" 2>/dev/null) || return 1
+    fi
+    [[ -n "$path" ]] || return 1
+    printf '%s\n' "$path"
+}
+record_advisor_tooling() {
+    local operator miniharness hermes tmp
+    operator="${SUDO_USER:-${USER:-}}"
+    [[ -n "$operator" && "$operator" != root ]] \
+        || die "cannot determine the operator account; run this through sudo rather than as root directly"
+    miniharness=$(resolve_operator_tool "$operator" miniharness) \
+        || die "miniharness is not on ${operator}'s PATH; the reboot advisor needs it (npm install -g miniharness)"
+    hermes=$(resolve_operator_tool "$operator" hermes) \
+        || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts"
+    atomic_write_text "$OPERATOR_FILE" 0644 "$operator"
+    tmp=$(mktemp "$STATE_DIR/.tooling.XXXXXXXX")
+    printf 'miniharness\t%s\nhermes\t%s\n' "$miniharness" "$hermes" > "$tmp"
+    chmod 0644 "$tmp"; chown "$(root_owner)" "$tmp"; mv -f "$tmp" "$TOOLING_FILE"
+    # Sessions are written by miniharness as the operator, so this one directory
+    # is operator-owned while the rest of the state dir stays root's.
+    mkdir -p "$ADVISOR_SESSION_DIR"
+    chmod 0700 "$ADVISOR_SESSION_DIR"
+    [[ "$TEST_MODE" == 1 ]] || chown "$operator" "$ADVISOR_SESSION_DIR"
 }
 
 cmd_enable() {
@@ -377,9 +448,11 @@ cmd_enable() {
     atomic_install "$stage/system-updates.timer" "$UPDATE_TIMER" 0644
     atomic_install "$stage/system-updates-reboot.service" "$REBOOT_SERVICE" 0644
     atomic_install "$stage/system-updates-reboot.timer" "$REBOOT_TIMER" 0644
+    atomic_install "$stage/advisor-prompt" "$ADVISOR_PROMPT" 0644
     mkdir -p "$STATE_DIR"; chmod 0755 "$STATE_DIR"
     atomic_write_text "$BACKEND_FILE" 0644 "$backend"
     atomic_install "$displaced_state" "$TIMER_STATE_FILE" 0644
+    record_advisor_tooling
 
     if [[ "$backend" == apt ]]; then
         mkdir -p "$APT_CONF_DIR"
@@ -408,14 +481,17 @@ cmd_disable() {
     systemctl stop system-updates.service system-updates-reboot.service >/dev/null 2>&1 || true
     rm -f "$UPDATE_SERVICE" "$UPDATE_TIMER" "$REBOOT_SERVICE" "$REBOOT_TIMER"
     [[ "$backend" != apt ]] || rm -f "$APT_CONFIG"
-    rm -f "$ROOT_COPY" "$BACKEND_FILE" "$TIMER_STATE_FILE"
+    rm -f "$ROOT_COPY" "$BACKEND_FILE" "$TIMER_STATE_FILE" "$ADVISOR_PROMPT"
     rm -f "$LOCK_FILE"
     rmdir "$(dirname "$LOCK_FILE")" 2>/dev/null || true
     systemctl daemon-reload
     restore_native_timer_states "$saved_state"
     rm -f "$saved_state"
     if [[ -d "$STATE_DIR" ]]; then
-        rm -f "$STATE_DIR/last-run.tsv"
+        rm -f "$STATE_DIR/last-run.tsv" "$OPERATOR_FILE" "$TOOLING_FILE" \
+            "$LAST_ADVICE_FILE" "$HOLD_COUNT_FILE"
+        # Advisor transcripts are the record of what was inspected before each
+        # reboot decision; keep them and leave the directory behind if present.
         rmdir "$STATE_DIR" 2>/dev/null || true
     fi
     info "system-updates disabled; native timer state restored"
@@ -476,33 +552,198 @@ reboot_required() {
         *) return 2 ;;
     esac
 }
-active_user_sessions() {
-    command -v loginctl >/dev/null 2>&1 || return 2
-    local session sessions class state
-    sessions=$(loginctl list-sessions --no-legend 2>/dev/null) || return 2
-    while read -r session _; do
-        [[ -n "$session" ]] || continue
-        class=$(loginctl show-session "$session" -p Class --value 2>/dev/null) || return 2
-        state=$(loginctl show-session "$session" -p State --value 2>/dev/null) || return 2
-        case "$class:$state" in user:active|user:online|user-early:active|user-early:online) return 0 ;; esac
-    done <<< "$sessions"
+read_state_line() {
+    local file="$1"
+    [[ -r "$file" ]] || return 1
+    local value; read -r value < "$file" || return 1
+    [[ -n "$value" ]] || return 1
+    printf '%s\n' "$value"
+}
+tooling_path() {
+    local want="$1" name path
+    [[ -r "$TOOLING_FILE" ]] || return 1
+    while IFS=$'\t' read -r name path; do
+        [[ "$name" == "$want" ]] || continue
+        [[ -n "$path" ]] || return 1
+        printf '%s\n' "$path"
+        return 0
+    done < "$TOOLING_FILE"
     return 1
 }
+# Run as the operator: miniharness, node (nvm) and the hermes credentials all
+# live in that home, and root's PATH cannot see them. root is kept for the
+# reboot itself and nothing else.
+as_operator() {
+    local operator; operator=$(read_state_line "$OPERATOR_FILE") || return 1
+    if [[ "$TEST_MODE" == 1 || "$(id -un)" == "$operator" ]]; then
+        "$@"
+        return
+    fi
+    runuser -u "$operator" -- "$@"
+}
+notify() {
+    local body="$1" hermes
+    hermes=$(tooling_path hermes) || { warn "no hermes path recorded; alert skipped"; return 0; }
+    as_operator "$hermes" send -t telegram -s "$(uname -n): reboot check" "$body" >/dev/null 2>&1 \
+        || warn "telegram alert failed"
+    return 0
+}
+write_last_advice() {
+    local decision="$1" reason="$2" duration="$3" tmp owner
+    owner=$(root_owner)
+    mkdir -p "$STATE_DIR"
+    tmp=$(mktemp "$STATE_DIR/.last-advice.XXXXXXXX")
+    {
+        printf 'schema\t1\n'
+        printf 'timestamp\t%s\n' "$(date --iso-8601=seconds)"
+        printf 'decision\t%s\n' "$decision"
+        printf 'reason\t%s\n' "$(sanitize_field "$reason")"
+        printf 'model\t%s/%s\n' "$ADVISOR_PROVIDER" "$ADVISOR_MODEL"
+        printf 'duration_s\t%s\n' "$duration"
+    } > "$tmp"
+    chmod 0644 "$tmp"; chown "$owner" "$tmp"; mv -f "$tmp" "$LAST_ADVICE_FILE"
+}
+bump_hold_count() {
+    local count=0
+    [[ ! -r "$HOLD_COUNT_FILE" ]] || read -r count < "$HOLD_COUNT_FILE" || count=0
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    atomic_write_text "$HOLD_COUNT_FILE" 0644 "$((count + 1))"
+}
+
+# Ask the model whether this is a safe moment. Sets ADVICE_DECISION to
+# reboot|hold|unavailable and ADVICE_REASON. Never fails the caller: every
+# error path is an "unavailable", which the caller treats as do-not-reboot.
+ADVICE_DECISION=unavailable
+ADVICE_REASON=""
+advise_reboot() {
+    ADVICE_DECISION=unavailable
+    ADVICE_REASON=""
+    local miniharness envelope rc started elapsed output
+    miniharness=$(tooling_path miniharness) || {
+        ADVICE_REASON="no miniharness path recorded; run: sudo $NAME enable"
+        return 0
+    }
+    [[ -r "$ADVISOR_PROMPT" ]] || {
+        ADVICE_REASON="advisor prompt is missing at $ADVISOR_PROMPT"
+        return 0
+    }
+    mkdir -p "$ADVISOR_SESSION_DIR"
+    started=$SECONDS
+    set +e
+    envelope=$(as_operator timeout "$ADVISOR_TIMEOUT" "$miniharness" \
+        --allow-bash \
+        --provider "$ADVISOR_PROVIDER" \
+        --model "$ADVISOR_MODEL" \
+        --effort low \
+        --silent \
+        --purpose "$ADVISOR_PURPOSE" \
+        --session-dir "$ADVISOR_SESSION_DIR" \
+        --system-prompt-file "$ADVISOR_PROMPT" \
+        "Decide whether it is safe to reboot this machine right now." 2>/dev/null)
+    rc=$?
+    set -e
+    elapsed=$((SECONDS - started))
+    if ((rc == 124)); then
+        ADVICE_REASON="advisor exceeded ${ADVISOR_TIMEOUT}s and was killed"
+        return 0
+    fi
+    if ((rc != 0)); then
+        ADVICE_REASON="advisor exited $rc (1=in-flight failure, 2=bad invocation or missing auth, 3=internal)"
+        return 0
+    fi
+    # The envelope passes the model's reply through unvalidated by contract, so
+    # the JSON shape is ours to enforce.
+    output=$(printf '%s' "$envelope" | python3 -c '
+import json, re, sys
+try:
+    envelope = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+reply = envelope.get("output")
+if not isinstance(reply, str):
+    sys.exit(1)
+match = re.search(r"\{.*\}", reply, re.S)
+if match is None:
+    sys.exit(1)
+try:
+    verdict = json.loads(match.group(0))
+except Exception:
+    sys.exit(1)
+decision = verdict.get("decision")
+if decision not in ("reboot", "hold"):
+    sys.exit(1)
+reason = verdict.get("reason")
+print(decision)
+print(reason if isinstance(reason, str) and reason.strip() else "no reason given")
+' 2>/dev/null) || {
+        ADVICE_REASON="advisor reply was not a usable {\"decision\",\"reason\"} object"
+        return 0
+    }
+    ADVICE_DECISION=$(printf '%s' "$output" | sed -n '1p')
+    ADVICE_REASON=$(printf '%s' "$output" | sed -n '2p')
+    write_last_advice "$ADVICE_DECISION" "$ADVICE_REASON" "$elapsed"
+    return 0
+}
+
+reboot_decision() {
+    local backend="$1" rc
+    set +e; reboot_required "$backend"; rc=$?; set -e
+    case "$rc" in
+        1) log_msg "reboot skipped: backend reports no reboot required"; return 1 ;;
+        2) log_msg "reboot skipped: reboot-required state is unknown"; return 1 ;;
+    esac
+    advise_reboot
+    case "$ADVICE_DECISION" in
+        reboot)
+            log_msg "reboot approved: $ADVICE_REASON"
+            atomic_write_text "$HOLD_COUNT_FILE" 0644 0
+            notify "Rebooting now. $ADVICE_REASON"
+            return 0
+            ;;
+        hold)
+            log_msg "reboot held: $ADVICE_REASON"
+            bump_hold_count
+            notify "Holding the reboot. $ADVICE_REASON"
+            return 1
+            ;;
+        *)
+            log_msg "reboot held: advisor unavailable: $ADVICE_REASON"
+            bump_hold_count
+            write_last_advice unavailable "$ADVICE_REASON" 0
+            notify "Reboot check could not reach a decision, so nothing was rebooted. $ADVICE_REASON"
+            return 1
+            ;;
+    esac
+}
+
 cmd_reboot_check() {
     require_root reboot-check
-    local backend rc
+    local backend
     backend=$(backend_from_state_or_detect)
     ensure_lock_directory
     exec 9> "$LOCK_FILE"
     if ! flock -n 9; then log_msg "reboot skipped: update is active"; return 0; fi
-    set +e; reboot_required "$backend"; rc=$?; set -e
-    case "$rc" in 1) log_msg "reboot skipped: backend reports no reboot required"; return 0 ;;
-        2) log_msg "reboot skipped: reboot-required state is unknown"; return 0 ;; esac
-    set +e; active_user_sessions; rc=$?; set -e
-    case "$rc" in 0) log_msg "reboot deferred: active non-system login session exists"; return 0 ;;
-        2) log_msg "reboot deferred: active login sessions could not be determined"; return 0 ;; esac
-    log_msg "rebooting: backend reports reboot required and no active non-system login sessions exist"
+    reboot_decision "$backend" || return 0
     systemctl reboot
+}
+
+# Same decision path, without the reboot. The way to exercise this on a real
+# machine, and useful on its own for asking what the advisor currently thinks.
+cmd_advise() {
+    require_root advise
+    local backend rc
+    backend=$(backend_from_state_or_detect)
+    set +e; reboot_required "$backend"; rc=$?; set -e
+    case "$rc" in
+        1) printf 'reboot required: no (the advisor is not consulted)\n'; return 0 ;;
+        2) printf 'reboot required: unknown (the advisor is not consulted)\n'; return 0 ;;
+    esac
+    printf 'reboot required: yes\n'
+    advise_reboot
+    printf 'decision: %s\n' "$ADVICE_DECISION"
+    printf 'reason: %s\n' "$ADVICE_REASON"
+    printf 'sessions: %s\n' "$ADVISOR_SESSION_DIR"
+    [[ "$ADVICE_DECISION" != unavailable ]] || return 1
 }
 
 unit_field() {
@@ -524,16 +765,20 @@ root_copy_state() {
     printf '%s\n' "$drift"
 }
 cmd_status() {
-    local backend supported=no reboot=unknown sessions=unknown could=no rc unit reboot_enabled reboot_active
+    local backend supported=no reboot=unknown could=no rc unit reboot_enabled reboot_active
+    local advisor=unconfigured holds=0
     backend=$(backend_from_state_or_detect)
     backend_capable "$backend" && supported=yes || true
     reboot_enabled=$(unit_field system-updates-reboot.timer enabled)
     reboot_active=$(unit_field system-updates-reboot.timer active)
     set +e; reboot_required "$backend"; rc=$?; set -e
     case "$rc" in 0) reboot=yes ;; 1) reboot=no ;; esac
-    set +e; active_user_sessions; rc=$?; set -e
-    case "$rc" in 0) sessions=yes ;; 1) sessions=no ;; esac
-    [[ "$reboot" == yes && "$sessions" == no && "$reboot_enabled" == enabled \
+    if tooling_path miniharness >/dev/null && [[ -r "$ADVISOR_PROMPT" ]]; then
+        advisor="$ADVISOR_PROVIDER/$ADVISOR_MODEL"
+    fi
+    [[ ! -r "$HOLD_COUNT_FILE" ]] || read -r holds < "$HOLD_COUNT_FILE" || holds=0
+    # "Could reboot" now means "will ask", because the answer is the model's.
+    [[ "$reboot" == yes && "$advisor" != unconfigured && "$reboot_enabled" == enabled \
         && "$reboot_active" == active ]] && could=yes
     printf 'system-updates status\n'
     printf '  backend: %s (capable: %s)\n' "$backend" "$supported"
@@ -548,9 +793,11 @@ cmd_status() {
         if [[ -e "$APT_LEGACY" ]] && ! legacy_matches_exact; then printf '  Apt legacy config: divergent file preserved and overridden while enabled\n'; fi
     fi
     printf '  reboot required: %s\n' "$reboot"
-    printf '  active user suppression: %s\n' "$sessions"
-    printf '  next 07:00 check could reboot if state is unchanged: %s\n' "$could"
+    printf '  reboot advisor: %s\n' "$advisor"
+    printf '  consecutive holds: %s\n' "$holds"
+    printf '  next 07:00 check will consult the advisor: %s\n' "$could"
     if [[ -r "$LAST_RUN_FILE" ]]; then printf '  last run:\n'; sed 's/^/    /' "$LAST_RUN_FILE"; else printf '  last run: none\n'; fi
+    if [[ -r "$LAST_ADVICE_FILE" ]]; then printf '  last advice:\n'; sed 's/^/    /' "$LAST_ADVICE_FILE"; else printf '  last advice: none\n'; fi
 }
 
 cmd_help() {
@@ -560,8 +807,9 @@ Usage: system-updates <command>
 Commands:
   enable       Install and enable the module-owned update and reboot timers (root)
   disable      Remove module artifacts and restore displaced native timers (root)
-  status       Report backend, timers, last result, reboot need, and user suppression
+  status       Report backend, timers, last result, reboot need, and last advice
   run          Install all available stable updates from enabled repositories (root)
+  advise       Ask the reboot advisor what it thinks right now, without rebooting (root)
   help         Show this help
 
 Policy:
@@ -570,6 +818,14 @@ Policy:
   are included; repositories and trust configuration are never changed. Native
   package holds/excludes are honored. Apt uses apt-get full-upgrade; DNF uses
   dnf --refresh upgrade. Reboots are checked only by the module timer at 07:00.
+
+Rebooting:
+  When the package manager reports a reboot is required, the 07:00 check asks a
+  model to decide whether this is a safe moment. It runs as the operator with a
+  shell, inspects what the machine is actually doing, and answers reboot or hold.
+  Anything other than a clear "reboot" leaves the machine running. Every decision
+  is sent to Telegram, and the transcript of what was inspected is kept under
+  the module state directory.
 EOF
 }
 
@@ -580,6 +836,7 @@ if [[ "${SYSTEM_UPDATES_SOURCE_ONLY:-0}" != 1 ]]; then
         disable) cmd_disable "$@" ;;
         status) cmd_status "$@" ;;
         run) cmd_run "$@" ;;
+        advise) cmd_advise "$@" ;;
         reboot-check) cmd_reboot_check "$@" ;;
         help|-h|--help) cmd_help ;;
         *) die "unknown command '$command_name'. Try '$NAME help'." ;;

@@ -70,7 +70,7 @@ Simple modules that copy a managed script or executable to your machine.
 | `monitoring` | `~/.local/bin/monitoring` | System monitoring utility |
 | `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `providers`, `backup`, `system-updates`, and `kernel-simmer` all render their timers through it |
 | `backup` | `~/.local/bin/backup` | Restic-based incremental backup script to `bingus` |
-| `system-updates` | `~/.local/bin/system-updates` | Safe daily package updater (Linux only, runs between 03:00–03:30) |
+| `system-updates` | `~/.local/bin/system-updates` | Safe daily package updater (Linux only, runs between 03:00–03:30). At 07:00, when a reboot is required, a model with a shell inspects what the machine is actually doing and decides whether rebooting is safe; anything short of a clear yes holds, and every decision goes to Telegram. `system-updates advise` asks without rebooting |
 
 ---
 
