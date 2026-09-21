@@ -64,6 +64,24 @@ A module names what it needs in the manifest's `requires` column (comma-separate
 
 A module declares a dependency when the two are always installed together — not only when it would crash without it. `opencodex` keeps running if `providers` is missing, but it loses model filtering for every provider bar one, which is never a state worth shipping, so the edge is declared.
 
+The current edges:
+
+| Module | Requires | Why |
+|--------|----------|-----|
+| `providers` | `auth` | Provider credentials live behind Common Auth |
+| `harnesses` | `auth` | Same credential store |
+| `opencodex` | `providers` | Without it, 11 of 12 registry providers lose model filtering |
+| `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
+| `backup` | `schedule` | Same |
+| `system-updates` | `schedule` | Same |
+| `setup` | `fzf-multicolumn` | The interactive module picker has no stock-`fzf` fallback by design |
+| `ai-menu` | `fzf-multicolumn` | The `ai` menu falls back to plain `fzf`, but loses its folder column and re-installs the picker on every run |
+| `tmux` | `zsh-basics` | The status bar reads `SYSTEM_COLOR_HEX`, which only `zsh-basics` exports; without it every machine's bar is the same blue |
+
+`setup` bootstraps `fzf-multicolumn` straight from the manifest on first interactive run, so a fresh `curl | zsh` install still lands a working picker — the declared edge only makes that hand-wired behavior explicit and blocks an uninstall that would immediately be undone.
+
+Deliberately not declared: `harnesses` works as a general harness updater and configurator on a machine with no proxy, so it does not require `opencodex` even though `harnesses proxy` needs it.
+
 The one thing the column cannot express is a platform-conditional need: `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, so they keep their own runtime check instead.
 
 ---

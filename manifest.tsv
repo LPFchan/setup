@@ -1,7 +1,7 @@
 # module	target	mode	source	audience	platform	status	requires
-setup	~/.local/bin/setup	0755	bin/setup
+setup	~/.local/bin/setup	0755	bin/setup				fzf-multicolumn
 resume	~/.local/bin/resume	0755	files/resume
-ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
+ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh				fzf-multicolumn
 claudex	~/.local/bin/claudex	script	files/claudex.sh			retired
 opencodex	~/.local/bin/opencodex	script	files/opencodex.sh				providers
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux		schedule
@@ -23,4 +23,4 @@ zsh-basics	-	script	files/zsh-basics.sh
 agents	~/.agents/AGENTS.md	script	files/agents.sh
 ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh	fleet
 mac-boot	/usr/local/bin/mac-boot	script	files/mac-boot.sh	fleet	darwin
-tmux	~/.tmux.conf	script	files/tmux.sh
+tmux	~/.tmux.conf	script	files/tmux.sh				zsh-basics
