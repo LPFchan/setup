@@ -46,8 +46,7 @@ the console).
 1. If `~/.oci/config` already exists, use it; only bootstrap when it is
    missing or `oci` fails with a signing/auth error.
 2. Fetch the five items with `mcp__passage__get_secret`
-   (`folder: infra`), or `passage get infra <item>` from a shell (the
-   `passage` setup module). Write the PEM to `~/.oci/oci_api_key.pem`,
+   (`folder: infra`). Write the PEM to `~/.oci/oci_api_key.pem`,
    `chmod 600`. Write `~/.oci/config`:
    ```ini
    [DEFAULT]

@@ -1,6 +1,6 @@
 # Plan: module dependencies in `setup`
 
-**Status:** design approved; not started.
+**Status:** design approved. Workstream B (passage retirement) complete 2026-09-21; A and C not started.
 
 ## Goal
 
@@ -62,7 +62,7 @@ The sort is small. The plumbing is not:
 3. Retire the `service-ctl` row, delete `bin/service-ctl`, drop it from `SERVICE_MODULES`.
 4. Remove its README row.
 
-### B — `passage` retirement
+### B — `passage` retirement — DONE 2026-09-21
 
 Every consumer is one npm script line: `passage run --env CLOUDFLARE_API_TOKEN=infra/CF_MASTER_TOKEN -- <deploy>`. The module is installed on OCI only, and every consuming repo is checked out there. Order matters — deploys break if the module goes first.
 

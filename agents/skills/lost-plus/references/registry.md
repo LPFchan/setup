@@ -15,9 +15,10 @@ DNS for these is a proxied placeholder record (`A 192.0.2.1`); the zone route
 `<host>/*` on the gateway answers, and a path the route table does not name
 gets a gateway 404. MCP hosts route only `/mcp`.
 Deploy with `wrangler` from the repo (token `CF_MASTER_TOKEN` in passage,
-folder `infra`; account `f6f0cfde…`). Each repo's `npm run deploy` fetches it
-at deploy time via the `passage` setup module:
-`passage run --env CLOUDFLARE_API_TOKEN=infra/CF_MASTER_TOKEN -- npx wrangler deploy`.
+folder `infra`; account `f6f0cfde…`). Each repo's `npm run deploy` is a plain
+`wrangler deploy` and reads `CLOUDFLARE_API_TOKEN` from the environment; on
+OCI that is exported from `~/.zshenv`, outside the `setup:api-keys` block so
+`providers` does not rewrite it.
 
 | Hostname | Service | Worker · state | Gateway · policy | Repo |
 | --- | --- | --- | --- | --- |
