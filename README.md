@@ -68,8 +68,7 @@ The current edges:
 
 | Module | Requires | Why |
 |--------|----------|-----|
-| `providers` | `auth` | Provider credentials live behind Common Auth |
-| `harnesses` | `auth` | Same credential store |
+| `providers` | `auth` | `auth` is the only door to the passage vault, and the vault is where 10 of 12 providers' credentials live |
 | `opencodex` | `providers` | Without it, 11 of 12 registry providers lose model filtering |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
@@ -80,7 +79,10 @@ The current edges:
 
 `setup` bootstraps `fzf-multicolumn` straight from the manifest on first interactive run, so a fresh `curl | zsh` install still lands a working picker — the declared edge only makes that hand-wired behavior explicit and blocks an uninstall that would immediately be undone.
 
-Deliberately not declared: `harnesses` works as a general harness updater and configurator on a machine with no proxy, so it does not require `opencodex` even though `harnesses proxy` needs it.
+Deliberately not declared, both on `harnesses`, for the same reason — the module is two jobs in one binary, and its updater half stands alone:
+
+- `opencodex`: `harnesses install` and `harnesses update` work fine on a machine with no proxy, even though `harnesses proxy` refuses to run there.
+- `auth`: same two commands need no credentials at all. `harnesses settings` skips only the MCP permission grants without it and reports the gap, and `harnesses mcp` refuses outright. Note that `harnesses daily` runs settings → mcp → update, so on a machine with no Common Auth login the daily timer reports a failure every run.
 
 The one thing the column cannot express is a platform-conditional need: `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, so they keep their own runtime check instead.
 
