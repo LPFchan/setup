@@ -156,14 +156,95 @@ def main():
         time.sleep(INTERVAL)
 
 
+UNIT_NAME = "gpu-fancontrol.service"
+UNIT_PATH = "/etc/systemd/system/" + UNIT_NAME
+BIN_LINK = "/usr/local/bin/gpu-fancontrol"
+
+UNIT = """[Unit]
+Description=GPU-based chassis fan controller
+After=network.target nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=simple
+ExecStart={exec_path}
+Restart=on-failure
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _require_root(action):
+    if os.geteuid() != 0:
+        sys.exit(
+            "gpu-fancontrol: %s requires root — try sudo gpu-fancontrol %s"
+            % (action, action)
+        )
+
+
+def cmd_enable():
+    """Install the unit and start it. The unit runs the managed copy in the
+    operator's ~/.local/bin through a stable /usr/local/bin symlink, so a
+    `setup update` refreshes the daemon without rewriting the unit."""
+    _require_root("enable")
+    source = os.path.realpath(__file__)
+    if source != BIN_LINK:
+        if os.path.islink(BIN_LINK) or os.path.exists(BIN_LINK):
+            os.remove(BIN_LINK)
+        os.symlink(source, BIN_LINK)
+    with open(UNIT_PATH, "w") as unit:
+        unit.write(UNIT.format(exec_path=BIN_LINK))
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", "--now", UNIT_NAME], check=True)
+    print("gpu-fancontrol: enabled")
+
+
+def cmd_disable():
+    _require_root("disable")
+    subprocess.run(["systemctl", "disable", "--now", UNIT_NAME], check=False)
+    for path in (UNIT_PATH, BIN_LINK):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    print("gpu-fancontrol: disabled")
+
+
+def cmd_status():
+    result = subprocess.run(
+        ["systemctl", "is-active", UNIT_NAME], capture_output=True, text=True
+    )
+    print("gpu-fancontrol: %s" % (result.stdout.strip() or "not-installed"))
+
+
+USAGE = """gpu-fancontrol — GPU-based PWM fan controller
+
+  Reads GPU temperatures via nvidia-smi and adjusts chassis fan
+  PWM via a Super I/O hwmon chip (nct6798, nct6775, etc.).
+
+Usage:  gpu-fancontrol            run in the foreground
+        gpu-fancontrol enable     install the systemd unit and start (root)
+        gpu-fancontrol disable    stop and remove the unit (root)
+        gpu-fancontrol status     show the unit state
+        gpu-fancontrol help"""
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
-        print("gpu-fancontrol — GPU-based PWM fan controller")
-        print()
-        print("  Reads GPU temperatures via nvidia-smi and adjusts chassis fan")
-        print("  PWM via a Super I/O hwmon chip (nct6798, nct6775, etc.).")
-        print()
-        print("Usage:  gpu-fancontrol")
-        print("        gpu-fancontrol help")
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command in ("help", "--help", "-h"):
+        print(USAGE)
         sys.exit(0)
-    main()
+    if command == "enable":
+        cmd_enable()
+    elif command == "disable":
+        cmd_disable()
+    elif command == "status":
+        cmd_status()
+    elif command:
+        sys.exit("gpu-fancontrol: unknown command %r — try 'help'" % command)
+    else:
+        main()

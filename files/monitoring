@@ -16,7 +16,11 @@ monitoring — unified container monitoring daemon
   Runs three parallel loops: cgroup polling (memory/nvidia-smi/health),
   Docker lifecycle events (blocking stream), and NVIDIA Xid error watch.
 
-Usage:  monitoring [--help]
+Usage:  monitoring             run in the foreground
+        monitoring enable      install the systemd unit and start (root)
+        monitoring disable     stop and remove the unit (root)
+        monitoring status      show the unit state
+        monitoring help
 
 Environment:
   GRIMOIRE_CONTAINER    Container name (default: grimoire)
@@ -25,8 +29,69 @@ Environment:
 EOF
 }
 
+UNIT_NAME="monitoring.service"
+UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
+BIN_LINK="/usr/local/bin/monitoring"
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "monitoring: $1 requires root — try sudo monitoring $1" >&2
+        exit 1
+    fi
+}
+
+# The unit runs the managed copy in the operator's ~/.local/bin through a
+# stable /usr/local/bin symlink, so a `setup update` refreshes the daemon
+# without rewriting the unit.
+cmd_enable() {
+    require_root enable
+    src=$(readlink -f "$0")
+    if [ "$src" != "$BIN_LINK" ]; then
+        ln -sfn "$src" "$BIN_LINK"
+    fi
+    cat > "$UNIT_PATH" <<UNIT
+[Unit]
+Description=Unified container monitoring (cgroup + events + Xid)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=${BIN_LINK}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monitoring
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now "$UNIT_NAME"
+    echo "monitoring: enabled"
+}
+
+cmd_disable() {
+    require_root disable
+    systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
+    rm -f "$UNIT_PATH" "$BIN_LINK"
+    systemctl daemon-reload
+    echo "monitoring: disabled"
+}
+
+cmd_status() {
+    state=$(systemctl is-active "$UNIT_NAME" 2>/dev/null || echo not-installed)
+    echo "monitoring: ${state}"
+}
+
 case "${1:-}" in
     help|--help|-h) usage; exit 0 ;;
+    enable)  cmd_enable; exit 0 ;;
+    disable) cmd_disable; exit 0 ;;
+    status)  cmd_status; exit 0 ;;
+    "") ;;
+    *) echo "monitoring: unknown command '$1' — try 'help'" >&2; exit 1 ;;
 esac
 
 CONTAINER="${GRIMOIRE_CONTAINER:-grimoire}"

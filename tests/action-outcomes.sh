@@ -19,15 +19,15 @@ normalize_block_order() { :; }
 delim=$'\x1f'
 env_summary=test
 
-# service-ctl is an installed tool, never an actionable service. In a mixed
+# toolonly is an installed tool, never an actionable service. In a mixed
 # selection it must not create an Enable candidate that suppresses Disable for
 # an actually active service.
 snapshot=(
-  "service-ctl"$'\t''~/.local/bin/service-ctl'$'\t''0755'$'\t''bin/service-ctl'$'\t''current'$'\t''1'$'\t''0'$'\t''0'$'\t''tool'
+  "toolonly"$'\t''~/.local/bin/toolonly'$'\t''0755'$'\t''bin/toolonly'$'\t''current'$'\t''1'$'\t''0'$'\t''0'$'\t''tool'
   "backup"$'\t''~/.local/bin/backup'$'\t''0755'$'\t''bin/backup'$'\t''current'$'\t''1'$'\t''1'$'\t''1'$'\t''active'
 )
-selected_modules=(service-ctl backup)
-[[ $(eligible_count enable) -eq 0 ]] || fail "service-ctl tool became enable-eligible"
+selected_modules=(toolonly backup)
+[[ $(eligible_count enable) -eq 0 ]] || fail "toolonly tool became enable-eligible"
 [[ $(eligible_count disable) -eq 1 ]] || fail "active service was not disable-eligible"
 picker_fixture="$TMP/picker-fixture"
 mkdir -p "$picker_fixture"

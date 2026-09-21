@@ -35,7 +35,7 @@ RETIRED_FILE="$STATE_DIR/retired.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer service-ctl gpu-fancontrol monitoring providers harnesses backup system-updates"
+SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring providers harnesses backup system-updates"
 USER_SERVICE_MODULES="providers harnesses"
 BATCH=0
 
@@ -109,9 +109,8 @@ module_enable_cmd() {
     local bin
     case "$1" in
         kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin enable" ;;
-        service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin enable --all" ;;
         gpu-fancontrol|monitoring)
-                        bin=$(_resolve_bin service-ctl); echo "$bin enable $1" ;;
+                        bin=$(_resolve_bin "$1"); echo "$bin enable" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule" ;;
         harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
@@ -123,9 +122,8 @@ module_disable_cmd() {
     local bin
     case "$1" in
         kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin disable" ;;
-        service-ctl)    bin=$(_resolve_bin service-ctl); echo "$bin disable --all" ;;
         gpu-fancontrol|monitoring)
-                        bin=$(_resolve_bin service-ctl); echo "$bin disable $1" ;;
+                        bin=$(_resolve_bin "$1"); echo "$bin disable" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule disable" ;;
         harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
@@ -135,7 +133,6 @@ module_disable_cmd() {
 
 module_service_unit() {
     case "$1" in
-        service-ctl)    echo "tool" ;;
         kernel-simmer)  echo "kernel-simmer.timer" ;;
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;

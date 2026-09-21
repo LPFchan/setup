@@ -65,7 +65,6 @@ Simple modules that copy a managed script or executable to your machine.
 | `setup` | `~/.local/bin/setup` | Main setup CLI tool |
 | `resume` | `~/.local/bin/resume` | Quick interactive session selector for AI coding tools (Claude, Codex, OpenCode, Antigravity, Grok, Kimi, Muse, etc.) |
 | `kernel-simmer` | `~/.local/bin/kernel-simmer` | Fleet-only kernel performance tuning tool |
-| `service-ctl` | `~/.local/bin/service-ctl` | Fleet-only system service controller |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | GPU fan speed control script |
 | `monitoring` | `~/.local/bin/monitoring` | System monitoring utility |
 | `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `providers`, `backup`, `system-updates`, and `kernel-simmer` all render their timers through it |

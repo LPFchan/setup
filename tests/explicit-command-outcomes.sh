@@ -38,10 +38,10 @@ if output=$(cmd_update defer 2>&1); then rc=0; else rc=$?; fi
 [[ "$output" != *'All modules up to date.'* ]] \
     || fail "deferred script update was reported as current"
 
-# Explicit enable/disable aggregate, verify convergence, and reject service-ctl.
-SERVICE_MODULES='fail ok service-ctl'
+# Explicit enable/disable aggregate, verify convergence, and reject toolonly.
+SERVICE_MODULES='fail ok toolonly'
 USER_SERVICE_MODULES='fail ok'
-module_service_unit() { [[ "$1" == service-ctl ]] && echo tool || echo "$1.timer"; }
+module_service_unit() { [[ "$1" == toolonly ]] && echo tool || echo "$1.timer"; }
 module_enable_cmd() { echo "transition_cmd $1 enable"; }
 module_disable_cmd() { echo "transition_cmd $1 disable"; }
 transition_cmd() { return 0; }
@@ -49,7 +49,7 @@ module_is_active() {
     case "${DESIRED:-enable}:$1" in enable:ok|uninstall:fail) return 0 ;; disable:fail) return 0 ;; *) return 1 ;; esac
 }
 DESIRED=enable
-if cmd_enable fail ok service-ctl >/dev/null 2>&1; then rc=0; else rc=$?; fi
+if cmd_enable fail ok toolonly >/dev/null 2>&1; then rc=0; else rc=$?; fi
 [[ $rc -ne 0 ]] || fail "enable state failure/tool rejection was masked"
 DESIRED=disable
 if cmd_disable fail ok >/dev/null 2>&1; then rc=0; else rc=$?; fi

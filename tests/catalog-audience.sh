@@ -51,7 +51,7 @@ trusted_darwin=$(list_for Darwin)
     exit 1
 }
 [[ "$trusted_darwin" != *kernel-simmer* && "$trusted_darwin" != *backup* \
-    && "$trusted_darwin" != *monitoring* && "$trusted_darwin" != *service-ctl* \
+    && "$trusted_darwin" != *monitoring* \
     && "$trusted_darwin" != *gpu-fancontrol* && "$trusted_darwin" != *system-updates* ]] || {
     echo "trusted Darwin catalog exposed linux-only entries" >&2
     exit 1

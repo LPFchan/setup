@@ -1,6 +1,6 @@
 # Plan: module dependencies in `setup`
 
-**Status:** design approved. Workstream B (passage retirement) complete 2026-09-21; A and C not started.
+**Status:** design approved. Workstreams A (`service-ctl` retirement) and B (passage retirement) complete 2026-09-21; C not started.
 
 ## Goal
 
@@ -53,7 +53,13 @@ The sort is small. The plumbing is not:
 
 ## Workstreams
 
-### A — `service-ctl` retirement (do first)
+### A — `service-ctl` retirement — DONE 2026-09-21
+
+Left behind: `module_service_unit` no longer returns `tool` for any module, so
+the nine `!= tool` guards in `bin/setup` are unreachable. The mechanism still
+has test coverage (`action-outcomes`, `explicit-command-outcomes`, both now on
+synthetic fixtures). Removing it is its own slice — operator decision.
+
 
 `service-ctl` writes units for `gpu-fancontrol` and `monitoring`. Its third component, `kernel-simmer`, is already pure pass-through (bin/service-ctl:147) and `setup enable kernel-simmer` bypasses it entirely.
 
