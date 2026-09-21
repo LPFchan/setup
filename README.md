@@ -72,7 +72,7 @@ The current edges:
 | `opencodex` | `providers` | Without it, 11 of 12 registry providers lose model filtering |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
-| `system-updates` | `schedule` | Same |
+| `system-updates` | `schedule`, `miniharness` | `schedule` for the timer; `miniharness` because `system-updates enable` refuses to run without the model summon its 07:00 reboot check asks |
 | `setup` | `fzf-multicolumn` | The interactive module picker has no stock-`fzf` fallback by design |
 | `ai-menu` | `fzf-multicolumn` | The `ai` menu falls back to plain `fzf`, but loses its folder column and re-installs the picker on every run |
 | `tmux` | `zsh-basics` | The status bar reads `SYSTEM_COLOR_HEX`, which only `zsh-basics` exports; without it every machine's bar is the same blue |
@@ -85,6 +85,18 @@ Deliberately not declared, both on `harnesses`, for the same reason — the modu
 - `auth`: same two commands need no credentials at all. `harnesses settings` skips only the MCP permission grants without it and reports the gap, and `harnesses mcp` refuses outright. Note that `harnesses daily` runs settings → mcp → update, so on a machine with no Common Auth login the daily timer reports a failure every run.
 
 The one thing the column cannot express is a platform-conditional need: `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, so they keep their own runtime check instead.
+
+#### External requirements
+
+Some modules need tools that are not modules, so the `requires` column cannot reach them. These surface only when a module refuses to run:
+
+| Module | Needs | Where it comes from |
+|--------|-------|---------------------|
+| `backup` | restic ≥ 0.17, `flock`, `ssh-keygen` | System packages |
+| `system-updates` | `hermes` on the operator's PATH | **Nothing installs it.** Its `harnesses-manifest.json` entry has `install: ""`, so `harnesses` keeps it updated but cannot put it there |
+| `miniharness` | node and npm | nvm or `/opt/node`; the module reports what to do rather than installing node itself |
+
+`hermes` is the open gap: `system-updates enable` gets past `miniharness` now but still dies on a missing `hermes`, with a message naming it. Closing it means first deciding how `hermes` reaches a machine at all.
 
 ---
 
@@ -126,6 +138,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `auth` | Public Common Auth client: one browser-approved login, a local `0600` global/per-service credential store, and service-token resolution for other modules (`~/.local/bin/auth`) | `files/auth.sh` |
 | `harnesses` | AI harness install/update, settings, and MCP enrollment for claude, codex, and hermes (where `~/.hermes/config.yaml` exists). The lost.plus MCP set is read from the Common Auth hub (`GET /api/services`: every registry row the account is admitted to that has an `mcp_url`, its `token_key` as the scope) with the global machine token `auth` holds, so a service registered in the hub enrolls everywhere on the next pass and the manifest lists only third-party MCPs; if the hub cannot be read the MCP pass fails loudly and changes nothing. lost.plus credentials come from `auth`, external-service credentials remain in the passage MCP (`~/.local/bin/harnesses`) | `files/harnesses.sh` |
 | `providers` | Provider enrollment, credential mirrors, and model refresh; Grimoire uses `auth`, while third-party provider keys remain in the passage MCP (`~/.local/bin/providers`). OpenCode Zen is enrolled with its free-tier-only model policy and shares the existing OpenCode Go key (`~/.local/bin/providers`) | `files/providers.sh` |
+| `miniharness` | The headless model summon (`npm install -g miniharness`) that `system-updates` asks at 07:00 whether a reboot is safe. Installed globally through npm, so its path follows the active node version rather than a fixed target | `files/miniharness.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
