@@ -77,6 +77,9 @@ cmd_disable() {
     systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
     rm -f "$UNIT_PATH" "$BIN_LINK"
     systemctl daemon-reload
+    # Removing the unit file while it has a runtime state leaves systemd
+    # reporting "failed"; clear it so status reads inactive.
+    systemctl reset-failed "$UNIT_NAME" 2>/dev/null || true
     echo "monitoring: disabled"
 }
 

@@ -211,6 +211,10 @@ def cmd_disable():
         except FileNotFoundError:
             pass
     subprocess.run(["systemctl", "daemon-reload"], check=False)
+    # Removing the unit file while it has a runtime state leaves systemd
+    # reporting "failed"; clear it so status reads inactive.
+    subprocess.run(["systemctl", "reset-failed", UNIT_NAME], check=False,
+                   capture_output=True)
     print("gpu-fancontrol: disabled")
 
 

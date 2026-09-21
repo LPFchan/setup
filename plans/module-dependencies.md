@@ -55,6 +55,14 @@ The sort is small. The plumbing is not:
 
 ### A — `service-ctl` retirement — DONE 2026-09-21
 
+Rollout hazard, self-healing: a machine keeps routing enable/disable through
+`service-ctl` until its own `~/.local/bin/setup` updates. Between the push and
+that machine's nightly `setup schedule` run, `setup enable gpu-fancontrol`
+fails with `sudo: service-ctl: command not found`. Running services are
+unaffected — their units are already installed — and the next setup update
+fixes it. Grimoire was updated by hand and verified.
+
+
 Left behind: `module_service_unit` no longer returns `tool` for any module, so
 the nine `!= tool` guards in `bin/setup` are unreachable. The mechanism still
 has test coverage (`action-outcomes`, `explicit-command-outcomes`, both now on
