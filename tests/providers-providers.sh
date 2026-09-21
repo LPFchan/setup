@@ -83,7 +83,7 @@ fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
     'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-zen'
+    'cloudflare', 'openrouter', 'opencode-zen', 'opencode-go'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
@@ -161,7 +161,7 @@ m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
     'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-zen'
+    'cloudflare', 'openrouter', 'opencode-zen', 'opencode-go'
 }
 m.REGISTRY_PATH = original_registry
 
@@ -417,6 +417,7 @@ assert openrouter_server == {
     'model_exclude_prefixes': [],
     'model_allow_suffixes': [],
     'model_allow_ids': [],
+    'headers': {},
 }
 m.cache_set('openrouter', 'fixture-openrouter-token')
 assert m.get_auth(openrouter_server['auth']) == ('api_key', 'fixture-openrouter-token')
@@ -938,6 +939,29 @@ assert pi_demo['models'] == [
     }
     for model_id in ('fresh-1', 'fresh-2', 'stale-1')
 ]
+# The demo enrollment keys its credential by its own name, so no indirection
+# is projected; a provider that declares one gets auth_key, and endpoint-
+# required headers ride along for Pi-side consumers to substitute.
+assert 'auth_key' not in pi_demo
+assert 'headers' not in pi_demo
+shared = dict(servers['demo'])
+shared['auth'] = {'type': 'auth_json', 'provider': 'shared-key'}
+shared['headers'] = {'x-opencode-session': '{session_id}'}
+m._update_capability_cache('shared', m._capability_snapshot(
+    'shared', shared, rows=[{'id': 'fresh-1'}], static=True,
+))
+m._sync_pi_models_mirror({'shared': shared}, {'shared': models})
+pi_shared = m.load_json(m.PI_MODELS_PATH)['providers']['shared']
+assert pi_shared['auth_key'] == 'shared-key', pi_shared
+assert pi_shared['headers'] == {'x-opencode-session': '{session_id}'}, pi_shared
+# Dropping the indirection from the registry must clear the stale projection.
+plain = dict(shared)
+plain['auth'] = {'type': 'auth_json', 'provider': 'shared'}
+plain['headers'] = {}
+m._sync_pi_models_mirror({'shared': plain}, {'shared': models})
+pi_plain = m.load_json(m.PI_MODELS_PATH)['providers']['shared']
+assert 'auth_key' not in pi_plain, pi_plain
+assert 'headers' not in pi_plain, pi_plain
 pi_before = open(m.PI_MODELS_PATH, 'rb').read()
 m._sync_pi_models_mirror(servers, {'demo': models})
 assert open(m.PI_MODELS_PATH, 'rb').read() == pi_before

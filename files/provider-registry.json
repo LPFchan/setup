@@ -151,6 +151,21 @@
         "union-alpha",
         "x-preview-f-free"
       ]
+    },
+    "opencode-go": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "opencode-go"
+      },
+      "headers": {
+        "x-opencode-session": "{session_id}"
+      },
+      "enabled": true
     }
   }
 }

@@ -145,6 +145,14 @@ labels and uses `default` for omission; a saved legacy `none` value is ignored.
 The launcher sends an explicit effort only for a named level, so unknown or
 unsupported cache states do not inherit catalog-generated choices.
 
+OpenCode Go and OpenCode Zen are separate services that share one API key, and
+they serve different catalogs from different base paths: `/zen/v1` (73 models,
+free tier filtered by the Zen entry's allow-lists) and `/zen/go/v1` (30
+subscription models). They are therefore enrolled as two providers,
+`opencode-zen` and `opencode-go`, both authenticating with the stored
+`opencode-go` key. A single entry cannot serve both, because the base path
+selects the catalog.
+
 The Pi/miniharness mirror consumes the same snapshot after provider refresh.
 Known input modalities are projected to Pi's `input` field. Reasoning support
 maps to `true` for full or partial, `false` for none, and omission for

@@ -1536,6 +1536,23 @@ def _sync_pi_models_mirror(servers, refreshed):
         projected = dict(existing)
         projected["base_url"] = server["baseURL"]
         projected["provider_type"] = "OpenAICompatible"
+        # Pi-side consumers authenticate by stored-credential name, which is
+        # not always the provider name: OpenCode Go and Zen are separate
+        # enrollments sharing one key. Project the indirection only when it
+        # actually differs, and clear a stale one if the registry drops it.
+        auth_entry = server.get("auth")
+        credential = auth_entry.get("provider") if isinstance(auth_entry, dict) else None
+        if isinstance(credential, str) and credential and credential != name:
+            projected["auth_key"] = credential
+        else:
+            projected.pop("auth_key", None)
+        # Endpoint-required request headers (OpenCode Go rejects requests with
+        # no x-opencode-session). Pi-side consumers substitute {session_id}.
+        headers = server.get("headers")
+        if isinstance(headers, dict) and headers:
+            projected["headers"] = headers
+        else:
+            projected.pop("headers", None)
         projected["models"] = [
             _pi_model_entry(model_id, models.get(model_id, {}), capability)
             for model_id, capability in cached_models.items()
@@ -1920,6 +1937,7 @@ def _servers_from_registry(registry):
             "model_exclude_prefixes": provider.get("model_exclude_prefixes", []),
             "model_allow_suffixes": provider.get("model_allow_suffixes", []),
             "model_allow_ids": provider.get("model_allow_ids", []),
+            "headers": provider.get("headers", {}),
         }
     return servers
 
