@@ -368,11 +368,18 @@ restore_artifacts() {
 # nvm-installed binaries or ~/.local/bin, and at timer-fire time there is no
 # SUDO_USER left to consult, so both are pinned here at enable time.
 resolve_operator_tool() {
-    local operator="$1" tool="$2" path
+    local operator="$1" tool="$2" path shell
     if [[ "$TEST_MODE" == 1 ]]; then
         path=$(command -v "$tool" 2>/dev/null) || return 1
     else
-        path=$(runuser -u "$operator" -- bash -lc "command -v $tool" 2>/dev/null) || return 1
+        # Ask through the operator's own login shell. Per-user PATH setup
+        # (nvm, in particular) lives in that shell's rc files, so asking bash
+        # about a zsh user's node install finds nothing: on grimoire
+        # `bash -lc 'command -v miniharness'` is empty while `zsh -lc` returns
+        # the nvm path.
+        shell=$(getent passwd "$operator" 2>/dev/null | cut -d: -f7)
+        [[ -n "$shell" && -x "$shell" ]] || shell=/bin/sh
+        path=$(runuser -u "$operator" -- "$shell" -lc "command -v $tool" 2>/dev/null) || return 1
     fi
     [[ -n "$path" ]] || return 1
     printf '%s\n' "$path"

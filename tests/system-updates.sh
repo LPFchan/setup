@@ -247,6 +247,15 @@ if (cmd_run >/dev/null 2>&1); then fail 'lock-file symlink was accepted'; fi
 [[ $(cat "$TEST_TMP/lock-target") == 'lock target' ]] || fail 'lock symlink target was modified'
 rm -f "$LOCK_FILE"
 
+# enable refuses when the advisor's tooling is absent, rather than installing a
+# timer that can only ever fail at 07:00. Only miniharness is hidden, so the
+# failure cannot be attributed to any other missing command.
+mv "$FAKE_BIN/miniharness" "$TEST_TMP/miniharness.hidden"
+enable_err=$(cmd_enable 2>&1) && fail 'enable succeeded without miniharness'
+grep -q 'miniharness is not on' <<< "$enable_err" \
+    || fail "enable failed for the wrong reason: $enable_err"
+mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"
+
 # The 07:00 check asks the advisor; only an explicit "reboot" verdict reboots.
 mkdir -p "$STATE_DIR"
 printf '%s\n' "$(id -un)" > "$OPERATOR_FILE"
