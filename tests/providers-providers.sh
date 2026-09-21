@@ -76,6 +76,10 @@ assert locker.wait() == 0
 # Network-optional: no vault token means the local cache is authoritative.
 m.vault_available = lambda: False
 
+# Keep the suite offline: an empty catalogue is treated as "already fetched,
+# nothing published", so no refresh reaches models.dev.
+m._MODELS_DEV_CACHE = {}
+
 # Keep the test hermetic: the real ocx/codex sync must not run from here.
 m._sync_opencodex_provider_statuses = lambda restart=True: None
 
@@ -418,6 +422,7 @@ assert openrouter_server == {
     'model_allow_suffixes': [],
     'model_allow_ids': [],
     'headers': {},
+    'models_dev': '',
 }
 m.cache_set('openrouter', 'fixture-openrouter-token')
 assert m.get_auth(openrouter_server['auth']) == ('api_key', 'fixture-openrouter-token')
@@ -962,6 +967,39 @@ m._sync_pi_models_mirror({'shared': plain}, {'shared': models})
 pi_plain = m.load_json(m.PI_MODELS_PATH)['providers']['shared']
 assert 'auth_key' not in pi_plain, pi_plain
 assert 'headers' not in pi_plain, pi_plain
+
+# models.dev fills limits an endpoint leaves out, and never overrides a
+# reported one. Stub the catalogue so the test stays offline.
+m._MODELS_DEV_CACHE = {
+    'demo-catalog': {'models': {
+        'fresh-1': {'limit': {'context': 1000000, 'output': 384000}},
+        'fresh-2': {'limit': {'context': 200000, 'output': 32000}},
+    }},
+}
+enrich_cfg = dict(servers['demo'])
+enrich_cfg['models_dev'] = 'demo-catalog'
+rows = [
+    {'id': 'fresh-1'},                                  # nothing reported
+    {'id': 'fresh-2', 'context_length': 4096},          # context reported, output not
+    {'id': 'stale-1'},                                  # absent from models.dev
+]
+enriched = {row['id']: row for row in m._enrich_rows_from_models_dev('demo', enrich_cfg, rows)}
+assert enriched['fresh-1']['context_length'] == 1000000, enriched['fresh-1']
+assert enriched['fresh-1']['max_completion_tokens'] == 384000, enriched['fresh-1']
+# A provider-reported value wins; only the missing half is filled.
+assert enriched['fresh-2']['context_length'] == 4096, enriched['fresh-2']
+assert enriched['fresh-2']['max_completion_tokens'] == 32000, enriched['fresh-2']
+# Unknown to models.dev: left alone for the downstream default to handle.
+assert 'context_length' not in enriched['stale-1'], enriched['stale-1']
+# The caller's rows are never mutated in place.
+assert rows[0] == {'id': 'fresh-1'}, rows[0]
+# A provider with no models_dev pointer is untouched, catalogue or not.
+assert m._enrich_rows_from_models_dev('demo', servers['demo'], rows) is rows
+# An unknown catalogue key degrades to the provider's own data.
+missing_cfg = dict(servers['demo'])
+missing_cfg['models_dev'] = 'no-such-catalog'
+assert m._enrich_rows_from_models_dev('demo', missing_cfg, rows) is rows
+m._MODELS_DEV_CACHE = {}
 pi_before = open(m.PI_MODELS_PATH, 'rb').read()
 m._sync_pi_models_mirror(servers, {'demo': models})
 assert open(m.PI_MODELS_PATH, 'rb').read() == pi_before

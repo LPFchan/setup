@@ -145,6 +145,17 @@ labels and uses `default` for omission; a saved legacy `none` value is ignored.
 The launcher sends an explicit effort only for a named level, so unknown or
 unsupported cache states do not inherit catalog-generated choices.
 
+Some endpoints return bare model names with no size limits: OpenCode Zen and
+Go, DeepSeek, Meta, and Cloudflare all do. Without a limit the projection fell
+back to a 32768 placeholder that no consumer could distinguish from a reported
+value, so million-token models were published as 32k and every tool reading the
+registry compacted far too early. Providers that declare a `models_dev` key now
+fill those gaps from models.dev, OpenCode's own published catalogue, which
+already uses this module's `limit: {context, output}` shape. A value the
+provider actually reports always wins, a model absent from models.dev keeps the
+downstream default, and an unreachable catalogue degrades to provider-reported
+data with a warning.
+
 OpenCode Go and OpenCode Zen are separate services that share one API key, and
 they serve different catalogs from different base paths: `/zen/v1` (73 models,
 free tier filtered by the Zen entry's allow-lists) and `/zen/go/v1` (30

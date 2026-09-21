@@ -66,7 +66,8 @@
         "store": "opencode",
         "key": "deepseek"
       },
-      "enabled": true
+      "enabled": true,
+      "models_dev": "deepseek"
     },
     "kimicode": {
       "provider_type": "OpenAICompatible",
@@ -90,7 +91,8 @@
         "store": "opencode",
         "key": "meta"
       },
-      "enabled": true
+      "enabled": true,
+      "models_dev": "meta"
     },
     "cloudflare": {
       "provider_type": "OpenAICompatible",
@@ -107,7 +109,8 @@
         {
           "id": "@cf/google/gemma-4-26b-a4b-it"
         }
-      ]
+      ],
+      "models_dev": "cloudflare-workers-ai"
     },
     "openrouter": {
       "provider_type": "OpenAICompatible",
@@ -150,7 +153,8 @@
         "nemotron-3.5-lightning-free",
         "union-alpha",
         "x-preview-f-free"
-      ]
+      ],
+      "models_dev": "opencode"
     },
     "opencode-go": {
       "provider_type": "OpenAICompatible",
@@ -165,7 +169,8 @@
       "headers": {
         "x-opencode-session": "{session_id}"
       },
-      "enabled": true
+      "enabled": true,
+      "models_dev": "opencode-go"
     }
   }
 }

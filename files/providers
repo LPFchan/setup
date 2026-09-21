@@ -1658,6 +1658,80 @@ def as_int(value, default):
         return default
 
 
+MODELS_DEV_URL = os.environ.get("MODELS_DEV_URL", "https://models.dev/api.json")
+_MODELS_DEV_CACHE = None
+
+
+def _models_dev_catalog():
+    """Fetch models.dev once per process. Returns None when unavailable."""
+    global _MODELS_DEV_CACHE
+    if _MODELS_DEV_CACHE is None:
+        request = urllib.request.Request(MODELS_DEV_URL)
+        request.add_header("Accept", "application/json")
+        # models.dev rejects the default urllib agent with 403.
+        request.add_header("User-Agent", "providers/1.0")
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                _MODELS_DEV_CACHE = json.load(response)
+        except Exception as exc:
+            print(
+                f"  Warning: models.dev unavailable ({exc}); using provider-reported limits only",
+                file=sys.stderr,
+            )
+            _MODELS_DEV_CACHE = {}
+    return _MODELS_DEV_CACHE or None
+
+
+def _enrich_rows_from_models_dev(name, cfg, rows):
+    """Fill in limits the provider's own /models endpoint left out.
+
+    Several endpoints (OpenCode Zen and Go, DeepSeek, Meta, Cloudflare) return
+    bare model names with no size limits. The projection then falls back to a
+    placeholder that no consumer can tell apart from a reported value, so a
+    model with a million-token context is published as 32768 and every tool
+    reading the registry compacts far too early. models.dev is OpenCode's own
+    published catalogue and already uses this module's `limit: {context,
+    output}` shape. A value the provider actually reported always wins; this
+    only fills gaps.
+    """
+    key = cfg.get("models_dev")
+    if not key:
+        return rows
+    catalog = _models_dev_catalog()
+    entry = catalog.get(key) if isinstance(catalog, dict) else None
+    published = entry.get("models") if isinstance(entry, dict) else None
+    if not isinstance(published, dict):
+        if catalog is not None:
+            print(f"  Warning: models.dev has no provider '{key}' for {name}", file=sys.stderr)
+        return rows
+    enriched = []
+    filled = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            enriched.append(row)
+            continue
+        # Registry-supplied rows are shared state; never mutate them in place.
+        row = dict(row)
+        model = published.get(row.get("id"))
+        limit = model.get("limit") if isinstance(model, dict) else None
+        if isinstance(limit, dict):
+            context = as_int(limit.get("context"), 0)
+            output = as_int(limit.get("output"), 0)
+            touched = False
+            if row.get("context_length") is None and context > 0:
+                row["context_length"] = context
+                touched = True
+            if _model_output_limit(row) is None and output > 0:
+                row["max_completion_tokens"] = output
+                touched = True
+            if touched:
+                filled += 1
+        enriched.append(row)
+    if filled:
+        print(f"  {name}: {filled} models took limits from models.dev", file=sys.stderr)
+    return enriched
+
+
 def _opencode_output_limit(output, context):
     """Give OpenCode a finite ceiling for an unbounded provider limit."""
     if as_number(output, None) == -1:
@@ -1831,6 +1905,8 @@ def refresh_server(name, cfg):
     if not models_list:
         print(f"  Warning: all models excluded by registry policy for {name}", file=sys.stderr)
         return False
+    # After admission, so only models this machine will actually use are looked up.
+    models_list = _enrich_rows_from_models_dev(name, cfg, models_list)
     models = {}
     for m in models_list:
         model_id = m.get("id", "")
@@ -1938,6 +2014,7 @@ def _servers_from_registry(registry):
             "model_allow_suffixes": provider.get("model_allow_suffixes", []),
             "model_allow_ids": provider.get("model_allow_ids", []),
             "headers": provider.get("headers", {}),
+            "models_dev": provider.get("models_dev", ""),
         }
     return servers
 
