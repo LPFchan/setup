@@ -3,7 +3,7 @@ setup	~/.local/bin/setup	0755	bin/setup
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh
 claudex	~/.local/bin/claudex	script	files/claudex.sh			retired
-opencodex	~/.local/bin/opencodex	script	files/opencodex.sh
+opencodex	~/.local/bin/opencodex	script	files/opencodex.sh				providers
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux		schedule
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux

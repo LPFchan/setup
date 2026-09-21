@@ -62,7 +62,9 @@ A module names what it needs in the manifest's `requires` column (comma-separate
 - A module installed only as a dependency is remembered, so removing the last thing that needed it offers to take it away too.
 - A dependency cycle is a hard error naming the module it runs through.
 
-Only unconditional dependencies belong in the column. `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, which one column cannot express, so they keep their own runtime check instead.
+A module declares a dependency when the two are always installed together — not only when it would crash without it. `opencodex` keeps running if `providers` is missing, but it loses model filtering for every provider bar one, which is never a state worth shipping, so the edge is declared.
+
+The one thing the column cannot express is a platform-conditional need: `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, so they keep their own runtime check instead.
 
 ---
 
