@@ -15,7 +15,6 @@ BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
    && [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]; then
     source ~/.zsh/zsh-autocomplete/zsh-autocomplete.plugin.zsh
     source ~/.zsh/zsh-defer/zsh-defer.plugin.zsh
-    zstyle '\'':autocomplete:'\'' persist-context yes
     zstyle '\'':autocomplete:'\'' min-input 1
     zstyle '\'':autocomplete:'\'' default-context history-incremental-search-backward
     setopt histignorealldups sharehistory
