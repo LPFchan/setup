@@ -1,0 +1,21 @@
+# Starship prompt, kept in the setup repo so every machine matches.
+#
+# The only purpose of this file is indentation. Everything else is left to
+# Starship's defaults via $all, so a future release changing the default layout
+# is still picked up.
+#
+# The indent is two spaces, one symbol, three spaces, which puts typed text in
+# column seven. zsh-omnibar's completion list uses the same margin, glyph and
+# gap, so the list lines up with the line being typed:
+#
+#     ❯   git clone …
+#     🕘   git clone https://github.com/…
+#
+# If you change one, change the other:
+#   zstyle ':autocomplete:omnibar:' left-margin 2
+#   zstyle ':autocomplete:omnibar:' icon-gap    3
+
+format = "  $all"
+
+[character]
+format = "  $symbol   "

@@ -6,6 +6,8 @@
 
 MODULE="starship"
 BIN="$HOME/.local/bin/starship"
+CONFIG_SRC="${${(%):-%x}:A:h}/starship.toml"
+CONFIG_DST="${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml"
 
 BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
    && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
@@ -26,6 +28,7 @@ install() {
         curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b "$HOME/.local/bin"
     fi
     _upsert_block
+    _link_config
     _record_state
 }
 
@@ -57,17 +60,39 @@ status() {
 update() {
     curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b "$HOME/.local/bin"
     _upsert_block
+    _link_config
     _record_state
 }
 
 uninstall() {
     rm -f "$BIN"
+    # Only remove the link if it is ours; a user's own config stays put.
+    [[ -L "$CONFIG_DST" && "$(readlink "$CONFIG_DST")" == "$CONFIG_SRC" ]] &&
+        rm -f "$CONFIG_DST"
     manage_block "$HOME/.zshrc" "starship" "" "remove"
     remove_script_state "$MODULE"
 }
 
 _upsert_block() {
     manage_block "$HOME/.zshrc" "starship" "$BLOCK_CONTENT" "upsert" "append"
+}
+
+# Symlink the repo's config into place, so an edit here reaches every machine
+# on the next sync. Anything already there is kept as a .pre-starship.bak
+# rather than thrown away. Same approach as the agents module.
+_link_config() {
+    [[ -f "$CONFIG_SRC" ]] || return 0
+    mkdir -p "$(dirname "$CONFIG_DST")"
+    if [[ -L "$CONFIG_DST" ]]; then
+        [[ "$(readlink "$CONFIG_DST")" == "$CONFIG_SRC" ]] || ln -sfn "$CONFIG_SRC" "$CONFIG_DST"
+        return 0
+    fi
+    if [[ -e "$CONFIG_DST" ]]; then
+        local bak="$CONFIG_DST.pre-starship.bak"
+        [[ -e "$bak" ]] || mv "$CONFIG_DST" "$bak"
+        rm -f "$CONFIG_DST"
+    fi
+    ln -s "$CONFIG_SRC" "$CONFIG_DST"
 }
 
 _record_state() {
