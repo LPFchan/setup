@@ -19,7 +19,7 @@ FLEET=(
     "mangchi|mangchi.lost.plus|yeowool"
     "yeowoolmac|mac.lost.plus|yeowool||ignore"
     "grimoire|grimoire.lost.plus|yeowool"
-    "oci-ubuntu|oci.lost.plus|yeowool"
+    "oci-ubuntu|oci.lost.plus|ubuntu"
     "bingus|bingus.lost.plus|yeowool|xterm-256color"
     "yeowoolair|yeowool-air.tailaa113.ts.net|yeowool"
 )
