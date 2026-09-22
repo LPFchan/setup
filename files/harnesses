@@ -335,6 +335,28 @@ def _node_bin_dirs():
             for d in sorted(base.glob("*/bin"), reverse=True): dirs.append(str(d))
     return dirs
 
+HARNESS_VERSION_TIMEOUT_SECONDS = 20
+
+def harness_version(binpath):
+    """The harness's own `--version`, first line, or None if it will not say.
+
+    An updater that exits 0 is not evidence that it updated anything: a
+    Homebrew-managed opencode answers `opencode upgrade` with "already
+    installed" and exits 0 while a newer release sits in the tap. Reading the
+    version on both sides of the run is what turns that silent no-op into a
+    line the operator can see.
+    """
+    try:
+        r = subprocess.run([binpath, "--version"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL,
+                           timeout=HARNESS_VERSION_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    line = (r.stdout or r.stderr or "").strip().splitlines()
+    return line[0].strip() if line else None
+
 def harness_resolve(name, spec):
     if spec.get("viaNpx"):
         if not (HOME/".config/systemd/user/t3code.service").exists(): return None
@@ -381,7 +403,7 @@ def cmd_install(names):
 def cmd_update(names):
     specs = dict(harnesses())
     targets = names or list(specs)
-    present = 0; missing = []; failed = []
+    present = 0; missing = []; failed = []; unchanged = []
     for name in targets:
         spec = specs.get(name)
         if not spec:
@@ -395,16 +417,33 @@ def cmd_update(names):
         print("Updating harness %s (%s)" % (name, binpath))
         env = dict(os.environ)
         env["PATH"] = os.path.dirname(binpath)+os.pathsep+env.get("PATH","")
+        # A version probe is the only thing that distinguishes "already
+        # current" from "the updater did nothing and said nothing".
+        before = None if spec.get("viaNpx") else harness_version(binpath)
         try:
             r = subprocess.run(argv, stdin=subprocess.DEVNULL, env=env,
                                timeout=int(os.environ.get("SETUP_HARNESS_TIMEOUT","900")))
-            if r.returncode != 0: failed.append(name)
+            if r.returncode != 0:
+                failed.append(name)
+                continue
         except subprocess.TimeoutExpired:
             failed.append(name)
+            continue
+        after = None if spec.get("viaNpx") else harness_version(binpath)
+        if before and after and before != after:
+            print("  %s -> %s" % (before, after))
+        elif before and after:
+            print("  %s (unchanged)" % after)
+            unchanged.append(name)
     if present == 0:
         print("No AI harnesses installed.")
     elif missing:
         print("Not installed, skipped: "+" ".join(missing))
+    if unchanged:
+        # Usually this just means the machine was already current. It is also
+        # exactly what a broken updater looks like, so name the harnesses
+        # rather than leaving a clean run indistinguishable from a stuck one.
+        print("Already current, or the updater did nothing: "+" ".join(unchanged))
     if failed:
         eprint("harness(es) could not be updated: "+" ".join(failed))
     return 0 if not failed else 1
