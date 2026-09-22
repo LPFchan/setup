@@ -57,7 +57,11 @@ prepend_block_once() {
 
 # Canonical top→bottom order of setup-managed .zshrc blocks. Mirrors
 # ZSHRC_BLOCK_ORDER in bin/setup so a fresh curl-install ends up ordered too.
-ZSHRC_BLOCK_ORDER=(tmux-autostart tmux-title zsh-basics starship zsh-omnibar zsh-syntax-highlighting ai-menu)
+# `zsh-autocomplete` is the pre-rename label, kept in the same slot so an
+# un-migrated block is not demoted past zsh-syntax-highlighting: zsh-defer is
+# defined inside this block and the highlighting guard depends on it. Remove
+# once every machine has migrated.
+ZSHRC_BLOCK_ORDER=(tmux-autostart tmux-title zsh-basics starship zsh-autocomplete zsh-omnibar zsh-syntax-highlighting ai-menu)
 
 # Reorder setup-managed blocks in <file> to match the given label order,
 # preserving unmanaged content and staying idempotent. Mirrors

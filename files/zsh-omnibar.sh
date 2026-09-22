@@ -35,18 +35,31 @@ fi'
 # sourcing the plugin. And the clone carries local commits, so it is moved
 # rather than re-cloned.
 _migrate_from_old_name() {
-    if [[ -d "$OLD_DIR1/.git" && ! -d "$DIR1/.git" ]]; then
-        mv "$OLD_DIR1" "$DIR1" || return 1
+    # Nothing to do on a machine that never had the old name.
+    [[ -e "$OLD_DIR1" ]] || return 0
+
+    if [[ -e "$DIR1" ]]; then
+        # `mv src existing_dir` moves the source *inside* it, so the clone
+        # would end up at ~/.zsh/zsh-omnibar/zsh-autocomplete while this
+        # reported success. Refuse instead, and leave the old block in place:
+        # a stale block that still works beats none at all.
+        print -u2 "zsh-omnibar: cannot migrate, $DIR1 already exists"
+        return 1
     fi
-    # Drop a leftover empty directory, but never a non-empty one.
-    [[ -d "$OLD_DIR1" ]] && rmdir "$OLD_DIR1" 2>/dev/null
+
+    # Moved, not re-cloned: the checkout carries local commits.
+    mv "$OLD_DIR1" "$DIR1" || return 1
+
+    # Only now is it safe to drop the old block. Doing this before the move
+    # succeeds can leave .zshrc with no plugin block at all -- which also
+    # takes out zsh-defer, and with it syntax highlighting.
     manage_block "$HOME/.zshrc" "$OLD_MODULE" "" "remove"
     remove_script_state "$OLD_MODULE"
     return 0
 }
 
 install() {
-    _migrate_from_old_name
+    _migrate_from_old_name || return 1
     git_clone_if_missing "$REPO1" "$DIR1" || return 1
     git_clone_if_missing "$REPO2" "$DIR2" || return 1
     _upsert_block || return 1
@@ -54,6 +67,16 @@ install() {
 }
 
 status() {
+    # A machine still on the old name counts as installed-but-outdated, not
+    # uninstalled. `cmd_update` does nothing for "uninstalled" except count it,
+    # so probing only for the post-migration directory meant the unattended
+    # path never called update() and the migration never ran.
+    if [[ ! -d "$DIR1/.git" && -d "$OLD_DIR1/.git" && -d "$DIR2/.git" ]]; then
+        printf '%-25s %-12s local=%s remote=%s target=%s\n' \
+            "$MODULE" "outdated" "pre-rename" "migrate" "$OLD_DIR1"
+        record_script_state "$MODULE" "git" "pre-rename" "migrate"
+        return 1
+    fi
     if [[ ! -d "$DIR1/.git" ]] || [[ ! -d "$DIR2/.git" ]]; then
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
@@ -76,7 +99,7 @@ status() {
 }
 
 update() {
-    _migrate_from_old_name
+    _migrate_from_old_name || return 1
     if [[ -d "$DIR1/.git" ]]; then
         git_pull_ff "$DIR1"
     else

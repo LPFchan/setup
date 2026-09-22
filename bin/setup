@@ -643,7 +643,11 @@ BLOCK_REGISTRY=(
 
 # Canonical top→bottom order of setup-managed .zshrc blocks. Enforced by
 # normalize_block_order at the end of every path that may add/rewrite a block.
-ZSHRC_BLOCK_ORDER=(tmux-autostart tmux-title zsh-basics ssh-reconnect starship zsh-omnibar zsh-syntax-highlighting ai-menu)
+# `zsh-autocomplete` is the pre-rename label, kept in the same slot so an
+# un-migrated block is not demoted past zsh-syntax-highlighting: zsh-defer is
+# defined inside this block and the highlighting guard depends on it. Remove
+# once every machine has migrated.
+ZSHRC_BLOCK_ORDER=(tmux-autostart tmux-title zsh-basics ssh-reconnect starship zsh-autocomplete zsh-omnibar zsh-syntax-highlighting ai-menu)
 
 configure_shell() {
     local path_block
