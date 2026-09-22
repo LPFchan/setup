@@ -955,6 +955,7 @@ def _sync_cache_from_vault_once(servers):
         for name, cfg in servers.items()
         if cfg.get("auth", {}).get("type") == "common_auth"
     }
+    retired = set(_load_retired())
     cache = _load_cache()
     changed = False
     for env_name, item in items.items():
@@ -966,6 +967,12 @@ def _sync_cache_from_vault_once(servers):
         if not provider:
             continue
         if provider in common_auth_providers:
+            continue
+        # Pulling the whole folder is deliberate -- providers live in the vault
+        # that the registry never lists. A retired name is the one exception:
+        # the item outlives the registry entry, so without this the vault hands
+        # the dead key straight back to the cache the sweep just cleared.
+        if provider in retired:
             continue
         value = vault_get(env_name)
         if value is None:
@@ -1045,6 +1052,12 @@ def _write_env_block(lines):
     else:
         ensure_block = True
 
+    # The separator below is written fresh each time, so the blank line that
+    # preceded the old block has to go with it. Keeping it grew the file by one
+    # blank line per write -- 180 of them had piled up before this was caught.
+    while existing and not existing[-1].strip():
+        existing.pop()
+
     with open(ZSENV_PATH, "w") as f:
         for line in existing:
             f.write(line)
@@ -1073,10 +1086,19 @@ def _sync_zsenv_to_cache_once(servers=None):
         for auth in [cfg.get("auth", {})]
         if auth.get("type") == "common_auth"
     }
+    retired = set(_load_retired())
     changed = False
     for env_name, value in block.items():
         provider = _provider_from_env(env_name)
         if not provider or provider in common_auth_providers:
+            continue
+        # Keep the invariant that a retired name never enters the cache. The
+        # sweep runs after this read and would clear it anyway, but an
+        # interrupted refresh -- a dozen vault fetches happen in between -- would
+        # otherwise leave the dead key in the cache on disk, and the next bare
+        # `providers` call re-mirrors it. Enforcing it at both cache entry points
+        # also means a later reordering of the refresh cannot quietly break this.
+        if provider in retired:
             continue
         if env_name.endswith("_API_KEY"):
             if cache.get(provider) != value:
@@ -1831,23 +1853,6 @@ def model_to_config_grimoire(m):
     }
 
 
-def model_to_config_crofai(m):
-    pricing = m.get("pricing", {})
-    context = as_int(m.get("context_length"), 32768)
-    output = as_int(m.get("max_completion_tokens"), 16384)
-    return {
-        "limit": {
-            "context": context,
-            "output": _opencode_output_limit(output, context),
-        },
-        "cost": {
-            "input": as_number(pricing.get("prompt")),
-            "output": as_number(pricing.get("completion")),
-            "cache_read": as_number(pricing.get("cache_prompt")),
-        },
-    }
-
-
 def model_to_config_openai(m):
     context = m.get("context_length", 32768)
     output = _model_output_limit(m, 16384)
@@ -1862,7 +1867,6 @@ def model_to_config_openai(m):
 
 FORMAT_HANDLERS = {
     "grimoire": model_to_config_grimoire,
-    "crofai": model_to_config_crofai,
     "openai": model_to_config_openai,
 }
 
@@ -1956,7 +1960,6 @@ def _is_macos():
 
 PROVIDER_URLS = {
     "grimoire": "http://localhost:9001 (self-hosted)",
-    "crofai": "https://crof.ai",
     "commandcode": "https://commandcode.ai/studio → Settings → API Keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
     # META_API_KEY is the same Model API key muse reads for headless runs.
@@ -1974,6 +1977,159 @@ def _load_servers():
         return None
     servers = _servers_from_registry(registry)
     return servers or None
+
+
+def _load_retired():
+    """Names the registry has withdrawn, for the prune. Empty on any error:
+    a registry we cannot read is never grounds for deleting a credential."""
+    try:
+        registry = _validate_registry(load_json(REGISTRY_PATH))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    return list(registry.get("retired_providers", []))
+
+
+def _prune_retired(retired):
+    """Delete every trace of a withdrawn provider from this machine.
+
+    Each consumer write path is an upsert scoped to a name, so dropping a
+    provider from the registry leaves its credential and its model list behind
+    on every machine indefinitely -- and the credential cache explicitly never
+    deletes an entry only it knows about, which then re-mirrors the dead key
+    into .zshenv and auth.json on the next pass. This is the one sweep that
+    closes that loop. Idempotent and silent when there is nothing to remove,
+    because it runs on every hourly refresh.
+    """
+    retired = [name for name in retired if name]
+    if not retired:
+        return
+    removed = set()
+
+    cache = _load_cache()
+    if any(name in cache for name in retired):
+        for name in retired:
+            if cache.pop(name, None) is not None:
+                removed.add(name)
+        _save_cache(cache)
+
+    # The whole auth.json entry goes, api-type or OAuth: an OAuth entry left here
+    # is re-exported as {NAME}_OAUTH_TOKEN on every pass. _write_auth_mirror's
+    # managed_absent would only drop the api-type one, and stays that way for its
+    # own callers, where opencode owns the OAuth entry and must keep it.
+    if os.path.exists(OLD_AUTH_PATH):
+        try:
+            auth = load_json(OLD_AUTH_PATH)
+        except (OSError, json.JSONDecodeError):
+            auth = None
+        if isinstance(auth, dict) and any(name in auth for name in retired):
+            for name in retired:
+                if auth.pop(name, None) is not None:
+                    removed.add(name)
+            save_json_atomic(OLD_AUTH_PATH, auth, mode=0o600)
+    # Rewritten from the pruned cache either way: an earlier release may have
+    # left the export in .zshenv after the cache entry was already gone. Refresh
+    # calls _sync_mirrors() right after this, so these two look redundant there --
+    # they are what makes the sweep complete on its own, for every other caller.
+    _write_auth_mirror(cache)
+    _write_env_mirror(cache)
+
+    state = _load_provider_state()
+    if isinstance(state, dict):
+        providers = state.get("providers")
+        if isinstance(providers, dict):
+            hit = {name for name in retired if providers.pop(name, None) is not None}
+            if hit:
+                removed |= hit
+                save_json_atomic(STATE_PATH, state)
+
+    capabilities = _load_capabilities()
+    known = capabilities.get("providers")
+    if isinstance(known, dict):
+        hit = {name for name in retired if known.pop(name, None) is not None}
+        if hit:
+            removed |= hit
+            _save_capabilities(capabilities)
+
+    opencode = load_json_or_quarantine(OPENCODE_PATH)
+    changed = False
+    block = opencode.get("provider")
+    if isinstance(block, dict):
+        for name in retired:
+            if block.pop(name, None) is not None:
+                removed.add(name)
+                changed = True
+    disabled = opencode.get("disabled_providers")
+    if isinstance(disabled, list) and any(name in disabled for name in retired):
+        opencode["disabled_providers"] = [n for n in disabled if n not in retired]
+        if not opencode["disabled_providers"]:
+            del opencode["disabled_providers"]
+        changed = True
+    if changed:
+        save_json_atomic(OPENCODE_PATH, opencode)
+
+    # Pi keeps its own catalogue, and it is an upsert too. Only the provider
+    # entries are ours: Pi's model ids are bare and often vendor-prefixed
+    # (deepseek/..., meta/... under openrouter), so nothing else in this file can
+    # be matched against a provider name without reading a vendor as a provider.
+    pi = load_json_or_quarantine(PI_MODELS_PATH)
+    if isinstance(pi, dict) and isinstance(pi.get("providers"), dict):
+        hit = {name for name in retired if pi["providers"].pop(name, None) is not None}
+        if hit:
+            removed |= hit
+            save_json_atomic(PI_MODELS_PATH, pi)
+
+    removed.update(_prune_retired_hermes(retired))
+
+    for name in sorted(removed):
+        print(f"  {name}: retired; removed from this machine", file=sys.stderr)
+
+
+def _prune_retired_hermes(retired):
+    """Drop retired entries from Hermes custom_providers[]. Needs PyYAML;
+    without it the entry is left alone rather than edited by hand, the same
+    way the credential sync degrades. Returns the names actually removed, so
+    the caller reports only what it really did."""
+    try:
+        import yaml
+    except ImportError:
+        return set()
+    if not os.path.exists(HERMES_CONFIG):
+        return set()
+    try:
+        with open(HERMES_CONFIG) as handle:
+            config = yaml.safe_load(handle)
+    except Exception:
+        return set()
+    if not isinstance(config, dict):
+        return set()
+    custom = config.get("custom_providers")
+    if not isinstance(custom, list):
+        return set()
+    hit = {
+        item["name"] for item in custom
+        if isinstance(item, dict) and item.get("name") in retired
+    }
+    if not hit:
+        return set()
+    custom[:] = [
+        item for item in custom
+        if not (isinstance(item, dict) and item.get("name") in retired)
+    ]
+    directory = os.path.dirname(HERMES_CONFIG)
+    pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".providers.", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, HERMES_CONFIG)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+    return hit
 
 
 def _servers_from_registry(registry):
@@ -2382,11 +2538,37 @@ def _valid_base_url(value):
 def _validate_registry(data):
     if not isinstance(data, dict) or data.get("version") != 1:
         raise ValueError("registry version must be 1")
-    if set(data) != {"version", "providers"}:
-        raise ValueError("registry must contain only version and providers")
+    known = {"version", "providers", "retired_providers", "retired_providers_comment"}
+    if not set(data) <= known or not {"version", "providers"} <= set(data):
+        raise ValueError("registry must contain only version, providers, and retired_providers")
     providers = data.get("providers")
     if not isinstance(providers, dict) or not providers:
         raise ValueError("registry providers must be a non-empty object")
+    retired = data.get("retired_providers", [])
+    if not isinstance(retired, list):
+        raise ValueError("retired_providers must be a list")
+    # Credential names a live provider resolves through, which is not always its
+    # own name: opencode-zen and opencode-go share one enrollment filed under
+    # opencode-go. Retiring the name a live provider borrows would delete the
+    # credential it needs, and the sweep's read-back filters then block the vault
+    # from ever healing it -- a silent, permanent key: x on a provider still in use.
+    borrowed = {
+        auth["key"] for provider in providers.values()
+        if isinstance(provider, dict)
+        for auth in [provider.get("auth")]
+        if isinstance(auth, dict) and isinstance(auth.get("key"), str)
+    }
+    for name in retired:
+        if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+            raise ValueError(f"invalid retired provider: {name}")
+        # A name cannot be both live and retired: the prune would delete the
+        # credential the refresh is about to write back, every hour.
+        if name in providers:
+            raise ValueError(f"{name} is both a provider and retired")
+        if name in borrowed:
+            raise ValueError(f"{name} is the credential of a live provider and cannot be retired")
+    if len(retired) != len(set(retired)):
+        raise ValueError("duplicate retired provider")
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise ValueError(f"invalid provider: {provider_name}")
@@ -2961,6 +3143,11 @@ def main():
             _sync_zsenv_to_cache(servers)
             _sync_common_auth(servers)
             _sync_cache_from_vault(servers)
+            # After the two reads that populate the cache, both of which skip
+            # retired names, so there is nothing left to revive. Sweeping
+            # earlier would blank the .zshenv block before the read above --
+            # and that block is the recovery source when the cache is lost.
+            _prune_retired(_load_retired())
             _sync_mirrors()
             _sync_opencode_provider_statuses(servers)
             if len(args) == 2:

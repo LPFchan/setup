@@ -114,8 +114,9 @@ def _string(value: Any, field: str) -> str:
 def validate_registry(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or data.get("version") != 1:
         raise UserError("registry version must be 1")
-    if set(data) != {"version", "providers"}:
-        raise UserError("registry must contain only version and providers")
+    known = {"version", "providers", "retired_providers", "retired_providers_comment"}
+    if not set(data) <= known or not {"version", "providers"} <= set(data):
+        raise UserError("registry must contain only version, providers, and retired_providers")
     providers = data.get("providers")
     if not isinstance(providers, dict) or not providers:
         raise UserError("registry providers must be a non-empty object")
@@ -144,7 +145,7 @@ def validate_registry(data: Any) -> dict[str, Any]:
                 raise UserError(f"invalid auth key for {provider_name}")
             if not isinstance(provider.get("enabled"), bool):
                 raise UserError(f"enabled for {provider_name} must be a boolean")
-            if provider.get("api_format") not in {"grimoire", "crofai", "openai"}:
+            if provider.get("api_format") not in {"grimoire", "openai"}:
                 raise UserError(f"invalid api_format for {provider_name}")
             _string(provider.get("npm"), f"npm package for {provider_name}")
             for field in (

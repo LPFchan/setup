@@ -457,7 +457,7 @@ grep -Fqx "ANTHROPIC_MODEL=commandcode/$cc_opus" "$TEST_TMP/claude-env" \
 # Another provider's route is not re-prefixed onto this one. With nothing left
 # to fall back to, the resume is refused rather than quietly rerouted.
 foreign_id="77777777-8888-4999-8aaa-bbbbbbbbbbbb"
-printf '{"type":"assistant","message":{"role":"assistant","model":"crofai/deepseek-v4-flash-0731"}}\n' \
+printf '{"type":"assistant","message":{"role":"assistant","model":"openrouter/deepseek-v4-flash-0731"}}\n' \
     > "$transcript_dir/$foreign_id.jsonl"
 ! "$ROOT/files/opencodex" run commandcode claude --resume "$foreign_id" \
     2>"$TEST_TMP/foreign-resume-error" \
@@ -1161,7 +1161,7 @@ assert restore("commandcode/moonshotai_Kimi--K3", set()) == "commandcode/moonsho
 assert restore("commandcode/xiaomi_mimo--v2.5--pro", set()) == "commandcode/xiaomi/mimo-v2.5-pro"
 assert restore("commandcode/MiniMaxAI_MiniMax--M3", set()) == "commandcode/MiniMaxAI/MiniMax-M3"
 assert restore("gpt-5.6-sol", known) == "gpt-5.6-sol"
-assert restore("crofai/glm-5.2", known) == "crofai/glm-5.2"
+assert restore("openrouter/glm-5.2", known) == "openrouter/glm-5.2"
 
 width, gap = namespace["reel_geometry"](120)
 reel_at = namespace["reel_at"]

@@ -21,7 +21,7 @@ export PATH="$TMP/bin:$PATH"
 python3 - <<PY
 import importlib.machinery, importlib.util, os, sys
 path = '$ROOT/files/providers'
-for provider in ('demo', 'grimoire', 'crofai', 'commandcode'):
+for provider in ('demo', 'grimoire', 'commandcode'):
     os.environ.pop(f'{provider.upper()}_API_KEY', None)
 loader = importlib.machinery.SourceFileLoader('providers_onboarding_test', path)
 spec = importlib.util.spec_from_loader(loader.name, loader)

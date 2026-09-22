@@ -6,7 +6,7 @@ already covered here — `claude`, `codex`, `grok`, or `kimi` — by launching t
 harness against the local OpenCodex proxy.
 
 Delegate through OpenCodex when the child must run on a model the plain harness
-cannot reach: a routed provider (`crofai`, `grimoire`, `kimicode`, …) driven by
+cannot reach: a routed provider (`grimoire`, `kimicode`, `deepseek`, …) driven by
 Codex's or Claude Code's agent loop. The delegation protocol is the leg's, not
 OpenCodex's — the thread and session semantics in
 [codex.md](codex.md), [claude-code.md](claude-code.md), [grok.md](grok.md), and
@@ -71,14 +71,14 @@ Output is tab-separated rows under `#` comment lines:
 # columns: provider	model	efforts	status
 # launch: opencodex run <provider> --model <model> [--effort <effort>] [<harness>]
 # harnesses: claude, codex, grok, kimi
-crofai	crofai/glm-4.7-flash	default	launchable
+kimicode	kimicode/k3-256k	low,high,max,default	launchable
 codex	gpt-5.6-sol	low,medium,high,xhigh,max,ultra	launchable
 ```
 
 Filter and parse:
 
 ```bash
-opencodex list --provider crofai | grep -v '^#' | cut -f2
+opencodex list --provider kimicode | grep -v '^#' | cut -f2
 opencodex list --json | jq -r '.providers[] | select(.launchable)
   | .name as $p | .models[] | [$p, .id, (.efforts | join(","))] | @tsv'
 ```
@@ -107,9 +107,9 @@ Notes on the listing:
 The parent may pin all three when starting the delegation:
 
 ```bash
-provider=crofai
-model=crofai/glm-4.7-flash
-effort=medium
+provider=kimicode
+model=kimicode/k3-256k
+effort=high
 ```
 
 Pass a value the listing showed for that provider. To fall back to the route's
@@ -132,9 +132,9 @@ Launch this block in the orchestrator's background terminal:
 
 ```bash
 workdir=/absolute/path/to/workspace
-provider=crofai
-model=crofai/glm-4.7-flash
-effort=medium
+provider=kimicode
+model=kimicode/k3-256k
+effort=high
 run_id="$(uuidgen)"
 run_dir="/tmp/opencodex-${run_id}"
 turn="$(date +%Y%m%dT%H%M%S)"
@@ -188,9 +188,9 @@ Resume with the same route on every turn:
 ```bash
 run_dir=/tmp/opencodex-RETAINED_RUN_ID
 thread_id=RETAINED_THREAD_ID
-provider=crofai
-model=crofai/glm-4.7-flash
-effort=medium
+provider=kimicode
+model=kimicode/k3-256k
+effort=high
 turn="$(date +%Y%m%dT%H%M%S)"
 events_file="$run_dir/${turn}.events.jsonl"
 final_file="$run_dir/${turn}.final.txt"
@@ -238,9 +238,9 @@ OpenCodex launches Claude Code through the proxy and rewrites its arguments:
 
 ```bash
 workdir=/absolute/path/to/workspace
-provider=crofai
-model=crofai/glm-4.7-flash
-effort=medium
+provider=kimicode
+model=kimicode/k3-256k
+effort=high
 session_id="$(uuidgen)"
 run_dir="/tmp/opencodex-${session_id}"
 turn="$(date +%Y%m%dT%H%M%S)"
@@ -277,9 +277,9 @@ exit "$run_status"
 ```bash
 workdir=/absolute/path/to/workspace
 session_id=RETAINED_SESSION_ID
-provider=crofai
-model=crofai/glm-4.7-flash
-effort=medium
+provider=kimicode
+model=kimicode/k3-256k
+effort=high
 run_dir="/tmp/opencodex-${session_id}"
 turn="$(date +%Y%m%dT%H%M%S)"
 out_file="$run_dir/${turn}.out.json"
@@ -372,7 +372,7 @@ before continuing.
 
 `opencodex run anthropic … claude` fails with `api_error_status: 404` even when
 `anthropic/claude-*` models are live in the catalogue and the OAuth account is
-healthy. Routed providers such as `crofai` are unaffected.
+healthy. Routed providers such as `kimicode` are unaffected.
 
 Do not route Anthropic models through OpenCodex's claude leg. Delegate to plain
 `claude` per [claude-code.md](claude-code.md) instead — that is the same model on

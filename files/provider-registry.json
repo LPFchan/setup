@@ -32,18 +32,6 @@
         "eastself-"
       ]
     },
-    "crofai": {
-      "provider_type": "OpenAICompatible",
-      "base_url": "https://crof.ai/v1",
-      "api_format": "crofai",
-      "npm": "@ai-sdk/openai-compatible",
-      "auth": {
-        "type": "api-key",
-        "store": "opencode",
-        "key": "crofai"
-      },
-      "enabled": true
-    },
     "commandcode": {
       "provider_type": "OpenAICompatible",
       "base_url": "https://api.commandcode.ai/provider/v1",
@@ -172,5 +160,9 @@
       "enabled": true,
       "models_dev": "opencode-go"
     }
-  }
+  },
+  "retired_providers": [
+    "crofai"
+  ],
+  "retired_providers_comment": "Providers withdrawn from the fleet. Every consumer write path here is an upsert, so a name simply deleted from providers keeps its credential and its model list on every machine forever. Naming it here makes each refresh sweep it out of the credential cache, the .zshenv api-keys block, opencode's auth.json and provider block, the provider state, the capability cache, and the Hermes custom_providers list."
 }

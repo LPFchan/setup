@@ -86,7 +86,7 @@ m._sync_opencodex_provider_statuses = lambda restart=True: None
 fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
-    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
+    'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
     'cloudflare', 'openrouter', 'opencode-zen', 'opencode-go'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
@@ -164,7 +164,7 @@ m._validate_registry(canonical)
 m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
-    'grimoire', 'crofai', 'commandcode', 'deepseek', 'kimicode', 'meta',
+    'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
     'cloudflare', 'openrouter', 'opencode-zen', 'opencode-go'
 }
 m.REGISTRY_PATH = original_registry
@@ -223,6 +223,24 @@ assert preserved_oauth == {'type': 'oauth', 'access': 'separate-oauth-session'}
 mirrored_env = open(m.ZSENV_PATH).read()
 assert 'GRIMOIRE_API_KEY=common-chat-v1' in mirrored_env
 assert 'GRIMOIRE_OAUTH_TOKEN=separate-oauth-session' in mirrored_env
+
+# The block's leading separator is rewritten on every pass, so the blank line
+# before it must be reclaimed with the old block. It was not, and the file grew
+# by one blank line per write; a real .zshenv had reached 180. Repeated writes
+# must converge, and an already-bloated file must heal rather than hold.
+def _blanks_before_block():
+    head = open(m.ZSENV_PATH).read().split(m.AUTH_BLOCK_BEGIN)[0]
+    return len(head) - len(head.rstrip('\n'))
+with open(m.ZSENV_PATH) as handle:
+    bloated = handle.read().replace(m.AUTH_BLOCK_BEGIN, '\n' * 40 + m.AUTH_BLOCK_BEGIN, 1)
+with open(m.ZSENV_PATH, 'w') as handle:
+    handle.write(bloated)
+m._write_env_mirror(m._load_cache())
+healed = _blanks_before_block()
+m._write_env_mirror(m._load_cache())
+assert _blanks_before_block() == healed, (healed, _blanks_before_block())
+assert healed <= 2, healed
+assert 'GRIMOIRE_API_KEY=common-chat-v1' in open(m.ZSENV_PATH).read()
 
 # If account context cannot be read, do not fetch a potentially different
 # login's tokens and then save them under the previous account binding.
@@ -1219,7 +1237,7 @@ fixture_providers = m.load_json(fixture_registry)['providers']
 full_registry = copy.deepcopy(m.load_json('$ROOT/files/provider-registry.json'))
 full_registry.setdefault('providers', {}).update(fixture_providers)
 full_servers = m._servers_from_registry(full_registry)
-assert set(full_servers) >= {'demo', 'unused', 'grimoire', 'crofai'}
+assert set(full_servers) >= {'demo', 'unused', 'grimoire', 'commandcode'}
 # Ensure enablement state for the fixture providers: demo enabled, unused disabled.
 m.save_json_atomic(m.STATE_PATH, {'version': 1, 'providers': {}})
 state = m.load_json(m.STATE_PATH)
@@ -1264,6 +1282,165 @@ unused = next(e for e in mirrored['custom_providers'] if e['name'] == 'unused')
 assert unused['models'] == ['u1'], unused
 assert unused['base_url'] == 'http://unused', unused
 assert unused['api_key'] == 'unused-key', unused
+
+# A retired provider is swept off the machine. Every write path here is an
+# upsert, so without the sweep a withdrawn provider keeps its credential and
+# its model list in every consumer config forever.
+m.cache_set('ghost', 'ghost-key')
+state = m.load_json(m.STATE_PATH)
+state['providers']['ghost'] = {'enabled': True}
+m.save_json_atomic(m.STATE_PATH, state)
+opencode = m.load_json(m.OPENCODE_PATH)
+opencode.setdefault('provider', {})['ghost'] = {'options': {'apiKey': 'ghost-key'}}
+opencode['disabled_providers'] = ['foreign-disabled', 'ghost']
+m.save_json_atomic(m.OPENCODE_PATH, opencode)
+caps = m._load_capabilities()
+_endpoint, _when, _digest = 'http://ghost/v1', '2026-01-01T00:00:00Z', '0' * 64
+caps.setdefault('providers', {})['ghost'] = {
+    'provider': 'ghost', 'source_endpoint': _endpoint, 'fetched_at': _when,
+    'raw_response_sha256': _digest, 'evidence_source': 'live',
+    'models': {'g1': {
+        'provider': 'ghost', 'id': 'g1', 'source_endpoint': _endpoint,
+        'fetched_at': _when, 'raw_response_sha256': _digest,
+        'metadata_fingerprint': _digest,
+    }},
+}
+m._save_capabilities(caps)
+m._write_env_mirror(m._load_cache())
+assert 'export GHOST_API_KEY=ghost-key' in open(m.ZSENV_PATH).read()
+# auth.json must actually hold the key before the sweep, or the assertion below
+# passes on the cache pop alone and never exercises the auth.json path at all.
+m._write_auth_mirror(m._load_cache())
+assert m.load_json(m.OLD_AUTH_PATH)['ghost'] == {'type': 'api', 'key': 'ghost-key'}
+# An OAuth entry is re-exported as {NAME}_OAUTH_TOKEN on every pass, so the
+# whole entry has to go, not just the api-type one the mirror would drop.
+auth = m.load_json(m.OLD_AUTH_PATH)
+auth['spectre'] = {'type': 'oauth', 'access': 'dead-oauth'}
+m.save_json_atomic(m.OLD_AUTH_PATH, auth, mode=0o600)
+m._write_env_mirror(m._load_cache())
+assert 'SPECTRE_OAUTH_TOKEN=dead-oauth' in open(m.ZSENV_PATH).read()
+# Pi keeps its own catalogue. Its model ids are bare and often vendor-prefixed --
+# 'ghost/...' here is a vendor under a live provider, matching how the real file
+# carries deepseek/... and meta/... under openrouter. Only the provider entry is
+# ours to remove; matching a retired name against an id prefix would take a live
+# provider's model with it.
+m.save_json_atomic(m.PI_MODELS_PATH, {
+    '_comment': 'left alone',
+    'providers': {'ghost': {'base_url': 'http://ghost', 'models': [{'id': 'ghost-1'}]},
+                  'demo': {'base_url': 'http://demo',
+                           'models': [{'id': 'd1'}, {'id': 'ghost/borrowed-vendor-name'}]}},
+})
+
+# Drive the sweep the way refresh does -- off the registry, so the prune and the
+# two read-back filters below all read one source rather than agreeing by luck.
+_reg = m.load_json(m.REGISTRY_PATH)
+_reg['retired_providers'] = ['ghost', 'spectre']
+m.save_json(m.REGISTRY_PATH, _reg)
+assert set(m._load_retired()) == {'ghost', 'spectre'}
+# The sweep runs hourly and its report is the only visible sign it did anything,
+# so it must name what it actually removed. 'absent' is retired but present
+# nowhere, and must not be claimed.
+_reg['retired_providers'] = ['ghost', 'spectre', 'absent', 'hermesonly']
+m.save_json(m.REGISTRY_PATH, _reg)
+# A provider left in Hermes and nowhere else: the only surface that can report it
+# is the Hermes prune, so it proves that prune feeds the report rather than
+# riding on a name some other surface already found.
+import yaml as _yaml
+_hcfg = _load_yaml(m.HERMES_CONFIG)
+_hcfg['custom_providers'].append({'name': 'hermesonly', 'base_url': 'http://h', 'models': ['h1']})
+with open(m.HERMES_CONFIG, 'w') as handle:
+    _yaml.safe_dump(_hcfg, handle, sort_keys=False)
+_report = io.StringIO()
+with contextlib.redirect_stderr(_report):
+    m._prune_retired(m._load_retired())
+_said = {line.split(':')[0].strip() for line in _report.getvalue().splitlines() if 'retired' in line}
+assert _said == {'ghost', 'spectre', 'hermesonly'}, _report.getvalue()
+
+assert 'ghost' not in m._load_cache()
+assert 'ghost' not in m.load_json(m.STATE_PATH)['providers']
+assert 'ghost' not in m._load_capabilities()['providers']
+opencode = m.load_json(m.OPENCODE_PATH)
+assert 'ghost' not in opencode['provider']
+assert opencode['disabled_providers'] == ['foreign-disabled']
+assert 'GHOST_API_KEY' not in open(m.ZSENV_PATH).read()
+assert 'ghost' not in m.load_json(m.OLD_AUTH_PATH)
+assert 'spectre' not in m.load_json(m.OLD_AUTH_PATH)
+assert 'SPECTRE_OAUTH_TOKEN' not in open(m.ZSENV_PATH).read()
+_hnames = [e['name'] for e in _load_yaml(m.HERMES_CONFIG)['custom_providers']]
+assert 'ghost' not in _hnames and 'hermesonly' not in _hnames, _hnames
+pi = m.load_json(m.PI_MODELS_PATH)
+assert 'ghost' not in pi['providers'], pi
+assert 'demo' in pi['providers'] and pi['_comment'] == 'left alone', pi
+# The live provider keeps every model, including the one whose vendor prefix
+# happens to match the retired provider's name.
+assert [e['id'] for e in pi['providers']['demo']['models']] == ['d1', 'ghost/borrowed-vendor-name'], pi
+# Providers the registry still knows are untouched by the sweep.
+assert 'demo' in m._load_cache()
+assert 'foreign' in m.load_json(m.OPENCODE_PATH)['provider']
+assert m.load_json(m.OLD_AUTH_PATH)['demo']['key'] == 'demo-key'
+
+# Idempotent: the sweep runs on every hourly refresh, so a second pass on an
+# already-clean machine must be a no-op rather than an error.
+m._prune_retired(m._load_retired())
+assert 'demo' in m._load_cache()
+
+# The vault outlives the registry entry, so the folder pull -- which is keyed on
+# vault item names, not registry names, on purpose -- must skip retired names.
+# Without this the vault hands the key back the moment the sweep clears it. The
+# stubs above list no ghost item, so they have to be replaced here or the loop
+# never reaches the check and this passes on nothing.
+m.vault_available = lambda: True
+m.vault_list_items = lambda: [
+    {'name': 'GHOST_API_KEY'},
+    {'name': 'DEMO_API_KEY'},
+]
+m.vault_get = lambda name: {
+    'GHOST_API_KEY': 'ghost-key-from-vault',
+    'DEMO_API_KEY': 'demo-key',
+}.get(name)
+m.cache_set('ghost', 'ghost-key')
+m._prune_retired(m._load_retired())
+assert 'ghost' not in m._load_cache()
+m._sync_cache_from_vault(servers)
+assert 'ghost' not in m._load_cache(), 'the vault revived a retired provider'
+# ... while a live provider in the same pull still refreshes normally, so the
+# filter is not just switching the whole vault sync off.
+assert m._load_cache()['demo'] == 'demo-key'
+# ... and the .zshenv read-back, the other route into the cache.
+with open(m.ZSENV_PATH, 'a') as handle:
+    handle.write(f'\n{m.AUTH_BLOCK_BEGIN}\nexport GHOST_API_KEY=ghost-key\n{m.AUTH_BLOCK_END}\n')
+m._sync_zsenv_to_cache(servers)
+assert 'ghost' not in m._load_cache(), '.zshenv revived a retired provider'
+
+# A name cannot be live and retired at once: the sweep would delete the
+# credential the same refresh is about to write back.
+try:
+    m._validate_registry({'version': 1, 'providers': {'demo': {}}, 'retired_providers': ['demo']})
+except ValueError as exc:
+    assert 'both a provider and retired' in str(exc), exc
+else:
+    raise AssertionError('a live provider was accepted as retired')
+
+# Nor the *credential* of a live provider. opencode-zen resolves through the
+# enrollment filed under opencode-go, so retiring opencode-go would delete the
+# key live zen needs -- and the two read-back filters then stop the vault from
+# ever healing it. Silent and permanent, so it has to fail at validation.
+_shared = {'version': 1, 'retired_providers': ['gone'], 'providers': {
+    'borrower': {'provider_type': 'OpenAICompatible', 'base_url': 'http://borrower',
+                 'api_format': 'openai', 'npm': '@ai-sdk/openai-compatible',
+                 'auth': {'type': 'api-key', 'store': 'opencode', 'key': 'gone'},
+                 'enabled': True}}}
+try:
+    m._validate_registry(_shared)
+except ValueError as exc:
+    assert 'credential of a live provider' in str(exc), exc
+else:
+    raise AssertionError('retiring a live provider\'s credential name was accepted')
+# Retiring the borrower itself is fine -- nothing else resolves through it.
+_shared['retired_providers'] = ['other']
+m._validate_registry(_shared)
+# And the real registry still validates, opencode-zen/opencode-go included.
+m._validate_registry(m.load_json('$ROOT/files/provider-registry.json'))
 
 # Naming convention: only {PROVIDER}_API_KEY items are conforming.
 assert m._conforming_item_name('DEEPSEEK_API_KEY')

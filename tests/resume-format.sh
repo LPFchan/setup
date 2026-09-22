@@ -378,7 +378,7 @@ mkdir -p "$ocxactivecwd" "$HOME/.claude/projects/-home-opencodex-active-proj"
 ocxactivesession="$HOME/.claude/projects/-home-opencodex-active-proj/$ocxactiveid.jsonl"
 {
     printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Active OpenCodex session"}}\n' "$ocxactivecwd"
-    printf '{"type":"assistant","message":{"role":"assistant","model":"crofai/deepseek-v4-flash-0731","content":[{"type":"text","text":"ok"}]}}\n'
+    printf '{"type":"assistant","message":{"role":"assistant","model":"commandcode/deepseek-v4-flash-0731","content":[{"type":"text","text":"ok"}]}}\n'
 } > "$ocxactivesession"
 # A prefixless model claims no provider, however many are configured, so this
 # one stays a plain Claude session rather than being guessed onto a route.
@@ -390,7 +390,7 @@ ocxbaresession="$HOME/.claude/projects/-home-opencodex-bare-proj/$ocxbareid.json
     printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Bare model session"}}\n' "$ocxbarecwd"
     printf '{"type":"assistant","message":{"role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}]}}\n'
 } > "$ocxbaresession"
-printf '{"providers":{"codex":{},"crofai":{}}}\n' \
+printf '{"providers":{"codex":{},"commandcode":{}}}\n' \
     > "$HOME/.config/opencodex/managed-profiles.json"
 touch -t 202407061400.00 "$ocxactivesession"
 touch -t 202407061350.00 "$ocxbaresession"
@@ -405,7 +405,7 @@ chmod +x "$FAKE_BIN/fzf"
 
 TMUX=test-session "$ROOT/files/resume" >/dev/null 2>"$TEST_TMP/opencodex-active-stderr"
 
-expected_ocxactive_args=$(printf '%s\nrun\ncrofai\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxactiveid")
+expected_ocxactive_args=$(printf '%s\nrun\ncommandcode\nclaude\n--resume\n%s' "$FAKE_BIN/opencodex" "$ocxactiveid")
 [[ $(cat "$TEST_TMP/opencodex-args") == "$expected_ocxactive_args" ]] \
     || { echo "FAIL: resume did not recover an active unmapped OpenCodex session" >&2; exit 1; }
 grep -F "$ocxbareid" "$TEST_TMP/active-listing" | grep -Fq "cc|$ocxbareid" \
