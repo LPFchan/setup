@@ -4,16 +4,24 @@
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
+# The repo is LPFchan/zsh-omnibar; this module, its target directory and its
+# .zshrc block label are still named zsh-autocomplete on purpose.
+#
+# Renaming those means every machine has to migrate: the block label changes,
+# so manage_block cannot find the old one and would leave two blocks in
+# .zshrc, both sourcing the plugin. That needs a one-time removal of the old
+# block plus cleanup of the orphaned clone, and it is not worth running
+# unattended overnight. Left as a deliberate follow-up.
 MODULE="zsh-autocomplete"
 DIR1="$ZSH_PLUGINS_DIR/zsh-autocomplete"
 DIR2="$ZSH_PLUGINS_DIR/zsh-defer"
-REPO1="https://github.com/LPFchan/zsh-autocomplete.git"
+REPO1="https://github.com/LPFchan/zsh-omnibar.git"
 REPO2="https://github.com/romkatv/zsh-defer.git"
 
 BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
    && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
    && [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]; then
-    source ~/.zsh/zsh-autocomplete/zsh-autocomplete.plugin.zsh
+    source ~/.zsh/zsh-autocomplete/zsh-omnibar.plugin.zsh
     source ~/.zsh/zsh-defer/zsh-defer.plugin.zsh
     zstyle '\'':autocomplete:'\'' min-input 1
     zstyle '\'':autocomplete:'\'' default-context history-incremental-search-backward

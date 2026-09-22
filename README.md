@@ -125,7 +125,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 
 | Module | What it installs / manages | Source File |
 |--------|---------------------------|-------------|
-| `zsh-autocomplete` | Tab completion and history configuration (`~/.zsh/`) | `files/zsh-autocomplete.sh` |
+| `zsh-autocomplete` | [zsh-omnibar](https://github.com/LPFchan/zsh-omnibar) — one ranked list blending history and completions (`~/.zsh/`) | `files/zsh-autocomplete.sh` |
 | `zsh-syntax-highlighting` | Command syntax highlighting (`~/.zsh/`) | `files/zsh-syntax-highlighting.sh` |
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
