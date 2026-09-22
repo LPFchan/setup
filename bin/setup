@@ -2427,7 +2427,13 @@ cmd_reconfigure() {
             --bind='esc:abort' --bind="load:pos($picker_pos)" --preview-window=hidden
     }
     while true; do
-        local choice kind key display row m all_selected=1 refresh_snapshot=0
+        # Every name needs an assignment. `local x` re-declaring a name that is
+        # already a local in this same scope makes zsh *print* `x=value`, and
+        # this runs once per loop pass -- which is why a run dumped
+        # `choice=$'action\C-_update...'`, `kind=`, `key=` and friends to the
+        # terminal after the first action. The two that already had `=` were
+        # the two that never showed up.
+        local choice="" kind="" key="" display="" row="" m="" all_selected=1 refresh_snapshot=0
         if (( initial_snapshot == 1 )); then
             choice=$({ snapshot_refresh; sync_picker_state; _setup_picker_render; } | main_picker) || break
             initial_snapshot=0
