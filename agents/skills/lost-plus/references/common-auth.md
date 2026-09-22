@@ -102,6 +102,11 @@ Where a service may trust those headers:
   gateway. Bind a standalone service to loopback; containers may listen
   internally on `0.0.0.0` when Docker publishes the host port on `127.0.0.1`.
 
+A backend's redirect reaches the client as sent: the gateway does not follow
+it and does not rewrite `Location` (LPFchan/auth DEC-20260923-001). Build
+`Location` from the public host (the backend sees `Host` and
+`x-forwarded-proto: https`), never from a loopback address.
+
 Never send `Authorization` to the service: the gateway strips it under every
 policy, `public` included, so a backend that checks its own token sees an
 anonymous request. Never `fetch("https://auth.lost.plus/…")` from a Worker: a

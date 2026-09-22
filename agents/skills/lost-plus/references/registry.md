@@ -23,7 +23,8 @@ OCI that is exported from `~/.zshenv`, outside the `setup:api-keys` block so
 | Hostname | Service | Worker · state | Gateway · policy | Repo |
 | --- | --- | --- | --- | --- |
 | `auth.lost.plus` | Common Auth hub | `auth-lost-plus` · D1 `auth` | none (it is the hub) | `LPFchan/auth` `workers/` |
-| `awa.lost.plus` | agent-with-agent chatrooms | `awa` · Durable Objects | cloud · `/` oauth, `/api/manage` api (scope `awa-v1`), `/api/rooms` public (WebSocket, `X-AWA-Participant-Token`), `/r` + `/assets` + `/skill.md` + `/icon.svg` + `/healthz` public GET | `LPFchan/agent-with-agent` |
+| `awa.lost.plus` | agent-with-agent chatrooms | `awa` · Durable Objects | cloud · `/` public, `/_auth/logout` oauth, `/api/manage` api (scope `awa-v1`), `/api/rooms` public (WebSocket, `X-AWA-Participant-Token`), `/r` + `/assets` + `/skill.md` + `/icon.svg` + `/healthz` public GET | `LPFchan/agent-with-agent` |
+| `today.lost.plus` | today: plan timer, shared board, Pebble feed | `today` · D1 `today` | cloud · `/` oauth (visibility `today`), `/api/watch` api (scope `today`, hub OAuth token from the watch), `/pair` public (watch pairing mailbox) | `LPFchan/today` |
 | `okdam.lost.plus` | Songbook | `okdam-songbook` · D1 `okdam-songbook` | cloud · `/` public, `/api/catalog` public GET, `/api` oauth, `/mcp` mcp (scope `okdam-mcp`) | `LPFchan/okdam-songbook` |
 | `coverse.lost.plus` | Coverse | `coverse` | cloud · `/` public, `/api/project` + `PUT /api/draft` oauth | `LPFchan/coverse` |
 | `censor.lost.plus` | Censor PWA + MCP | `censor` · static assets | cloud · `/` public, `/mcp` mcp anonymous-allowed (scope `censor`) | `LPFchan/censor` |
@@ -75,7 +76,7 @@ Reached through the `grimoire` Cloudflare tunnel. Gateway config:
 | `chat.lost.plus` | OpenAI-compatible inference API | none (own key) | `~/inference`, `inference` skill |
 | `dash.lost.plus` | inference telemetry dashboard | none | `~/inference` |
 | `heatmap.lost.plus` | heatmap + MCP | none | `~/heatmap` |
-| `eastself.lost.plus` | eastself | none | `~/Eastself` |
+| `eastself.lost.plus` | eastself (`:8765`) | grimoire · oauth (visibility `eastself`) | `~/Eastself` |
 | `librechat.lost.plus`, `webui.lost.plus`, `unsloth.lost.plus` | tunnel entries on Grimoire | none | check the box before relying on them |
 
 ## Elsewhere
@@ -96,8 +97,8 @@ Reached through the `grimoire` Cloudflare tunnel. Gateway config:
 
 ## Hub registry rows with no gateway route yet
 
-`chat.lost.plus` / `chat-v1`, `grimoire-v1`, `eastself.lost.plus` are
-registered on the hub but no gateway references them (pending adoptions).
+`chat.lost.plus` / `chat-v1` and `grimoire-v1` are registered on the hub but
+no gateway references them (pending adoptions).
 
 ## MCP client registry
 
