@@ -14,9 +14,15 @@ DIR2="$ZSH_PLUGINS_DIR/zsh-defer"
 REPO1="https://github.com/LPFchan/zsh-omnibar.git"
 REPO2="https://github.com/romkatv/zsh-defer.git"
 
+# The guard tests the two files this sources, not the directories holding
+# them. A directory test cannot protect a file source: the rename shipped a
+# block sourcing zsh-omnibar.plugin.zsh, which only exists past the rename
+# commit, so every checkout that had not pulled it yet passed the directory
+# test and then failed the source on every single shell start.
 BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
    && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
-   && [[ -d "$HOME/.zsh/zsh-omnibar" && -d "$HOME/.zsh/zsh-defer" ]]; then
+   && [[ -r "$HOME/.zsh/zsh-omnibar/zsh-omnibar.plugin.zsh" \
+      && -r "$HOME/.zsh/zsh-defer/zsh-defer.plugin.zsh" ]]; then
     source ~/.zsh/zsh-omnibar/zsh-omnibar.plugin.zsh
     source ~/.zsh/zsh-defer/zsh-defer.plugin.zsh
     zstyle '\'':autocomplete:'\'' min-input 1
@@ -100,15 +106,26 @@ status() {
 
 update() {
     _migrate_from_old_name || return 1
-    if [[ -d "$DIR1/.git" ]]; then
-        git_pull_ff "$DIR1"
-    else
-        install; return
+    if [[ ! -d "$DIR1/.git" ]]; then
+        install
+        return
     fi
+    # A failed pull is a failed update. Both return codes used to be
+    # discarded, so a checkout that could not fast-forward was reported as
+    # succeeded=1 while the plugin sat on whatever commit it was already on.
+    # That is how a machine whose `main` tracked the old third-party upstream
+    # instead of the fork went a full sync cycle looking healthy.
+    local pull_rc=0
+    git_pull_ff "$DIR1" || pull_rc=1
     if [[ -d "$DIR2/.git" ]]; then
-        git_pull_ff "$DIR2"
+        git_pull_ff "$DIR2" || pull_rc=1
     fi
-    _upsert_block
+    # The block is written either way. It is guarded on the files it sources,
+    # so a checkout that did not move just leaves the guard unmet and the
+    # shell starts clean. Recording state is not: _record_state writes
+    # local==remote, which would mark the module current while it is behind.
+    _upsert_block || return 1
+    (( pull_rc == 0 )) || return 1
     _record_state
 }
 

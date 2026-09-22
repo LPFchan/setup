@@ -8,9 +8,13 @@ MODULE="zsh-syntax-highlighting"
 DIR="$ZSH_PLUGINS_DIR/zsh-syntax-highlighting"
 REPO="https://github.com/zsh-users/zsh-syntax-highlighting.git"
 
+# Guarded on the file it sources, not the directory holding it: an
+# interrupted clone leaves the directory with the file still missing, and a
+# directory test passes right before the source fails. Same defect the
+# zsh-omnibar rename made visible.
 BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
    && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
-   && [[ -d "$HOME/.zsh/zsh-syntax-highlighting" ]] \
+   && [[ -r "$HOME/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]] \
    && (( ${+functions[zsh-defer]} )); then
     zsh-defer source "$HOME/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 fi'
@@ -40,12 +44,18 @@ status() {
 }
 
 update() {
-    if [[ -d "$DIR/.git" ]]; then
-        git_pull_ff "$DIR"
-    else
-        install; return
+    if [[ ! -d "$DIR/.git" ]]; then
+        install
+        return
     fi
-    _upsert_block
+    # A failed pull is a failed update; the return code used to be discarded.
+    # The block is still written -- it is guarded on the file it sources --
+    # but state is not recorded, because that would mark the module current
+    # while it is still behind.
+    local pull_rc=0
+    git_pull_ff "$DIR" || pull_rc=1
+    _upsert_block || return 1
+    (( pull_rc == 0 )) || return 1
     _record_state
 }
 

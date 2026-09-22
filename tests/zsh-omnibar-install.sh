@@ -148,4 +148,57 @@ _migrate_from_old_name || { echo "migration failed on a fresh machine" >&2; exit
 [[ -z "${removed_states[*]}" ]] ||
     { echo "migration touched state on a machine with nothing to migrate" >&2; exit 1 }
 
+# --- a pull that cannot fast-forward -------------------------------------
+#
+# The regression this file was extended for. A checkout whose branch tracked
+# the wrong remote could not fast-forward, update() discarded the return code,
+# and the run was tallied as succeeded=1 while the plugin never moved.
+
+rm -rf "$ZSH_PLUGINS_DIR" "$HOME/.zshrc"
+mkdir -p "$ZSH_PLUGINS_DIR/zsh-omnibar/.git" "$ZSH_PLUGINS_DIR/zsh-defer/.git"
+
+pull_fails=1
+git_pull_ff() { (( pull_fails == 0 )); }
+upsert_count=0
+record_count=0
+
+if update; then
+    echo "update reported success after the pull failed to fast-forward" >&2; exit 1
+fi
+[[ "$upsert_count" -eq 1 ]] ||
+    { echo "a failed pull skipped the .zshrc block; the guard makes it safe to write" >&2; exit 1 }
+[[ "$record_count" -eq 0 ]] ||
+    { echo "a failed pull recorded state, marking a stale module current" >&2; exit 1 }
+
+pull_fails=0
+upsert_count=0
+record_count=0
+update || { echo "update failed when both pulls succeeded" >&2; exit 1 }
+[[ "$record_count" -eq 1 ]] ||
+    { echo "a successful update did not record state" >&2; exit 1 }
+
+# --- the block guards the files it sources, not their directories --------
+#
+# The directory existed on every affected machine. The plugin file inside it
+# did not, so the guard passed and the source failed on every shell start.
+
+[[ "$BLOCK_CONTENT" == *'-r "$HOME/.zsh/zsh-omnibar/zsh-omnibar.plugin.zsh"'* ]] ||
+    { echo "the block does not test the omnibar plugin file it sources" >&2; exit 1 }
+[[ "$BLOCK_CONTENT" == *'-r "$HOME/.zsh/zsh-defer/zsh-defer.plugin.zsh"'* ]] ||
+    { echo "the block does not test the zsh-defer plugin file it sources" >&2; exit 1 }
+
+# And the guard has to actually keep a half-updated checkout out of the shell.
+guard_holds() {
+    local omnibar="$1" defer="$2"
+    [[ -r "$omnibar" && -r "$defer" ]]
+}
+ob="$ZSH_PLUGINS_DIR/zsh-omnibar/zsh-omnibar.plugin.zsh"
+df="$ZSH_PLUGINS_DIR/zsh-defer/zsh-defer.plugin.zsh"
+if guard_holds "$ob" "$df"; then
+    echo "the guard passed with the plugin file absent" >&2; exit 1
+fi
+touch "$ob" "$df"
+guard_holds "$ob" "$df" ||
+    { echo "the guard failed with both plugin files present" >&2; exit 1 }
+
 echo "zsh-omnibar install tests passed"
