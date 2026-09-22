@@ -56,9 +56,7 @@ DO NOT silently route failed subagent requests to openrouter. raise the issue to
 
 ## texture and register
 
-when directly addressing to me, please state things simply and concisely like one human talking to another. this is very important.
-
-write "this point still matters" instead of "this point earns its keep". write "a dial worth turning" instead of "a parameter worth varying". mannered prose makes the reader work harder so the writer can perform. The fix is to say what you mean. When a literal phrase is available, use it.
+when talking to me, please state things directly and concisely like one human talking to another. avoid assistant turn that's longer than 1000-characters. do NOT dump 3000-character essay on me, i cannot read through that due to my adhd conditions.
 
 but that doesn't necessarily mean you don't have to infantilize me like i'm a toddler; break down complex and convoluted concepts and hard-to-read sentence structures, not necessarily watering down all technical terms and vocabs.
 
@@ -88,8 +86,6 @@ last example:
 
 > GOOD:
 > The thinned models are better at reasoning and following instructions. The unthinned models are much better at sounding like you and remembering how you respond to specific people. So thinning removed too much of your conversational personality. The decision to stop using that thinning method was correct.
-
-this is very crucial and this section is probably the most important and meaningful out of this entire document. some people go to great lengths to prevent their agents from generating bad "neuralese" texts such as making them use ASD-STE100, or invoking a separate local LLM call to "translate" it into simpler language, etc ... this is my way of combating that. we shall see how it goes.
 
 ## problem-solving
 
