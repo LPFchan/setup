@@ -1283,7 +1283,7 @@ cmd_install() {
 
 cmd_update() {
     configure_shell || true
-    local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() filters=()
+    local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() unchecked_count=0 unchecked_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
     local manifest_input
     # `setup update` only updates modules. The harnesses keep their own
@@ -1337,9 +1337,13 @@ cmd_update() {
                     new_names+=("$module")
                     ;;
                 installed|unknown)
-                    echo "Warning: could not determine whether $module is current; skipping update." >&2
-                    failure_count=$((failure_count + 1))
-                    failure_names+=("$module")
+                    # Not a failure: the module reached this state by deciding its
+                    # upstream was unreachable and leaving what is on disk alone.
+                    # Counting a momentary network blip as a failed run is what
+                    # made a red nightly stop meaning anything.
+                    echo "Note: could not check $module against its upstream; left as installed." >&2
+                    unchecked_count=$((unchecked_count + 1))
+                    unchecked_names+=("$module")
                     ;;
                 *)
                     echo "Warning: could not probe $module; skipping update." >&2
@@ -1415,12 +1419,17 @@ cmd_update() {
     if [[ "$failure_count" -gt 0 ]]; then
         echo "$failure_count module(s) could not be updated: ${failure_names[*]}" >&2
     fi
+    if [[ "$unchecked_count" -gt 0 ]]; then
+        echo "$unchecked_count module(s) could not be checked (upstream unreachable): ${unchecked_names[*]}"
+    fi
     if [[ "$deferred_count" -gt 0 ]]; then
         echo "$deferred_count module(s) need an interactive update: ${deferred_names[*]}"
-    elif [[ "$failure_count" -eq 0 && "$new_count" -eq 0 ]]; then
+    elif [[ "$failure_count" -eq 0 && "$new_count" -eq 0 && "$unchecked_count" -eq 0 ]]; then
         echo "All modules up to date."
     fi
 
+    # Only a module that actually failed turns the run red, so a red nightly
+    # means a human is needed rather than "one of 25 modules saw a slow network".
     (( failure_count == 0 ))
 }
 

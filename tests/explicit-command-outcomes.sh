@@ -38,6 +38,49 @@ if output=$(cmd_update defer 2>&1); then rc=0; else rc=$?; fi
 [[ "$output" != *'All modules up to date.'* ]] \
     || fail "deferred script update was reported as current"
 
+# A module whose upstream is unreachable reports 'installed'/'unknown' on purpose,
+# meaning it left what is on disk alone. That is not a failed run: counting a
+# momentary network blip as failure is what let a real four-day outage hide in a
+# nightly that was already red.
+for unreachable in installed unknown; do
+    write_manifest '# module\ttarget\tmode\tsource\nblip\t~/blip\tscript\tx\n'
+    script_status_fields() { printf '%s\t'"$unreachable"'\tupstream unreachable\tv1\tv1\t1\t\n' "$HOME/blip"; }
+    if output=$(cmd_update blip 2>&1); then rc=0; else rc=$?; fi
+    [[ $rc -eq 0 ]] || fail "$unreachable module failed the run"
+    [[ "$output" == *'1 module(s) could not be checked (upstream unreachable): blip'* ]] \
+        || fail "$unreachable module was not reported as unchecked"
+    [[ "$output" != *'could not be updated'* ]] \
+        || fail "$unreachable module was counted as a failure"
+    [[ "$output" != *'All modules up to date.'* ]] \
+        || fail "$unreachable module was reported as current"
+done
+
+# A module that genuinely failed still turns the run red, so red keeps meaning
+# that a human is needed -- this is the opencodex case.
+write_manifest '# module\ttarget\tmode\tsource\nbroken\t~/broken\tscript\tx\n'
+script_status_fields() { printf '%s\toutdated\tupdate available\told\tnew\t1\t\n' "$HOME/broken"; }
+_script_update() { return 1; }
+if output=$(cmd_update broken 2>&1); then rc=0; else rc=$?; fi
+[[ $rc -ne 0 ]] || fail "a genuinely failed module did not fail the run"
+[[ "$output" == *'1 module(s) could not be updated: broken'* ]] \
+    || fail "a genuinely failed module was not named"
+
+# An unreachable check alongside a real failure still fails, and each is counted
+# under its own heading rather than merged.
+write_manifest '# module\ttarget\tmode\tsource\nblip\t~/blip\tscript\tx\nbroken\t~/broken\tscript\tx\n'
+script_status_fields() {
+    if [[ "$1" == blip ]]; then printf '%s\tinstalled\tupstream unreachable\tv1\tv1\t1\t\n' "$HOME/blip"
+    else printf '%s\toutdated\tupdate available\told\tnew\t1\t\n' "$HOME/broken"; fi
+}
+_script_update() { return 1; }
+if output=$(cmd_update blip broken 2>&1); then rc=0; else rc=$?; fi
+[[ $rc -ne 0 ]] || fail "a real failure was masked by an unchecked module"
+[[ "$output" == *'could not be updated: broken'* ]] \
+    || fail "the real failure was not named separately"
+[[ "$output" == *'could not be checked (upstream unreachable): blip'* ]] \
+    || fail "the unchecked module was not named separately"
+unset -f _script_update
+
 # Explicit enable/disable aggregate, verify convergence, and reject toolonly.
 SERVICE_MODULES='fail ok toolonly'
 USER_SERVICE_MODULES='fail ok'
