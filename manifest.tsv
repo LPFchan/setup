@@ -16,7 +16,7 @@ browser-use-chrome	~/.config/systemd/user/browser-use-chrome.service	script	file
 refresh-models	~/.local/bin/refresh-models	script	files/refresh-models.sh			retired
 backup	~/.local/bin/backup	0755	bin/backup	fleet	linux		schedule
 system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux		schedule,miniharness
-zsh-autocomplete	~/.zsh/zsh-autocomplete	script	files/zsh-autocomplete.sh
+zsh-omnibar	~/.zsh/zsh-omnibar	script	files/zsh-omnibar.sh
 zsh-syntax-highlighting	~/.zsh/zsh-syntax-highlighting	script	files/zsh-syntax-highlighting.sh
 starship	~/.local/bin/starship	script	files/starship.sh
 fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh

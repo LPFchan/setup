@@ -1,27 +1,23 @@
 #!/usr/bin/env zsh
-# setup-module: zsh-autocomplete
+# setup-module: zsh-omnibar
 # setup-type: script
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
-# The repo is LPFchan/zsh-omnibar; this module, its target directory and its
-# .zshrc block label are still named zsh-autocomplete on purpose.
-#
-# Renaming those means every machine has to migrate: the block label changes,
-# so manage_block cannot find the old one and would leave two blocks in
-# .zshrc, both sourcing the plugin. That needs a one-time removal of the old
-# block plus cleanup of the orphaned clone, and it is not worth running
-# unattended overnight. Left as a deliberate follow-up.
-MODULE="zsh-autocomplete"
-DIR1="$ZSH_PLUGINS_DIR/zsh-autocomplete"
+MODULE="zsh-omnibar"
+DIR1="$ZSH_PLUGINS_DIR/zsh-omnibar"
+
+# Previous names, kept only for the one-time migration below.
+OLD_MODULE="zsh-autocomplete"
+OLD_DIR1="$ZSH_PLUGINS_DIR/zsh-autocomplete"
 DIR2="$ZSH_PLUGINS_DIR/zsh-defer"
 REPO1="https://github.com/LPFchan/zsh-omnibar.git"
 REPO2="https://github.com/romkatv/zsh-defer.git"
 
 BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
    && [[ -n ${TERM_PROGRAM-} || -n ${SSH_TTY-} || -n ${TMUX-} ]] \
-   && [[ -d "$HOME/.zsh/zsh-autocomplete" && -d "$HOME/.zsh/zsh-defer" ]]; then
-    source ~/.zsh/zsh-autocomplete/zsh-omnibar.plugin.zsh
+   && [[ -d "$HOME/.zsh/zsh-omnibar" && -d "$HOME/.zsh/zsh-defer" ]]; then
+    source ~/.zsh/zsh-omnibar/zsh-omnibar.plugin.zsh
     source ~/.zsh/zsh-defer/zsh-defer.plugin.zsh
     zstyle '\'':autocomplete:'\'' min-input 1
     zstyle '\'':autocomplete:'\'' default-context history-incremental-search-backward
@@ -31,7 +27,26 @@ BLOCK_CONTENT='if [[ -o interactive && -t 0 ]] \
     HISTFILE=~/.zsh_history
 fi'
 
+# One-time move from the old name. Has to run before anything else touches
+# .zshrc or the clone.
+#
+# The block label is what manage_block matches on, so simply renaming the
+# module would leave the old block sitting in .zshrc next to the new one, both
+# sourcing the plugin. And the clone carries local commits, so it is moved
+# rather than re-cloned.
+_migrate_from_old_name() {
+    if [[ -d "$OLD_DIR1/.git" && ! -d "$DIR1/.git" ]]; then
+        mv "$OLD_DIR1" "$DIR1" || return 1
+    fi
+    # Drop a leftover empty directory, but never a non-empty one.
+    [[ -d "$OLD_DIR1" ]] && rmdir "$OLD_DIR1" 2>/dev/null
+    manage_block "$HOME/.zshrc" "$OLD_MODULE" "" "remove"
+    remove_script_state "$OLD_MODULE"
+    return 0
+}
+
 install() {
+    _migrate_from_old_name
     git_clone_if_missing "$REPO1" "$DIR1" || return 1
     git_clone_if_missing "$REPO2" "$DIR2" || return 1
     _upsert_block || return 1
@@ -61,6 +76,7 @@ status() {
 }
 
 update() {
+    _migrate_from_old_name
     if [[ -d "$DIR1/.git" ]]; then
         git_pull_ff "$DIR1"
     else
@@ -75,13 +91,13 @@ update() {
 
 uninstall() {
     rm -rf "$DIR1" "$DIR2"
-    manage_block "$HOME/.zshrc" "zsh-autocomplete" "" "remove"
+    manage_block "$HOME/.zshrc" "zsh-omnibar" "" "remove"
     remove_script_state "$MODULE"
     [[ -d "$ZSH_PLUGINS_DIR" ]] && [[ -z "$(ls -A "$ZSH_PLUGINS_DIR" 2>/dev/null)" ]] && rmdir "$ZSH_PLUGINS_DIR"
 }
 
 _upsert_block() {
-    manage_block "$HOME/.zshrc" "zsh-autocomplete" "$BLOCK_CONTENT" "upsert" "append"
+    manage_block "$HOME/.zshrc" "zsh-omnibar" "$BLOCK_CONTENT" "upsert" "append"
 }
 
 _record_state() {

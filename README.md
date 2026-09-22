@@ -125,7 +125,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 
 | Module | What it installs / manages | Source File |
 |--------|---------------------------|-------------|
-| `zsh-autocomplete` | [zsh-omnibar](https://github.com/LPFchan/zsh-omnibar) — one ranked list blending history and completions (`~/.zsh/`) | `files/zsh-autocomplete.sh` |
+| `zsh-omnibar` | [zsh-omnibar](https://github.com/LPFchan/zsh-omnibar) — one ranked list blending history and completions (`~/.zsh/`) | `files/zsh-omnibar.sh` |
 | `zsh-syntax-highlighting` | Command syntax highlighting (`~/.zsh/`) | `files/zsh-syntax-highlighting.sh` |
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
@@ -170,7 +170,7 @@ Setup manages your `~/.zshrc` using guarded blocks. Block order is automatically
 3. `zsh-basics` — Sets default environment options, machine color scheme, and handy aliases
 4. `ssh-reconnect` — Wraps `ssh` so a suspended laptop reattaches instead of leaving a dead terminal (owned by the `tmux` module)
 5. `starship` — Initializes the Starship prompt
-6. `zsh-autocomplete` — Sets up tab completion and history search
+6. `zsh-omnibar` — Sets up the blended history/completion list
 7. `zsh-syntax-highlighting` — Enables syntax highlighting
 8. `ai-menu` — Enables the `ai` menu command and autolaunch hook
 
