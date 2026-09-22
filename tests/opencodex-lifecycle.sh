@@ -16,7 +16,6 @@ export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
 export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_LAUNCHER_SOURCE="$ROOT/files/opencodex"
 export OPENCODEX_REGISTRY_SOURCE="$ROOT/files/provider-registry.json"
-export OPENCODEX_ZEN_SESSION_PATCH_SOURCE="$ROOT/files/opencodex-zen-session.patch"
 export OPENCODEX_RELEASE_VERSION="2.7.42"
 mkdir -p "${OPENCODEX_LAUNCHER:h}" "${OPENCODEX_REGISTRY:h}" "$XDG_STATE_HOME"
 

@@ -79,7 +79,9 @@ if output=$(cmd_update blip broken 2>&1); then rc=0; else rc=$?; fi
     || fail "the real failure was not named separately"
 [[ "$output" == *'could not be checked (upstream unreachable): blip'* ]] \
     || fail "the unchecked module was not named separately"
-unset -f _script_update
+# Both stubs go, not just the update one: a later test inheriting the status
+# stub would silently read these fixtures' state instead of its own.
+unset -f _script_update script_status_fields
 
 # Explicit enable/disable aggregate, verify convergence, and reject toolonly.
 SERVICE_MODULES='fail ok toolonly'
