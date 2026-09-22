@@ -45,17 +45,36 @@ assert namespace["provider_model_options"](
 # when it rebuilds the Codex model catalog the desktop picker reads.
 auth = {
     "commandcode": {"key": "secret"},
-    # Zen and Go intentionally share this credential reference.
-    "opencode-go": {"key": "zen-secret"},
+    # Two providers intentionally sharing one credential reference, the way
+    # opencode-zen borrowed opencode-go's enrollment before it was retired.
+    "opencode-go": {"key": "go-secret"},
 }
 desired, _ = namespace["desired_opencodex_config"](registry, {}, auth)
 assert desired["providers"]["commandcode"]["disabled"] is True
-zen_config = desired["providers"]["opencode-zen"]
-assert zen_config["disabled"] is False
-assert zen_config["selectedModels"] == sorted(
-    registry["providers"]["opencode-zen"]["model_allow_ids"]
+assert desired["providers"]["opencode-go"]["disabled"] is False
+
+# Admission policy reaching the OpenCodex config, on a synthetic provider rather
+# than whichever live one happens to carry the fields: no registry provider sets
+# them today, and pinning the test to one means retiring that provider breaks it.
+registry_admission = copy.deepcopy(registry)
+registry_admission["providers"]["gated"] = {
+    "provider_type": "OpenAICompatible",
+    "base_url": "https://gated.invalid/v1",
+    "api_format": "openai",
+    "npm": "@ai-sdk/openai-compatible",
+    "auth": {"type": "api-key", "store": "opencode", "key": "gated"},
+    "enabled": True,
+    "model_allow_suffixes": ["-free", "alpha"],
+    "model_allow_ids": ["big-pickle", "union-alpha"],
+    "model_no_reasoning_suffixes": ["alpha"],
+}
+desired_gated, _ = namespace["desired_opencodex_config"](
+    registry_admission, {}, {**auth, "gated": {"key": "gated-secret"}}
 )
-assert zen_config["noReasoningModels"] == ["union-alpha"]
+gated_config = desired_gated["providers"]["gated"]
+assert gated_config["disabled"] is False
+assert gated_config["selectedModels"] == ["big-pickle", "union-alpha"]
+assert gated_config["noReasoningModels"] == ["union-alpha"]
 assert namespace["_registry_no_reasoning_models"](
     {"model_no_reasoning_suffixes": ["alpha"]},
     ["big-pickle", "Ox-Alpha", "union-alpha"],

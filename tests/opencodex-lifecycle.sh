@@ -50,25 +50,19 @@ npm() {
     done
     mkdir -p "$prefix/node_modules/.bin"
     print '#!/bin/sh\necho opencodex 9.8.7' > "$prefix/node_modules/.bin/ocx"
-    mkdir -p "$prefix/node_modules/@bitkyc08/opencodex/src/providers" \
-        "$prefix/node_modules/@bitkyc08/opencodex/src/types"
-    cp "$ROOT/tests/fixtures/opencodex-opencode-go-transport.ts" \
-        "$prefix/node_modules/@bitkyc08/opencodex/src/providers/opencode-go-transport.ts"
-    cp "$ROOT/tests/fixtures/opencodex-wire.ts" \
-        "$prefix/node_modules/@bitkyc08/opencodex/src/types/wire.ts"
     chmod +x "$prefix/node_modules/.bin/ocx"
 }
-_ensure_runtime "9.8.7" "$ROOT/files/opencodex-zen-session.patch"
+_ensure_runtime "9.8.7"
 [[ "$npm_args" == *"@bitkyc08/opencodex@9.8.7"* ]] || fail "resolved OpenCodex package was not installed"
 [[ "$npm_args" != *"--allow-scripts"* ]] || fail "project install used the rejected allow-scripts CLI flag"
 grep -q '"bun": true' "$OPENCODEX_ROOT/package.json" \
     || fail "OpenCodex runtime package did not approve Bun's install script"
 [[ "$(_installed_version)" == "9.8.7" ]] || fail "resolved OpenCodex runtime version is wrong"
-grep -q 'destinationId !== "opencode-zen"' \
-    "$OPENCODEX_ROOT/node_modules/@bitkyc08/opencodex/src/providers/opencode-go-transport.ts" \
-    || fail "Zen session compatibility patch was not applied to the runtime"
-[[ -f "$OPENCODEX_ROOT/.setup-opencodex-zen-session.patch.sha256" ]] \
-    || fail "Zen session compatibility patch did not leave its integrity marker"
+# The runtime is now installed verbatim: the Zen session patch went with
+# opencode-zen's retirement, so nothing rewrites upstream's source in place and
+# an upstream release can no longer break the install by moving those lines.
+[[ ! -e "$OPENCODEX_ROOT/.setup-opencodex-zen-session.patch.sha256" ]] \
+    || fail "a retired runtime patch left its integrity marker behind"
 unfunction npm
 rm -f "$OPENCODEX_BIN"
 rm -rf "$OPENCODEX_ROOT"

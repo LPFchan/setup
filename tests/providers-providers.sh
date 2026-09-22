@@ -87,7 +87,7 @@ fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-zen', 'opencode-go'
+    'cloudflare', 'openrouter', 'opencode-go'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
@@ -145,15 +145,11 @@ assert openrouter == {
     'auth': {'type': 'api-key', 'store': 'opencode', 'key': 'openrouter'},
     'enabled': True,
 }
-zen = canonical['providers']['opencode-zen']
-assert zen['base_url'] == 'https://opencode.ai/zen/v1'
-assert zen['auth'] == {
-    'type': 'api-key', 'store': 'opencode', 'key': 'opencode-go'
-}
-assert zen['model_allow_suffixes'] == ['-free', 'alpha']
-assert 'big-pickle' in zen['model_allow_ids']
-assert 'union-alpha' in zen['model_allow_ids']
-assert 'x-preview-f-free' in zen['model_allow_ids']
+# opencode-zen is retired: gone from providers, named in retired_providers so
+# every machine sweeps it, and its shared credential left with live opencode-go.
+assert 'opencode-zen' not in canonical['providers']
+assert 'opencode-zen' in canonical['retired_providers']
+assert canonical['providers']['opencode-go']['auth']['key'] == 'opencode-go'
 serialized = json.dumps(canonical).lower()
 for legacy_field in ('default_model', 'haiku', 'sonnet', 'opus'):
     assert legacy_field not in serialized
@@ -165,7 +161,7 @@ m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-zen', 'opencode-go'
+    'cloudflare', 'openrouter', 'opencode-go'
 }
 m.REGISTRY_PATH = original_registry
 
@@ -747,9 +743,15 @@ failed_refresh = __import__('subprocess').run(
 assert CapabilityHandler.calls == 2, CapabilityHandler.calls
 assert open('$HOME/.config/providers/capabilities.json', 'rb').read() == capability_bytes_before_failed_refresh
 server.shutdown()
-# OpenCode Zen admits newly published -free IDs and known free stealth IDs,
-# while paid and unknown IDs never reach a consumer mirror.
-zen_rows = [
+# An admission policy admits newly published -free IDs and known free stealth
+# IDs, while paid and unknown IDs never reach a consumer mirror. Held on a
+# synthetic provider: opencode-zen was the only one that carried these fields and
+# it is retired, but the machinery stays for the next free tier, so it stays
+# tested rather than riding on whichever provider happens to set them.
+gated = copy.deepcopy(canonical_servers['opencode-go'])
+gated['model_allow_suffixes'] = ['-free', 'alpha']
+gated['model_allow_ids'] = ['big-pickle', 'union-alpha', 'x-preview-f-free']
+gated_rows = [
     {'id': 'big-pickle'},
     {'id': 'union-alpha'},
     {'id': 'x-preview-f-free'},
@@ -760,16 +762,13 @@ zen_rows = [
     {'id': 'minimax-m3'},
     {'id': 'unknown-stealth'},
 ]
-assert [row['id'] for row in m._filter_models(
-    'opencode-zen', canonical_servers['opencode-zen'], zen_rows
-)] == [
+assert [row['id'] for row in m._filter_models('gated', gated, gated_rows)] == [
     'big-pickle', 'union-alpha', 'x-preview-f-free', 'new-model-free',
     'ox-alpha', 'future-stealth-alpha', 'OX-ALPHA'
 ]
 # The same allow policy applies to static model inventories.
 assert m._filter_models(
-    'opencode-zen', canonical_servers['opencode-zen'],
-    [{'id': 'paid-model'}, {'id': 'mimo-v2.5-free'}],
+    'gated', gated, [{'id': 'paid-model'}, {'id': 'mimo-v2.5-free'}],
 ) == [{'id': 'mimo-v2.5-free'}]
 # Registry-owned model_exclude_prefixes removes matching ids from a live
 # refresh before any mirror sees them. The provider's other models pass
@@ -1421,10 +1420,11 @@ except ValueError as exc:
 else:
     raise AssertionError('a live provider was accepted as retired')
 
-# Nor the *credential* of a live provider. opencode-zen resolves through the
-# enrollment filed under opencode-go, so retiring opencode-go would delete the
-# key live zen needs -- and the two read-back filters then stop the vault from
-# ever healing it. Silent and permanent, so it has to fail at validation.
+# Nor the *credential* of a live provider. opencode-zen used to resolve through
+# the enrollment filed under opencode-go, and retiring opencode-go would have
+# deleted the key live zen needed -- with the two read-back filters then stopping
+# the vault from ever healing it. Silent and permanent, so it fails validation.
+# (zen is the one retired now, which is the safe direction: nothing borrows it.)
 _shared = {'version': 1, 'retired_providers': ['gone'], 'providers': {
     'borrower': {'provider_type': 'OpenAICompatible', 'base_url': 'http://borrower',
                  'api_format': 'openai', 'npm': '@ai-sdk/openai-compatible',
@@ -1439,7 +1439,7 @@ else:
 # Retiring the borrower itself is fine -- nothing else resolves through it.
 _shared['retired_providers'] = ['other']
 m._validate_registry(_shared)
-# And the real registry still validates, opencode-zen/opencode-go included.
+# And the real registry still validates, with opencode-zen retired.
 m._validate_registry(m.load_json('$ROOT/files/provider-registry.json'))
 
 # Naming convention: only {PROVIDER}_API_KEY items are conforming.

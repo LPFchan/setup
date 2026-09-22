@@ -8,10 +8,12 @@ in the passage MCP (folder llm, items named {PROVIDER}_API_KEY). A local 0600 ca
 serves offline/headless contexts. This tool maintains the OpenCode and shell
 credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi tools.
 Provider descriptors may restrict a live catalog with model_allow_suffixes and
-model_allow_ids; OpenCode Zen uses these to keep paid models out of every
+model_allow_ids, which keep a mixed free/paid endpoint's paid models out of every
 consumer while still admitting newly published *-free IDs and time-limited IDs
-ending in alpha. Zen alpha models also opt out of the generic reasoning ladder
-until the provider advertises model-specific effort levels.
+ending in alpha. model_no_reasoning_suffixes opts those time-limited IDs out of
+the generic reasoning ladder until the provider advertises per-model efforts.
+OpenCode Zen was the only provider to use all three; no live provider sets them
+since it was retired, and they are kept for the next mixed-tier endpoint.
 
 Commands:
   (no args)                    List providers and key status (never the key)
@@ -1964,7 +1966,6 @@ PROVIDER_URLS = {
     "deepseek": "https://platform.deepseek.com/api_keys",
     # META_API_KEY is the same Model API key muse reads for headless runs.
     "meta": "https://dev.meta.ai",
-    "opencode-zen": "https://opencode.ai/auth (shared with OpenCode Go)",
 }
 
 
@@ -2548,7 +2549,7 @@ def _validate_registry(data):
     if not isinstance(retired, list):
         raise ValueError("retired_providers must be a list")
     # Credential names a live provider resolves through, which is not always its
-    # own name: opencode-zen and opencode-go share one enrollment filed under
+    # own name: opencode-zen shared one enrollment with opencode-go, filed under
     # opencode-go. Retiring the name a live provider borrows would delete the
     # credential it needs, and the sweep's read-back filters then block the vault
     # from ever healing it -- a silent, permanent key: x on a provider still in use.

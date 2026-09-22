@@ -112,38 +112,6 @@
       },
       "enabled": true
     },
-    "opencode-zen": {
-      "provider_type": "OpenAICompatible",
-      "base_url": "https://opencode.ai/zen/v1",
-      "api_format": "openai",
-      "npm": "@ai-sdk/openai-compatible",
-      "auth": {
-        "type": "api-key",
-        "store": "opencode",
-        "key": "opencode-go"
-      },
-      "enabled": true,
-      "model_allow_suffixes": [
-        "-free",
-        "alpha"
-      ],
-      "model_no_reasoning_suffixes": [
-        "alpha"
-      ],
-      "model_allow_ids": [
-        "big-pickle",
-        "deepseek-v4-flash-free",
-        "ling-3.0-flash-fin-free",
-        "mimo-v2.5-free",
-        "muse-spark-1.2-contributor-free",
-        "muse-spark-1.3-contributor-free",
-        "nemotron-3-ultra-free",
-        "nemotron-3.5-lightning-free",
-        "union-alpha",
-        "x-preview-f-free"
-      ],
-      "models_dev": "opencode"
-    },
     "opencode-go": {
       "provider_type": "OpenAICompatible",
       "base_url": "https://opencode.ai/zen/go/v1",
@@ -162,7 +130,8 @@
     }
   },
   "retired_providers": [
-    "crofai"
+    "crofai",
+    "opencode-zen"
   ],
   "retired_providers_comment": "Providers withdrawn from the fleet. Every consumer write path here is an upsert, so a name simply deleted from providers keeps its credential and its model list on every machine forever. Naming it here makes each refresh sweep it out of the credential cache, the .zshenv api-keys block, opencode's auth.json and provider block, the provider state, the capability cache, and the Hermes custom_providers list."
 }
