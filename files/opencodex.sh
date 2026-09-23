@@ -214,15 +214,46 @@ except Exception:
 PY
 }
 
+# Poll /healthz for up to $1 seconds (default 120); print the live version as
+# soon as one answers, fail if the window closes first.
+_wait_live_proxy() {
+    local deadline=$(( SECONDS + ${1:-120} )) live
+    while (( SECONDS < deadline )); do
+        live=$(_live_proxy_version)
+        if [[ -n "$live" ]]; then
+            printf '%s\n' "$live"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 # A package swap leaves the previous build serving until something restarts it.
 # `service install` re-registers and restarts, so it is the whole job when it
 # works; the version probe is what proves it did, because a failure here used
 # to be invisible.
+#
+# `service install` only gives the fresh proxy ~20s to answer /healthz, and a
+# cold start can spend longer than that syncing providers and the model catalog
+# — so it exits 1 while the proxy is still coming up. Believing that exit
+# failed the module before record_script_state, and `setup update` re-swapped
+# and re-failed every night. On a failed install, keep polling until
+# OPENCODEX_ACTIVATE_WAIT (default 120s) expires before deciding; a proxy that
+# answers inside the window with the installed version is a success.
 _activate_runtime() {
-    "$OPENCODEX_BIN" service install || return 1
-    local installed live
+    local install_rc=0 installed live
+    "$OPENCODEX_BIN" service install || install_rc=$?
     installed=$(_installed_version)
-    live=$(_live_proxy_version)
+    if (( install_rc != 0 )); then
+        echo "opencodex: service install exited $install_rc; waiting up to ${OPENCODEX_ACTIVATE_WAIT:-120}s for /healthz" >&2
+        if ! live=$(_wait_live_proxy "${OPENCODEX_ACTIVATE_WAIT:-120}"); then
+            echo "opencodex: no proxy answered /healthz within ${OPENCODEX_ACTIVATE_WAIT:-120}s; install treated as failed" >&2
+            return 1
+        fi
+    else
+        live=$(_live_proxy_version)
+    fi
     # An unreachable proxy reports no version, which is not evidence of drift.
     if [[ -z "$installed" || -z "$live" || "$live" == "$installed" ]]; then
         return 0
