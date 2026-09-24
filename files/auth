@@ -200,7 +200,7 @@ def _refresh(data):
         )
     try:
         bundle = _request(
-            "/api/setup/session/token",
+            "/api/device/session/token",
             json_body={"refresh_token": refresh_token, "device_name": DEVICE_NAME},
         )
     except AuthError as exc:
@@ -263,7 +263,7 @@ def _open_browser(uri):
 
 def cmd_login():
     device = _request(
-        "/api/setup/device", form={"client": "setup-auth", "device_name": DEVICE_NAME}
+        "/api/device", form={"client": "setup-auth", "device_name": DEVICE_NAME}
     )
     device_code = device.get("device_code")
     user_code = device.get("user_code")
@@ -279,7 +279,7 @@ def cmd_login():
     while time.monotonic() < deadline:
         time.sleep(interval)
         try:
-            response = _request("/api/setup/device/token", form={"device_code": device_code})
+            response = _request("/api/device/token", form={"device_code": device_code})
         except AuthError as exc:
             if str(exc) == "authorization_pending":
                 continue
