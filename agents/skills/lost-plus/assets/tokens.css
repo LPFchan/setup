@@ -1,22 +1,23 @@
 /* Copy this accessible starter into a service. Adapt the accent and re-test
-   contrast. */
+   contrast. Colours come from the yeowool palette in references/design.md;
+   surfaces and meta text use in-between steps on the same warm hues. */
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
 
 :root {
   color-scheme: light dark;
-  --bg: #f7f7f5;
-  --surface: #fff;
-  --surface-2: #efefed;
-  --hair: rgb(0 0 0 / 8%);
-  --line: #8b929a;
-  --hover: rgb(0 0 0 / 5%);
-  --text: #1a1a1a;
-  --text-muted: #555c64;
-  --text-meta: #686f77;
-  --accent: #3151c6;
-  --accent-soft: rgb(49 81 198 / 12%);
-  --accent-solid: #3151c6;
-  --on-accent-solid: #fff;
+  --bg: #f7f1eb;
+  --surface: #f9f4ef;
+  --surface-2: #f2ebe4;
+  --hair: rgb(33 24 17 / 8%);
+  --line: #8c827a;
+  --hover: rgb(33 24 17 / 5%);
+  --text: #211811;
+  --text-muted: #5e5750;
+  --text-meta: #6f665e;
+  --accent: #564537;
+  --accent-soft: rgb(86 69 55 / 12%);
+  --accent-solid: #564537;
+  --on-accent-solid: #f9f4ef;
   --ok: #247737;
   --warn: #8a5a12;
   --danger: #b4232a;
@@ -29,19 +30,19 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #151619;
-    --surface: #1b1c20;
-    --surface-2: #222327;
-    --hair: rgb(255 255 255 / 8%);
-    --line: #69717c;
-    --hover: rgb(255 255 255 / 5%);
-    --text: #e8eaed;
-    --text-muted: #afb5bd;
-    --text-meta: #969da7;
-    --accent: #9aabff;
-    --accent-soft: rgb(154 171 255 / 16%);
-    --accent-solid: #9aabff;
-    --on-accent-solid: #111318;
+    --bg: #211811;
+    --surface: #28201a;
+    --surface-2: #302720;
+    --hair: rgb(242 235 228 / 8%);
+    --line: #8c827a;
+    --hover: rgb(242 235 228 / 5%);
+    --text: #f2ebe4;
+    --text-muted: #ccc2b8;
+    --text-meta: #a89e95;
+    --accent: #ccb9a2;
+    --accent-soft: rgb(204 185 162 / 16%);
+    --accent-solid: #ccb9a2;
+    --on-accent-solid: #211811;
     --ok: #58d080;
     --warn: #efbd5b;
     --danger: #ff8a8f;

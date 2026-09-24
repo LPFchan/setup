@@ -21,9 +21,11 @@ smallest useful component, retain its accessible behavior, and style it locally.
 
 ## Visual language
 
-- Neutral near-black dark surfaces and warm off-white light surfaces.
+- Coffee-black dark surfaces and cream light surfaces, from the yeowool
+  palette below.
 - One restrained service accent for primary actions, links, focus, and
-  selection. Green means success, amber warning, and red danger.
+  selection; coffee brown by default. Links sit close to body text, so keep
+  them underlined. Green means success, amber warning, and red danger.
 - One page background, at most two raised tones, 1px separators, and flat hover
   states. Shadows belong to floating menus and sheets.
 - Pretendard for all text, loaded by the token starter; system sans is only
