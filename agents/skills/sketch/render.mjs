@@ -44,8 +44,15 @@ const proc = spawn(chrome, [
 ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
 const exited = new Promise(ok => proc.on('exit', ok));
-// Chrome keeps writing to its profile until it exits, so wait before deleting it.
-const cleanup = async () => { proc.kill(); await exited; rmSync(profile, { recursive: true, force: true }); };
+// Chrome's helper processes can hold the profile for a moment after it exits.
+const cleanup = async () => {
+  proc.kill();
+  await exited;
+  for (let i = 0; ; i++) {
+    try { return rmSync(profile, { recursive: true, force: true }); }
+    catch (e) { if (i === 20) throw e; await new Promise(r => setTimeout(r, 100)); }
+  }
+};
 const timer = setTimeout(async () => { console.error('render.mjs: timed out'); await cleanup(); process.exit(1); }, 30000);
 
 // Chrome prints its DevTools address on stderr once it is ready.
