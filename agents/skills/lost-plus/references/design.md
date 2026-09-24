@@ -42,6 +42,33 @@ smallest useful component, retain its accessible behavior, and style it locally.
 Copy [the token starter](../assets/tokens.css) into a new service and adapt its
 accent. Existing services keep their established accent.
 
+## yeowool palette
+
+Tone: cream, coffee, earth, ash. Mood: cosy, warm, serene, understated. Every
+swatch sits on a warm 26–33° hue; the number in each name is roughly its
+brightness, from 0 (black) to 100 (white).
+
+| Swatch | Hex | Group |
+| --- | --- | --- |
+| cream(98) | `#f9f4ef` | highlight, 29° |
+| cream(97) | `#f7f1eb` | highlight |
+| cream(94) | `#f2ebe4` | highlight |
+| sweater(95) | `#f2e8dd` | midtone, 33° |
+| sweater(92) | `#ebdcca` | midtone |
+| sweater(90) | `#e5d9cc` | midtone |
+| ash(87) | `#e0d8ce` | midtone |
+| sweater(80) | `#ccb9a2` | midtone |
+| ash(56) | `#8c827a` | shadow, 26° |
+| ash(38) | `#5e5750` | shadow |
+| pants(33) | `#564537` | shadow |
+| pants(24) | `#3f342b` | shadow |
+| hair(12) | `#211811` | shadow |
+
+Two ready-made ramps, light to dark:
+
+- muted, greyer: cream(94), ash(87), ash(56), pants(24)
+- fabric, warmer: sweater(95), sweater(92), sweater(80), pants(33), hair(12)
+
 ## Accessibility
 
 - Meet WCAG AA contrast and keep a visible 2px focus indicator.
