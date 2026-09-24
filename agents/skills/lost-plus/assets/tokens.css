@@ -1,23 +1,24 @@
-/* Copy this accessible starter into a service. Adapt the accent and re-test
-   contrast. Colours come from the yeowool palette in references/design.md;
-   surfaces and meta text use in-between steps on the same warm hues. */
+/* Copy this accessible starter into a service. Surfaces and text stay neutral
+   grey; set --accent-hue to a random hue (0-359) for each new service. Every
+   hue passes WCAG AA at these lightness values. */
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
 
 :root {
   color-scheme: light dark;
-  --bg: #f7f1eb;
-  --surface: #f9f4ef;
-  --surface-2: #f2ebe4;
-  --hair: rgb(33 24 17 / 8%);
-  --line: #8c827a;
-  --hover: rgb(33 24 17 / 5%);
-  --text: #211811;
-  --text-muted: #5e5750;
-  --text-meta: #6f665e;
-  --accent: #564537;
-  --accent-soft: rgb(86 69 55 / 12%);
-  --accent-solid: #564537;
-  --on-accent-solid: #f9f4ef;
+  --accent-hue: 265;
+  --bg: #f7f7f7;
+  --surface: #fff;
+  --surface-2: #efefef;
+  --hair: rgb(0 0 0 / 8%);
+  --line: #8a8a8a;
+  --hover: rgb(0 0 0 / 5%);
+  --text: #1a1a1a;
+  --text-muted: #555;
+  --text-meta: #6b6b6b;
+  --accent: oklch(50% 0.15 var(--accent-hue));
+  --accent-soft: oklch(50% 0.15 var(--accent-hue) / 12%);
+  --accent-solid: var(--accent);
+  --on-accent-solid: #fff;
   --ok: #247737;
   --warn: #8a5a12;
   --danger: #b4232a;
@@ -30,19 +31,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #211811;
-    --surface: #28201a;
-    --surface-2: #302720;
-    --hair: rgb(242 235 228 / 8%);
-    --line: #8c827a;
-    --hover: rgb(242 235 228 / 5%);
-    --text: #f2ebe4;
-    --text-muted: #ccc2b8;
-    --text-meta: #a89e95;
-    --accent: #ccb9a2;
-    --accent-soft: rgb(204 185 162 / 16%);
-    --accent-solid: #ccb9a2;
-    --on-accent-solid: #211811;
+    --bg: #161616;
+    --surface: #1c1c1c;
+    --surface-2: #232323;
+    --hair: rgb(255 255 255 / 8%);
+    --line: #6e6e6e;
+    --hover: rgb(255 255 255 / 5%);
+    --text: #e8e8e8;
+    --text-muted: #b0b0b0;
+    --text-meta: #999;
+    --accent: oklch(80% 0.12 var(--accent-hue));
+    --accent-soft: oklch(80% 0.12 var(--accent-hue) / 16%);
+    --on-accent-solid: #161616;
     --ok: #58d080;
     --warn: #efbd5b;
     --danger: #ff8a8f;

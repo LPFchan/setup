@@ -21,11 +21,10 @@ smallest useful component, retain its accessible behavior, and style it locally.
 
 ## Visual language
 
-- Coffee-black dark surfaces and cream light surfaces, from the yeowool
-  palette below.
+- Strictly greyscale neutral grey for surfaces, text, and lines: no warm or
+  cool tint.
 - One restrained service accent for primary actions, links, focus, and
-  selection; coffee brown by default. Links sit close to body text, so keep
-  them underlined. Green means success, amber warning, and red danger.
+  selection. Green means success, amber warning, and red danger.
 - One page background, at most two raised tones, 1px separators, and flat hover
   states. Shadows belong to floating menus and sheets.
 - Pretendard for all text, loaded by the token starter; system sans is only
@@ -41,10 +40,16 @@ smallest useful component, retain its accessible behavior, and style it locally.
 - Motion explains continuity or state change. Keep ordinary transitions around
   120–150ms and honor `prefers-reduced-motion`.
 
-Copy [the token starter](../assets/tokens.css) into a new service and adapt its
-accent. Existing services keep their established accent.
+Copy [the token starter](../assets/tokens.css) into a new service and give it
+a random accent: roll a hue with `shuf -i 0-359 -n 1` and set `--accent-hue`
+on `:root`; setting it lower in the page has no effect.
+Roll again if the hue could be mistaken for a status colour. Existing services
+keep their established accent.
 
 ## yeowool palette
+
+A personal reference, not the service default. Use it when a project asks for
+the yeowool look.
 
 Tone: cream, coffee, earth, ash. Mood: cosy, warm, serene, understated. Every
 swatch sits on a warm 26–33° hue; the number in each name is roughly its

@@ -47,7 +47,7 @@ It loads Pretendard and defines light and dark colours, which switch with
   only for the occasional section heading.
 
 If the lost-plus skill isn't on this machine, the link fails quietly; write
-your own coffee-black/cream CSS in the same spirit.
+your own neutral grey CSS in the same spirit.
 
 ## Layout rules
 
