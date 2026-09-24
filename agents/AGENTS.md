@@ -50,7 +50,7 @@ do not sweep pre-existing test failures under the rug. raise the issue to the op
 
 preferred subagent model for ambitious backend/code-work: claude-opus-5.5 high. use `codexbar-cli` to check usage limits when requested.
 preferred subagent model for easy-to-tackle mechanical backend/code-work: gpt-5.6-luna xhigh
-preferred subagent model for frontend/design-work: kimicode/k3-256k high
+preferred subagent model for frontend/design-work: claude-opus-5.5 high
 these selections are subject to change at any time.
 DO NOT silently route failed subagent requests to openrouter. raise the issue to the operator and request for a manual fix or a reauth.
 
