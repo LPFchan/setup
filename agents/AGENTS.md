@@ -48,7 +48,7 @@ i will often ask you 'what decisions do i need to make?': split 'critical produc
 
 do not sweep pre-existing test failures under the rug. raise the issue to the operator and fix it.
 
-preferred subagent model for ambitious backend/code-work: either gpt-6-astra medium or claude-fable-5.1 high, ask the operator what she's feeling today. use `codexbar-cli` to check each model's usage limits when requested.
+preferred subagent model for ambitious backend/code-work: claude-opus-5.5 high. use `codexbar-cli` to check usage limits when requested.
 preferred subagent model for easy-to-tackle mechanical backend/code-work: gpt-5.6-luna xhigh
 preferred subagent model for frontend/design-work: kimicode/k3-256k high
 these selections are subject to change at any time.
