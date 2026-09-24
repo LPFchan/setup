@@ -55,6 +55,10 @@ your own neutral near-black/off-white CSS in the same spirit.
   (`body { width: max-content; margin: 0; padding: 32px; }`) or give it a fixed
   width, or the image will be as wide as the viewport.
 - Aim for roughly 900–1400 CSS px wide. It will be read in a chat column.
+- If the operator is on mobile, render with `--width 390 --scale 3` and lay
+  out for that width: `body { width: auto; }`, one column, larger text
+  relative to the frame. Cut content rather than just stacking it; aim for
+  one or two phone screens tall.
 - Plain language labels. One idea per box. Colour means something (e.g. green
   = pro, red = con) and stays consistent within the image.
 - For arrows, use inline SVG positioned over a CSS grid/flex layout, or simple
