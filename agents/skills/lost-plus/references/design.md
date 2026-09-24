@@ -26,8 +26,8 @@ smallest useful component, retain its accessible behavior, and style it locally.
   selection. Green means success, amber warning, and red danger.
 - One page background, at most two raised tones, 1px separators, and flat hover
   states. Shadows belong to floating menus and sheets.
-- System sans for prose. Add Pretendard for Korean-heavy text. Use monospace for
-  values people compare or copy.
+- Pretendard for all text, loaded by the token starter; system sans is only
+  the fallback. Use monospace for values people compare or copy.
 - Primary, muted, and metadata text must remain readable. Reserve uppercase
   tracked labels for occasional section headings.
 - Prefer compact rows for repeated records. Use cards for grouped controls.

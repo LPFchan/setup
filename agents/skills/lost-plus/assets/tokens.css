@@ -1,5 +1,7 @@
 /* Copy this accessible starter into a service. Adapt the accent and re-test
    contrast. */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
+
 :root {
   color-scheme: light dark;
   --bg: #f7f7f5;
@@ -19,8 +21,8 @@
   --warn: #8a5a12;
   --danger: #b4232a;
   --danger-soft: rgb(180 35 42 / 8%);
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", "Apple SD Gothic Neo", Pretendard, sans-serif;
+  --sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", "Apple SD Gothic Neo", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
     monospace;
 }
