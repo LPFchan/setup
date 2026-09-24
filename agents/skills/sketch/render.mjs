@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Render an HTML file to a JPG with headless Chrome, sized to its content.
-//   node render.mjs <in.html> [out.jpg] [--width 1200] [--scale 2]
+//   node render.mjs <in.html> [out.jpg] [--width 1200] [--scale 2] [--light]
+// Pages render with prefers-color-scheme: dark unless --light is given.
 // No npm dependencies: talks to Chrome over the DevTools protocol using
 // Node's built-in WebSocket (Node 22+).
 import { spawn } from 'node:child_process';
@@ -16,11 +17,14 @@ const flag = (name, fallback) => {
   const [, value] = args.splice(i, 2);
   return Number(value);
 };
+const lightAt = args.indexOf('--light');
+const light = lightAt !== -1;
+if (light) args.splice(lightAt, 1);
 const width = flag('--width', 1200);
 const scale = flag('--scale', 2);
 const [input, output = input?.replace(/\.html?$/i, '') + '.jpg'] = args;
 if (!input || !existsSync(input)) {
-  console.error('usage: render.mjs <in.html> [out.jpg] [--width 1200] [--scale 2]');
+  console.error('usage: render.mjs <in.html> [out.jpg] [--width 1200] [--scale 2] [--light]');
   process.exit(2);
 }
 
@@ -98,6 +102,9 @@ try {
 
   await page('Page.enable');
   await viewport(800);
+  await page('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-color-scheme', value: light ? 'light' : 'dark' }],
+  });
   const loaded = new Promise(ok => events.push(m => m.method === 'Page.loadEventFired' && ok()));
   await page('Page.navigate', { url: pathToFileURL(resolve(input)).href });
   await loaded;
