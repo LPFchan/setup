@@ -5,7 +5,7 @@
 
 :root {
   color-scheme: light dark;
-  --accent-hue: 265;
+  --accent-hue: 50; /* terracotta, the default for sketches */
   --bg: #f7f7f7;
   --surface: #fff;
   --surface-2: #efefef;
