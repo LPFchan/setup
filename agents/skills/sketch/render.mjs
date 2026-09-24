@@ -5,9 +5,9 @@
 // No npm dependencies: talks to Chrome over the DevTools protocol using
 // Node's built-in WebSocket (Node 22+).
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const args = process.argv.slice(2);
@@ -40,6 +40,22 @@ if (!chrome) {
   process.exit(1);
 }
 
+// Snap Chromium can't read dot-directories under $HOME, so a stylesheet link
+// into ~/.agents (the house-style tokens) silently fails to load. Inline local
+// stylesheets into a sibling copy of the page, which Chrome can already read.
+const source = resolve(input);
+const html = readFileSync(source, 'utf8').replace(
+  /<link\b[^>]*\brel=["']?stylesheet["']?[^>]*>/gi,
+  tag => {
+    const href = tag.match(/\bhref=["']([^"']+)["']/i)?.[1];
+    if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith('file:')) return tag;
+    const file = href.startsWith('file:') ? new URL(href) : resolve(dirname(source), href);
+    return existsSync(file) ? `<style>\n${readFileSync(file, 'utf8')}\n</style>` : tag;
+  },
+);
+const staged = join(dirname(source), `.${basename(source)}.render.html`);
+writeFileSync(staged, html);
+
 const profile = mkdtempSync(join(tmpdir(), 'sketch-'));
 const proc = spawn(chrome, [
   '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
@@ -50,6 +66,7 @@ const proc = spawn(chrome, [
 const exited = new Promise(ok => proc.on('exit', ok));
 // Chrome's helper processes can hold the profile for a moment after it exits.
 const cleanup = async () => {
+  rmSync(staged, { force: true });
   proc.kill();
   await exited;
   for (let i = 0; ; i++) {
@@ -106,7 +123,7 @@ try {
     features: [{ name: 'prefers-color-scheme', value: light ? 'light' : 'dark' }],
   });
   const loaded = new Promise(ok => events.push(m => m.method === 'Page.loadEventFired' && ok()));
-  await page('Page.navigate', { url: pathToFileURL(resolve(input)).href });
+  await page('Page.navigate', { url: pathToFileURL(staged).href });
   await loaded;
   await evaluate('document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))');
 
