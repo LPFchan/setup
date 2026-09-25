@@ -569,6 +569,15 @@ assert "UNMANAGED" not in setenv and "ANTHROPIC_BASE_URL" not in setenv, \
 ns["_gui_env_install"]()
 agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
 assert "<string>gui-env</string>" in agent.read_text() and "RunAtLoad" in agent.read_text()
+def run_setenv_fails(argv, **kw):
+    return FakeCompleted(1 if argv[:2] == ["launchctl", "setenv"] else 0)
+g["subprocess"] = type("P", (), {"run": staticmethod(run_setenv_fails), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+assert ns["cmd_gui_env"]([]) == 1, "a failed launchctl setenv reported success"
+real_gui_env = g["cmd_gui_env"]
+g["cmd_gui_env"] = lambda names: 1
+assert ns["cmd_mcp"]([]) == 1, "harnesses mcp hid a gui-env failure"
+g["cmd_gui_env"] = real_gui_env
+g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 g["_is_macos"] = lambda: False
 calls.clear()
 assert ns["cmd_gui_env"]([]) == 0 and not calls, "gui-env touched launchctl off macOS"

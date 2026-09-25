@@ -782,7 +782,9 @@ def _cmd_mcp_once(names):
                       exports, authoritative_missing)
     if _is_macos():
         _gui_env_install()
-        cmd_gui_env([])
+        # A token that never reached launchctl is an app that still gets 401;
+        # fail the pass so the refresh reports it instead of looking green.
+        return cmd_gui_env([])
     return 0
 
 def _claude_mcp_registered(name):
