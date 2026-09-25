@@ -476,7 +476,9 @@ class FakeCompleted:
 # the test machine's own ocx must not decide what this asserts.
 os.environ["HARNESSES_PROXY_PORT"] = "10101"
 
-# stub ocx + systemctl: active service -> export written
+# stub ocx + systemctl: active service -> export written. Pin the platform
+# too, or on a Mac the check asks launchctl and never sees the systemctl stub.
+g["_is_macos"] = lambda: False
 g["shutil"] = type("S", (), {"which": staticmethod(lambda c: "/fake/ocx" if c == "ocx" else None)})
 def run_active(argv, **kw):
     if argv[:3] == ["systemctl", "--user", "is-active"]:
@@ -486,11 +488,17 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": sub
 assert ns["cmd_proxy"]([]) == 0
 zshenv = (HOME/".zshenv").read_text()
 assert "export ANTHROPIC_BASE_URL=http://127.0.0.1:10101" in zshenv
-# Shells read .zshenv; systemd user services do not. T3 Code's claudeAgent is
-# spawned by t3code.service, so the var has to reach the user manager too.
+# Shells read .zshenv; a claude spawned by T3 Code or any service does not.
+# Claude Code's own settings env reaches every launch, and replaces the old
+# environment.d drop-in, which a pass now cleans up.
+settings = json.loads((HOME/".claude/settings.json").read_text())
+assert settings["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 envd = HOME/".config/environment.d/10-harnesses-anthropic.conf"
-assert envd.exists(), "no environment.d drop-in written for systemd user units"
-assert envd.read_text().strip() == "ANTHROPIC_BASE_URL=http://127.0.0.1:10101"
+assert not envd.exists(), "legacy environment.d drop-in written"
+envd.parent.mkdir(parents=True, exist_ok=True)
+envd.write_text("ANTHROPIC_BASE_URL=http://127.0.0.1:10101\n")
+assert ns["cmd_proxy"]([]) == 0
+assert not envd.exists(), "legacy environment.d drop-in not cleaned up"
 
 # inactive service -> export removed, nonzero rc
 def run_inactive(argv, **kw):
@@ -501,7 +509,8 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": s
 assert ns["cmd_proxy"]([]) == 1
 zshenv2 = (HOME/".zshenv").read_text()
 assert "ANTHROPIC_BASE_URL" not in zshenv2, "base-url export left behind on inactive proxy"
-assert not envd.exists(), "environment.d drop-in left behind on inactive proxy"
+assert "env" not in json.loads((HOME/".claude/settings.json").read_text()), \
+    "settings env left behind on inactive proxy"
 
 # macOS: ocx registers a launchd agent, not a systemd unit, and the systemd
 # half of the export has no equivalent there.
@@ -513,7 +522,7 @@ def run_mac(argv, **kw):
 g["subprocess"] = type("P", (), {"run": staticmethod(run_mac), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_proxy"]([]) == 0, "macOS proxy check did not see the launchd agent"
 assert "export ANTHROPIC_BASE_URL=http://127.0.0.1:10101" in (HOME/".zshenv").read_text()
-assert not envd.exists(), "macOS wrote a systemd environment.d drop-in"
+assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 
 # A loaded-but-stopped agent carries "-" where the pid would be.
 def run_mac_stopped(argv, **kw):
@@ -523,6 +532,18 @@ def run_mac_stopped(argv, **kw):
 g["subprocess"] = type("P", (), {"run": staticmethod(run_mac_stopped), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_proxy"]([]) == 1, "a stopped launchd agent was treated as running"
 g["_is_macos"] = lambda: False
+
+# The scheduled refresh never calls cmd_proxy, so it seeds the export itself
+# whenever the service is up, and leaves it alone when it is not.
+for name in ("cmd_settings", "cmd_mcp", "cmd_update"):
+    g[name] = lambda names: 0
+g["_proxy_stop_budget"] = lambda: None
+g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+assert ns["cmd_refresh"]([]) == 0
+assert "env" not in json.loads((HOME/".claude/settings.json").read_text())
+g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+assert ns["cmd_refresh"]([]) == 0
+assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 print("proxy ok")
 PY
 
