@@ -587,7 +587,10 @@ def cmd_settings(names):
         eprint("  cannot read the lost.plus service registry from Common Auth: %s; "
                "MCP permission grants not rendered" % exc)
         servers, rc = [], 1
-    _write_claude_settings(servers)
+    # harnesses proxy also rewrites this file (its env block) under the same
+    # lock; without it an overlapping pass could drop the other's change.
+    with _consumer_sync_lock():
+        _write_claude_settings(servers)
     _write_t3_settings()
     print("settings applied. t3 custom models appear in the picker; routing them")
     print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
