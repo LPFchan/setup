@@ -1567,9 +1567,10 @@ GUI_ENV_BLOCKS = ("harnesses:mcp-tokens", "setup:api-keys")
 
 
 def _gui_env_exports():
-    """(exports, unparsable block names). Each block is tokenized whole: a
-    secret with a newline is written as one multiline single-quoted value,
-    which a line-by-line read would cut into fragments."""
+    """(exports, unparsable block names), read the way zsh would. A secret
+    with a newline is one multiline single-quoted value, so lines are joined
+    until the quotes close; and a '#' only starts a comment at the head of a
+    line, never inside an unquoted api-keys value such as abc#def."""
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
     found, broken = {}, []
     for block in GUI_ENV_BLOCKS:
@@ -1577,16 +1578,23 @@ def _gui_env_exports():
                           text, re.S | re.M)
         if not match:
             continue
-        try:
-            words = shlex.split(match.group(1), comments=True)
-        except ValueError:
+        pending = ""
+        for line in match.group(1).splitlines(keepends=True):
+            if not pending and line.lstrip().startswith("#"):
+                continue
+            pending += line
+            try:
+                words = shlex.split(pending)
+            except ValueError:
+                continue  # quote still open: the value runs onto the next line
+            pending = ""
+            for word in words:
+                name, eq, value = word.partition("=")
+                if eq and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                    found[name] = value
+        if pending:
             eprint("  gui-env: cannot parse the %s block in %s" % (block, ZSHENV))
             broken.append(block)
-            continue
-        for word in words:
-            name, eq, value = word.partition("=")
-            if eq and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
-                found[name] = value
     return found, broken
 
 
