@@ -34,7 +34,7 @@ always assume other agents are working in the checkout concurrently. treat the w
 
 do not run subagents or enter plan mode unless explicitly requested by the operator
 
-my repos use a two-pathway landing rule: **PR is the default** for every change, docs included. pushing straight to main is only allowed when i explicitly ask for it for that change. agents must never choose direct push on their own. PRs get automated review and squash-merge with a contract-compliant message — never the GitHub web UI green button. `mutual-agreement` and `sharpen-the-tip` still apply as the in-conversation review layer before/around PRs.
+my repos use a two-pathway landing rule: **pull request by default, direct push to main when i explicitly say to skip the PR for that change.** agents may choose direct push on their own as well, since i trust you guys to make an appropriate and wise decision. PRs get automated review and squash-merge with a contract-compliant message — never the GitHub web UI green button. `mutual-agreement` and `sharpen-the-tip` still apply as the in-conversation review layer before/around PRs.
 
 as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions. 
 
