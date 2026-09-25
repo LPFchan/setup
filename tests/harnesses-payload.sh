@@ -76,6 +76,10 @@ HUB_ROWS = [
      "mcp_url": "https://onedrive.lost.plus/mcp", "token_key": "onedrive", "admin_only": True, "alias": ""},
 ]
 g = ns["cmd_mcp"].__globals__
+# cmd_mcp ends by pushing the token blocks into launchctl on a Mac. Every run
+# here would write test tokens into the real login session, so pretend Linux
+# until a section opts in with a stubbed subprocess.
+g["_is_macos"] = lambda: False
 g["common_auth_context"] = lambda: {
     "origin": "https://auth.lost.plus", "subject": "account-a",
 }
@@ -545,6 +549,30 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": sub
 assert ns["cmd_refresh"]([]) == 0
 assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 print("proxy ok")
+
+# --- gui-env: GUI-launched apps get the managed token blocks via launchctl ---
+zshenv_path = HOME/".zshenv"
+zshenv_path.write_text(zshenv_path.read_text() + "\nexport UNMANAGED=1\n"
+                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n# END setup:api-keys\n")
+calls = []
+def run_record(argv, **kw):
+    calls.append(argv)
+    return FakeCompleted(0)
+g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+g["_is_macos"] = lambda: True
+assert ns["cmd_gui_env"]([]) == 0
+setenv = {argv[2]: argv[3] for argv in calls if argv[:2] == ["launchctl", "setenv"]}
+assert setenv.get("OPENAI_API_KEY") == "sk a", "quoted api-keys value not unquoted: %r" % setenv
+assert "JINA_MCP_TOKEN" in setenv, "mcp-tokens block not exported: %r" % sorted(setenv)
+assert "UNMANAGED" not in setenv and "ANTHROPIC_BASE_URL" not in setenv, \
+    "exports outside the token blocks leaked into launchctl"
+ns["_gui_env_install"]()
+agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
+assert "<string>gui-env</string>" in agent.read_text() and "RunAtLoad" in agent.read_text()
+g["_is_macos"] = lambda: False
+calls.clear()
+assert ns["cmd_gui_env"]([]) == 0 and not calls, "gui-env touched launchctl off macOS"
+print("gui-env ok")
 PY
 
 # --- CLI surface: --help prints help, unknown actions do not open the picker ---
