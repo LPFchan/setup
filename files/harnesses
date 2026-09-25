@@ -1567,24 +1567,27 @@ GUI_ENV_BLOCKS = ("harnesses:mcp-tokens", "setup:api-keys")
 
 
 def _gui_env_exports():
+    """(exports, unparsable block names). Each block is tokenized whole: a
+    secret with a newline is written as one multiline single-quoted value,
+    which a line-by-line read would cut into fragments."""
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
-    found = {}
+    found, broken = {}, []
     for block in GUI_ENV_BLOCKS:
         match = re.search(r"^# BEGIN %s\n(.*?)^# END %s$" % (re.escape(block), re.escape(block)),
                           text, re.S | re.M)
         if not match:
             continue
-        for line in match.group(1).splitlines():
-            export = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line.strip())
-            if not export:
-                continue
-            try:
-                words = shlex.split(export.group(2))
-            except ValueError:
-                eprint("  gui-env: cannot parse %s in %s; skipped" % (export.group(1), ZSHENV))
-                continue
-            found[export.group(1)] = words[0] if words else ""
-    return found
+        try:
+            words = shlex.split(match.group(1), comments=True)
+        except ValueError:
+            eprint("  gui-env: cannot parse the %s block in %s" % (block, ZSHENV))
+            broken.append(block)
+            continue
+        for word in words:
+            name, eq, value = word.partition("=")
+            if eq and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                found[name] = value
+    return found, broken
 
 
 def _gui_env_install():
@@ -1623,7 +1626,7 @@ def cmd_gui_env(names):
     if not _is_macos():
         print("gui-env: only needed on macOS; nothing to do")
         return 0
-    exports = _gui_env_exports()
+    exports, broken = _gui_env_exports()
     failed = [name for name, value in sorted(exports.items())
               if subprocess.run(["launchctl", "setenv", name, value],
                                 capture_output=True).returncode != 0]
@@ -1631,7 +1634,7 @@ def cmd_gui_env(names):
         eprint("  launchctl setenv %s failed" % name)
     print("  set %d variable(s) for GUI-launched apps; running apps keep their old "
           "environment until relaunched" % (len(exports) - len(failed)))
-    return 1 if failed else 0
+    return 1 if failed or broken else 0
 
 
 ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule","gui-env"]

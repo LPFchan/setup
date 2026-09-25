@@ -553,7 +553,8 @@ print("proxy ok")
 # --- gui-env: GUI-launched apps get the managed token blocks via launchctl ---
 zshenv_path = HOME/".zshenv"
 zshenv_path.write_text(zshenv_path.read_text() + "\nexport UNMANAGED=1\n"
-                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n# END setup:api-keys\n")
+                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n"
+                       "export MULTI='line one\nline two'\n# END setup:api-keys\n")
 calls = []
 def run_record(argv, **kw):
     calls.append(argv)
@@ -563,6 +564,7 @@ g["_is_macos"] = lambda: True
 assert ns["cmd_gui_env"]([]) == 0
 setenv = {argv[2]: argv[3] for argv in calls if argv[:2] == ["launchctl", "setenv"]}
 assert setenv.get("OPENAI_API_KEY") == "sk a", "quoted api-keys value not unquoted: %r" % setenv
+assert setenv.get("MULTI") == "line one\nline two", "multiline value cut into fragments"
 assert "JINA_MCP_TOKEN" in setenv, "mcp-tokens block not exported: %r" % sorted(setenv)
 assert "UNMANAGED" not in setenv and "ANTHROPIC_BASE_URL" not in setenv, \
     "exports outside the token blocks leaked into launchctl"
@@ -578,6 +580,10 @@ g["cmd_gui_env"] = lambda names: 1
 assert ns["cmd_mcp"]([]) == 1, "harnesses mcp hid a gui-env failure"
 g["cmd_gui_env"] = real_gui_env
 g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+good_zshenv = zshenv_path.read_text()
+zshenv_path.write_text(good_zshenv.replace("export OPENAI_API_KEY='sk a'", "export OPENAI_API_KEY='sk a"))
+assert ns["cmd_gui_env"]([]) == 1, "an unparsable block reported success"
+zshenv_path.write_text(good_zshenv)
 g["_is_macos"] = lambda: False
 calls.clear()
 assert ns["cmd_gui_env"]([]) == 0 and not calls, "gui-env touched launchctl off macOS"
