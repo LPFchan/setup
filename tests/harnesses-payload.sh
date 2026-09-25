@@ -532,6 +532,18 @@ def run_mac_stopped(argv, **kw):
 g["subprocess"] = type("P", (), {"run": staticmethod(run_mac_stopped), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_proxy"]([]) == 1, "a stopped launchd agent was treated as running"
 g["_is_macos"] = lambda: False
+
+# The scheduled refresh never calls cmd_proxy, so it seeds the export itself
+# whenever the service is up, and leaves it alone when it is not.
+for name in ("cmd_settings", "cmd_mcp", "cmd_update"):
+    g[name] = lambda names: 0
+g["_proxy_stop_budget"] = lambda: None
+g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+assert ns["cmd_refresh"]([]) == 0
+assert "env" not in json.loads((HOME/".claude/settings.json").read_text())
+g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+assert ns["cmd_refresh"]([]) == 0
+assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 print("proxy ok")
 PY
 

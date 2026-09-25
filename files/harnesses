@@ -1526,6 +1526,12 @@ def cmd_refresh(names):
         except Exception as exc:
             eprint("  %s failed: %s" % (name, exc))
             failed.append(name)
+    # Keep the base-url export current on the scheduled path too, so a machine
+    # nobody ran 'harnesses proxy' on still routes GUI-launched claude through
+    # ocx. Only ever written here, never removed: a proxy caught mid-restart
+    # must not strip the route. 'harnesses proxy' owns removal.
+    if _proxy_service_active():
+        _write_base_url_export()
     if failed:
         eprint("harnesses refresh: %s failed" % ", ".join(failed))
         return 1
