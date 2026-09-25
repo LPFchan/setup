@@ -1267,23 +1267,28 @@ def _write_base_url_export_locked():
     ZSHENV.write_text(text)
     print("  exported ANTHROPIC_BASE_URL=http://127.0.0.1:%d in %s" % (port, ZSHENV))
 
-    # .zshenv only reaches shells. Systemd user services never read it, so a
-    # service-spawned claude (T3 Code's claudeAgent provider is one) would
-    # still talk to api.anthropic.com and reject every fleet model. The
-    # systemd user manager reads environment.d at startup; set-environment
-    # covers the manager that is already running.
-    url = "http://127.0.0.1:%d" % port
+    # .zshenv only reaches shells. A claude spawned by a GUI app or a service
+    # (T3 Code's claudeAgent is one) never reads it, so it would still talk to
+    # api.anthropic.com and reject every fleet model. Claude Code applies the
+    # env block of its own settings file on every launch, however it started,
+    # and that survives a reboot where launchctl setenv does not.
+    settings = load_json(CLAUDE_SETTINGS)
+    settings.setdefault("env", {})["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:%d" % port
+    save_json_atomic(CLAUDE_SETTINGS, settings)
+    print("  set env.ANTHROPIC_BASE_URL in %s" % CLAUDE_SETTINGS)
+    _remove_legacy_service_env()
+
+
+def _remove_legacy_service_env():
+    """Undo the launchctl / environment.d exports that settings.json replaced."""
     if _is_macos():
-        subprocess.run(["launchctl", "setenv", "ANTHROPIC_BASE_URL", url], check=False)
-        print("  set ANTHROPIC_BASE_URL for GUI-launched apps (launchctl setenv)")
-        print("  note: launchctl setenv does not survive a reboot; shells use .zshenv")
+        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
         return
-    ENVIRONMENT_D.parent.mkdir(parents=True, exist_ok=True)
-    ENVIRONMENT_D.write_text("ANTHROPIC_BASE_URL=%s\n" % url)
-    print("  exported ANTHROPIC_BASE_URL to systemd user units via %s" % ENVIRONMENT_D)
-    subprocess.run(["systemctl", "--user", "set-environment",
-                    "ANTHROPIC_BASE_URL=%s" % url], check=False)
-    print("  restart a service to pick it up, e.g. systemctl --user restart t3code.service")
+    if ENVIRONMENT_D.exists():
+        ENVIRONMENT_D.unlink()
+        print("  removed %s" % ENVIRONMENT_D)
+    subprocess.run(["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
+                   check=False)
 
 
 def _remove_base_url_export():
@@ -1293,14 +1298,15 @@ def _remove_base_url_export():
 
 def _remove_base_url_export_locked():
     begin, end = "# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url"
-    if _is_macos():
-        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
-    else:
-        if ENVIRONMENT_D.exists():
-            ENVIRONMENT_D.unlink()
-            print("  removed %s" % ENVIRONMENT_D)
-        subprocess.run(["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
-                       check=False)
+    _remove_legacy_service_env()
+    settings = load_json(CLAUDE_SETTINGS)
+    env = settings.get("env")
+    if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+        del env["ANTHROPIC_BASE_URL"]
+        if not env:
+            del settings["env"]
+        save_json_atomic(CLAUDE_SETTINGS, settings)
+        print("  removed env.ANTHROPIC_BASE_URL from %s" % CLAUDE_SETTINGS)
     if not ZSHENV.exists():
         return
     text = ZSHENV.read_text()
