@@ -84,6 +84,8 @@ Reached through the `grimoire` Cloudflare tunnel. Gateway config:
 | Hostname | What |
 | --- | --- |
 | `setup.lost.plus` | GitHub Pages for `LPFchan/setup` |
+| `parakeet.lost.plus` | GitHub Pages for `LPFchan/parakeet` (`docs/`): homepage + Sparkle appcast; DNS-only CNAME to `lpfchan.github.io` |
+| `threek.lost.plus` | GitHub Pages for `LPFchan/Threek` (`docs/`): homepage + Sparkle appcast; DNS-only CNAME to `lpfchan.github.io` |
 | `homebridge.lost.plus`, `unifi.lost.plus`, `*.lost.plus` (wildcard `A 10.0.0.50`) | LAN-only, bingus |
 | `oci.lost.plus`, `grimoire.lost.plus`, `mangchi.lost.plus`, `mac.lost.plus` | machine addresses, see `fleet` |
 
