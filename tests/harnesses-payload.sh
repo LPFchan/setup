@@ -569,6 +569,12 @@ grep -q "capture_output" <(sed -n '/^def menu/,/^def dispatch/p' "$ROOT/files/ha
 echo "cli surface ok"
 
 # --- schedule: the module owns its own update cadence ------------------
+# The timer half is systemd-only. On a Mac 'harnesses schedule' takes the
+# launchd branch, which bootstraps the scratch plist into the real login
+# session and replaced the operator's own harnesses-update agent.
+if [[ "$(uname -s)" == Darwin ]]; then
+    echo "schedule skipped (systemd-only; would touch the real launchd session)"
+else
 sched_tmp="$TMP/sched"
 mkdir -p "$sched_tmp/bin" "$sched_tmp/units"
 cat > "$sched_tmp/bin/systemctl" <<'STUB'
@@ -607,3 +613,4 @@ SCHEDULE_USER_DIR="$sched_tmp/units" PATH="$sched_tmp/bin:$PATH" \
     || { echo "FAIL: harnesses timer left behind after disable" >&2; exit 1; }
 
 echo "schedule ok"
+fi
