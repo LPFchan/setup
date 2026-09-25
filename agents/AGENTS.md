@@ -34,7 +34,7 @@ always assume other agents are working in the checkout concurrently. treat the w
 
 do not run subagents or enter plan mode unless explicitly requested by the operator
 
-since i don't have a SWE background and generally my software has an audience of (at most) five to ten, i tend to just rawdog pushing to main over making ephemeral feature branches, and have a new diff reviewed by a subagent over filing and reviewing a formal pull request. hence that's why i've authored skills such as `mutual-agreement` or `sharpen-the-tip` for this type of workflow. note that this only applies to repos of my own, not when i'm contributing to other open source projects.
+my repos use a two-pathway landing rule: **pull request by default, direct push to main when i explicitly say to skip the PR for that change.** agents may choose direct push on their own as well, since i trust you guys to make an appropriate and wise decision. PRs get automated review and squash-merge with a contract-compliant message — never the GitHub web UI green button. `mutual-agreement` and `sharpen-the-tip` still apply as the in-conversation review layer before/around PRs.
 
 as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions. 
 
