@@ -26,8 +26,11 @@ Shepherd a PR through automated review so the operator doesn't copy-paste bot fe
 
 Bots reviewed the latest head, no new actionable comments, CI green. Then:
 
-1. Squash-merge with a message following the repo's commit conventions
-   (`gh pr merge <pr> --squash --subject ... --body ...`), not the web UI button.
+1. Squash-merge, never the web UI button. repo-template repos: `sh scripts/merge-pr.sh
+   --pr <n> --subject ... --changes-file ...` (generates + validates the contract message,
+   pins to the reviewed head SHA, deletes the branch). Otherwise:
+   `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>` with a message in
+   the repo's commit style.
 2. Stop the loop.
 3. Report: rounds run, fixed, skipped + why, follow-ups deferred as scope creep.
 
