@@ -76,6 +76,10 @@ HUB_ROWS = [
      "mcp_url": "https://onedrive.lost.plus/mcp", "token_key": "onedrive", "admin_only": True, "alias": ""},
 ]
 g = ns["cmd_mcp"].__globals__
+# cmd_mcp ends by pushing the token blocks into launchctl on a Mac. Every run
+# here would write test tokens into the real login session, so pretend Linux
+# until a section opts in with a stubbed subprocess.
+g["_is_macos"] = lambda: False
 g["common_auth_context"] = lambda: {
     "origin": "https://auth.lost.plus", "subject": "account-a",
 }
@@ -545,6 +549,47 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": sub
 assert ns["cmd_refresh"]([]) == 0
 assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 print("proxy ok")
+
+# --- gui-env: GUI-launched apps get the managed token blocks via launchctl ---
+zshenv_path = HOME/".zshenv"
+zshenv_path.write_text(zshenv_path.read_text() + "\nexport UNMANAGED=1\n"
+                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n"
+                       "export MULTI='line one\n# not a comment'\nexport HASHED=abc#def\n"
+                       "# END setup:api-keys\n")
+calls = []
+def run_record(argv, **kw):
+    calls.append(argv)
+    return FakeCompleted(0)
+g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+g["_is_macos"] = lambda: True
+assert ns["cmd_gui_env"]([]) == 0
+setenv = {argv[2]: argv[3] for argv in calls if argv[:2] == ["launchctl", "setenv"]}
+assert setenv.get("OPENAI_API_KEY") == "sk a", "quoted api-keys value not unquoted: %r" % setenv
+assert setenv.get("MULTI") == "line one\n# not a comment", "multiline value cut into fragments"
+assert setenv.get("HASHED") == "abc#def", "a '#' inside an unquoted value was read as a comment"
+assert "JINA_MCP_TOKEN" in setenv, "mcp-tokens block not exported: %r" % sorted(setenv)
+assert "UNMANAGED" not in setenv and "ANTHROPIC_BASE_URL" not in setenv, \
+    "exports outside the token blocks leaked into launchctl"
+ns["_gui_env_install"]()
+agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
+assert "<string>gui-env</string>" in agent.read_text() and "RunAtLoad" in agent.read_text()
+def run_setenv_fails(argv, **kw):
+    return FakeCompleted(1 if argv[:2] == ["launchctl", "setenv"] else 0)
+g["subprocess"] = type("P", (), {"run": staticmethod(run_setenv_fails), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+assert ns["cmd_gui_env"]([]) == 1, "a failed launchctl setenv reported success"
+real_gui_env = g["cmd_gui_env"]
+g["cmd_gui_env"] = lambda names: 1
+assert ns["cmd_mcp"]([]) == 1, "harnesses mcp hid a gui-env failure"
+g["cmd_gui_env"] = real_gui_env
+g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+good_zshenv = zshenv_path.read_text()
+zshenv_path.write_text(good_zshenv.replace("# END setup:api-keys", "export BROKEN='never closed\n# END setup:api-keys"))
+assert ns["cmd_gui_env"]([]) == 1, "an unparsable block reported success"
+zshenv_path.write_text(good_zshenv)
+g["_is_macos"] = lambda: False
+calls.clear()
+assert ns["cmd_gui_env"]([]) == 0 and not calls, "gui-env touched launchctl off macOS"
+print("gui-env ok")
 PY
 
 # --- CLI surface: --help prints help, unknown actions do not open the picker ---
@@ -569,6 +614,12 @@ grep -q "capture_output" <(sed -n '/^def menu/,/^def dispatch/p' "$ROOT/files/ha
 echo "cli surface ok"
 
 # --- schedule: the module owns its own update cadence ------------------
+# The timer half is systemd-only. On a Mac 'harnesses schedule' takes the
+# launchd branch, which bootstraps the scratch plist into the real login
+# session and replaced the operator's own harnesses-update agent.
+if [[ "$(uname -s)" == Darwin ]]; then
+    echo "schedule skipped (systemd-only; would touch the real launchd session)"
+else
 sched_tmp="$TMP/sched"
 mkdir -p "$sched_tmp/bin" "$sched_tmp/units"
 cat > "$sched_tmp/bin/systemctl" <<'STUB'
@@ -607,3 +658,4 @@ SCHEDULE_USER_DIR="$sched_tmp/units" PATH="$sched_tmp/bin:$PATH" \
     || { echo "FAIL: harnesses timer left behind after disable" >&2; exit 1; }
 
 echo "schedule ok"
+fi

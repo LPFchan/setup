@@ -101,6 +101,11 @@ uninstall() {
     if [[ -x "$BIN" ]]; then
         python3 "$BIN" schedule disable >/dev/null 2>&1 || true
     fi
+    # The macOS login agent that replays the .zshenv token blocks runs $BIN too.
+    if [[ "$(uname -s)" == Darwin ]]; then
+        launchctl bootout "gui/$(id -u)/com.lost.plus.harnesses-gui-env" >/dev/null 2>&1 || true
+        rm -f "$HOME/Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
+    fi
     rm -f "$BIN" "$MANIFEST_TARGET"
     remove_script_state "$MODULE"
     echo "harnesses: uninstalled launcher"

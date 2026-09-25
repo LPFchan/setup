@@ -780,6 +780,11 @@ def _cmd_mcp_once(names):
     _write_codex_mcp([s for s in servers if "codex" in mcp_surfaces(s)])
     _write_hermes_mcp([s for s in servers if "hermes" in mcp_surfaces(s)],
                       exports, authoritative_missing)
+    if _is_macos():
+        _gui_env_install()
+        # A token that never reached launchctl is an app that still gets 401;
+        # fail the pass so the refresh reports it instead of looking green.
+        return cmd_gui_env([])
     return 0
 
 def _claude_mcp_registered(name):
@@ -1549,8 +1554,98 @@ def cmd_schedule(names):
     eprint("harnesses: schedule takes enable|disable|status")
     return 2
 
+# --- gui env (macOS) --------------------------------------------------
+# Apps opened from the Dock or Finder never read .zshenv, and T3 Code copies
+# only a fixed list (PATH, SSH_AUTH_SOCK, the Homebrew vars) out of a login
+# shell. A claude it spawned expanded ${JINA_MCP_TOKEN} in its MCP headers to
+# nothing, so every token-authenticated server answered 401. launchctl setenv
+# reaches apps launched afterwards but is wiped on reboot, so a login agent
+# replays the managed token blocks at every login. It reads the file only: no
+# network, nothing that can fail before the first app opens.
+GUI_ENV_PLIST_NAME = "com.lost.plus.harnesses-gui-env"
+GUI_ENV_BLOCKS = ("harnesses:mcp-tokens", "setup:api-keys")
 
-ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule"]
+
+def _gui_env_exports():
+    """(exports, unparsable block names), read the way zsh would. A secret
+    with a newline is one multiline single-quoted value, so lines are joined
+    until the quotes close; and a '#' only starts a comment at the head of a
+    line, never inside an unquoted api-keys value such as abc#def."""
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    found, broken = {}, []
+    for block in GUI_ENV_BLOCKS:
+        match = re.search(r"^# BEGIN %s\n(.*?)^# END %s$" % (re.escape(block), re.escape(block)),
+                          text, re.S | re.M)
+        if not match:
+            continue
+        pending = ""
+        for line in match.group(1).splitlines(keepends=True):
+            if not pending and line.lstrip().startswith("#"):
+                continue
+            pending += line
+            try:
+                words = shlex.split(pending)
+            except ValueError:
+                continue  # quote still open: the value runs onto the next line
+            pending = ""
+            for word in words:
+                name, eq, value = word.partition("=")
+                if eq and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                    found[name] = value
+        if pending:
+            eprint("  gui-env: cannot parse the %s block in %s" % (block, ZSHENV))
+            broken.append(block)
+    return found, broken
+
+
+def _gui_env_install():
+    """Write the login agent. launchd loads everything in LaunchAgents at
+    login, so there is nothing to bootstrap now: cmd_mcp sets the current
+    session itself right after."""
+    path = LAUNCHD_DIR/("%s.plist" % GUI_ENV_PLIST_NAME)
+    plist = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>%s</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+        <string>gui-env</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/harnesses-gui-env.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/harnesses-gui-env.log</string>
+</dict>
+</plist>
+""" % (GUI_ENV_PLIST_NAME, _self_path())
+    if path.exists() and path.read_text() == plist:
+        return
+    LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(plist)
+    print("  installed login agent %s" % path)
+
+
+def cmd_gui_env(names):
+    if not _is_macos():
+        print("gui-env: only needed on macOS; nothing to do")
+        return 0
+    exports, broken = _gui_env_exports()
+    failed = [name for name, value in sorted(exports.items())
+              if subprocess.run(["launchctl", "setenv", name, value],
+                                capture_output=True).returncode != 0]
+    for name in failed:
+        eprint("  launchctl setenv %s failed" % name)
+    print("  set %d variable(s) for GUI-launched apps; running apps keep their old "
+          "environment until relaunched" % (len(exports) - len(failed)))
+    return 1 if failed or broken else 0
+
+
+ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule","gui-env"]
 
 USAGE = """Usage: harnesses [%s] [name...] [--help]
 
@@ -1564,6 +1659,8 @@ Install, update, and configure the fleet's AI coding harnesses.
   refresh             The scheduled pass: proxy apply, settings, mcp, update.
   schedule [enable|disable|status]
                       Daily 11:00 timer that runs 'harnesses refresh'.
+  gui-env             macOS: copy the .zshenv token blocks into launchctl so
+                      GUI-launched apps see them (also runs at every login).
   -h, --help          Show this help.
 
 With no arguments (and a terminal + fzf) it opens the action menu.
@@ -1574,7 +1671,7 @@ Every action takes optional names to narrow the run: harness names, except
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
+    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; gui-env) echo macOS: expose the .zshenv token blocks to GUI-launched apps;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
@@ -1593,6 +1690,7 @@ def dispatch(action, names):
     if action=="mcp": return cmd_mcp(names)
     if action=="proxy": return cmd_proxy(names)
     if action=="schedule": return cmd_schedule(names)
+    if action=="gui-env": return cmd_gui_env(names)
     eprint("harnesses: unknown action %r" % action)
     eprint(USAGE)
     return 2
