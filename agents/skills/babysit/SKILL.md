@@ -17,14 +17,19 @@ Shepherd a PR through automated review so the operator doesn't copy-paste bot fe
 2. **Triage** each unresolved bot comment on the latest round:
    - real bug / valid point → fix.
    - nitpick, false positive, out of scope → skip; reply on the thread with a one-line reason and resolve it.
+   - **Resist scope creep.** Fix only what the PR set out to do. Refactors, new features,
+     or "while you're here" suggestions → skip with reason; note them as follow-ups in the final report.
 3. **Fix** all accepted items in one commit (repo's commit conventions), push to the PR branch.
 4. **Repeat** from 1.
 
 ## Done when
 
-Bots reviewed the latest head, no new actionable comments, CI green. Then stop the
-loop and report: rounds run, what was fixed, what was skipped and why.
-Merge only if the operator asked to.
+Bots reviewed the latest head, no new actionable comments, CI green. Then:
+
+1. Squash-merge with a message following the repo's commit conventions
+   (`gh pr merge <pr> --squash --subject ... --body ...`), not the web UI button.
+2. Stop the loop.
+3. Report: rounds run, fixed, skipped + why, follow-ups deferred as scope creep.
 
 ## Scheduling
 
