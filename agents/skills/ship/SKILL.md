@@ -15,6 +15,12 @@ Ask the operator only for the icon direction and the first version number.
 - Icon drawn by hand in a script (no SF Symbols in app icons).
 - UI in en + ar bg cs da de es et fi fr hi hr hu it ja ko nb nl pl pt-BR
   pt-PT ro ru sk sv tr uk vi zh-Hans, via string catalogs.
+- First-launch onboarding window (`onboarded` default;
+  `--onboarding` re-shows it upon reset/logout): welcome screen (optional: with the real UI running as a demo)
+  one step per permission (say why, raise the system prompt, then open
+  System Settings; poll and advance once granted), then where the app lives
+  plus an "Open at login" switch, applied only if finished. No bare
+  permission prompt at launch while it's up.
 - Version = the `v*` tag; build number = commit count (Sparkle compares it).
 - Sparkle key per app: `generate_keys --account <app>` (without `--account`
   it reuses the shared default key).
