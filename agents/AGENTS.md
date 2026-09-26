@@ -38,7 +38,7 @@ my repos use a two-pathway landing rule: **pull request by default, direct push 
 
 as someone with AuDHD, i WILL forget to commit stuff when left on my own, ending up with a messy tree. so please feel free to commit and push autonomously in reasonable slices using repo's existing commit conventions. 
 
-same goes with deploying to prod; assume that i would want the changes applied to prod for each commit+push unless explicitly saying otherwise. (major exception: `setup update` - i prefer `setup schedule` doing its thing in a daily cadence over manually pushing setup repo changes)
+same goes with deploying to prod; assume that i would want the changes applied to prod for each commit+push unless explicitly saying otherwise. (major exceptions: `setup update` - i prefer `setup schedule` doing its thing in a daily cadence over manually pushing setup repo changes - and versioned github releases; always ask me before cutting a release tag, never publish one autonomously)
 
 same goes with maintaining documentation on an ongoing basis; you're encouraged to update the docs and repo records on your own. many of the repos that you touch will have LPFchan/repo-template adopted. when dealing with commits, DEC, RSH, IBX etc, refer to repo's `records/` and `skills/`.
 
