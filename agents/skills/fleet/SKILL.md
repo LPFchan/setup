@@ -18,9 +18,10 @@ LPFchan/setup (`setup`, `ai-menu`, `resume`, `backup`, …) with config synced.
 All machines except `bingus` auto-launch tmux and ai-menu by default. Press Esc
 to dismiss ai-menu.
 
-When accessing a remote machine, use the `main` tmux session. Do not open a new
+When using the terminal in general, use the `main` tmux session. Do not open a new
 separate tmux session. This allows the operator to see and interact with the
-terminal, such as entering an admin password manually.
+terminal, such as entering an admin password manually. Do not forget to close
+the tmux tab when the job is done.
 
 When requested to deploy a new web service, use cloudflare credentials from the `passage` MCP (`infra/CF_MASTER_TOKEN`) to edit DNS records and Worker routes.
 
