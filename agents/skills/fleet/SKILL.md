@@ -43,6 +43,7 @@ services that remain on that machine.
 ## yeowoolair — daily-driver MacBook Air
 - yeowool-air.tailaa113.ts.net (no static IP) · user yeowool
 - active repos in ~/Documents/
+- this machine uses Ghostty instead of Apple Terminal
 
 ## mangchi — NVIDIA Jetson AGX Thor (T5000)
 - mangchi.lost.plus (10.0.0.53) · user yeowool
