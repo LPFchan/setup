@@ -42,7 +42,7 @@
         "store": "opencode",
         "key": "commandcode"
       },
-      "enabled": true
+      "enabled": false
     },
     "deepseek": {
       "provider_type": "OpenAICompatible",
@@ -54,7 +54,7 @@
         "store": "opencode",
         "key": "deepseek"
       },
-      "enabled": true,
+      "enabled": false,
       "models_dev": "deepseek"
     },
     "kimicode": {
@@ -110,7 +110,7 @@
         "store": "opencode",
         "key": "openrouter"
       },
-      "enabled": true
+      "enabled": false
     },
     "opencode-go": {
       "provider_type": "OpenAICompatible",

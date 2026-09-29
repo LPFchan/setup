@@ -22,7 +22,8 @@ registry = namespace["load_registry"](Path(registry_path))
 state_path = Path(globals_["PROVIDER_STATE"])
 
 # Missing state preserves registry defaults during bootstrap.
-assert "commandcode" in namespace["enabled_providers"](registry)
+assert "kimicode" in namespace["enabled_providers"](registry)
+assert "commandcode" not in namespace["enabled_providers"](registry)
 
 state_path.write_text(json.dumps({
     "version": 1,

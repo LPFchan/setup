@@ -143,7 +143,7 @@ assert openrouter == {
     'api_format': 'openai',
     'npm': '@ai-sdk/openai-compatible',
     'auth': {'type': 'api-key', 'store': 'opencode', 'key': 'openrouter'},
-    'enabled': True,
+    'enabled': False,
 }
 # opencode-zen is retired: gone from providers, named in retired_providers so
 # every machine sweeps it, and its shared credential left with live opencode-go.
@@ -430,7 +430,7 @@ assert openrouter_server == {
     'api_format': 'openai',
     'npm': '@ai-sdk/openai-compatible',
     'auth': {'type': 'auth_json', 'provider': 'openrouter'},
-    'registry_enabled': True,
+    'registry_enabled': False,
     'models': [],
     'model_exclude_prefixes': [],
     'model_allow_suffixes': [],
