@@ -53,10 +53,25 @@ EOF
     chmod +x "$prefix/bin/node"
 }
 
+# A system-wide copy of the same harness, the kind a package manager drops in
+# /usr/local/bin. The scheduled run inherits a PATH that carries it and none of
+# the operator's own directories, and must still update the operator's copy.
+make_system_codex() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then printf 'codex-cli 0.100.0\n'; exit 0; fi
+printf 'the system-wide copy was updated\n' >> "$RECORD"
+exit 0
+EOF
+    chmod +x "$1"
+}
+
 make_codex "$IN_USE" 0.159.0
 make_codex "$STALE" 0.160.0
 ln -sf "$IN_USE/bin/codex" "$HOME/.local/bin/codex"
 make_npm "$DECOY_NPM"
+make_system_codex "$TMP/usrlocal/codex"
 
 cat > "$TMP/probe.py" <<'PY'
 import io, os, runpy, sys
@@ -110,14 +125,15 @@ if seen != [os.path.realpath(in_use/"bin/npm")]:
 print("ok: [%s] update acts on the harness the operator runs" % scenario)
 PY
 
-# A login shell: ~/.local/bin leads, and one node install is active. The
-# unused newer install must not displace either of them.
-PATH="$HOME/.local/bin:$IN_USE/bin:/usr/bin:/bin" \
+# A login shell: ~/.local/bin leads, and one node install is active. Neither
+# the unused newer install nor the system-wide copy may displace them.
+PATH="$HOME/.local/bin:$IN_USE/bin:$TMP/usrlocal:/usr/bin:/bin" \
     python3 "$TMP/probe.py" "$ROOT/files/harnesses" "login shell"
 
 # The scheduled run: systemd hands us a PATH with none of the user's own
-# directories on it, and a system npm that would install as root. _heal_path
-# has to add the user's directories back, and the updater still has to end up
-# on the npm of the install it is updating.
-PATH="$TMP/sysbin:/usr/bin:/bin" \
+# directories on it, a system-wide codex, and a system npm that would install
+# as root. _heal_path has to add the user's directories back ahead of all of
+# that, and the updater still has to end up on the npm of the install it is
+# updating.
+PATH="$TMP/sysbin:$TMP/usrlocal:/usr/bin:/bin" \
     python3 "$TMP/probe.py" "$ROOT/files/harnesses" "login-less PATH"
