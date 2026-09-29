@@ -28,8 +28,8 @@ export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
 export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
 export OPENCODEX_PROVIDERS_BIN="$TEST_TMP/providers"
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
-# The test drives commandcode and openrouter; keep them enabled here whatever the live registry says.
-jq '.providers.commandcode.enabled = true | .providers.openrouter.enabled = true' "$ROOT/files/provider-registry.json" > "$OPENCODEX_REGISTRY"
+# The test drives commandcode, openrouter and kimicode; keep them enabled here whatever the live registry says.
+jq '.providers.commandcode.enabled = true | .providers.openrouter.enabled = true | .providers.kimicode.enabled = true' "$ROOT/files/provider-registry.json" > "$OPENCODEX_REGISTRY"
 printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
 # The two commandcode models the assertions below launch and compare against.
 # Nothing in the registry ranks a provider's models, so the test names its own.

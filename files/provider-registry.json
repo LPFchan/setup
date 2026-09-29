@@ -67,7 +67,7 @@
         "store": "opencode",
         "key": "kimicode"
       },
-      "enabled": true
+      "enabled": false
     },
     "meta": {
       "provider_type": "OpenAICompatible",
@@ -79,7 +79,7 @@
         "store": "opencode",
         "key": "meta"
       },
-      "enabled": true,
+      "enabled": false,
       "models_dev": "meta"
     },
     "cloudflare": {
