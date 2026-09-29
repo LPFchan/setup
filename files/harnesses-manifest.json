@@ -148,11 +148,12 @@
       ]
     },
     "t3": {
-      "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy. A slug must be spelled exactly as the proxy's /v1/models publishes it -- some catalogs are provider-prefixed, some are bare, and a prefix naming a provider the proxy does not have fails to route at all. t3 draws a reasoning selector only for entries carrying capabilities.optionDescriptors, so the module generates those from the same catalog at write time. Do not hand-write effort levels here.",
+      "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy. A slug must be spelled exactly as the proxy's /v1/models publishes it -- some catalogs are provider-prefixed, some are bare, and a prefix naming a provider the proxy does not have fails to route at all. t3 draws a reasoning selector only for entries carrying capabilities.optionDescriptors, so the module generates those from the same catalog at write time. Do not hand-write effort levels here. A model the proxy routes but has not listed yet (gpt-6.1-sol) may name a listed sibling in effortsFrom to borrow its reasoning ladder; its own catalog entry wins once published.",
       "claudeCustomModels": [
         {
           "slug": "gpt-6.1-sol",
-          "name": "GPT-6.1 Sol"
+          "name": "GPT-6.1 Sol",
+          "effortsFrom": "gpt-6-sol"
         },
         {
           "slug": "gpt-6-luna",

@@ -551,7 +551,10 @@ def _write_t3_settings():
     by_slug = {}
     for m in models:
         entry = dict(m)
-        descriptor = descriptors.get(entry["slug"])
+        # A model the proxy routes before it lists (gpt-6.1-sol) borrows a
+        # sibling's ladder until the catalog publishes its own.
+        sibling = entry.pop("effortsFrom", None)
+        descriptor = descriptors.get(entry["slug"]) or (descriptors.get(sibling) if sibling else None)
         if descriptor is not None:
             entry["capabilities"] = {"optionDescriptors": [descriptor]}
         by_slug[entry["slug"]] = entry

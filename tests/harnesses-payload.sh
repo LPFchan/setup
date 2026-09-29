@@ -39,6 +39,13 @@ catalog = {"data": [{
         {"value": "medium", "label": "Medium Effort", "default": True},
         {"value": "xhigh", "label": "Xhigh Effort"},
     ],
+}, {
+    "id": "gpt-6-sol",
+    "reasoning_efforts": [
+        {"value": "low", "label": "Low Effort"},
+        {"value": "medium", "label": "Medium Effort", "default": True},
+        {"value": "ultra", "label": "Ultra Effort"},
+    ],
 }]}
 os.environ["HARNESSES_PROXY_PORT"] = "10100"
 with mock.patch.object(
@@ -134,6 +141,11 @@ models = t3["providerInstances"]["claudeAgent"]["config"]["customModels"]
 by_slug = {m["slug"]: m for m in models}
 slugs = set(by_slug)
 assert {"gpt-6.1-sol", "gpt-6-luna"} <= slugs
+# gpt-6.1-sol routes but is not in the catalog yet: it borrows gpt-6-sol's
+# ladder, and the borrow hint itself never lands in t3's settings.
+sol61 = by_slug["gpt-6.1-sol"]
+assert [o["id"] for o in sol61["capabilities"]["optionDescriptors"][0]["options"]] == ["low", "medium", "ultra"]
+assert "effortsFrom" not in sol61
 for retired_slug in ("kimicode/k3-256k", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"):
     assert retired_slug not in slugs, "retired custom model slug %s survived" % retired_slug
 assert by_slug["grimoire/qwen3.8-flash-next"]["name"] == "qwen3.8-flash-next"
