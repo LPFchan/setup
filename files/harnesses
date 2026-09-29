@@ -107,13 +107,14 @@ def _heal_path():
     and skipped MCP enrolment entirely, and claude's self-update failed with a
     permissions error that was really npm not being found.
 
-    The operator's own bin directories go in front, so a system-wide copy of a
-    harness under /usr/local/bin cannot outrank the copy their login shell
-    runs. The toolchains behind them go on the end: they are there to be found,
-    not to win. Putting every nvm version the machine still keeps in front --
-    newest first -- is what made `harnesses update codex` read and upgrade a
-    stale copy under an unused node while ~/.local/bin/codex, the copy the
-    operator actually runs, sat untouched at an older version.
+    The operator's own bin directories lead, promoted there even when the
+    caller had them behind a system one: they hold nothing but the operator's
+    own tools, so a system-wide copy of a harness under /usr/local/bin must
+    never outrank them. The toolchains go on the end, because they are there to
+    be found, not to win -- putting every nvm version the machine still keeps
+    in front, newest first, is what made `harnesses update codex` read and
+    upgrade a stale copy under an unused node while ~/.local/bin/codex, the
+    copy the operator actually runs, sat untouched at an older version.
     """
     mine = [HOME/".local/bin", HOME/".opencode/bin", HOME/".kimi-code/bin"]
     toolchains = sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
@@ -122,9 +123,10 @@ def _heal_path():
     # self-update kept failing for the very reason this function exists.
     toolchains += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
-    def absent(dirs):
-        return [str(d) for d in dirs if d.is_dir() and str(d) not in current]
-    os.environ["PATH"] = os.pathsep.join(absent(mine)+current+absent(toolchains))
+    owned = [str(d) for d in mine if d.is_dir()]
+    front = owned + [entry for entry in current if entry not in owned]
+    os.environ["PATH"] = os.pathsep.join(
+        front + [str(d) for d in toolchains if d.is_dir() and str(d) not in front])
 
 
 _heal_path()

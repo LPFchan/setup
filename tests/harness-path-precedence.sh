@@ -137,3 +137,10 @@ PATH="$HOME/.local/bin:$IN_USE/bin:$TMP/usrlocal:/usr/bin:/bin" \
 # updating.
 PATH="$TMP/sysbin:$TMP/usrlocal:/usr/bin:/bin" \
     python3 "$TMP/probe.py" "$ROOT/files/harnesses" "login-less PATH"
+
+# The same run, except the inherited PATH does carry ~/.local/bin -- behind the
+# system directory. Adding only what is missing would skip it and leave the
+# system-wide copy winning, so the operator's own directories get promoted
+# rather than merely added.
+PATH="$TMP/usrlocal:$HOME/.local/bin:/usr/bin:/bin" \
+    python3 "$TMP/probe.py" "$ROOT/files/harnesses" "user bin behind the system dir"
