@@ -106,19 +106,27 @@ def _heal_path():
     and ocx are all invisible: the scheduled run reported "claude not installed"
     and skipped MCP enrolment entirely, and claude's self-update failed with a
     permissions error that was really npm not being found.
+
+    The operator's own bin directories lead, promoted there even when the
+    caller had them behind a system one: they hold nothing but the operator's
+    own tools, so a system-wide copy of a harness under /usr/local/bin must
+    never outrank them. The toolchains go on the end, because they are there to
+    be found, not to win -- putting every nvm version the machine still keeps
+    in front, newest first, is what made `harnesses update codex` read and
+    upgrade a stale copy under an unused node while ~/.local/bin/codex, the
+    copy the operator actually runs, sat untouched at an older version.
     """
-    extra = [HOME/".local/bin", HOME/".opencode/bin", HOME/".kimi-code/bin"]
-    extra += sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
+    mine = [HOME/".local/bin", HOME/".opencode/bin", HOME/".kimi-code/bin"]
+    toolchains = sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
     # macOS keeps node and npm under Homebrew, which a launchd agent does not
     # see either: without these the Macs found claude but not npm, so claude's
     # self-update kept failing for the very reason this function exists.
-    extra += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
+    toolchains += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
-    for directory in extra:
-        entry = str(directory)
-        if directory.is_dir() and entry not in current:
-            current.insert(0, entry)
-    os.environ["PATH"] = os.pathsep.join(current)
+    owned = [str(d) for d in mine if d.is_dir()]
+    front = owned + [entry for entry in current if entry not in owned]
+    os.environ["PATH"] = os.pathsep.join(
+        front + [str(d) for d in toolchains if d.is_dir() and str(d) not in front])
 
 
 _heal_path()
@@ -335,6 +343,22 @@ def _node_bin_dirs():
             for d in sorted(base.glob("*/bin"), reverse=True): dirs.append(str(d))
     return dirs
 
+def _owning_node_bin(binpath):
+    """The bin/ of the node install that npm put `binpath` under, or None.
+
+    ~/.local/bin/codex is a symlink into one node install's node_modules, and
+    its own directory holds neither node nor npm. codex and claude self-update
+    by shelling out to `npm install -g`, so the npm first on PATH decides which
+    install the new version lands in: read the harness on one node, rewrite it
+    on another, and the copy in use never moves. Handing the updater the bin/
+    of its own install keeps both sides on one node.
+    """
+    for parent in pathlib.Path(os.path.realpath(binpath)).parents:
+        if parent.name == "node_modules" and parent.parent.name == "lib":
+            candidate = parent.parent.parent/"bin"
+            if (candidate/"npm").exists(): return str(candidate)
+    return None
+
 HARNESS_VERSION_TIMEOUT_SECONDS = 20
 
 def harness_version(binpath):
@@ -416,7 +440,10 @@ def cmd_update(names):
         if spec.get("updateEnv"): argv = ["env", spec["updateEnv"]] + argv
         print("Updating harness %s (%s)" % (name, binpath))
         env = dict(os.environ)
-        env["PATH"] = os.path.dirname(binpath)+os.pathsep+env.get("PATH","")
+        lead = [os.path.dirname(binpath)]
+        owner = _owning_node_bin(binpath)
+        if owner and owner not in lead: lead.insert(0, owner)
+        env["PATH"] = os.pathsep.join(lead+[env.get("PATH","")])
         # A version probe is the only thing that distinguishes "already
         # current" from "the updater did nothing and said nothing".
         before = None if spec.get("viaNpx") else harness_version(binpath)
