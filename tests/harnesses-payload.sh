@@ -133,8 +133,9 @@ t3 = json.loads((HOME/".t3/userdata/settings.json").read_text())
 models = t3["providerInstances"]["claudeAgent"]["config"]["customModels"]
 by_slug = {m["slug"]: m for m in models}
 slugs = set(by_slug)
-assert "kimicode/k3-256k" in slugs and "gpt-6-astra" in slugs
-assert by_slug["kimicode/k3-256k"]["name"] == "kimi-k3-256k"
+assert {"gpt-6.1-sol", "gpt-6-luna"} <= slugs
+for retired_slug in ("kimicode/k3-256k", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"):
+    assert retired_slug not in slugs, "retired custom model slug %s survived" % retired_slug
 assert by_slug["grimoire/qwen3.8-flash-next"]["name"] == "qwen3.8-flash-next"
 qwen_options = by_slug["grimoire/qwen3.8-flash-next"]["capabilities"]["optionDescriptors"][0]["options"]
 assert [option["id"] for option in qwen_options] == ["low", "medium", "xhigh"]

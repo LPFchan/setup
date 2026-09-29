@@ -151,20 +151,12 @@
       "comment": "Merged into ~/.t3/userdata/settings.json. customModels on the claudeAgent provider instance surface fleet models in the t3 picker; routing them depends on ANTHROPIC_BASE_URL pointing at a local opencodex proxy. A slug must be spelled exactly as the proxy's /v1/models publishes it -- some catalogs are provider-prefixed, some are bare, and a prefix naming a provider the proxy does not have fails to route at all. t3 draws a reasoning selector only for entries carrying capabilities.optionDescriptors, so the module generates those from the same catalog at write time. Do not hand-write effort levels here.",
       "claudeCustomModels": [
         {
-          "slug": "kimicode/k3-256k",
-          "name": "kimi-k3-256k"
+          "slug": "gpt-6.1-sol",
+          "name": "GPT-6.1 Sol"
         },
         {
-          "slug": "gpt-6-astra",
-          "name": "GPT-6 Astra"
-        },
-        {
-          "slug": "gpt-5.6-sol",
-          "name": "GPT-5.6 Sol"
-        },
-        {
-          "slug": "gpt-5.6-luna",
-          "name": "GPT-5.6 Luna"
+          "slug": "gpt-6-luna",
+          "name": "GPT-6 Luna"
         },
         {
           "slug": "grimoire/qwen3.8-flash-next",
@@ -175,9 +167,13 @@
         "codex/gpt-6-astra",
         "codex/gpt-5.6-sol",
         "codex/gpt-5.6-luna",
-        "grimoire/qwen3.8-flash-next-uncensored-nvfp4"
+        "grimoire/qwen3.8-flash-next-uncensored-nvfp4",
+        "kimicode/k3-256k",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-luna"
       ],
-      "retiredComment": "Slugs the module must delete from an existing settings file. These named a 'codex' provider the proxy never had, so they sat in the picker unroutable; the same models are published bare. Entries the manifest has never owned are left alone."
+      "retiredComment": "Slugs the module must delete from an existing settings file: rows that named a 'codex' provider the proxy never had (the same models are published bare), and models that have been dropped from the picker. Entries the manifest has never owned are left alone."
     }
   },
   "retiredMcpServers": [
