@@ -48,9 +48,6 @@ services that remain on that machine.
 ## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
 - spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
 - Ubuntu 24.04 / DGX OS 7.6.0; 20-core Arm CPU, 128 GB unified memory, 1 TB NVMe
-- LAN address observed at enrollment: 10.0.0.117; use the Tailscale hostname for SSH
-- Tailscale on lost.plus runs as the boot-enabled tailscaled service
-- setup daily sync at 06:00 GMT+9; zsh, tmux, ai-menu, resume, agents, and SSH aliases
 
 ## mangchi — NVIDIA Jetson AGX Thor (T5000)
 - mangchi.lost.plus (10.0.0.53) · user yeowool
