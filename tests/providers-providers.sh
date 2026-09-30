@@ -45,8 +45,8 @@ cat > "$PROVIDERS_REGISTRY" <<'EOF'
   "unused":{"provider_type":"OpenAICompatible","base_url":"http://unused","api_format":"openai","npm":"@ai-sdk/openai-compatible","auth":{"type":"api-key","store":"opencode","key":"unused"},"enabled":true}
 }}
 EOF
-printf '{"servers":{"demo":{"baseURL":"http://old-demo","enabled":true},"unused":{"baseURL":"http://old-unused","enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models.json"
-printf '{"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > "$HOME/.config/opencode/refresh-models-state.json"
+mkdir -p "$HOME/.config/providers"
+printf '{"version":1,"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > "$PROVIDER_STATE_PATH"
 
 python3 - <<PY
 import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, time
@@ -102,35 +102,10 @@ assert servers['demo']['baseURL'] == 'http://demo'
 assert servers['demo']['models'] == []
 state = m._load_provider_state()
 assert state == {'version': 1, 'providers': {'demo': {'enabled': True}, 'unused': {'enabled': False}}}
-assert os.path.exists(m.STATE_PATH)
-assert not os.path.exists(m.LEGACY_STATE_PATH)
-assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 
-# Once neutral state exists, neither legacy input can overwrite it and both
-# obsolete copies are removed after the neutral file validates.
-m.save_json(m.LEGACY_STATE_PATH, {'providers': {'demo': {'enabled': False}}})
-m.save_json(m.LEGACY_CONFIG_PATH, {'servers': {'demo': {'enabled': False}}})
-assert m._load_provider_state() == state
-assert m.load_json(m.STATE_PATH) == state
-assert not os.path.exists(m.LEGACY_STATE_PATH)
-assert not os.path.exists(m.LEGACY_CONFIG_PATH)
-
-# The oldest combined config still migrates directly into the neutral schema.
+# Missing state means no provider has been toggled yet.
 os.remove(m.STATE_PATH)
-m.save_json(m.LEGACY_CONFIG_PATH, {
-    'servers': {
-        'demo': {'baseURL': 'http://old-demo', 'enabled': True},
-        'unused': {'baseURL': 'http://old-unused', 'enabled': False},
-    },
-})
-assert m._load_provider_state() == state
-assert not os.path.exists(m.LEGACY_CONFIG_PATH)
-
-legacy = {'servers': {'private-only': {'baseURL': 'https://private.invalid/v1', 'enabled': False}}}
-os.remove(m.STATE_PATH)
-m.save_json(m.LEGACY_CONFIG_PATH, legacy)
 assert m._load_provider_state() == {'version': 1, 'providers': {}}
-assert not os.path.exists(m.LEGACY_CONFIG_PATH)
 m.save_json_atomic(m.STATE_PATH, state)
 
 # The canonical registry routes only through its provider object.
@@ -153,9 +128,6 @@ assert canonical['providers']['opencode-go']['auth']['key'] == 'opencode-go'
 serialized = json.dumps(canonical).lower()
 for legacy_field in ('default_model', 'haiku', 'sonnet', 'opus'):
     assert legacy_field not in serialized
-retired = m.load_json('$ROOT/files/claudex-profiles.json')
-assert 'providers' not in retired
-assert isinstance(retired.get('profiles'), list) and retired['profiles']
 m._validate_registry(canonical)
 m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
@@ -1201,13 +1173,7 @@ for argv in ([path, 'timer'], [path, 'auth'], [path, 'sync'], [path, 'audit'],
 with open(m.STATE_PATH, 'w') as handle:
     handle.write('{truncated')
 assert not m._provider_enabled('demo', servers['demo'])
-
-# An unreadable migration source is never deleted.
 os.remove(m.STATE_PATH)
-with open(m.LEGACY_STATE_PATH, 'w') as handle:
-    handle.write('{truncated')
-assert m._load_provider_state() is None
-assert os.path.exists(m.LEGACY_STATE_PATH)
 
 # Status reflection: the mirror reconciles Hermes custom_providers against
 # enablement. Re-seed a controlled fixture, then assert:

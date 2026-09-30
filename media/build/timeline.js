@@ -71,8 +71,8 @@ const SHOTS = [
     ease: 'inOutCubic',
     from: { c: SETUP_WORD_COL, r: 0, s: 34 }, to: { c: SETUP_WORD_COL, r: 0, s: 5.0 } },
 
-  // 2 · FALL down the tool column: claude, codex, claudex, claudex-cc,
-  //     opencode, hermes, grok. Column held, camera drops.
+  // 2 · FALL down the tool column: claude, codex, opencode, hermes, grok.
+  //     Column held, camera drops.
   { id: 'aimenu', t0: 2.20, t1: 4.30, cast: [2.30, 4.40], ease: 'inOutCubic', cut: true,
     from: { c: 11, r: 0, s: 6.2 }, to: { c: 11, r: 8, s: 6.2 } },
 

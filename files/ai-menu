@@ -91,7 +91,7 @@ _ai_recent_dirs() {
     local store=${XDG_STATE_HOME:-$HOME/.local/state}/setup/ai-menu-dirs
     local -a lines
     # Forkless read: $(<file) is optimized to not fork in zsh (same pattern as
-    # the ssh-config / claudex-config reads in ai()). Records are epoch<TAB>path.
+    # the ssh-config read in ai()). Records are epoch<TAB>path.
     [[ -r $store ]] && lines=( ${(f)"$(<$store)"} )
     # Rank by recency. Records lead with the epoch, so a reverse-numeric sort of
     # the whole line orders by that epoch, newest first — a real sort, not line
@@ -275,7 +275,7 @@ ai() {
     # Forkless availability filter: ${+commands[...]} is a hash lookup,
     # so missing tools drop out of the menu without any external probe.
     local tool
-    for tool in claude codex claudex opencodex opencode agy hermes grok muse; do
+    for tool in claude codex opencodex opencode agy hermes grok muse; do
         (( ${+commands[$tool]} )) && tools+=("$tool")
     done
     kimi_bin=${commands[kimi]-}
@@ -422,7 +422,6 @@ ai() {
                 codex
             fi
             ;;
-        claudex) claudex ;;
         opencodex) opencodex ;;
         opencode) OPENCODE_ENABLE_EXA=1 opencode --yolo ;;
         agy) agy --dangerously-skip-permissions ;;
