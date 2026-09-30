@@ -12,9 +12,6 @@
 MODULE="providers"
 BIN="${PROVIDERS_BIN:-$HOME/.local/bin/providers}"
 REGISTRY="${PROVIDERS_REGISTRY:-$HOME/.config/providers/registry.json}"
-LEGACY_REGISTRY="${PROVIDERS_LEGACY_REGISTRY:-$HOME/.config/claudex/managed-profiles.json}"
-CLAUDEX_BIN="${CLAUDEX_BIN:-$HOME/.local/bin/claudex}"
-REFRESH_MODELS_BIN="${REFRESH_MODELS_BIN:-$HOME/.local/bin/refresh-models}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${PROVIDERS_SOURCE:-$SOURCE_BASE/files/providers}"
 REGISTRY_SOURCE="${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}"
@@ -51,14 +48,6 @@ _recorded_hash() {
     IFS=$'\t' read -r rt lr rr < <(script_state_for "$MODULE" 2>/dev/null) && printf '%s' "$lr"
 }
 
-# Remove an obsolete registry path once no retired module still owns it.
-_reclaim_legacy_registry() {
-    [[ "$REGISTRY" != "$LEGACY_REGISTRY" ]] || return 0
-    [[ -f "$LEGACY_REGISTRY" ]] || return 0
-    [[ ! -x "$CLAUDEX_BIN" && ! -x "$REFRESH_MODELS_BIN" ]] || return 0
-    rm -f "$LEGACY_REGISTRY"
-}
-
 _apply() {
     local action="$1" staged hash bin_tmp registry_tmp
     staged=$(mktemp -d)
@@ -82,7 +71,6 @@ _apply() {
         }
     mv "$registry_tmp" "$REGISTRY"
     mv "$bin_tmp" "$BIN"
-    _reclaim_legacy_registry
     rm -rf "$staged"
     record_script_state "$MODULE" "provider-registry" "$hash" "$hash"
     echo "providers: $action -> $BIN"

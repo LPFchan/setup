@@ -154,17 +154,6 @@ rm -f "$OPENCODEX_BIN"
 expect_status 1 outdated
 install_surfaces
 
-shared_registry="$HOME/.config/claudex/managed-profiles.json"
-mkdir -p "${shared_registry:h}"
-cp "$ROOT/files/claudex-profiles.json" "$shared_registry"
-(
-    export CLAUDEX_REGISTRY="$shared_registry"
-    export PROVIDERS_BIN="$HOME/.local/bin/missing-providers"
-    source "$ROOT/files/claudex.sh"
-    uninstall >/dev/null
-)
-[[ -f "$REGISTRY" ]] || fail "claudex uninstall removed opencodex's independent snapshot"
-
 providers_registry="$HOME/.config/providers/registry.json"
 mkdir -p "${providers_registry:h}"
 cp "$ROOT/files/provider-registry.json" "$providers_registry"

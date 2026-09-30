@@ -30,7 +30,7 @@ SSH_HOSTS = [                       # mirrors files/ssh-aliases.sh
     ('bingus',     'bingus.lost.plus', 'yeowool', 'xterm-256color'),
 ]
 
-HARNESSES = ['claude', 'codex', 'claudex', 'opencode', 'agy', 'hermes', 'grok']
+HARNESSES = ['claude', 'codex', 'opencode', 'agy', 'hermes', 'grok']
 
 PROJECTS = ['Documents/setup', 'Documents/fzf-multicolumn', 'Documents/repo-template',
             'Documents/nxgallery', 'Documents/Marble', 'Documents/Photopeace',
@@ -231,13 +231,6 @@ error_symbol = "[\\u279c](bold red)"
             lines.append(f'    SetEnv TERM={term}')
     write(os.path.join(HOME, '.ssh', 'config'), '\n'.join(lines) + '\n', 0o600)
     os.chmod(os.path.join(HOME, '.ssh'), 0o700)
-
-    # claudex profile, so the claudex-cc entry appears in the menu
-    write(os.path.join(HOME, '.config', 'claudex', 'config.toml'), '''[[profiles]]
-name = "codex"
-[[profiles]]
-name = "commandcode"
-''')
 
     # history + recency store: what fills ai-menu's folder column
     hist = ['cd ~/' + p for p in PROJECTS]
