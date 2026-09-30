@@ -4,7 +4,7 @@
 #
 # Manages marker-delimited outbound Host aliases in ~/.ssh/config and inbound
 # owner keys from GitHub in ~/.ssh/authorized_keys. Keep the fleet table below
-# in sync with agents/FLEET.md.
+# in sync with agents/skills/fleet/SKILL.md.
 
 (( ${+functions[setup_sha256_string]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
@@ -16,6 +16,7 @@ OWNER_KEYS_URL="${SETUP_OWNER_KEYS_URL:-https://github.com/LPFchan.keys}"
 
 # alias | hostname | user | optional TERM fallback | optional host-key policy
 FLEET=(
+    "spark1|spark1.tailaa113.ts.net|yeowool"
     "mangchi|mangchi.lost.plus|yeowool"
     "yeowoolmac|mac.lost.plus|yeowool||ignore"
     "grimoire|grimoire.lost.plus|yeowool"

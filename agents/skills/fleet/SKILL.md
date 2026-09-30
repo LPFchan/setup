@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (mangchi, eleven, bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
+description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (spark1, mangchi, eleven, bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
 argument-hint: "Host name (e.g. bingus, grimoire) or fleet question"
 tags: [fleet, ssh, remote, hosts, infrastructure]
 audience: fleet
@@ -44,6 +44,13 @@ services that remain on that machine.
 - yeowool-air.tailaa113.ts.net (no static IP) · user yeowool
 - active repos in ~/Documents/
 - this machine uses Ghostty instead of Apple Terminal
+
+## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
+- spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
+- Ubuntu 24.04 / DGX OS 7.6.0; 20-core Arm CPU, 128 GB unified memory, 1 TB NVMe
+- LAN address observed at enrollment: 10.0.0.117; use the Tailscale hostname for SSH
+- Tailscale on lost.plus runs as the boot-enabled tailscaled service
+- setup daily sync at 06:00 GMT+9; zsh, tmux, ai-menu, resume, agents, and SSH aliases
 
 ## mangchi — NVIDIA Jetson AGX Thor (T5000)
 - mangchi.lost.plus (10.0.0.53) · user yeowool
