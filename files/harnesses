@@ -140,6 +140,18 @@ CONSUMER_SYNC_LOCK = HOME/".config/auth/consumer-sync.lock"
 
 def eprint(*a): print(*a, file=sys.stderr)
 
+def _claude_maintenance_env(base=None):
+    """Manage MCP config and the CLI without refreshing the user's login.
+
+    Claude's normal startup refreshes OAuth even for `mcp get` and `update`.
+    A rejected refresh can erase the shared login used by running T3 sessions.
+    Minimal mode skips OAuth reads while retaining these maintenance commands.
+    Keep it confined to child processes; interactive sessions need normal auth.
+    """
+    env = dict(os.environ if base is None else base)
+    env["CLAUDE_CODE_SIMPLE"] = "1"
+    return env
+
 @contextlib.contextmanager
 def _consumer_sync_lock():
     CONSUMER_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
@@ -444,6 +456,8 @@ def cmd_update(names):
         owner = _owning_node_bin(binpath)
         if owner and owner not in lead: lead.insert(0, owner)
         env["PATH"] = os.pathsep.join(lead+[env.get("PATH","")])
+        if name == "claude":
+            env = _claude_maintenance_env(env)
         # A version probe is the only thing that distinguishes "already
         # current" from "the updater did nothing and said nothing".
         before = None if spec.get("viaNpx") else harness_version(binpath)
@@ -800,7 +814,7 @@ def _cmd_mcp_once(names):
                 # No -s: the CLI then removes it from whichever scope holds it.
                 # Passing user silently missed the local-scope copies.
                 subprocess.run(["claude", "mcp", "remove", name],
-                               capture_output=True)
+                               capture_output=True, env=_claude_maintenance_env())
         for s in servers:
             if "claude" in mcp_surfaces(s):
                 _claude_mcp_reconcile(s)
@@ -827,7 +841,8 @@ def _claude_mcp_registered(name):
     'claude.ai tweet-fetch-mcp' -- read as already enrolled and was skipped on
     every run. 'get' names one server and cannot collide.
     """
-    r = subprocess.run(["claude","mcp","get",name], capture_output=True, text=True)
+    r = subprocess.run(["claude","mcp","get",name], capture_output=True, text=True,
+                       env=_claude_maintenance_env())
     if r.returncode != 0 or "No MCP server named" in (r.stdout + r.stderr):
         return None
     url, header, scope = None, None, None
@@ -856,7 +871,7 @@ def _claude_mcp_reconcile(s):
     want_header = argv[argv.index("--header") + 1] if "--header" in argv else None
     current = _claude_mcp_registered(s["name"])
     if current is None:
-        subprocess.run(argv)
+        subprocess.run(argv, env=_claude_maintenance_env())
         return
     url, header, scope = current
     if scope not in (None, "user"):
@@ -870,8 +885,8 @@ def _claude_mcp_reconcile(s):
         return
     print("  re-enrolling %s (stored config differs from the manifest)" % s["name"])
     subprocess.run(["claude","mcp","remove",s["name"],"-s","user"],
-                   capture_output=True)
-    subprocess.run(argv)
+                   capture_output=True, env=_claude_maintenance_env())
+    subprocess.run(argv, env=_claude_maintenance_env())
 
 
 CODEX_MCP_BEGIN = "# BEGIN harnesses:mcp-servers"
@@ -1469,9 +1484,9 @@ def _schedule_enable():
         print("harnesses auto-update scheduled daily at %02d:00 (launchd)" % SCHEDULE_HOUR)
         return 0
 
-    # setup's timer runs at 06:00 and providers refreshes hourly; this pass runs
-    # late enough to be clear of both, and it restarts the proxy, so it wants an
-    # hour where nothing is mid-turn. Persistent=true replays a run missed while off.
+    # setup's timer runs at 06:00 and providers refreshes hourly, including 11:00.
+    # This pass can overlap provider refreshes and active sessions.
+    # Persistent=true replays a run missed while off.
     with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as tf:
         tf.write("Persistent=true\n")
         timer_extra = tf.name
@@ -1539,8 +1554,8 @@ def cmd_refresh(names):
 
     Order is the point. Settings are generated from what the proxy reports, so
     the proxy has to be serving current config before they are rendered, and
-    the restart that gets it there belongs here -- on a daily cadence at an
-    hour nothing is running -- rather than in the hourly refresh that feeds it.
+    the restart that gets it there belongs here, on a daily cadence, rather
+    than in the hourly refresh that feeds it.
 
     mcp runs after settings: enrollment reconciles against the manifest, so a
     renamed or re-pointed server heals on the next pass instead of waiting for
