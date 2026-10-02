@@ -142,7 +142,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `miniharness` | The headless model summon (`npm install -g miniharness`) that `system-updates` asks at 07:00 whether a reboot is safe. Installed globally through npm, so its path follows the active node version rather than a fixed target | `files/miniharness.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
-The fleet-only `ssh-aliases` module also sets an outbound `Host *` default of
+The fleet-only `ssh-aliases` module also sets an outbound default of
 `StrictHostKeyChecking accept-new`, including destinations outside the alias
 list. OpenSSH automatically records first-seen keys in its normal known-hosts
 files and rejects changed keys; first use is trust-on-first-use, not independent
@@ -151,8 +151,8 @@ rewritten by setup. This replaces the old `yeowoolmac` exception that disabled
 checking and discarded keys, so changing that machine's boot partition may now
 require investigating a host-key mismatch rather than silently accepting it.
 
-The managed default follows existing configuration. OpenSSH's first-value-wins
-rules preserve earlier explicit user policies (including stricter `yes` or
+The managed default follows existing configuration and uses `Match final` so
+second-pass user policies are considered first. OpenSSH's first-value-wins rules preserve earlier explicit user policies (including stricter `yes` or
 `ask`); an earlier `no` or custom `UserKnownHostsFile` can still override normal
 protection. Command-line options also take precedence. Install/update replaces
 only setup's managed blocks, status detects policy drift, and uninstall removes

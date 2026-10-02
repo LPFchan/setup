@@ -51,8 +51,10 @@ _build_block() {
     # OpenSSH uses the first value found. Keep this default after the aliases
     # and existing user configuration so explicit stricter policies survive.
     # Use OpenSSH's normal known_hosts files: never discard or replace keys.
-    printf 'Host *\n'
+    # Defer until reparsing so earlier Match final/canonical policies win too.
+    printf 'Match final\n'
     printf '    StrictHostKeyChecking accept-new\n'
+    printf 'Host *\n'
     return 0
 }
 

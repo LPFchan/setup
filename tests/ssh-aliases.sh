@@ -66,7 +66,7 @@ grimoire_block=$(printf '%s\n' "$block" | awk '
    && "$grimoire_block" != *'StrictHostKeyChecking '* ]] \
     || fail "host-specific host-key policy overrides the fleet default"
 
-[[ "$block" == *$'Host *\n    StrictHostKeyChecking accept-new' ]] \
+[[ "$block" == *$'Match final\n    StrictHostKeyChecking accept-new\nHost *' ]] \
     || fail "global first-use policy is missing or scoped to the last alias"
 [[ "$block" != *'UserKnownHostsFile '* ]] \
     || fail "managed config replaces the user's known-hosts storage"
@@ -96,6 +96,12 @@ Host ask.example
     StrictHostKeyChecking ask
 Host user-override.example
     StrictHostKeyChecking no
+Match final host final-strict.example
+    StrictHostKeyChecking yes
+Host canonical-strict.example
+    CanonicalizeHostname yes
+Match canonical host canonical-strict.example
+    StrictHostKeyChecking yes
 Host *
     ServerAliveInterval 42
 EOF
@@ -146,6 +152,10 @@ for target in dumpling mac.lost.plus yeowoolmac arbitrary.example 192.0.2.1; do
 done
 [[ "$(effective_option strict.example stricthostkeychecking)" == "true" ]] \
     || fail "explicit strict user policy was weakened"
+[[ "$(effective_option final-strict.example stricthostkeychecking)" == "true" ]] \
+    || fail "default weakened a Match final strict user policy"
+[[ "$(effective_option canonical-strict.example stricthostkeychecking)" == "true" ]] \
+    || fail "default weakened a Match canonical strict user policy"
 [[ "$(effective_option later-strict.example stricthostkeychecking)" == "true" ]] \
     || fail "migration weakened a strict stanza after the old managed block"
 [[ "$(effective_option ask.example stricthostkeychecking)" == "ask" ]] \
