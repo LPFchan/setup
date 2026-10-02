@@ -104,6 +104,10 @@ printf '%s\n' 'existing.example ssh-ed25519 existing-key-do-not-delete' > "$HOME
 known_hosts_before=$(cat "$HOME/.ssh/known_hosts")
 legacy_block=$'Host yeowoolmac mac.lost.plus\n    UserKnownHostsFile /dev/null\n    StrictHostKeyChecking no'
 manage_block "$SSH_CONFIG" "$MODULE" "$legacy_block" "upsert" "append" >/dev/null
+# Existing installations can have stricter user stanzas after the old block.
+later_config=$'Host later-strict.example\n    StrictHostKeyChecking yes'
+printf '%s\n' "$later_config" >> "$SSH_CONFIG"
+unmanaged_config+=$'\n'"$later_config"
 status_output=$(status 2>&1) && fail "missing authorized_keys did not make the module outdated"
 [[ "$status_output" == *'outdated'* ]] \
     || fail "missing authorized_keys did not report outdated"
@@ -142,10 +146,22 @@ for target in dumpling mac.lost.plus yeowoolmac arbitrary.example 192.0.2.1; do
 done
 [[ "$(effective_option strict.example stricthostkeychecking)" == "true" ]] \
     || fail "explicit strict user policy was weakened"
+[[ "$(effective_option later-strict.example stricthostkeychecking)" == "true" ]] \
+    || fail "migration weakened a strict stanza after the old managed block"
 [[ "$(effective_option ask.example stricthostkeychecking)" == "ask" ]] \
     || fail "explicit interactive user policy was overridden"
 [[ "$(effective_option user-override.example stricthostkeychecking)" == "false" ]] \
     || fail "explicit user override was rewritten"
+# Detect and repair placement drift even when the managed content is unchanged.
+added_config=$'Host added-strict.example\n    StrictHostKeyChecking yes'
+printf '%s\n' "$added_config" >> "$SSH_CONFIG"
+unmanaged_config+=$'\n'"$added_config"
+status_output=$(status 2>&1) && fail "later user stanza did not cause placement drift"
+[[ "$status_output" == *'outdated'* ]] || fail "placement drift did not report outdated"
+update >/dev/null
+[[ "$(effective_option added-strict.example stricthostkeychecking)" == "true" ]] \
+    || fail "update did not preserve a newly added strict user policy"
+status >/dev/null || fail "relocated managed block did not report current"
 config_before=$(cat "$SSH_CONFIG")
 update >/dev/null
 [[ "$(cat "$SSH_CONFIG")" == "$config_before" ]] || fail "update is not idempotent"

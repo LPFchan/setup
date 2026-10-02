@@ -56,6 +56,17 @@ _build_block() {
     return 0
 }
 
+# upsert preserves an existing block's position. A default must instead stay
+# after user-added stanzas, including ones appended since the previous update.
+_config_block_at_end() {
+    [[ -f "$SSH_CONFIG" ]] || return 1
+    awk '
+        $0 == "# <<< setup:ssh-aliases <<<" { ended=1; next }
+        ended && $0 !~ /^[[:space:]]*$/ { trailing=1 }
+        END { exit !(ended && !trailing) }
+    ' "$SSH_CONFIG"
+}
+
 _managed_block_hash() {
     local file="$1" block="$2"
     if [[ ! -f "$file" ]]; then
@@ -101,6 +112,9 @@ install() {
         return 1
     fi
     _ensure_perms
+    if ! _config_block_at_end; then
+        manage_block "$SSH_CONFIG" "$MODULE" "" "remove"
+    fi
     manage_block "$SSH_CONFIG" "ssh-aliases" "$(_build_block)" "upsert" "append"
     manage_block "$AUTHORIZED_KEYS" "$AUTHORIZED_KEYS_BLOCK" "$owner_keys" "upsert" "append"
     _ensure_perms
@@ -123,7 +137,7 @@ status() {
     expected_config=$(setup_managed_block_body "$(_build_block)" | setup_sha256_string)
     expected_keys=$(setup_managed_block_body "$owner_keys" | setup_sha256_string)
     expected=$(printf '%s\n%s\n' "$expected_config" "$expected_keys" | setup_sha256_string)
-    if [[ "$expected" == "$actual" ]]; then
+    if [[ "$expected" == "$actual" ]] && _config_block_at_end; then
         printf '%-25s %-12s local=%s remote=%s targets=%s,%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$SSH_CONFIG" "$AUTHORIZED_KEYS"
         _record_state
         return 0
