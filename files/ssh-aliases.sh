@@ -14,11 +14,11 @@ AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"
 AUTHORIZED_KEYS_BLOCK="ssh-aliases-github-keys"
 OWNER_KEYS_URL="${SETUP_OWNER_KEYS_URL:-https://github.com/LPFchan.keys}"
 
-# alias | hostname | user | optional TERM fallback | optional host-key policy
+# alias | hostname | user | optional TERM fallback
 FLEET=(
     "spark1|spark1.tailaa113.ts.net|yeowool"
     "mangchi|mangchi.lost.plus|yeowool"
-    "yeowoolmac|mac.lost.plus|yeowool||ignore"
+    "yeowoolmac|mac.lost.plus|yeowool"
     "grimoire|grimoire.lost.plus|yeowool"
     "oci-ubuntu|oci.lost.plus|ubuntu"
     "bingus|bingus.lost.plus|yeowool|xterm-256color"
@@ -29,23 +29,15 @@ FLEET=(
 _self() { echo "${SSH_ALIASES_SELF:-$(hostname -s 2>/dev/null || hostname)}"; }
 
 _build_block() {
-    local self entry alias hn user term host_keys
+    local self entry alias hn user term
     self=$(_self)
     for entry in "${FLEET[@]}"; do
-        IFS='|' read -r alias hn user term host_keys <<< "$entry"
+        IFS='|' read -r alias hn user term <<< "$entry"
         [[ "$alias" == "$self" ]] && continue
-        if [[ "$host_keys" == "ignore" ]]; then
-            printf 'Host %s %s\n' "$alias" "$hn"
-        else
-            printf 'Host %s\n' "$alias"
-        fi
+        printf 'Host %s %s\n' "$alias" "$hn"
         printf '    HostName %s\n' "$hn"
         printf '    User %s\n' "$user"
         printf '    IdentityFile ~/.ssh/id_ed25519\n'
-        if [[ "$host_keys" == "ignore" ]]; then
-            printf '    UserKnownHostsFile /dev/null\n'
-            printf '    StrictHostKeyChecking no\n'
-        fi
         # Suspending a laptop strands the TCP session; without keepalives the
         # client waits out the full TCP timeout before reporting a broken pipe,
         # which is what makes a lid-close look like a hung terminal.
@@ -56,7 +48,25 @@ _build_block() {
         printf '    ConnectTimeout 5\n'
         [[ -n "$term" ]] && printf '    SetEnv TERM=%s\n' "$term"
     done
+    # OpenSSH uses the first value found. Keep this default after the aliases
+    # and existing user configuration so explicit stricter policies survive.
+    # Use OpenSSH's normal known_hosts files: never discard or replace keys.
+    # Defer until reparsing so earlier Match final/canonical policies win too.
+    printf 'Match final\n'
+    printf '    StrictHostKeyChecking accept-new\n'
+    printf 'Host *\n'
     return 0
+}
+
+# upsert preserves an existing block's position. A default must instead stay
+# after user-added stanzas, including ones appended since the previous update.
+_config_block_at_end() {
+    [[ -f "$SSH_CONFIG" ]] || return 1
+    awk '
+        $0 == "# <<< setup:ssh-aliases <<<" { ended=1; next }
+        ended && $0 !~ /^[[:space:]]*$/ { trailing=1 }
+        END { exit !(ended && !trailing) }
+    ' "$SSH_CONFIG"
 }
 
 _managed_block_hash() {
@@ -104,6 +114,9 @@ install() {
         return 1
     fi
     _ensure_perms
+    if ! _config_block_at_end; then
+        manage_block "$SSH_CONFIG" "$MODULE" "" "remove"
+    fi
     manage_block "$SSH_CONFIG" "ssh-aliases" "$(_build_block)" "upsert" "append"
     manage_block "$AUTHORIZED_KEYS" "$AUTHORIZED_KEYS_BLOCK" "$owner_keys" "upsert" "append"
     _ensure_perms
@@ -126,7 +139,7 @@ status() {
     expected_config=$(setup_managed_block_body "$(_build_block)" | setup_sha256_string)
     expected_keys=$(setup_managed_block_body "$owner_keys" | setup_sha256_string)
     expected=$(printf '%s\n%s\n' "$expected_config" "$expected_keys" | setup_sha256_string)
-    if [[ "$expected" == "$actual" ]]; then
+    if [[ "$expected" == "$actual" ]] && _config_block_at_end; then
         printf '%-25s %-12s local=%s remote=%s targets=%s,%s\n' "$MODULE" "current" "${actual:0:7}" "${actual:0:7}" "$SSH_CONFIG" "$AUTHORIZED_KEYS"
         _record_state
         return 0
