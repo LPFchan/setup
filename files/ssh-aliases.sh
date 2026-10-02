@@ -14,11 +14,11 @@ AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"
 AUTHORIZED_KEYS_BLOCK="ssh-aliases-github-keys"
 OWNER_KEYS_URL="${SETUP_OWNER_KEYS_URL:-https://github.com/LPFchan.keys}"
 
-# alias | hostname | user | optional TERM fallback | optional host-key policy
+# alias | hostname | user | optional TERM fallback
 FLEET=(
     "spark1|spark1.tailaa113.ts.net|yeowool"
     "mangchi|mangchi.lost.plus|yeowool"
-    "yeowoolmac|mac.lost.plus|yeowool||ignore"
+    "yeowoolmac|mac.lost.plus|yeowool"
     "grimoire|grimoire.lost.plus|yeowool"
     "oci-ubuntu|oci.lost.plus|ubuntu"
     "bingus|bingus.lost.plus|yeowool|xterm-256color"
@@ -29,23 +29,15 @@ FLEET=(
 _self() { echo "${SSH_ALIASES_SELF:-$(hostname -s 2>/dev/null || hostname)}"; }
 
 _build_block() {
-    local self entry alias hn user term host_keys
+    local self entry alias hn user term
     self=$(_self)
     for entry in "${FLEET[@]}"; do
-        IFS='|' read -r alias hn user term host_keys <<< "$entry"
+        IFS='|' read -r alias hn user term <<< "$entry"
         [[ "$alias" == "$self" ]] && continue
-        if [[ "$host_keys" == "ignore" ]]; then
-            printf 'Host %s %s\n' "$alias" "$hn"
-        else
-            printf 'Host %s\n' "$alias"
-        fi
+        printf 'Host %s %s\n' "$alias" "$hn"
         printf '    HostName %s\n' "$hn"
         printf '    User %s\n' "$user"
         printf '    IdentityFile ~/.ssh/id_ed25519\n'
-        if [[ "$host_keys" == "ignore" ]]; then
-            printf '    UserKnownHostsFile /dev/null\n'
-            printf '    StrictHostKeyChecking no\n'
-        fi
         # Suspending a laptop strands the TCP session; without keepalives the
         # client waits out the full TCP timeout before reporting a broken pipe,
         # which is what makes a lid-close look like a hung terminal.
@@ -56,6 +48,11 @@ _build_block() {
         printf '    ConnectTimeout 5\n'
         [[ -n "$term" ]] && printf '    SetEnv TERM=%s\n' "$term"
     done
+    # OpenSSH uses the first value found. Keep this default after the aliases
+    # and existing user configuration so explicit stricter policies survive.
+    # Use OpenSSH's normal known_hosts files: never discard or replace keys.
+    printf 'Host *\n'
+    printf '    StrictHostKeyChecking accept-new\n'
     return 0
 }
 

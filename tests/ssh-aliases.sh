@@ -29,7 +29,7 @@ source "$ROOT/files/ssh-aliases.sh"
 
 block=$(SSH_ALIASES_SELF=not-a-fleet-host _build_block)
 mangchi_block=$(printf '%s\n' "$block" | awk '
-    /^Host mangchi$/ { found=1 }
+    /^Host mangchi mangchi.lost.plus$/ { found=1 }
     found && /^Host / && $2 != "mangchi" { exit }
     found { print }
 ')
@@ -41,11 +41,11 @@ mac_block=$(printf '%s\n' "$block" | awk '
     found && /^Host / && $2 != "yeowoolmac" { exit }
     found { print }
 ')
-[[ "$mac_block" == *'UserKnownHostsFile /dev/null'* \
-   && "$mac_block" == *'StrictHostKeyChecking no'* ]] \
-    || fail "Mac mini partition host keys are not ignored"
+[[ "$mac_block" != *'UserKnownHostsFile '* \
+   && "$mac_block" != *'StrictHostKeyChecking '* ]] \
+    || fail "Mac mini still bypasses host-key verification"
 bingus_block=$(printf '%s\n' "$block" | awk '
-    /^Host bingus$/ { found=1 }
+    /^Host bingus bingus.lost.plus$/ { found=1 }
     found && /^Host / && $2 != "bingus" { exit }
     found { print }
 ')
@@ -56,7 +56,7 @@ bingus_block=$(printf '%s\n' "$block" | awk '
     || fail "bingus does not fall back to DSM-supported terminfo"
 
 grimoire_block=$(printf '%s\n' "$block" | awk '
-    /^Host grimoire$/ { found=1 }
+    /^Host grimoire grimoire.lost.plus$/ { found=1 }
     found && /^Host / && $2 != "grimoire" { exit }
     found { print }
 ')
@@ -64,7 +64,12 @@ grimoire_block=$(printf '%s\n' "$block" | awk '
     || fail "TERM fallback leaked to hosts that support tmux-256color"
 [[ "$grimoire_block" != *'UserKnownHostsFile '* \
    && "$grimoire_block" != *'StrictHostKeyChecking '* ]] \
-    || fail "Mac mini host-key policy leaked to other hosts"
+    || fail "host-specific host-key policy overrides the fleet default"
+
+[[ "$block" == *$'Host *\n    StrictHostKeyChecking accept-new' ]] \
+    || fail "global first-use policy is missing or scoped to the last alias"
+[[ "$block" != *'UserKnownHostsFile '* ]] \
+    || fail "managed config replaces the user's known-hosts storage"
 
 self_block=$(SSH_ALIASES_SELF=bingus _build_block)
 [[ "$self_block" != *'Host bingus'* ]] \
@@ -83,7 +88,22 @@ export LINUX_SETUP_SOURCE_URL="file://$ROOT"
 source "$ROOT/bin/setup"
 source "$ROOT/files/ssh-aliases.sh"
 
-manage_block "$SSH_CONFIG" "$MODULE" "$(_build_block)" "upsert" "append" >/dev/null
+# Preserve user policy and key history while replacing the old Mac exception.
+cat > "$SSH_CONFIG" <<'EOF'
+Host strict.example
+    StrictHostKeyChecking yes
+Host ask.example
+    StrictHostKeyChecking ask
+Host user-override.example
+    StrictHostKeyChecking no
+Host *
+    ServerAliveInterval 42
+EOF
+unmanaged_config=$(cat "$SSH_CONFIG")
+printf '%s\n' 'existing.example ssh-ed25519 existing-key-do-not-delete' > "$HOME/.ssh/known_hosts"
+known_hosts_before=$(cat "$HOME/.ssh/known_hosts")
+legacy_block=$'Host yeowoolmac mac.lost.plus\n    UserKnownHostsFile /dev/null\n    StrictHostKeyChecking no'
+manage_block "$SSH_CONFIG" "$MODULE" "$legacy_block" "upsert" "append" >/dev/null
 status_output=$(status 2>&1) && fail "missing authorized_keys did not make the module outdated"
 [[ "$status_output" == *'outdated'* ]] \
     || fail "missing authorized_keys did not report outdated"
@@ -106,6 +126,36 @@ key_mode=$(stat -c '%a' "$HOME/.ssh/authorized_keys" 2>/dev/null \
     || fail "authorized_keys permissions are not 600 (got: $key_mode)"
 
 status >/dev/null || fail "freshly installed GitHub owner keys are not current"
+[[ "$(cat "$HOME/.ssh/known_hosts")" == "$known_hosts_before" ]] \
+    || fail "install changed known_hosts"
+! grep -q '/dev/null' "$SSH_CONFIG" || fail "legacy Mac bypass survived migration"
+
+# Ask the real OpenSSH parser, not just a text matcher. -G does not connect.
+effective_option() {
+    ssh -G -F "$SSH_CONFIG" "$1" 2>/dev/null | awk -v key="$2" '$1 == key { print $2 }'
+}
+for target in dumpling mac.lost.plus yeowoolmac arbitrary.example 192.0.2.1; do
+    [[ "$(effective_option "$target" stricthostkeychecking)" == "accept-new" ]] \
+        || fail "first-use policy does not apply to $target"
+    [[ "$(effective_option "$target" userknownhostsfile)" != "/dev/null" ]] \
+        || fail "$target discards known host keys"
+done
+[[ "$(effective_option strict.example stricthostkeychecking)" == "true" ]] \
+    || fail "explicit strict user policy was weakened"
+[[ "$(effective_option ask.example stricthostkeychecking)" == "ask" ]] \
+    || fail "explicit interactive user policy was overridden"
+[[ "$(effective_option user-override.example stricthostkeychecking)" == "false" ]] \
+    || fail "explicit user override was rewritten"
+config_before=$(cat "$SSH_CONFIG")
+update >/dev/null
+[[ "$(cat "$SSH_CONFIG")" == "$config_before" ]] || fail "update is not idempotent"
+# Policy drift participates in the normal module status/update lifecycle.
+sed 's/StrictHostKeyChecking accept-new/StrictHostKeyChecking ask/' "$SSH_CONFIG" > "$TEST_TMP/drift"
+mv "$TEST_TMP/drift" "$SSH_CONFIG"
+status_output=$(status 2>&1) && fail "host-key policy drift was not detected"
+[[ "$status_output" == *'outdated'* ]] || fail "policy drift did not report outdated"
+update >/dev/null
+status >/dev/null || fail "update did not repair host-key policy drift"
 printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOwnerKeyThree owner-three' >> "$OWNER_KEYS_FILE"
 status_output=$(status 2>&1) && fail "a new GitHub owner key did not make the module outdated"
 [[ "$status_output" == *'outdated'* ]] \
@@ -121,5 +171,13 @@ grep -q 'UnmanagedKey' "$HOME/.ssh/authorized_keys" \
     || fail "uninstall removed an unmanaged authorized key"
 ! grep -q 'setup:ssh-aliases-github-keys' "$HOME/.ssh/authorized_keys" \
     || fail "uninstall left the GitHub owner-key block behind"
+
+! grep -q 'setup:ssh-aliases' "$SSH_CONFIG" || fail "uninstall left the SSH block behind"
+[[ "$(cat "$SSH_CONFIG" | sed '/^$/d')" == "$unmanaged_config" ]] \
+    || fail "uninstall changed unmanaged SSH config"
+[[ "$(cat "$HOME/.ssh/known_hosts")" == "$known_hosts_before" ]] \
+    || fail "update/uninstall changed known_hosts"
+status_output=$(status 2>&1) && fail "uninstalled module reported current"
+[[ "$status_output" == *'uninstalled'* ]] || fail "uninstall status is incorrect"
 
 echo "ssh aliases tests passed"

@@ -142,6 +142,23 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `miniharness` | The headless model summon (`npm install -g miniharness`) that `system-updates` asks at 07:00 whether a reboot is safe. Installed globally through npm, so its path follows the active node version rather than a fixed target | `files/miniharness.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
+The fleet-only `ssh-aliases` module also sets an outbound `Host *` default of
+`StrictHostKeyChecking accept-new`, including destinations outside the alias
+list. OpenSSH automatically records first-seen keys in its normal known-hosts
+files and rejects changed keys; first use is trust-on-first-use, not independent
+verification of the server. Existing `known_hosts` files are never cleared or
+rewritten by setup. This replaces the old `yeowoolmac` exception that disabled
+checking and discarded keys, so changing that machine's boot partition may now
+require investigating a host-key mismatch rather than silently accepting it.
+
+The managed default follows existing configuration. OpenSSH's first-value-wins
+rules preserve earlier explicit user policies (including stricter `yes` or
+`ask`); an earlier `no` or custom `UserKnownHostsFile` can still override normal
+protection. Command-line options also take precedence. Install/update replaces
+only setup's managed blocks, status detects policy drift, and uninstall removes
+the default without removing saved host keys. Machines receive this through
+normal setup updates, including their enabled nightly schedule.
+
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
 
 `auth login` performs one browser-approved onboarding for the machine and stores a renewable setup session plus the account's active global or per-service bearer set locally with mode `0600`. It reports the machine hostname during login and later refreshes so Auth can identify each setup device without exposing its network address in the console. `auth status`, `auth refresh`, and `auth token` sync through `/api/setup/session/token`, so bearer rotations, revocations, token-mode changes, and admission changes arrive without another browser login. The local bundle and setup-managed consumer copies are bound to the Auth origin and immutable account subject. A confirmed session rejection is remembered and fails closed; temporary Auth unavailability may use the last-known-good bearer while that session remains active. Setup sessions and bearer tokens are separately revokable in Auth. `auth token` uses distinct exit statuses for authoritative absence, rejected setup sessions, and temporary failures, allowing `providers` and `harnesses` to remove only confirmed revoked managed mirrors while preserving same-account copies during outages or temporary unreadability. During MCP reconciliation, each declared credential source is authoritative; an existing environment or `.zshenv` value is used only as a last-known-good fallback when its source is unavailable. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
