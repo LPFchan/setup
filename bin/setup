@@ -158,10 +158,12 @@ module_is_active() {
     if echo " ${USER_SERVICE_MODULES} " | grep -q " $1 "; then
         user_flag="--user"
     fi
-    # macOS: check launchd for providers
-    if [[ "$1" == "providers" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
-        launchctl print "gui/$(id -u)/com.lost.plus.providers" &>/dev/null && return 0
-        return 1
+    # macOS user timers live in launchd, not systemd.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        case "$1" in
+            providers) launchctl print "gui/$(id -u)/com.lost.plus.providers" &>/dev/null; return $? ;;
+            harnesses) launchctl print "gui/$(id -u)/com.lost.plus.harnesses-update" &>/dev/null; return $? ;;
+        esac
     fi
     [[ "$(systemctl ${user_flag} is-active "${unit}" 2>/dev/null)" == "active" ]]
 }

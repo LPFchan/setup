@@ -1,12 +1,14 @@
 ---
 name: fleet
-description: "Fleet topology — machines, hosts, roles, SSH aliases, Tailscale hostnames, and services running on each. Load this whenever the user mentions a host by name (spark1, mangchi, eleven, bingus, grimoire, yeowoolmac, oci-ubuntu), asks about the fleet, wants to run something on a remote machine, or when SSH/remote operations are needed."
+description: "Fleet topology and macOS/Linux machine onboarding — hosts, roles, SSH aliases, Tailscale hostnames, and services. Load when the user mentions a fleet host (including dumpling), asks about the fleet, onboards a machine, or needs SSH/remote operations."
 argument-hint: "Host name (e.g. bingus, grimoire) or fleet question"
 tags: [fleet, ssh, remote, hosts, infrastructure]
 audience: fleet
 ---
 
 # FLEET
+
+For a new macOS or Linux machine, read [references/onboarding.md](references/onboarding.md).
 
 Run `hostname` to see which machine you're on. All machines reach each other
 over SSH without a password (keys via `ssh-import-id gh:LPFchan`).
@@ -45,6 +47,12 @@ services that remain on that machine.
 - active repos in ~/Documents/
 - this machine uses Ghostty instead of Apple Terminal
 
+## dumpling — Mac mini (M1, 8 GB unified)
+
+- dumpling.tailaa113.ts.net · user yeowool
+- home to all computer-use (using codex + a2a skill)
+- home to all macOS/iOS xcode builds and testing
+
 ## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
 - spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
 - Ubuntu 24.04 / DGX OS 7.6.0; 20-core Arm CPU, 128 GB unified memory, 1 TB NVMe
@@ -82,7 +90,6 @@ services that remain on that machine.
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
 - mac.lost.plus (10.0.0.52) · user yeowool
-- for sophisticated computer-use tasks: summon codex agent here
 - two partitions: `audio work` and `the rest`. ssh and parsec through mac.lost.plus  should resolve for both partitions, regardless of the logged in status.
 - switch partitions with `mac-boot status`, `mac-boot 'The Rest'`, or `mac-boot 'Audio Work'`. Switching is passwordless, requests a normal application-aware restart, and guarantees reboot after 60 seconds if anything blocks it.
 

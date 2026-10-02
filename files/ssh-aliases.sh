@@ -23,6 +23,7 @@ FLEET=(
     "oci-ubuntu|oci.lost.plus|ubuntu"
     "bingus|bingus.lost.plus|yeowool|xterm-256color"
     "yeowoolair|yeowool-air.tailaa113.ts.net|yeowool"
+    "dumpling|dumpling.tailaa113.ts.net|yeowool"
 )
 
 _self() { echo "${SSH_ALIASES_SELF:-$(hostname -s 2>/dev/null || hostname)}"; }
