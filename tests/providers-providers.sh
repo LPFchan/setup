@@ -827,10 +827,18 @@ m.refresh_server = real_refresh_server
 import os as _os
 
 
+try:
+    import yaml as _yaml
+    HAVE_YAML = True
+except ImportError:
+    HAVE_YAML = False
+
+
 def _load_yaml(path):
-    """Parse a YAML file for assertions (mirrors are written by the
-    module's own _sync_hermes_mirror, which requires PyYAML to be present;
-    the test suite runs where PyYAML is available)."""
+    """Parse a YAML file for assertions. Without PyYAML the module's
+    _sync_hermes_mirror only takes its line-oriented credential fallback, so
+    every assertion that reads the YAML-path result is guarded by HAVE_YAML;
+    the mirror calls themselves still run on every machine."""
     import yaml
     with open(path) as handle:
         return yaml.safe_load(handle)
@@ -864,36 +872,38 @@ assert list(static_models) == ['@vendor/model']
 assert '@vendor/model' in m.load_json(m.OPENCODE_PATH)['provider']['demo']['models']
 # The single-provider refresh path in main() mirrors after the fetch.
 m._sync_hermes_mirror(servers, {'demo': models})
-mirrored = _load_yaml(m.HERMES_CONFIG)
-# unused (disabled) is removed by the status-reflecting mirror; ghost (unknown
-# to the registry) is never touched; foreign likewise.
-assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'foreign', 'ghost'], [e['name'] for e in mirrored['custom_providers']]
-entry = mirrored['custom_providers'][0]
-assert entry['models'] == ['fresh-1', 'fresh-2', 'stale-1'], entry
-assert entry['base_url'] == 'http://demo', entry
-assert entry['api_key'] == 'demo-key', entry
-assert entry['model'] == 'old-model'  # unrelated fields preserved
-assert mirrored['custom_providers'][1] == {
-    'name': 'foreign',
-    'base_url': 'http://foreign',
-    'api_key': 'foreign-key',
-    'models': ['foreign-model'],
-}
-assert mirrored['custom_providers'][2] == {
-    'name': 'ghost',
-    'base_url': 'http://ghost',
-    'api_key': 'ghost-key',
-    'models': ['ghost-model'],
-}
-assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
+if HAVE_YAML:
+    mirrored = _load_yaml(m.HERMES_CONFIG)
+    # unused (disabled) is removed by the status-reflecting mirror; ghost (unknown
+    # to the registry) is never touched; foreign likewise.
+    assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'foreign', 'ghost'], [e['name'] for e in mirrored['custom_providers']]
+    entry = mirrored['custom_providers'][0]
+    assert entry['models'] == ['fresh-1', 'fresh-2', 'stale-1'], entry
+    assert entry['base_url'] == 'http://demo', entry
+    assert entry['api_key'] == 'demo-key', entry
+    assert entry['model'] == 'old-model'  # unrelated fields preserved
+    assert mirrored['custom_providers'][1] == {
+        'name': 'foreign',
+        'base_url': 'http://foreign',
+        'api_key': 'foreign-key',
+        'models': ['foreign-model'],
+    }
+    assert mirrored['custom_providers'][2] == {
+        'name': 'ghost',
+        'base_url': 'http://ghost',
+        'api_key': 'ghost-key',
+        'models': ['ghost-model'],
+    }
+    assert _os.stat(m.HERMES_CONFIG).st_ino != before_inode  # atomic replace
 
 # Credential rotation is independent from model refresh. A failed /models
 # request keeps the known inventory but must still replace an old Hermes key.
 m.cache_set('demo', 'rotated-demo-key')
 m._sync_hermes_mirror(servers, {})
-rotated_entry = _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]
-assert rotated_entry['api_key'] == 'rotated-demo-key'
-assert rotated_entry['models'] == ['fresh-1', 'fresh-2', 'stale-1']
+if HAVE_YAML:
+    rotated_entry = _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]
+    assert rotated_entry['api_key'] == 'rotated-demo-key'
+    assert rotated_entry['models'] == ['fresh-1', 'fresh-2', 'stale-1']
 m.cache_set('demo', 'demo-key')
 m._sync_hermes_mirror(servers, {})
 
@@ -998,7 +1008,8 @@ assert open(m.PI_MODELS_PATH, 'rb').read() == pi_before
 # Idempotent: an unchanged mirror rewrites nothing.
 before_mtime = _os.stat(m.HERMES_CONFIG).st_mtime
 m._sync_hermes_mirror(servers, {'demo': {'fresh-1': {}, 'fresh-2': {}, 'stale-1': {}}})
-assert _os.stat(m.HERMES_CONFIG).st_mtime == before_mtime
+if HAVE_YAML:
+    assert _os.stat(m.HERMES_CONFIG).st_mtime == before_mtime
 
 # A refresh without models keeps the previous model list (offline tolerance;
 # never clobbered or removed), while credential updates remain independent.
@@ -1006,9 +1017,10 @@ m.cache_remove('demo')
 m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
 m.cache_set('demo', 'demo-key')
 m._sync_hermes_mirror(servers, {})
-assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
-    'fresh-1', 'fresh-2', 'stale-1'
-]
+if HAVE_YAML:
+    assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
+        'fresh-1', 'fresh-2', 'stale-1'
+    ]
 # Missing PyYAML still replaces and revokes credentials through the supported
 # line-oriented fallback; non-secret YAML content remains intact.
 m.fetch_models = lambda base, auth: {'data': [{'id': 'fresh-3'}]}
@@ -1042,10 +1054,11 @@ builtins.__dict__['__import__'] = real_import
 # PyYAML can attach a later successful credential to the preserved metadata.
 m.cache_set('demo', 'demo-key')
 m._sync_hermes_mirror(servers, {})
-assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
-    'fresh-1', 'fresh-2', 'stale-1'
-]
-assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['api_key'] == 'demo-key'
+if HAVE_YAML:
+    assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['models'] == [
+        'fresh-1', 'fresh-2', 'stale-1'
+    ]
+    assert _load_yaml(m.HERMES_CONFIG)['custom_providers'][0]['api_key'] == 'demo-key'
 
 # An unparseable Hermes config skips silently and is never overwritten.
 with open(m.HERMES_CONFIG, 'w') as handle:
@@ -1215,23 +1228,25 @@ m.cache_set('unused', 'unused-key')
 # Enabled + refreshed -> demo entry updated (models/base_url/api_key),
 # unused (disabled) removed, ghost (unknown) untouched.
 m._sync_hermes_mirror(full_servers, {'demo': {'fresh-1': {}, 'fresh-2': {}}})
-mirrored = _load_yaml(m.HERMES_CONFIG)
-names = [e['name'] for e in mirrored['custom_providers']]
-assert names == ['demo', 'ghost'], names
-demo = mirrored['custom_providers'][0]
-assert demo['models'] == ['fresh-1', 'fresh-2'], demo
-assert demo['base_url'] == 'http://demo', demo
-assert demo['api_key'] == 'demo-key', demo
-assert demo['model'] == 'old-model'  # unrelated fields preserved
-assert mirrored['custom_providers'][1]['name'] == 'ghost'
-assert mirrored['custom_providers'][1]['models'] == ['ghost-model']
+if HAVE_YAML:
+    mirrored = _load_yaml(m.HERMES_CONFIG)
+    names = [e['name'] for e in mirrored['custom_providers']]
+    assert names == ['demo', 'ghost'], names
+    demo = mirrored['custom_providers'][0]
+    assert demo['models'] == ['fresh-1', 'fresh-2'], demo
+    assert demo['base_url'] == 'http://demo', demo
+    assert demo['api_key'] == 'demo-key', demo
+    assert demo['model'] == 'old-model'  # unrelated fields preserved
+    assert mirrored['custom_providers'][1]['name'] == 'ghost'
+    assert mirrored['custom_providers'][1]['models'] == ['ghost-model']
 
 # Enabled + no refreshed data this run: the model list is left untouched (the
 # provider may simply be offline), not removed and not clobbered.
 m._sync_hermes_mirror(full_servers, {})
-mirrored = _load_yaml(m.HERMES_CONFIG)
-assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'ghost']
-assert mirrored['custom_providers'][0]['models'] == ['fresh-1', 'fresh-2']
+if HAVE_YAML:
+    mirrored = _load_yaml(m.HERMES_CONFIG)
+    assert [e['name'] for e in mirrored['custom_providers']] == ['demo', 'ghost']
+    assert mirrored['custom_providers'][0]['models'] == ['fresh-1', 'fresh-2']
 
 # An enabled provider with NO existing entry is created (mirror-all-enabled).
 m._sync_hermes_mirror(full_servers, {'unused': {'u1': {}}})
@@ -1240,13 +1255,14 @@ state = m.load_json(m.STATE_PATH)
 state['providers']['unused'] = {'enabled': True}
 m.save_json_atomic(m.STATE_PATH, state)
 m._sync_hermes_mirror(full_servers, {'unused': {'u1': {}}})
-mirrored = _load_yaml(m.HERMES_CONFIG)
-names = [e['name'] for e in mirrored['custom_providers']]
-assert 'unused' in names, names
-unused = next(e for e in mirrored['custom_providers'] if e['name'] == 'unused')
-assert unused['models'] == ['u1'], unused
-assert unused['base_url'] == 'http://unused', unused
-assert unused['api_key'] == 'unused-key', unused
+if HAVE_YAML:
+    mirrored = _load_yaml(m.HERMES_CONFIG)
+    names = [e['name'] for e in mirrored['custom_providers']]
+    assert 'unused' in names, names
+    unused = next(e for e in mirrored['custom_providers'] if e['name'] == 'unused')
+    assert unused['models'] == ['u1'], unused
+    assert unused['base_url'] == 'http://unused', unused
+    assert unused['api_key'] == 'unused-key', unused
 
 # A retired provider is swept off the machine. Every write path here is an
 # upsert, so without the sweep a withdrawn provider keeps its credential and
@@ -1310,16 +1326,16 @@ m.save_json(m.REGISTRY_PATH, _reg)
 # A provider left in Hermes and nowhere else: the only surface that can report it
 # is the Hermes prune, so it proves that prune feeds the report rather than
 # riding on a name some other surface already found.
-import yaml as _yaml
-_hcfg = _load_yaml(m.HERMES_CONFIG)
-_hcfg['custom_providers'].append({'name': 'hermesonly', 'base_url': 'http://h', 'models': ['h1']})
-with open(m.HERMES_CONFIG, 'w') as handle:
-    _yaml.safe_dump(_hcfg, handle, sort_keys=False)
+if HAVE_YAML:
+    _hcfg = _load_yaml(m.HERMES_CONFIG)
+    _hcfg['custom_providers'].append({'name': 'hermesonly', 'base_url': 'http://h', 'models': ['h1']})
+    with open(m.HERMES_CONFIG, 'w') as handle:
+        _yaml.safe_dump(_hcfg, handle, sort_keys=False)
 _report = io.StringIO()
 with contextlib.redirect_stderr(_report):
     m._prune_retired(m._load_retired())
 _said = {line.split(':')[0].strip() for line in _report.getvalue().splitlines() if 'retired' in line}
-assert _said == {'ghost', 'spectre', 'hermesonly'}, _report.getvalue()
+assert _said == {'ghost', 'spectre'} | ({'hermesonly'} if HAVE_YAML else set()), _report.getvalue()
 
 assert 'ghost' not in m._load_cache()
 assert 'ghost' not in m.load_json(m.STATE_PATH)['providers']
@@ -1331,8 +1347,9 @@ assert 'GHOST_API_KEY' not in open(m.ZSENV_PATH).read()
 assert 'ghost' not in m.load_json(m.OLD_AUTH_PATH)
 assert 'spectre' not in m.load_json(m.OLD_AUTH_PATH)
 assert 'SPECTRE_OAUTH_TOKEN' not in open(m.ZSENV_PATH).read()
-_hnames = [e['name'] for e in _load_yaml(m.HERMES_CONFIG)['custom_providers']]
-assert 'ghost' not in _hnames and 'hermesonly' not in _hnames, _hnames
+if HAVE_YAML:
+    _hnames = [e['name'] for e in _load_yaml(m.HERMES_CONFIG)['custom_providers']]
+    assert 'ghost' not in _hnames and 'hermesonly' not in _hnames, _hnames
 pi = m.load_json(m.PI_MODELS_PATH)
 assert 'ghost' not in pi['providers'], pi
 assert 'demo' in pi['providers'] and pi['_comment'] == 'left alone', pi
