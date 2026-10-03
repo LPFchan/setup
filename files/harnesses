@@ -16,7 +16,7 @@ MCP, folder=mcp.
 """
 
 from __future__ import annotations
-import contextlib, fcntl, json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, fcntl, glob, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.request
 import shlex
 
@@ -345,6 +345,25 @@ def vault_get(item_name):
 
 def _expand(p): return os.path.expanduser(p)
 
+def _version_key(path):
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", path)]
+
+def _expand_candidates(patterns):
+    """Expand ~ and globs; a glob yields its matches newest-version first.
+
+    t3 installed through npx (the older Linux route) leaves no ~/.local/bin/t3,
+    only ~/.t3/runtime/versions/<v>/t3, so the newest of those is the copy to
+    run `t3 update` with.
+    """
+    out = []
+    for p in patterns:
+        p = _expand(p)
+        if any(ch in p for ch in "*?["):
+            out.extend(sorted(glob.glob(p), key=_version_key, reverse=True))
+        else:
+            out.append(p)
+    return out
+
 def _node_bin_dirs():
     dirs = []
     nvm = os.environ.get("NVM_BIN")
@@ -394,15 +413,9 @@ def harness_version(binpath):
     return line[0].strip() if line else None
 
 def harness_resolve(name, spec):
-    if spec.get("viaNpx"):
-        if not (HOME/".config/systemd/user/t3code.service").exists(): return None
-        for d in _node_bin_dirs():
-            c = os.path.join(d, "npx")
-            if os.path.isfile(c) and os.access(c, os.X_OK): return c
-        return shutil.which("npx")
     c = shutil.which(name)
     if c: return c
-    candidates = [_expand(p) for p in spec.get("candidates", [])]
+    candidates = _expand_candidates(spec.get("candidates", []))
     if name in ("claude","codex"):
         try:
             prefix = subprocess.run(["npm","config","get","prefix"], capture_output=True, text=True, timeout=5).stdout.strip()
@@ -417,9 +430,12 @@ def harnesses(): return [(h["name"], h) for h in MANIFEST["harnesses"]]
 
 def cmd_install(names):
     specs = dict(harnesses())
-    targets = names or [n for n,s in harnesses() if s.get("install")]
-    if not shutil.which("node"):
-        print("node is required for codex/t3 but not found.")
+    # Bare `harnesses install` only installs the harnesses marked default;
+    # name any other harness to install it on this machine.
+    targets = names or [n for n,s in harnesses() if s.get("default")]
+    needs_node = [n for n in targets if specs.get(n, {}).get("needsNode")]
+    if needs_node and not shutil.which("node"):
+        print("node is required for %s but not found." % "/".join(needs_node))
         print("  Install node via nvm (https://github.com/nvm-sh/nvm) or /opt/node, then re-run.")
     rc = 0
     for name in targets:
@@ -429,10 +445,15 @@ def cmd_install(names):
         cmd = spec.get("install","").strip()
         if not cmd:
             print("  %s: no first-party installer registered; skipping." % name); continue
-        if harness_resolve(name, spec):
+        # A rerunnable installer repairs a partial install itself (t3: CLI
+        # present but its background service missing), so it runs anyway.
+        if harness_resolve(name, spec) and not spec.get("rerunWhenInstalled"):
             print("  %s: already installed; skipping." % name); continue
         print("  installing %s: %s" % (name, cmd))
-        if subprocess.run(["sh","-c",cmd]).returncode != 0:
+        # Installers are `curl ... | sh` pipelines. Without pipefail a failed
+        # download feeds the shell empty input, which exits 0 and reports an
+        # install that never happened.
+        if subprocess.run(["bash","-o","pipefail","-c",cmd]).returncode != 0:
             eprint("  %s: install failed" % name); rc = 1
     return rc
 
@@ -460,7 +481,7 @@ def cmd_update(names):
             env = _claude_maintenance_env(env)
         # A version probe is the only thing that distinguishes "already
         # current" from "the updater did nothing and said nothing".
-        before = None if spec.get("viaNpx") else harness_version(binpath)
+        before = harness_version(binpath)
         try:
             r = subprocess.run(argv, stdin=subprocess.DEVNULL, env=env,
                                timeout=int(os.environ.get("SETUP_HARNESS_TIMEOUT","900")))
@@ -470,7 +491,7 @@ def cmd_update(names):
         except subprocess.TimeoutExpired:
             failed.append(name)
             continue
-        after = None if spec.get("viaNpx") else harness_version(binpath)
+        after = harness_version(binpath)
         if before and after and before != after:
             print("  %s -> %s" % (before, after))
         elif before and after:
@@ -1696,7 +1717,7 @@ USAGE = """Usage: harnesses [%s] [name...] [--help]
 
 Install, update, and configure the fleet's AI coding harnesses.
 
-  install [name...]   Install/update node, claude, codex.
+  install [name...]   Install missing harnesses (default: claude, codex).
   update [name...]    Run each installed harness's own self-updater.
   settings [name...]  Render claude + t3 settings from the manifest.
   mcp [server...]     Enroll MCP servers through declared credential sources.
@@ -1716,7 +1737,7 @@ Every action takes optional names to narrow the run: harness names, except
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install/update node, claude, codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; gui-env) echo macOS: expose the .zshenv token blocks to GUI-launched apps;; esac"
+    preview = "case {1} in install) echo Install missing harnesses, default claude + codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; gui-env) echo macOS: expose the .zshenv token blocks to GUI-launched apps;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
