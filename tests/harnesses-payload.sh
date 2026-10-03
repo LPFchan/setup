@@ -622,6 +622,13 @@ ns["_remove_gui_env_agent"]()
 assert not agent.exists() and calls and calls[0][:2] == ["launchctl", "bootout"]
 unset = {c[2] for c in calls if c[:2] == ["launchctl", "unsetenv"]}
 assert unset == {"A_MCP_TOKEN", "MULTI_MCP_TOKEN", "HASHED_MCP_TOKEN", "OPENAI_API_KEY"}, unset
+# Until migration, the old agent's 'gui-env' still exports the token block.
+calls.clear()
+g["_is_macos"] = lambda: True
+assert ns["main"].__globals__["dispatch"]("gui-env", []) == 0
+assert ["launchctl", "setenv", "A_MCP_TOKEN", "sk a"] in calls, calls
+assert not any(c[:2] == ["launchctl", "setenv"] and c[2] == "OPENAI_API_KEY" for c in calls)
+g["_is_macos"] = lambda: False
 # Through cmd_mcp: a retired token the mirror drops from the block is still unset.
 zshenv_path.write_text("# BEGIN harnesses:mcp-tokens\nexport STALE_MCP_TOKEN=gone\n# END harnesses:mcp-tokens\n")
 agent.write_text("<plist/>")

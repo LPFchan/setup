@@ -1663,6 +1663,18 @@ def cmd_mcp_headers(args):
     return 0
 
 
+def cmd_gui_env(names):
+    """Legacy entry point. A Mac that took the new binary through a plain
+    setup update still runs the retired login agent, which calls this, and
+    its claude still holds the old ${VAR} headers until the next 'harnesses
+    mcp' migrates them and removes the agent. Keep those headers working
+    until then; once the agent is gone nothing calls this."""
+    if _is_macos():
+        for name, value in _managed_zshenv_exports().items():
+            subprocess.run(["launchctl", "setenv", name, value], capture_output=True)
+    return 0
+
+
 def _remove_gui_env_agent():
     """Remove the macOS login agent that copied the token blocks into
     launchctl, and the variables it set: headersHelper replaced both, and
@@ -1728,6 +1740,7 @@ def dispatch(action, names):
     if action=="proxy": return cmd_proxy(names)
     if action=="schedule": return cmd_schedule(names)
     if action=="mcp-headers": return cmd_mcp_headers(names)
+    if action=="gui-env": return cmd_gui_env(names)
     eprint("harnesses: unknown action %r" % action)
     eprint(USAGE)
     return 2
