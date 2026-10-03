@@ -1656,7 +1656,8 @@ def cmd_mcp_headers(args):
 
 def _remove_gui_env_agent():
     """Remove the macOS login agent that copied the token blocks into
-    launchctl. headersHelper replaced it; the values it set go at reboot."""
+    launchctl, and the variables it set: headersHelper replaced both, and
+    left in place every app launched until the next reboot inherits them."""
     path = LAUNCHD_DIR/("%s.plist" % GUI_ENV_PLIST_NAME)
     if not path.exists():
         return
@@ -1664,6 +1665,12 @@ def _remove_gui_env_agent():
                    capture_output=True)
     path.unlink()
     print("  removed login agent %s" % path)
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    for block in ("harnesses:mcp-tokens", "setup:api-keys"):
+        match = re.search(r"^# BEGIN %s\n(.*?)^# END %s$" % (re.escape(block), re.escape(block)),
+                          text, re.S | re.M)
+        for name in re.findall(r"^export ([A-Za-z_][A-Za-z0-9_]*)=", match.group(1) if match else "", re.M):
+            subprocess.run(["launchctl", "unsetenv", name], capture_output=True)
 
 
 ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule"]

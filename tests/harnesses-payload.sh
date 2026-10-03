@@ -615,9 +615,13 @@ assert [c[:3] for c in calls] == [["claude", "mcp", "get"]], "a current entry wa
 agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
 agent.parent.mkdir(parents=True, exist_ok=True)
 agent.write_text("<plist/>")
+zshenv_path.write_text(zshenv_path.read_text() +
+                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n# END setup:api-keys\n")
 calls.clear()
 ns["_remove_gui_env_agent"]()
 assert not agent.exists() and calls and calls[0][:2] == ["launchctl", "bootout"]
+unset = {c[2] for c in calls if c[:2] == ["launchctl", "unsetenv"]}
+assert unset == {"A_MCP_TOKEN", "MULTI_MCP_TOKEN", "HASHED_MCP_TOKEN", "OPENAI_API_KEY"}, unset
 zshenv_path.write_text(good_zshenv)
 print("mcp-headers ok")
 PY
