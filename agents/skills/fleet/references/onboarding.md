@@ -178,21 +178,37 @@ curl -fsSL https://setup.lost.plus/install.sh | zsh -s -- list
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Install the operator's requested modules individually, checking each result.
-The Dumpling selection was:
+Install modules individually, checking each result. Every fleet machine gets
+the default set; add `schedule` on Linux, where `setup schedule` and the
+module timers render through it (macOS uses launchd instead):
 
 ```sh
-for module in harnesses zsh-omnibar zsh-syntax-highlighting starship \
-    fzf-multicolumn zsh-basics agents ssh-aliases tmux; do
+fleet_modules=(zsh-basics zsh-omnibar zsh-syntax-highlighting starship tmux \
+    ssh-aliases agents auth)
+[[ $(uname) == Linux ]] && fleet_modules+=(schedule)
+for module in $fleet_modules; do
     setup install "$module" || break
 done
 ```
 
-These are an example selection, not requirements for every new host. Dependencies
-may install additional modules. Installing `harnesses` installs its manager and
-enables its daily refresh timer; verify the actual launchd job on macOS or
-systemd timer on Linux. Individual AI tools, provider enrollment, and Common Auth
-login are separate actions. Perform them only when requested.
+Then run `auth login` and pass its browser URL to the operator; wait for
+approval and verify with `auth status`. This is the machine's Common Auth
+identity: it is what later grants lost.plus MCPs and the passage vault.
+
+Machines that run interactive AI workloads also get the AI group, only when
+the operator asks for it:
+
+```sh
+for module in harnesses providers opencodex ai-menu resume; do
+    setup install "$module" || break
+done
+```
+
+Installing `harnesses` enables its daily refresh timer; verify the launchd job
+on macOS or the systemd timer on Linux. `ai-menu` auto-launches its menu in new
+shells. Other modules (`backup`, `system-updates`, `kernel-simmer`,
+`gpu-fancontrol`, `monitoring`, `mac-boot`) are role-specific; install them only
+when requested. Dependencies may pull in additional modules.
 
 `ssh-aliases` installs inbound owner keys from GitHub and outbound fleet shortcuts
 while preserving unmanaged entries. Test passwordless SSH to the new host from
@@ -201,14 +217,6 @@ other hosts when their `ssh-aliases` module next updates; do not force a fleet-w
 `setup update` to accelerate this without an instruction.
 
 ## Enable and verify automatic updates
-
-On Linux, install the shared timer helper first:
-
-```sh
-setup install schedule
-```
-
-Then, on either OS:
 
 ```sh
 setup schedule
