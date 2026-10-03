@@ -184,7 +184,10 @@ def load_json(path):
         eprint("  %s was corrupt (%s); moved aside and rebuilding" % (path, exc))
         return {}
 
-def save_json_atomic(path, data):
+def save_text_atomic(path, text):
+    """Replace the file in one rename, so a reader never sees it half written.
+    The target is resolved first: replacing a symlink would cut it loose."""
+    path = os.path.realpath(path)
     directory = os.path.dirname(path)
     pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
     try: mode = os.stat(path).st_mode & 0o777
@@ -192,11 +195,14 @@ def save_json_atomic(path, data):
     fd, tmp = tempfile.mkstemp(prefix=".harnesses.", dir=directory)
     try:
         with os.fdopen(fd, "w") as h:
-            json.dump(data, h, indent=2); h.write("\n"); h.flush(); os.fsync(h.fileno())
+            h.write(text); h.flush(); os.fsync(h.fileno())
         os.chmod(tmp, mode); os.replace(tmp, path)
     finally:
         try: os.unlink(tmp)
         except FileNotFoundError: pass
+
+def save_json_atomic(path, data):
+    save_text_atomic(path, json.dumps(data, indent=2) + "\n")
 
 def deep_merge(base, overlay):
     out = dict(base)
@@ -1133,7 +1139,8 @@ def _mirror_zshenv(exports, authoritative_missing=None, auth_context=None):
         text = text.rstrip("\n")+("\n\n" if text.strip() else "")+block
     for name in retired_vars:
         text = re.sub(r"^export\s+%s=.*\n?" % re.escape(name), "", text, flags=re.M)
-    ZSHENV.write_text(text)
+    # Atomic: claude's headersHelper reads this file at any moment.
+    save_text_atomic(ZSHENV, text)
     print("  mirrored %d token(s) into %s" % (len(exports), ZSHENV))
 
 # --- hermes -------------------------------------------------------------
@@ -1354,7 +1361,7 @@ def _write_base_url_export_locked():
         text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", block, text, flags=re.S)
     else:
         text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
-    ZSHENV.write_text(text)
+    save_text_atomic(ZSHENV, text)
     print("  exported ANTHROPIC_BASE_URL=http://127.0.0.1:%d in %s" % (port, ZSHENV))
 
     # .zshenv only reaches shells. A claude spawned by a GUI app or a service
@@ -1403,7 +1410,7 @@ def _remove_base_url_export_locked():
     if begin not in text:
         return
     text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", "", text, flags=re.S)
-    ZSHENV.write_text(text)
+    save_text_atomic(ZSHENV, text)
     print("  removed ANTHROPIC_BASE_URL block from %s" % ZSHENV)
 
 
