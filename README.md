@@ -95,10 +95,8 @@ Some modules need tools that are not modules, so the `requires` column cannot re
 | Module | Needs | Where it comes from |
 |--------|-------|---------------------|
 | `backup` | restic ≥ 0.17, `flock`, `ssh-keygen` | System packages |
-| `system-updates` | `hermes` on the operator's PATH | **Nothing installs it.** Its `harnesses-manifest.json` entry has `install: ""`, so `harnesses` keeps it updated but cannot put it there |
+| `system-updates` | `hermes` on the operator's PATH | `harnesses install hermes` (Hermes's own installer, run non-interactively); not part of a bare `harnesses install` |
 | `miniharness` | node and npm | nvm or `/opt/node`; the module reports what to do rather than installing node itself |
-
-`hermes` is the open gap: `system-updates enable` gets past `miniharness` now but still dies on a missing `hermes`, with a message naming it. Closing it means first deciding how `hermes` reaches a machine at all.
 
 ---
 

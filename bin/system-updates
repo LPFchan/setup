@@ -392,7 +392,7 @@ record_advisor_tooling() {
     miniharness=$(resolve_operator_tool "$operator" miniharness) \
         || die "miniharness is not on ${operator}'s PATH; the reboot advisor needs it (npm install -g miniharness)"
     hermes=$(resolve_operator_tool "$operator" hermes) \
-        || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts"
+        || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts (install it with 'harnesses install hermes')"
     atomic_write_text "$OPERATOR_FILE" 0644 "$operator"
     tmp=$(mktemp "$STATE_DIR/.tooling.XXXXXXXX")
     printf 'miniharness\t%s\nhermes\t%s\n' "$miniharness" "$hermes" > "$tmp"
