@@ -246,14 +246,11 @@ Chrome 142). Working path on branded Chrome: chromedriver BiDi
 `webExtension.install`. Chrome keeps its fingerprint; no Chrome-for-Testing
 needed (operator prefers branded — CFT can be flagged as bot traffic).
 
-### One-time service prep
+### Service flag
 
-The service needs `--enable-unsafe-extension-debugging` added to
-`ExecStart` (it's already on grimoire's unit as of 2026-09):
-
-```bash
-systemctl --user cat browser-use-chrome   # confirm the flag is present
-```
+BiDi `webExtension.install` needs `--enable-unsafe-extension-debugging` on the
+Chrome command line. The `browser-use-chrome` setup module renders it into
+`ExecStart`, so don't hand-edit the unit; the next `setup` run would overwrite it.
 
 ### Install an extension
 

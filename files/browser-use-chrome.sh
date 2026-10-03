@@ -62,7 +62,7 @@ Description=Chromium for Browser Use
 After=network.target
 
 [Service]
-ExecStart=$launch --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT --remote-allow-origins=* --user-data-dir=$profile about:blank
+ExecStart=$launch --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --enable-unsafe-extension-debugging --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT --remote-allow-origins=* --user-data-dir=$profile about:blank
 Restart=on-failure
 RestartSec=3
 

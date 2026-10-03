@@ -44,6 +44,7 @@ headless=$(BROWSER_USE_XVFB_RUN= zsh -c "source '$ROOT/lib/script-helpers.sh'; s
 grep -Fq "ExecStart=$BROWSER_USE_CHROMIUM_BIN --headless=new" <<<"$headless"
 grep -Fq -- "--user-data-dir=$BROWSER_USE_PROFILE_DIR" "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-address=127.0.0.1' "$TEST_TMP/unit.snapshot"
+grep -Fq -- '--enable-unsafe-extension-debugging' "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-port=9223' "$TEST_TMP/unit.snapshot"
 grep -Fq -- 'WantedBy=default.target' "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--user enable browser-use-chrome.service' "$SYSTEMCTL_LOG"
