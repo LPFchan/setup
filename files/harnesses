@@ -325,15 +325,52 @@ def hub_mcp_servers(context):
     return servers
 
 
+def local_plugin_mcp_servers():
+    """Import machine-local Codex plugin launch settings for Claude on Macs."""
+    if not _is_macos():
+        return []
+    codex_home = HOME/".codex"
+    servers = []
+    for spec in MANIFEST.get("localPluginMcpServers", []):
+        root = codex_home/"plugins/cache/openai-bundled"/spec["plugin"]
+        versions = [p for p in root.glob("*")
+                    if p.is_dir() and re.fullmatch(r"\d+(?:\.\d+)*", p.name)]
+        if not versions:
+            print("  %s: Codex plugin not installed; skipped" % spec["name"])
+            continue
+        latest = max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".")))
+        try:
+            entry = json.loads((latest/".mcp.json").read_text())["mcpServers"][spec["server"]]
+            command = entry["command"]
+            args, env = entry.get("args", []), entry.get("env", {})
+            if (not isinstance(command, str) or not pathlib.Path(command).is_absolute()
+                    or not os.access(command, os.X_OK)
+                    or not isinstance(args, list) or not all(isinstance(a, str) for a in args)
+                    or not isinstance(env, dict)
+                    or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+                    or entry.get("enabled") is False or entry.get("env_vars")):
+                raise ValueError("unsupported or unavailable plugin launch configuration")
+            if any("${" in value for value in [command, *args, *env.values()]):
+                raise ValueError("unresolved plugin placeholders")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            eprint("  %s: cannot import %s: %s; existing Claude registration preserved" %
+                   (spec["name"], latest/".mcp.json", exc))
+            continue
+        servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"],
+                        "stdio": {"type": "stdio", "command": command, "args": args, "env": env}})
+    return servers
+
+
 def all_mcp_servers(context):
-    """Hub servers first, then the manifest's third-party ones."""
+    """Hub servers, manifest third-party servers, and available local plugins."""
     hub = hub_mcp_servers(context)
     taken = {s["name"] for s in hub}
-    clash = sorted(taken & {s["name"] for s in MANIFEST["mcpServers"]})
+    external = list(MANIFEST["mcpServers"]) + local_plugin_mcp_servers()
+    clash = sorted(taken & {s["name"] for s in external})
     if clash:
         raise CommonAuthError("manifest names servers the registry already provides: %s"
                               % ", ".join(clash))
-    return hub + list(MANIFEST["mcpServers"])
+    return hub + external
 
 
 def mcp_grants(servers):
@@ -730,6 +767,8 @@ def _claude_mcp_entry(s):
     each connect, so the secret stays in .zshenv alone and a rotation lands
     on the next reconnect.
     """
+    if "stdio" in s:
+        return dict(s["stdio"])
     entry = {"type": "http", "url": s["url"]}
     if s["auth"] != "none":
         # An OAuth server lands in "none" too: claude negotiates it itself.
