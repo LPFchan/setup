@@ -622,6 +622,18 @@ ns["_remove_gui_env_agent"]()
 assert not agent.exists() and calls and calls[0][:2] == ["launchctl", "bootout"]
 unset = {c[2] for c in calls if c[:2] == ["launchctl", "unsetenv"]}
 assert unset == {"A_MCP_TOKEN", "MULTI_MCP_TOKEN", "HASHED_MCP_TOKEN", "OPENAI_API_KEY"}, unset
+# Through cmd_mcp: a retired token the mirror drops from the block is still unset.
+zshenv_path.write_text("# BEGIN harnesses:mcp-tokens\nexport STALE_MCP_TOKEN=gone\n# END harnesses:mcp-tokens\n")
+agent.write_text("<plist/>")
+calls.clear()
+g["_is_macos"] = lambda: True
+g["common_auth_context"] = lambda: {"origin": "https://auth.invalid", "subject": "test"}
+g["all_mcp_servers"] = lambda context: []
+g["_retired_env_vars"] = lambda: {"STALE_MCP_TOKEN"}
+assert ns["cmd_mcp"]([]) == 0
+assert "STALE_MCP_TOKEN" not in zshenv_path.read_text(), "mirror kept the retired token"
+g["_is_macos"] = lambda: False
+assert ["launchctl", "unsetenv", "STALE_MCP_TOKEN"] in calls, calls
 zshenv_path.write_text(good_zshenv)
 print("mcp-headers ok")
 PY

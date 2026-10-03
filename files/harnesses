@@ -846,6 +846,10 @@ def _cmd_mcp_once(names):
         # machine, which zsh then reports on every new shell.
         val = mcp_token_value(val)
         if val: exports.append("export %s=%s" % (envvar, shlex.quote(val)))
+    if _is_macos():
+        # Before the mirror: it drops revoked and retired tokens from the
+        # block, and the agent's copies of those still need unsetting.
+        _remove_gui_env_agent()
     _mirror_zshenv(exports, authoritative_missing, auth_context)
     if shutil.which("claude"):
         for name in MANIFEST.get("retiredMcpServers") or []:
@@ -864,8 +868,6 @@ def _cmd_mcp_once(names):
     _write_codex_mcp([s for s in servers if "codex" in mcp_surfaces(s)])
     _write_hermes_mcp([s for s in servers if "hermes" in mcp_surfaces(s)],
                       exports, authoritative_missing)
-    if _is_macos():
-        _remove_gui_env_agent()
     return 0
 
 def _claude_mcp_scope(name):
