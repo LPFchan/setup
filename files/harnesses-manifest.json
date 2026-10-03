@@ -61,7 +61,7 @@
     {
       "name": "kimi",
       "install": "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
-      "updateArgs": "update",
+      "updateArgs": "update --yes",
       "needsNode": false,
       "candidates": [
         "~/.kimi-code/bin/kimi"
