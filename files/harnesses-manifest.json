@@ -127,6 +127,13 @@
       ]
     }
   ],
+  "localPluginMcpServers": [
+    {
+      "name": "codex-cu",
+      "plugin": "unified-computer-use",
+      "server": "cua_repl"
+    }
+  ],
   "settings": {
     "claude": {
       "comment": "Merged into ~/.claude/settings.json. Scalar/dict keys deep-merge (existing preserved). 'permissionsAllowAdd' is union-merged into permissions.allow so the module can never clobber an operator's existing allow list. disableClaudeAiConnectors stops claude fetching the claude.ai cloud connectors: everything worth keeping is administered here, and the duplicates were showing up twice with different auth shapes.",

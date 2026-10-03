@@ -163,6 +163,8 @@ Every module that installs a user-facing command supports `--help`. Configuratio
 
 ---
 
+`harnesses settings` and `harnesses mcp` discover the newest numeric version of the local `unified-computer-use` Codex plugin on macOS, under `$CODEX_HOME/plugins/cache/openai-bundled` (default `~/.codex`). The manifest's `localPluginMcpServers` entry imports `cua_repl` as Claude's user-scope `codex-cu` stdio server, copying its command, arguments, and environment. The daily refresh updates that registration when the installed plugin changes. ChatGPT and its computer-use components must already be installed and permitted on the Mac; setup does not install them. Linux skips this entry. Missing, malformed, disabled, or unavailable plugin launch settings are reported and leave an existing Claude registration alone; local/project registrations retain precedence. This integration uses the app's unofficial plugin interface and may need adjustment after app updates. Codex continues to use its own plugin.
+
 `harnesses refresh` runs daily at 11:00 and can overlap the hourly provider refresh and active T3 sessions. Its Claude MCP management and self-update commands run with `CLAUDE_CODE_SIMPLE=1` only in their child environment: normal Claude startup can refresh OAuth even for these administrative commands, and a rejected refresh can erase the shared login. Minimal mode preserves MCP configuration management and updates while skipping native OAuth reads. Interactive Claude and T3 sessions retain their normal authentication behavior.
 
 ## Detailed Feature Overview
