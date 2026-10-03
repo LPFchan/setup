@@ -195,6 +195,9 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - CDP target order is not Chrome's visible tab-strip order.
 - `BU_CDP_URL` is an HTTP DevTools endpoint; the daemon resolves it to WebSocket.
 - Ask before leaving cloud browsers running; stop them with `stop_remote_daemon(name)` or `PATCH /browsers/{id} {"action":"stop"}`.
+- Clean up when the task is done: `close_tab()` every tab you opened, and kill any `BU_NAME` daemon you started (they outlive the task). Never touch tabs you didn't open; the shared browser holds the operator's and other agents' tabs.
+- Over SSH, quote `"--remote-allow-origins=*"`; zsh treats a bare `*` as a glob and aborts.
+- `pkill -f <pattern>` over SSH also matches the SSH session's own command line (and any later word in it, like a path you `rm`), killing your session. Kill by PID instead.
 
 ## Domain Skills
 
@@ -204,9 +207,12 @@ When enabled, search `$BH_AGENT_WORKSPACE/domain-skills/<host>/` before inventin
 
 ## Headless fleet hosts (grimoire, oci-ubuntu)
 
-Headless hosts have no GUI Chrome. A dedicated headless Chrome runs as a
-user systemd service on grimoire (`browser-use-chrome.service`, CDP on
-127.0.0.1:9223). The daemon's auto-discovery does not find it (Chrome
+Headless hosts have no monitor. A dedicated Chrome runs as a user systemd
+service on grimoire (`browser-use-chrome.service`, CDP on 127.0.0.1:9223),
+windowed on an Xvfb virtual display rather than `--headless`: Cloudflare
+challenges stop headless Chrome but pass the windowed one, and
+`capture_screenshot` works (it times out in headless). The setup module falls
+back to `--headless=new` only on hosts without `xvfb-run`. The daemon's auto-discovery does not find it (Chrome
 147+ no longer writes DevToolsActivePort where the scanner looks), so
 always set the CDP endpoint explicitly:
 
@@ -232,7 +238,7 @@ may not have it — pass it inline as above when unsure.
   equivalent user service, or use `browser-use auth login` cloud browsers;
   don't try to drive a GUI browser that isn't there.
 
-## Extensions in the headless Chrome (grimoire, verified 2026-09)
+## Extensions in grimoire's Chrome (verified 2026-09)
 
 Branded Chrome 137+ ignores `--load-extension` (and the
 `--disable-features=DisableLoadExtensionCommandLineSwitch` override died in

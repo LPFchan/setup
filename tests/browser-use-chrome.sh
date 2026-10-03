@@ -30,11 +30,18 @@ SH
 chmod +x "$TEST_TMP/bin/curl"
 export PATH="$TEST_TMP/bin:$PATH"
 
+export BROWSER_USE_XVFB_RUN="$TEST_TMP/xvfb-run"
+touch "$BROWSER_USE_XVFB_RUN"
+chmod +x "$BROWSER_USE_XVFB_RUN"
+
 zsh -c "source '$ROOT/lib/script-helpers.sh'; source '$ROOT/files/browser-use-chrome.sh'; install; status; cp '$BROWSER_USE_SYSTEMD_DIR/browser-use-chrome.service' '$TEST_TMP/unit.snapshot'; uninstall"
 
 UNIT="$BROWSER_USE_SYSTEMD_DIR/browser-use-chrome.service"
 [[ ! -e "$UNIT" ]] || { echo "unit survived uninstall" >&2; exit 1; }
-grep -Fq "ExecStart=$BROWSER_USE_CHROMIUM_BIN" "$TEST_TMP/unit.snapshot"
+grep -Fq "ExecStart=$BROWSER_USE_XVFB_RUN -a -s \"-screen 0 1440x900x24\" $BROWSER_USE_CHROMIUM_BIN" "$TEST_TMP/unit.snapshot"
+! grep -Fq -- '--headless' "$TEST_TMP/unit.snapshot"
+headless=$(BROWSER_USE_XVFB_RUN= zsh -c "source '$ROOT/lib/script-helpers.sh'; source '$ROOT/files/browser-use-chrome.sh'; _render_unit")
+grep -Fq "ExecStart=$BROWSER_USE_CHROMIUM_BIN --headless=new" <<<"$headless"
 grep -Fq -- "--user-data-dir=$BROWSER_USE_PROFILE_DIR" "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-address=127.0.0.1' "$TEST_TMP/unit.snapshot"
 grep -Fq -- '--remote-debugging-port=9223' "$TEST_TMP/unit.snapshot"
