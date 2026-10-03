@@ -448,7 +448,10 @@ def cmd_install(names):
         if harness_resolve(name, spec):
             print("  %s: already installed; skipping." % name); continue
         print("  installing %s: %s" % (name, cmd))
-        if subprocess.run(["sh","-c",cmd]).returncode != 0:
+        # Installers are `curl ... | sh` pipelines. Without pipefail a failed
+        # download feeds the shell empty input, which exits 0 and reports an
+        # install that never happened.
+        if subprocess.run(["bash","-o","pipefail","-c",cmd]).returncode != 0:
             eprint("  %s: install failed" % name); rc = 1
     return rc
 

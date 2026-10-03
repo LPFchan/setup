@@ -45,6 +45,16 @@ defaults = {h["name"] for h in manifest["harnesses"] if h.get("default")}
 if attempted != defaults or defaults != {"claude", "codex"}:
     fail("bare install attempted %s, expected %s" % (sorted(attempted), sorted(defaults)))
 
+# A failed download in an installer pipeline is an install failure, not an
+# empty script the shell happily runs.
+G["harnesses"] = lambda: [("piped", {"install": "false | sh"})]
+G["harness_resolve"] = lambda name, spec: None
+with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    rc = G["cmd_install"](["piped"])
+if rc == 0:
+    fail("a failing downloader in the install pipeline was reported as success")
+G["harnesses"] = ns["harnesses"]
+
 # t3 resolves through the runtime versions glob, newest version first (0.0.45
 # sorts above 0.0.9 by number, not by string).
 G["harness_resolve"] = ns["harness_resolve"]
