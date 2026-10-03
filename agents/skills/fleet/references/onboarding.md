@@ -40,6 +40,19 @@ role. Confirm the chosen fleet name with the operator if it is unspecified.
 Use `hostname`, `uname -m`, and either `sw_vers`/`sysctl` on macOS or
 `/etc/os-release`/`lscpu`/`free -h` on Linux.
 
+Set the machine's hostname to the fleet name. On macOS, set all three names;
+an unset `HostName` makes macOS take one from the network (for example a
+router's `Macmini.lan`), and that name is what `auth` reports to Common Auth:
+
+```sh
+sudo scutil --set ComputerName <fleet-name>
+sudo scutil --set LocalHostName <fleet-name>
+sudo scutil --set HostName <fleet-name>
+```
+
+On systemd Linux, use `sudo hostnamectl set-hostname <fleet-name>`. Verify
+with `hostname` on either OS.
+
 On macOS, install Homebrew if absent:
 
 ```sh
