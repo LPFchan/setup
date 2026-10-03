@@ -53,3 +53,7 @@ Ask the operator only for the icon direction and the first version number.
   negotiation and Link headers need a server in front of Pages; the API,
   OAuth, MCP and A2A checks don't apply to an app homepage.
 - Before tagging, build from a fresh worktree.
+
+For both web services and macOS apps, the final step is to add the app or service
+to the lost.plus homepage with its name, a short description, and a link to its
+public homepage. Verify the listing is live.
