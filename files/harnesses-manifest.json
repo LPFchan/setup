@@ -129,7 +129,7 @@
   ],
   "localPluginMcpServers": [
     {
-      "name": "codex-cu",
+      "name": "cua_repl",
       "plugin": "unified-computer-use",
       "server": "cua_repl"
     }

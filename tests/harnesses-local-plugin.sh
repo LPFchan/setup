@@ -40,20 +40,20 @@ with mock.patch.dict(g, _is_macos=lambda: True):
     want = {'type': 'stdio', **{k: entry[k] for k in ('command', 'args', 'env')}}
     assert ns['_claude_mcp_entry'](server) == want
     assert ns['mcp_surfaces'](server) == ['claude']
-    assert ns['mcp_grants'](servers) == ['mcp__codex-cu__*']
+    assert ns['mcp_grants'](servers) == ['mcp__cua_repl__*']
     with mock.patch.dict(g, hub_mcp_servers=lambda context: []):
         assert server in ns['all_mcp_servers']({})
     # Reconciliation changes a stale user entry, then becomes idempotent.
     calls = []
     config = home/'.claude.json'
-    config.write_text(json.dumps({'mcpServers': {'codex-cu': {'type': 'stdio', 'command': 'old'}}}))
+    config.write_text(json.dumps({'mcpServers': {'cua_repl': {'type': 'stdio', 'command': 'old'}}}))
     with mock.patch.dict(g, _claude_mcp_scope=lambda name: 'user'), \
          mock.patch.object(g['subprocess'], 'run', side_effect=lambda argv, **kw: calls.append(argv)):
         ns['_claude_mcp_reconcile'](server)
-        assert calls[0] == ['claude', 'mcp', 'remove', 'codex-cu', '-s', 'user']
+        assert calls[0] == ['claude', 'mcp', 'remove', 'cua_repl', '-s', 'user']
         assert json.loads(calls[1][-1]) == want
         calls.clear()
-        config.write_text(json.dumps({'mcpServers': {'codex-cu': want}}))
+        config.write_text(json.dumps({'mcpServers': {'cua_repl': want}}))
         ns['_claude_mcp_reconcile'](server)
         assert not calls
         with mock.patch.dict(g, _claude_mcp_scope=lambda name: 'project'):
@@ -68,7 +68,7 @@ with mock.patch.dict(g, _is_macos=lambda: True):
         with contextlib.redirect_stderr(io.StringIO()) as errors:
             assert ns['local_plugin_mcp_servers']() == []
         assert 'existing Claude registration preserved' in errors.getvalue()
-        assert json.loads(config.read_text())['mcpServers']['codex-cu'] == want
+        assert json.loads(config.read_text())['mcpServers']['cua_repl'] == want
     (latest/'.mcp.json').write_text(original)
     node.chmod(0o644)
     with contextlib.redirect_stderr(io.StringIO()):
