@@ -5,6 +5,7 @@
     {
       "name": "claude",
       "install": "curl -fsSL https://claude.ai/install.sh | bash",
+      "default": true,
       "updateArgs": "update",
       "needsNode": false,
       "candidates": [
@@ -15,13 +16,14 @@
     {
       "name": "codex",
       "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+      "default": true,
       "updateArgs": "update",
       "needsNode": true,
       "candidates": []
     },
     {
       "name": "opencode",
-      "install": "",
+      "install": "curl -fsSL https://opencode.ai/install | bash",
       "updateArgs": "upgrade",
       "needsNode": false,
       "candidates": [
@@ -30,7 +32,7 @@
     },
     {
       "name": "agy",
-      "install": "",
+      "install": "curl -fsSL https://antigravity.google/cli/install.sh | bash",
       "updateArgs": "update",
       "needsNode": false,
       "candidates": [
@@ -39,7 +41,7 @@
     },
     {
       "name": "hermes",
-      "install": "",
+      "install": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive",
       "updateArgs": "update --yes",
       "needsNode": false,
       "candidates": [
@@ -48,7 +50,7 @@
     },
     {
       "name": "grok",
-      "install": "",
+      "install": "curl -fsSL https://x.ai/cli/install.sh | bash",
       "updateArgs": "update",
       "needsNode": false,
       "candidates": [
@@ -58,7 +60,7 @@
     },
     {
       "name": "kimi",
-      "install": "",
+      "install": "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
       "updateArgs": "update",
       "needsNode": false,
       "candidates": [
@@ -67,7 +69,7 @@
     },
     {
       "name": "muse",
-      "install": "",
+      "install": "curl -fsSL https://dev.meta.ai/install.sh | bash",
       "updateArgs": "--version",
       "updateEnv": "MUSE_SYNC_UPDATE=1",
       "needsNode": false,
@@ -77,11 +79,13 @@
     },
     {
       "name": "t3",
-      "install": "",
-      "updateArgs": "--yes t3@latest service update",
-      "needsNode": true,
-      "viaNpx": true,
-      "candidates": []
+      "install": "curl -fsSL https://t3.codes/install.sh | sh && \"$HOME/.local/bin/t3\" service install",
+      "updateArgs": "update --yes",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/t3",
+        "~/.t3/runtime/versions/*/t3"
+      ]
     }
   ],
   "mcpServers": [
