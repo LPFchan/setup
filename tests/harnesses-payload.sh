@@ -611,36 +611,6 @@ claude_json.write_text(json.dumps({"mcpServers": {"jina": entry}}))
 ns["_claude_mcp_reconcile"](jina)
 assert [c[:3] for c in calls] == [["claude", "mcp", "get"]], "a current entry was rewritten: %r" % calls
 
-# The old macOS login agent is removed.
-agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
-agent.parent.mkdir(parents=True, exist_ok=True)
-agent.write_text("<plist/>")
-zshenv_path.write_text(zshenv_path.read_text() +
-                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n# END setup:api-keys\n")
-calls.clear()
-ns["_remove_gui_env_agent"]()
-assert not agent.exists() and calls and calls[0][:2] == ["launchctl", "bootout"]
-unset = {c[2] for c in calls if c[:2] == ["launchctl", "unsetenv"]}
-assert unset == {"A_MCP_TOKEN", "MULTI_MCP_TOKEN", "HASHED_MCP_TOKEN", "OPENAI_API_KEY"}, unset
-# Until migration, the old agent's 'gui-env' still exports the token block.
-calls.clear()
-g["_is_macos"] = lambda: True
-assert ns["main"].__globals__["dispatch"]("gui-env", []) == 0
-assert ["launchctl", "setenv", "A_MCP_TOKEN", "sk a"] in calls, calls
-assert not any(c[:2] == ["launchctl", "setenv"] and c[2] == "OPENAI_API_KEY" for c in calls)
-g["_is_macos"] = lambda: False
-# Through cmd_mcp: a retired token the mirror drops from the block is still unset.
-zshenv_path.write_text("# BEGIN harnesses:mcp-tokens\nexport STALE_MCP_TOKEN=gone\n# END harnesses:mcp-tokens\n")
-agent.write_text("<plist/>")
-calls.clear()
-g["_is_macos"] = lambda: True
-g["common_auth_context"] = lambda: {"origin": "https://auth.invalid", "subject": "test"}
-g["all_mcp_servers"] = lambda context: []
-g["_retired_env_vars"] = lambda: {"STALE_MCP_TOKEN"}
-assert ns["cmd_mcp"]([]) == 0
-assert "STALE_MCP_TOKEN" not in zshenv_path.read_text(), "mirror kept the retired token"
-g["_is_macos"] = lambda: False
-assert ["launchctl", "unsetenv", "STALE_MCP_TOKEN"] in calls, calls
 zshenv_path.write_text(good_zshenv)
 print("mcp-headers ok")
 PY

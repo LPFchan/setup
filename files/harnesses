@@ -852,10 +852,6 @@ def _cmd_mcp_once(names):
         # machine, which zsh then reports on every new shell.
         val = mcp_token_value(val)
         if val: exports.append("export %s=%s" % (envvar, shlex.quote(val)))
-    if _is_macos():
-        # Before the mirror: it drops revoked and retired tokens from the
-        # block, and the agent's copies of those still need unsetting.
-        _remove_gui_env_agent()
     _mirror_zshenv(exports, authoritative_missing, auth_context)
     if shutil.which("claude"):
         for name in MANIFEST.get("retiredMcpServers") or []:
@@ -1644,8 +1640,6 @@ def cmd_schedule(names):
     return 2
 
 # --- mcp headers --------------------------------------------------------
-GUI_ENV_PLIST_NAME = "com.lost.plus.harnesses-gui-env"
-
 
 def cmd_mcp_headers(args):
     """claude's headersHelper: print one server's auth header as JSON."""
@@ -1661,37 +1655,6 @@ def cmd_mcp_headers(args):
     print(json.dumps({"Authorization": "Bearer " + token} if auth == "bearer"
                      else {"X-API-Key": token}))
     return 0
-
-
-def cmd_gui_env(names):
-    """Legacy entry point. A Mac that took the new binary through a plain
-    setup update still runs the retired login agent, which calls this, and
-    its claude still holds the old ${VAR} headers until the next 'harnesses
-    mcp' migrates them and removes the agent. Keep those headers working
-    until then; once the agent is gone nothing calls this."""
-    if _is_macos():
-        for name, value in _managed_zshenv_exports().items():
-            subprocess.run(["launchctl", "setenv", name, value], capture_output=True)
-    return 0
-
-
-def _remove_gui_env_agent():
-    """Remove the macOS login agent that copied the token blocks into
-    launchctl, and the variables it set: headersHelper replaced both, and
-    left in place every app launched until the next reboot inherits them."""
-    path = LAUNCHD_DIR/("%s.plist" % GUI_ENV_PLIST_NAME)
-    if not path.exists():
-        return
-    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), GUI_ENV_PLIST_NAME)],
-                   capture_output=True)
-    path.unlink()
-    print("  removed login agent %s" % path)
-    text = ZSHENV.read_text() if ZSHENV.exists() else ""
-    for block in ("harnesses:mcp-tokens", "setup:api-keys"):
-        match = re.search(r"^# BEGIN %s\n(.*?)^# END %s$" % (re.escape(block), re.escape(block)),
-                          text, re.S | re.M)
-        for name in re.findall(r"^export ([A-Za-z_][A-Za-z0-9_]*)=", match.group(1) if match else "", re.M):
-            subprocess.run(["launchctl", "unsetenv", name], capture_output=True)
 
 
 ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule"]
@@ -1740,7 +1703,6 @@ def dispatch(action, names):
     if action=="proxy": return cmd_proxy(names)
     if action=="schedule": return cmd_schedule(names)
     if action=="mcp-headers": return cmd_mcp_headers(names)
-    if action=="gui-env": return cmd_gui_env(names)
     eprint("harnesses: unknown action %r" % action)
     eprint(USAGE)
     return 2
