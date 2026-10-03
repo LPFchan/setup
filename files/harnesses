@@ -74,33 +74,21 @@ def _zshenv_exports():
 
 
 def _managed_zshenv_exports():
-    """Exports from the account-bound harnesses block only, read the way zsh
-    would. A secret with a newline is one multiline single-quoted value, so
-    lines are joined until the quotes close; and a '#' only starts a comment
-    at the head of a line, never inside an unquoted value such as abc#def."""
+    """Exports from the account-bound harnesses block only."""
     path = HOME/".zshenv"
     if not path.exists():
         return {}
-    match = re.search(r"^# BEGIN harnesses:mcp-tokens\n(.*?)^# END harnesses:mcp-tokens$",
-                      path.read_text(), re.S | re.M)
+    begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+    match = re.search(re.escape(begin) + r"(.*?)" + re.escape(end), path.read_text(), re.S)
     if not match:
         return {}
-    found, pending = {}, ""
-    for line in match.group(1).splitlines(keepends=True):
-        if not pending and line.lstrip().startswith("#"):
+    found = {}
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("export ") or "=" not in line:
             continue
-        pending += line
-        try:
-            words = shlex.split(pending)
-        except ValueError:
-            continue  # quote still open: the value runs onto the next line
-        pending = ""
-        for word in words:
-            name, eq, value = word.partition("=")
-            if eq and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
-                found[name] = value
-    if pending:
-        eprint("  cannot parse the harnesses:mcp-tokens block in %s" % path)
+        name, _, value = line[len("export "):].partition("=")
+        found[name.strip()] = value.strip().strip('"\'')
     return found
 
 
@@ -714,22 +702,15 @@ def mcp_surfaces(server):
     return server.get("surfaces") or ["claude", "codex", "hermes"]
 
 
-def _claude_mcp_entry(s):
-    """The user-scope ~/.claude.json entry for a server.
-
-    A token server gets a headersHelper, not a ${VAR} header. claude expands
-    ${VAR} from its own environment, and a claude started by a service or a
-    GUI app (T3 Code under systemd or launchd) never read .zshenv, so every
-    token server answered 401. The helper reads the managed block itself at
-    each connect, so the secret stays in .zshenv alone and a rotation lands
-    on the next reconnect.
-    """
-    entry = {"type": "http", "url": s["url"]}
-    if s["auth"] != "none":
-        # An OAuth server lands in "none" too: claude negotiates it itself.
-        entry["headersHelper"] = "%s mcp-headers %s %s" % (
-            shlex.quote(_self_path()), s["auth"], mcp_env_var(s))
-    return entry
+def _claude_mcp_add(s):
+    argv = ["claude","mcp","add","--scope","user",s["name"],"--transport","http",s["url"]]
+    if s["auth"] == "none":
+        # Nothing to send. An OAuth server lands here too: claude negotiates it
+        # interactively, and there is no static token to put in a header.
+        return argv
+    envvar = mcp_env_var(s)
+    header = ("Authorization: Bearer ${%s}" % envvar) if s["auth"]=="bearer" else ("X-API-Key: ${%s}" % envvar)
+    return argv + ["--header", header]
 
 def _codex_mcp_block(s):
     lines = ["[mcp_servers.%s]" % s["name"], "url = \"%s\"" % s["url"]]
@@ -849,7 +830,7 @@ def _cmd_mcp_once(names):
     _mirror_zshenv(exports, authoritative_missing, auth_context)
     if shutil.which("claude"):
         for name in MANIFEST.get("retiredMcpServers") or []:
-            if _claude_mcp_scope(name) is not None:
+            if _claude_mcp_registered(name) is not None:
                 print("  unregistering retired MCP server %s" % name)
                 # No -s: the CLI then removes it from whichever scope holds it.
                 # Passing user silently missed the local-scope copies.
@@ -865,12 +846,14 @@ def _cmd_mcp_once(names):
     _write_hermes_mcp([s for s in servers if "hermes" in mcp_surfaces(s)],
                       exports, authoritative_missing)
     if _is_macos():
-        _remove_gui_env_agent()
+        _gui_env_install()
+        # A token that never reached launchctl is an app that still gets 401;
+        # fail the pass so the refresh reports it instead of looking green.
+        return cmd_gui_env([])
     return 0
 
-def _claude_mcp_scope(name):
-    """The scope claude has the server registered at ("" when it does not
-    say), or None when it is not registered.
+def _claude_mcp_registered(name):
+    """(url, header) as claude has it stored, or None when it is not registered.
 
     'claude mcp list' was the wrong source: it prints every server including the
     claude.ai connectors, and the old membership test was a substring search over
@@ -883,40 +866,43 @@ def _claude_mcp_scope(name):
                        env=_claude_maintenance_env())
     if r.returncode != 0 or "No MCP server named" in (r.stdout + r.stderr):
         return None
+    url, header, scope = None, None, None
     for line in r.stdout.splitlines():
         stripped = line.strip()
-        if stripped.startswith("Scope:"):
-            return stripped[6:].strip().split()[0].lower()
-    return ""
-
-
-def _claude_user_mcp_entry(name):
-    """The server's stored user-scope entry. Read from the file because
-    'claude mcp get' does not print a headersHelper at all."""
-    path = pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
-    try:
-        return (json.loads(path.read_text()).get("mcpServers") or {}).get(name)
-    except (OSError, ValueError, AttributeError):
-        return None
+        if stripped.startswith("URL:"):
+            url = stripped[4:].strip()
+        elif stripped.startswith("Scope:"):
+            scope = stripped[6:].strip().split()[0].lower()
+        elif ":" in stripped and stripped.split(":", 1)[0] in ("Authorization", "X-API-Key"):
+            header = stripped
+    return (url, header, scope)
 
 
 def _claude_mcp_reconcile(s):
-    """Enroll a server, or re-enroll one whose stored entry has drifted from
-    what the manifest asks for: a url change, an auth switch, or an entry from
-    before headersHelper that still carries a ${VAR} header."""
-    want = _claude_mcp_entry(s)
-    argv = ["claude","mcp","add-json","--scope","user",s["name"],json.dumps(want)]
-    scope = _claude_mcp_scope(s["name"])
-    if scope is None:
+    """Enroll a server, or re-enroll one whose stored url/header has drifted.
+
+    The token itself never goes stale here: the header stores ${VAR} and claude
+    expands it per request, so a rotation reaches it through the zshenv mirror.
+    What does drift is the manifest -- a url change or a bearer/x-api-key switch
+    -- and a skip-if-present enrollment can never apply either.
+    """
+    argv = _claude_mcp_add(s)
+    want_url = s["url"]
+    # A no-auth server has no --header at all; indexing for it threw.
+    want_header = argv[argv.index("--header") + 1] if "--header" in argv else None
+    current = _claude_mcp_registered(s["name"])
+    if current is None:
         subprocess.run(argv, env=_claude_maintenance_env())
         return
-    if scope not in ("", "user"):
+    url, header, scope = current
+    if scope not in (None, "user"):
         # We only ever write user scope. A local or project registration is the
         # operator's, it takes precedence over ours, and rewriting it at user
         # scope would not replace it -- it would sit underneath, shadowed.
         print("  %s is registered at %s scope; leaving it alone" % (s["name"], scope))
         return
-    if _claude_user_mcp_entry(s["name"]) == want:
+    if url == want_url and (want_header is None or header is None
+                            or header == want_header):
         return
     print("  re-enrolling %s (stored config differs from the manifest)" % s["name"])
     subprocess.run(["claude","mcp","remove",s["name"],"-s","user"],
@@ -1634,39 +1620,98 @@ def cmd_schedule(names):
     eprint("harnesses: schedule takes enable|disable|status")
     return 2
 
-# --- mcp headers --------------------------------------------------------
+# --- gui env (macOS) --------------------------------------------------
+# Apps opened from the Dock or Finder never read .zshenv, and T3 Code copies
+# only a fixed list (PATH, SSH_AUTH_SOCK, the Homebrew vars) out of a login
+# shell. A claude it spawned expanded ${JINA_MCP_TOKEN} in its MCP headers to
+# nothing, so every token-authenticated server answered 401. launchctl setenv
+# reaches apps launched afterwards but is wiped on reboot, so a login agent
+# replays the managed token blocks at every login. It reads the file only: no
+# network, nothing that can fail before the first app opens.
 GUI_ENV_PLIST_NAME = "com.lost.plus.harnesses-gui-env"
+GUI_ENV_BLOCKS = ("harnesses:mcp-tokens", "setup:api-keys")
 
 
-def cmd_mcp_headers(args):
-    """claude's headersHelper: print one server's auth header as JSON."""
-    if len(args) != 2 or args[0] not in ("bearer", "x-api-key"):
-        eprint("usage: harnesses mcp-headers bearer|x-api-key ENV_VAR")
-        return 2
-    auth, envvar = args
-    token = _managed_zshenv_exports().get(envvar)
-    if not token:
-        eprint("harnesses: no %s in the harnesses:mcp-tokens block of %s; "
-               "run 'harnesses mcp'" % (envvar, HOME/".zshenv"))
-        return 1
-    print(json.dumps({"Authorization": "Bearer " + token} if auth == "bearer"
-                     else {"X-API-Key": token}))
-    return 0
+def _gui_env_exports():
+    """(exports, unparsable block names), read the way zsh would. A secret
+    with a newline is one multiline single-quoted value, so lines are joined
+    until the quotes close; and a '#' only starts a comment at the head of a
+    line, never inside an unquoted api-keys value such as abc#def."""
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    found, broken = {}, []
+    for block in GUI_ENV_BLOCKS:
+        match = re.search(r"^# BEGIN %s\n(.*?)^# END %s$" % (re.escape(block), re.escape(block)),
+                          text, re.S | re.M)
+        if not match:
+            continue
+        pending = ""
+        for line in match.group(1).splitlines(keepends=True):
+            if not pending and line.lstrip().startswith("#"):
+                continue
+            pending += line
+            try:
+                words = shlex.split(pending)
+            except ValueError:
+                continue  # quote still open: the value runs onto the next line
+            pending = ""
+            for word in words:
+                name, eq, value = word.partition("=")
+                if eq and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                    found[name] = value
+        if pending:
+            eprint("  gui-env: cannot parse the %s block in %s" % (block, ZSHENV))
+            broken.append(block)
+    return found, broken
 
 
-def _remove_gui_env_agent():
-    """Remove the macOS login agent that copied the token blocks into
-    launchctl. headersHelper replaced it; the values it set go at reboot."""
+def _gui_env_install():
+    """Write the login agent. launchd loads everything in LaunchAgents at
+    login, so there is nothing to bootstrap now: cmd_mcp sets the current
+    session itself right after."""
     path = LAUNCHD_DIR/("%s.plist" % GUI_ENV_PLIST_NAME)
-    if not path.exists():
+    plist = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>%s</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+        <string>gui-env</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/harnesses-gui-env.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/harnesses-gui-env.log</string>
+</dict>
+</plist>
+""" % (GUI_ENV_PLIST_NAME, _self_path())
+    if path.exists() and path.read_text() == plist:
         return
-    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), GUI_ENV_PLIST_NAME)],
-                   capture_output=True)
-    path.unlink()
-    print("  removed login agent %s" % path)
+    LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(plist)
+    print("  installed login agent %s" % path)
 
 
-ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule"]
+def cmd_gui_env(names):
+    if not _is_macos():
+        print("gui-env: only needed on macOS; nothing to do")
+        return 0
+    exports, broken = _gui_env_exports()
+    failed = [name for name, value in sorted(exports.items())
+              if subprocess.run(["launchctl", "setenv", name, value],
+                                capture_output=True).returncode != 0]
+    for name in failed:
+        eprint("  launchctl setenv %s failed" % name)
+    print("  set %d variable(s) for GUI-launched apps; running apps keep their old "
+          "environment until relaunched" % (len(exports) - len(failed)))
+    return 1 if failed or broken else 0
+
+
+ACTIONS = ["install","update","settings","mcp","proxy","refresh","schedule","gui-env"]
 
 USAGE = """Usage: harnesses [%s] [name...] [--help]
 
@@ -1680,8 +1725,8 @@ Install, update, and configure the fleet's AI coding harnesses.
   refresh             The scheduled pass: proxy apply, settings, mcp, update.
   schedule [enable|disable|status]
                       Daily 11:00 timer that runs 'harnesses refresh'.
-  mcp-headers AUTH VAR
-                      Print one MCP auth header as JSON (claude's headersHelper).
+  gui-env             macOS: copy the .zshenv token blocks into launchctl so
+                      GUI-launched apps see them (also runs at every login).
   -h, --help          Show this help.
 
 With no arguments (and a terminal + fzf) it opens the action menu.
@@ -1692,7 +1737,7 @@ Every action takes optional names to narrow the run: harness names, except
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install missing harnesses, default claude + codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
+    preview = "case {1} in install) echo Install missing harnesses, default claude + codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; gui-env) echo macOS: expose the .zshenv token blocks to GUI-launched apps;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
@@ -1711,7 +1756,7 @@ def dispatch(action, names):
     if action=="mcp": return cmd_mcp(names)
     if action=="proxy": return cmd_proxy(names)
     if action=="schedule": return cmd_schedule(names)
-    if action=="mcp-headers": return cmd_mcp_headers(names)
+    if action=="gui-env": return cmd_gui_env(names)
     eprint("harnesses: unknown action %r" % action)
     eprint(USAGE)
     return 2
