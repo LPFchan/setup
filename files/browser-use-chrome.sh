@@ -26,6 +26,12 @@ _chrome_binary() {
     return 1
 }
 
+# A windowed Chrome on a virtual display passes Cloudflare checks that stop --headless.
+_xvfb_run() {
+    local xvfb="${BROWSER_USE_XVFB_RUN-$(command -v xvfb-run)}"
+    [[ -n "$xvfb" && -x "$xvfb" ]] && printf '%s\n' "$xvfb"
+}
+
 _profile_dir() {
     if [[ -n "${BROWSER_USE_PROFILE_DIR:-}" ]]; then
         printf '%s\n' "$BROWSER_USE_PROFILE_DIR"
@@ -41,17 +47,22 @@ _profile_dir() {
 }
 
 _render_unit() {
-    local chrome profile
+    local chrome profile xvfb launch
     chrome=$(_chrome_binary) || return 1
     profile=$(_profile_dir) || return 1
+    if xvfb=$(_xvfb_run); then
+        launch="$xvfb -a -s \"-screen 0 1440x900x24\" $chrome --window-size=1440,900"
+    else
+        launch="$chrome --headless=new"
+    fi
     cat <<EOF
 # setup-module: browser-use-chrome
 [Unit]
-Description=Headless Chromium for Browser Use
+Description=Chromium for Browser Use
 After=network.target
 
 [Service]
-ExecStart=$chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT --remote-allow-origins=* --user-data-dir=$profile about:blank
+ExecStart=$launch --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --no-default-browser-check --remote-debugging-address=127.0.0.1 --remote-debugging-port=$CDP_PORT --remote-allow-origins=* --user-data-dir=$profile about:blank
 Restart=on-failure
 RestartSec=3
 
