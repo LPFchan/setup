@@ -101,7 +101,8 @@ uninstall() {
     if [[ -x "$BIN" ]]; then
         python3 "$BIN" schedule disable >/dev/null 2>&1 || true
     fi
-    # The macOS login agent that replays the .zshenv token blocks runs $BIN too.
+    # The retired gui-env login agent runs $BIN too, on a Mac that never ran
+    # the 'harnesses mcp' that removes it.
     if [[ "$(uname -s)" == Darwin ]]; then
         launchctl bootout "gui/$(id -u)/com.lost.plus.harnesses-gui-env" >/dev/null 2>&1 || true
         rm -f "$HOME/Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
