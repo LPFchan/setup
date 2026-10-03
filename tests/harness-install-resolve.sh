@@ -53,6 +53,18 @@ with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
     rc = G["cmd_install"](["piped"])
 if rc == 0:
     fail("a failing downloader in the install pipeline was reported as success")
+# A rerunnable installer runs even when the harness already resolves, so a
+# missing t3 service is still repaired; a plain one is skipped.
+marker = HOME/"reran"
+G["harnesses"] = lambda: [("rerun", {"install": "touch %s" % marker, "rerunWhenInstalled": True}),
+                          ("plain", {"install": "touch %s.plain" % marker})]
+G["harness_resolve"] = lambda name, spec: "/stub/" + name
+with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    G["cmd_install"](["rerun", "plain"])
+if not marker.exists():
+    fail("a rerunWhenInstalled installer was skipped because the harness resolved")
+if Path(str(marker) + ".plain").exists():
+    fail("a plain installer ran although the harness was already installed")
 G["harnesses"] = ns["harnesses"]
 
 # t3 resolves through the runtime versions glob, newest version first (0.0.45

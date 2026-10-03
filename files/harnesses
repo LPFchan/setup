@@ -445,7 +445,9 @@ def cmd_install(names):
         cmd = spec.get("install","").strip()
         if not cmd:
             print("  %s: no first-party installer registered; skipping." % name); continue
-        if harness_resolve(name, spec):
+        # A rerunnable installer repairs a partial install itself (t3: CLI
+        # present but its background service missing), so it runs anyway.
+        if harness_resolve(name, spec) and not spec.get("rerunWhenInstalled"):
             print("  %s: already installed; skipping." % name); continue
         print("  installing %s: %s" % (name, cmd))
         # Installers are `curl ... | sh` pipelines. Without pipefail a failed

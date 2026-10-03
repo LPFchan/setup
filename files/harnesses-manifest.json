@@ -79,7 +79,8 @@
     },
     {
       "name": "t3",
-      "install": "curl -fsSL https://t3.codes/install.sh | sh && \"$HOME/.local/bin/t3\" service install",
+      "install": "set -e; t3=\"$HOME/.local/bin/t3\"; [ -x \"$t3\" ] || curl -fsSL https://t3.codes/install.sh | sh; case \"$(\"$t3\" service status)\" in *\"Status: installed\"*) ;; *) \"$t3\" service install ;; esac",
+      "rerunWhenInstalled": true,
       "updateArgs": "update --yes",
       "needsNode": false,
       "candidates": [
