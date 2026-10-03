@@ -868,6 +868,13 @@ def _cmd_mcp_once(names):
     else:
         print("  claude not installed; skipped claude MCP enrollment")
     _write_codex_mcp([s for s in servers if "codex" in mcp_surfaces(s)])
+    if CODEX_CONFIG.parent.exists():
+        # A codex started by T3 or another GUI app never read .zshenv, so its
+        # bearer_token_env_var servers failed with "is not set". codex loads
+        # ~/.codex/.env itself at startup, however it was launched. Temporary:
+        # once an installed codex has http_headers_helper, point it at
+        # 'harnesses mcp-headers' like claude and drop this copy.
+        _mirror_dotenv(CODEX_CONFIG.parent/".env", exports, authoritative_missing)
     _write_hermes_mcp([s for s in servers if "hermes" in mcp_surfaces(s)],
                       exports, authoritative_missing)
     return 0
@@ -1227,7 +1234,7 @@ def _write_hermes_mcp(servers, exports, authoritative_missing=None):
     if changed:
         HERMES_CONFIG.write_text(text)
         print("  wrote %s (%d hermes MCP server(s))" % (HERMES_CONFIG, len(servers)))
-    if _mirror_hermes_env(exports, authoritative_missing) or changed:
+    if _mirror_dotenv(HERMES_ENV, exports, authoritative_missing) or changed:
         _restart_hermes()
 
 
@@ -1237,12 +1244,12 @@ def _dotenv_value(value):
     return "'" + value.replace("'", "'\\''") + "'"
 
 
-def _mirror_hermes_env(exports, authoritative_missing=None):
-    """Managed NAME=value block in ~/.hermes/.env from the same exports the
+def _mirror_dotenv(path, exports, authoritative_missing=None):
+    """Managed NAME=value block in a .env file from the same exports the
     zshenv mirror gets. Retired and revoked names are stripped wherever an
     older release or a hand edit left them."""
     begin, end = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
-    original = HERMES_ENV.read_text() if HERMES_ENV.exists() else ""
+    original = path.read_text() if path.exists() else ""
     body = []
     for line in exports:
         match = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
@@ -1260,10 +1267,10 @@ def _mirror_hermes_env(exports, authoritative_missing=None):
         text = re.sub(r"^%s=.*\n?" % re.escape(name), "", text, flags=re.M)
     if text == original:
         return False
-    HERMES_ENV.parent.mkdir(parents=True, exist_ok=True)
-    HERMES_ENV.write_text(text)
-    os.chmod(HERMES_ENV, 0o600)
-    print("  mirrored %d token(s) into %s" % (len(body), HERMES_ENV))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    os.chmod(path, 0o600)
+    print("  mirrored %d token(s) into %s" % (len(body), path))
     return True
 
 

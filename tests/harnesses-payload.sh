@@ -341,6 +341,17 @@ before = (hcfg.read_text(), henv.read_text())
 ns["cmd_mcp"]([])
 assert (hcfg.read_text(), henv.read_text()) == before, "hermes writer is not idempotent"
 
+# codex loads ~/.codex/.env itself however it was launched, so the same block
+# lands there; hand-written lines survive and retired names go.
+cenv = HOME/".codex/.env"
+cenv.write_text("CUSTOM=keep\nVAULTWARDEN_MCP_TOKEN=dead\n" + cenv.read_text())
+ns["cmd_mcp"]([])
+ce = cenv.read_text()
+assert "CUSTOM=keep" in ce, "hand-written codex env line was lost"
+assert "VAULTWARDEN_MCP_TOKEN" not in ce, "retired token survived in codex env"
+assert "PASSAGE_MCP_TOKEN=auth-passage" in ce and "JINA_MCP_TOKEN=fresh-jina" in ce, "codex env block missing tokens"
+assert oct(cenv.stat().st_mode & 0o777) == "0o600", "codex env not private"
+
 # If either authority is temporarily unavailable later, preserve the freshly
 # reconciled managed values rather than falling back to stale process exports.
 fresh_zshenv = zshenv
