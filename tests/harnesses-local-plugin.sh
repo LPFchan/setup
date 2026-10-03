@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
+export CODEX_HOME="$HOME/.codex"
 export HARNESSES_MANIFEST="$ROOT/files/harnesses-manifest.json"
 mkdir -p "$HOME"
 python3 - "$ROOT/files/harnesses" <<'PY'
