@@ -329,7 +329,7 @@ def local_plugin_mcp_servers():
     """Import machine-local Codex plugin launch settings for Claude on Macs."""
     if not _is_macos():
         return []
-    codex_home = pathlib.Path(os.environ.get("CODEX_HOME") or HOME/".codex")
+    codex_home = HOME/".codex"
     servers = []
     for spec in MANIFEST.get("localPluginMcpServers", []):
         root = codex_home/"plugins/cache/openai-bundled"/spec["plugin"]

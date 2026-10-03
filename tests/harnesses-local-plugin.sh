@@ -5,7 +5,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home"
-export CODEX_HOME="$HOME/.codex"
 export HARNESSES_MANIFEST="$ROOT/files/harnesses-manifest.json"
 mkdir -p "$HOME"
 python3 - "$ROOT/files/harnesses" <<'PY'
@@ -74,8 +73,10 @@ with mock.patch.dict(g, _is_macos=lambda: True):
     with contextlib.redirect_stderr(io.StringIO()):
         assert ns['local_plugin_mcp_servers']() == []
     node.chmod(0o755)
-    # Honor a machine's custom Codex home, and handle an absent plugin.
+    # Discovery stays at the same durable path in shells and scheduled jobs.
     with mock.patch.dict(os.environ, CODEX_HOME=str(home/'other-codex')):
-        assert ns['local_plugin_mcp_servers']() == []
+        assert ns['local_plugin_mcp_servers']() == servers
+    root.rename(root.with_name('uninstalled'))
+    assert ns['local_plugin_mcp_servers']() == []
 print('local plugin MCP ok')
 PY
