@@ -478,7 +478,8 @@ PY
 
 # --- proxy: base-url export written only when the service is active, removed otherwise ---
 python3 - "$ROOT/files/harnesses" <<'PY'
-import json, os, runpy, subprocess, sys
+import io, json, os, runpy, subprocess, sys
+from unittest import mock
 from pathlib import Path
 payload = sys.argv[1]
 HOME = Path(os.environ["HOME"])
@@ -563,46 +564,62 @@ assert ns["cmd_refresh"]([]) == 0
 assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
 print("proxy ok")
 
-# --- gui-env: GUI-launched apps get the managed token blocks via launchctl ---
+# --- mcp-headers: claude's headersHelper reads the managed block itself ---
 zshenv_path = HOME/".zshenv"
-zshenv_path.write_text(zshenv_path.read_text() + "\nexport UNMANAGED=1\n"
-                       "# BEGIN setup:api-keys\nexport OPENAI_API_KEY='sk a'\n"
-                       "export MULTI='line one\n# not a comment'\nexport HASHED=abc#def\n"
-                       "# END setup:api-keys\n")
-calls = []
-def run_record(argv, **kw):
-    calls.append(argv)
-    return FakeCompleted(0)
-g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
-g["_is_macos"] = lambda: True
-assert ns["cmd_gui_env"]([]) == 0
-setenv = {argv[2]: argv[3] for argv in calls if argv[:2] == ["launchctl", "setenv"]}
-assert setenv.get("OPENAI_API_KEY") == "sk a", "quoted api-keys value not unquoted: %r" % setenv
-assert setenv.get("MULTI") == "line one\n# not a comment", "multiline value cut into fragments"
-assert setenv.get("HASHED") == "abc#def", "a '#' inside an unquoted value was read as a comment"
-assert "JINA_MCP_TOKEN" in setenv, "mcp-tokens block not exported: %r" % sorted(setenv)
-assert "UNMANAGED" not in setenv and "ANTHROPIC_BASE_URL" not in setenv, \
-    "exports outside the token blocks leaked into launchctl"
-ns["_gui_env_install"]()
-agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
-assert "<string>gui-env</string>" in agent.read_text() and "RunAtLoad" in agent.read_text()
-def run_setenv_fails(argv, **kw):
-    return FakeCompleted(1 if argv[:2] == ["launchctl", "setenv"] else 0)
-g["subprocess"] = type("P", (), {"run": staticmethod(run_setenv_fails), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
-assert ns["cmd_gui_env"]([]) == 1, "a failed launchctl setenv reported success"
-real_gui_env = g["cmd_gui_env"]
-g["cmd_gui_env"] = lambda names: 1
-assert ns["cmd_mcp"]([]) == 1, "harnesses mcp hid a gui-env failure"
-g["cmd_gui_env"] = real_gui_env
-g["subprocess"] = type("P", (), {"run": staticmethod(run_record), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 good_zshenv = zshenv_path.read_text()
-zshenv_path.write_text(good_zshenv.replace("# END setup:api-keys", "export BROKEN='never closed\n# END setup:api-keys"))
-assert ns["cmd_gui_env"]([]) == 1, "an unparsable block reported success"
-zshenv_path.write_text(good_zshenv)
-g["_is_macos"] = lambda: False
+zshenv_path.write_text("export UNMANAGED_MCP_TOKEN=outside\n"
+                       "# BEGIN harnesses:mcp-tokens\nexport A_MCP_TOKEN='sk a'\n"
+                       "export MULTI_MCP_TOKEN='line one\n# not a comment'\nexport HASHED_MCP_TOKEN=abc#def\n"
+                       "# END harnesses:mcp-tokens\n")
+def headers(*args):
+    out = io.StringIO()
+    with mock.patch.object(sys, "stdout", out):
+        code = ns["cmd_mcp_headers"](list(args))
+    return code, (json.loads(out.getvalue()) if code == 0 else None)
+assert headers("bearer", "A_MCP_TOKEN") == (0, {"Authorization": "Bearer sk a"}), "quoted value not unquoted"
+assert headers("x-api-key", "MULTI_MCP_TOKEN") == (0, {"X-API-Key": "line one\n# not a comment"}), \
+    "multiline value cut into fragments"
+assert headers("bearer", "HASHED_MCP_TOKEN")[1] == {"Authorization": "Bearer abc#def"}, \
+    "a '#' inside an unquoted value was read as a comment"
+assert headers("bearer", "UNMANAGED_MCP_TOKEN")[0] == 1, "an export outside the managed block was served"
+assert headers("bearer", "MISSING_MCP_TOKEN")[0] == 1
+assert headers("basic", "A_MCP_TOKEN")[0] == 2
+
+# The claude entry names the helper and the variable, never the secret.
+jina = {"name": "jina", "url": "https://mcp.jina.ai/v1", "auth": "bearer"}
+entry = ns["_claude_mcp_entry"](jina)
+assert entry["type"] == "http" and entry["url"] == jina["url"] and "headers" not in entry
+assert entry["headersHelper"].endswith(" mcp-headers bearer JINA_MCP_TOKEN"), entry
+assert ns["_claude_mcp_entry"]({"name": "heatmap", "url": "https://h/mcp", "auth": "none"}) == \
+    {"type": "http", "url": "https://h/mcp"}
+
+# A pre-helper ${VAR} entry is re-enrolled; a current one is left alone.
+calls = []
+def run_claude(argv, **kw):
+    calls.append(argv)
+    out = "jina:\n  Scope: User config (available in all your projects)\n" if argv[:3] == ["claude", "mcp", "get"] else ""
+    return FakeCompleted(0, out)
+g["subprocess"] = type("P", (), {"run": staticmethod(run_claude), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
+claude_json = HOME/".claude.json"
+claude_json.write_text(json.dumps({"mcpServers": {"jina": {"type": "http", "url": jina["url"],
+    "headers": {"Authorization": "Bearer ${JINA_MCP_TOKEN}"}}}}))
+ns["_claude_mcp_reconcile"](jina)
+assert ["claude", "mcp", "remove", "jina", "-s", "user"] in calls, calls
+assert ["claude", "mcp", "add-json", "--scope", "user", "jina", json.dumps(entry)] in calls, calls
 calls.clear()
-assert ns["cmd_gui_env"]([]) == 0 and not calls, "gui-env touched launchctl off macOS"
-print("gui-env ok")
+claude_json.write_text(json.dumps({"mcpServers": {"jina": entry}}))
+ns["_claude_mcp_reconcile"](jina)
+assert [c[:3] for c in calls] == [["claude", "mcp", "get"]], "a current entry was rewritten: %r" % calls
+
+# The old macOS login agent is removed.
+agent = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-gui-env.plist"
+agent.parent.mkdir(parents=True, exist_ok=True)
+agent.write_text("<plist/>")
+calls.clear()
+ns["_remove_gui_env_agent"]()
+assert not agent.exists() and calls and calls[0][:2] == ["launchctl", "bootout"]
+zshenv_path.write_text(good_zshenv)
+print("mcp-headers ok")
 PY
 
 # --- CLI surface: --help prints help, unknown actions do not open the picker ---

@@ -29,20 +29,20 @@ with (h/"calls.jsonl").open("a") as f:
     f.write(json.dumps({"args": a, "simple": simple}) + "\\n")
 if simple != "1":
     (h/".claude/.credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": "", "refreshToken": "", "expiresAt": 0}}))
-state_path = h/"mcp.json"
-state = json.loads(state_path.read_text()) if state_path.exists() else {}
+state_path = h/".claude.json"
+config = json.loads(state_path.read_text()) if state_path.exists() else {}
+state = config.setdefault("mcpServers", {})
 if a[:2] == ["mcp", "get"]:
-    server = state.get(a[2])
-    if server is None:
+    if a[2] not in state:
         print("No MCP server named " + a[2])
         raise SystemExit(1)
-    print("Scope: User config\\nURL: " + server)
-elif a[:2] == ["mcp", "add"]:
-    state[a[4]] = a[7]
-    state_path.write_text(json.dumps(state))
+    print("Scope: User config\\nURL: " + state[a[2]]["url"])
+elif a[:2] == ["mcp", "add-json"]:
+    state[a[4]] = json.loads(a[5])
+    state_path.write_text(json.dumps(config))
 elif a[:2] == ["mcp", "remove"]:
     state.pop(a[2], None)
-    state_path.write_text(json.dumps(state))
+    state_path.write_text(json.dumps(config))
 '''
     claude = bindir/"claude"
     claude.write_text(stub)
@@ -52,7 +52,9 @@ elif a[:2] == ["mcp", "remove"]:
     server = {"name": "managed", "url": "https://new.invalid/mcp", "auth": "none"}
     ns["_claude_mcp_reconcile"](server)  # missing -> get + add
     ns["_claude_mcp_reconcile"](server)  # current -> get
-    (home/"mcp.json").write_text(json.dumps({"managed": "https://old.invalid/mcp", "retired": "https://retired.invalid/mcp"}))
+    (home/".claude.json").write_text(json.dumps({"mcpServers": {
+        "managed": {"type": "http", "url": "https://old.invalid/mcp"},
+        "retired": {"type": "http", "url": "https://retired.invalid/mcp"}}}))
     ns["_claude_mcp_reconcile"](server)  # drift -> get + remove + add
     g["MANIFEST"] = {"retiredMcpServers": ["retired"]}
     g["common_auth_context"] = lambda: {"origin": "https://auth.invalid", "subject": "test"}
@@ -66,7 +68,7 @@ elif a[:2] == ["mcp", "remove"]:
     calls = [json.loads(line) for line in (home/"calls.jsonl").read_text().splitlines()]
     assert len(calls) == 9, calls
     assert all(call["simple"] == "1" for call in calls), calls
-    assert "retired" not in json.loads((home/"mcp.json").read_text())
+    assert "retired" not in json.loads((home/".claude.json").read_text())["mcpServers"]
     assert os.environ.get("CLAUDE_CODE_SIMPLE") is None, "minimal mode leaked into interactive launches"
     print("ok: MCP enrollment, reconciliation, retirement, and update preserve the Claude login")
 PY
