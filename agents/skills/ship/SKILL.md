@@ -12,7 +12,12 @@ Web service: use [lost-plus](../lost-plus/SKILL.md). macOS app:
 
 Ask the operator only for the icon direction and the first version number.
 
-- Icon drawn by hand in a script (no SF Symbols in app icons).
+- Icon drawn by hand in `scripts/make-icon.swift` (no SF Symbols in app
+  icons): the app's artwork inside [the shared icon frame](references/icon-frame.swift),
+  pasted verbatim. The frame owns the body (824 pt on a 1024 canvas, figma
+  squircle), bevel and drop shadow, copied from icon.kitchen's macOS
+  renderer; the script only paints the body. Regenerate every size and
+  the homepage icons with it, never by hand.
 - UI in en + ar bg cs da de es et fi fr hi hr hu it ja ko nb nl pl pt-BR
   pt-PT ro ru sk sv tr uk vi zh-Hans, via string catalogs.
 - First-launch onboarding window (`onboarded` default;
