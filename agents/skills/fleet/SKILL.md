@@ -52,9 +52,7 @@ services that remain on that machine.
 - dumpling.tailaa113.ts.net · user yeowool
 - home to all computer-use (using codex + a2a skill)
 - home to all macOS/iOS xcode builds and testing
-- Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, private to the tailnet via Tailscale Serve → `127.0.0.1:8786`
-- user LaunchAgent `com.lost.plus.findmy-mcp` starts at login and restarts on exit; installed binaries in `~/.local/bin`, source `LPFchan/findmy-cli` (`mcp/README.md`)
-- bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`; runtime token file `~/.config/findmy-mcp/token` (0600); logs `~/Library/Logs/findmy-mcp.log`
+- Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`
 
 ## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
 - spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
