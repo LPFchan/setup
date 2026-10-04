@@ -350,6 +350,9 @@ def local_plugin_mcp_servers():
                     or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
                     or entry.get("enabled") is False or entry.get("env_vars")):
                 raise ValueError("unsupported or unavailable plugin launch configuration")
+            env = {**env, **spec.get("env", {})}
+            if not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+                raise ValueError("invalid plugin environment overrides")
             if any("${" in value for value in [command, *args, *env.values()]):
                 raise ValueError("unresolved plugin placeholders")
         except (OSError, ValueError, KeyError, TypeError) as exc:

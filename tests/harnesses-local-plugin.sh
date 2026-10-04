@@ -23,7 +23,7 @@ def install(version, tag):
     directory = root/version
     directory.mkdir(parents=True)
     entry = {'command': str(node), 'args': ['/app/cua-repl.mjs', tag],
-             'env': {'CODEX_HOME': str(home/'.codex'), 'VALUE': 'spaces and "quotes"'},
+             'env': {'CODEX_HOME': str(home/'.codex'), 'VALUE': 'spaces and "quotes"', 'CUA_REPL_ENABLED_SURFACES': 'browser,computer'},
              'enabled': True, 'startup_timeout_sec': 120, 'env_vars': []}
     (directory/'.mcp.json').write_text(json.dumps({'mcpServers': {'cua_repl': entry}}))
     return directory, entry
@@ -37,7 +37,9 @@ with mock.patch.dict(g, _is_macos=lambda: True):
     assert len(servers) == 1
     server = servers[0]
     want = {'type': 'stdio', **{k: entry[k] for k in ('command', 'args', 'env')}}
+    want['env'] = {**entry['env'], 'CUA_REPL_ENABLED_SURFACES': 'computer'}
     assert ns['_claude_mcp_entry'](server) == want
+    assert entry['env']['CUA_REPL_ENABLED_SURFACES'] == 'browser,computer'
     assert ns['mcp_surfaces'](server) == ['claude']
     assert ns['mcp_grants'](servers) == ['mcp__cua_repl__*']
     with mock.patch.dict(g, hub_mcp_servers=lambda context: []):
