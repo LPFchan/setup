@@ -538,8 +538,9 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": s
 assert ns["cmd_proxy"]([]) == 1
 zshenv2 = (HOME/".zshenv").read_text()
 assert "ANTHROPIC_BASE_URL" not in zshenv2, "base-url export left behind on inactive proxy"
-assert "env" not in json.loads((HOME/".claude/settings.json").read_text()), \
-    "settings env left behind on inactive proxy"
+env = json.loads((HOME/".claude/settings.json").read_text())["env"]
+assert "ANTHROPIC_BASE_URL" not in env, "settings base URL left behind on inactive proxy"
+assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "272000"
 
 # macOS: ocx registers a launchd agent, not a systemd unit, and the systemd
 # half of the export has no equivalent there.
@@ -569,7 +570,9 @@ for name in ("cmd_settings", "cmd_mcp", "cmd_update"):
 g["_proxy_stop_budget"] = lambda: None
 g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_refresh"]([]) == 0
-assert "env" not in json.loads((HOME/".claude/settings.json").read_text())
+env = json.loads((HOME/".claude/settings.json").read_text())["env"]
+assert "ANTHROPIC_BASE_URL" not in env
+assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "272000"
 g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_refresh"]([]) == 0
 assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
