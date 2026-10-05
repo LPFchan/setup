@@ -666,8 +666,7 @@ for index, arg in enumerate(args):
         model = args[index + 1]
     elif arg.startswith("--model="):
         model = arg.split("=", 1)[1]
-if model.startswith(("gpt-", "native/gpt-", "openai/gpt-",
-                     "ocx-claude-native--gpt-", "ocx-claude-openai--gpt-")):
+if model in ("gpt-6.1-sol", "gpt-6-luna"):
     os.environ["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "272000"
 os.execvp("claude", ["claude", *args])
 """

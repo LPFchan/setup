@@ -118,7 +118,8 @@ with tempfile.TemporaryDirectory() as fake_bin:
     launch_env = dict(os.environ, PATH=fake_bin + os.pathsep + os.environ["PATH"])
     launch_env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
     for model, expected in [("gpt-6.1-sol", "272000"), ("gpt-6-luna", "272000"),
-                            ("claude-opus-5-5", "unset"), ("operator/small-model", "unset")]:
+                            ("claude-opus-5-5", "unset"), ("operator/small-model", "unset"),
+                            ("gpt-operator-small", "unset")]:
         result = subprocess.run([str(launcher), "--model", model], env=launch_env,
                                 capture_output=True, text=True, check=True)
         assert result.stdout.strip() == expected, (model, result.stdout)
