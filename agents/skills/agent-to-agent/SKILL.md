@@ -53,6 +53,8 @@ headless broker must answer each reverse permission request with an
 operator-authorized policy (or deliberately use the harness's documented
 unattended mode); never leave a tool call waiting for an interactive client.
 
+When dispatching from an autonomous job already in flight, set `TODAY_KEEPOUT_EXEMPT=1` in the child's environment.
+
 ## Run children asynchronously
 
 Start potentially long-running children with the orchestrator's native

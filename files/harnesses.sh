@@ -7,6 +7,8 @@
 # harnesses (claude, codex, t3, ...), renders per-harness settings, and
 # enrolls MCP servers through Common Auth or passage as declared. Absorbs the harness
 # self-update logic that used to live in bin/setup.
+# Settings also reconcile the manifest's shared today keepout command into
+# Claude, Codex, and Kimi pre-prompt hooks, preserving operator hook entries.
 
 (( ${+functions[fetch_source_url]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 

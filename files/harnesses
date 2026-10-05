@@ -145,6 +145,8 @@ _heal_path()
 VAULT_TOKEN = _vault_token()
 CLAUDE_SETTINGS = HOME/".claude/settings.json"
 CODEX_CONFIG = HOME/".codex/config.toml"
+CODEX_HOOKS = HOME/".codex/hooks.json"
+KIMI_CONFIG = HOME/".kimi-code/config.toml"
 T3_SETTINGS = HOME/".t3/userdata/settings.json"
 ZSHENV = HOME/".zshenv"
 ENVIRONMENT_D = HOME/".config/environment.d/10-harnesses-anthropic.conf"
@@ -568,6 +570,76 @@ def cmd_update(names):
         eprint("harness(es) could not be updated: "+" ".join(failed))
     return 0 if not failed else 1
 
+KEEPOUT_MARKER = "today.lost.plus/api/keepout"
+
+
+def _keepout_command():
+    spec = MANIFEST.get("keepout", {})
+    if not spec.get("enabled", False):
+        return None
+    command = spec.get("command")
+    if not isinstance(command, str) or KEEPOUT_MARKER not in command:
+        raise ValueError("keepout.command must contain %s (the ownership marker)" % KEEPOUT_MARKER)
+    return command
+
+
+def _is_keepout_hook(handler):
+    return (isinstance(handler, dict)
+            and KEEPOUT_MARKER in str(handler.get("command", "")))
+
+
+def _merge_keepout_hooks(settings):
+    """Reconcile only our command, including in a group shared with user hooks."""
+    command = _keepout_command()
+    hooks = settings.get("hooks", {})
+    groups = hooks.get("UserPromptSubmit", [])
+    out = []
+    for group in groups:
+        handlers = group.get("hooks", [])
+        kept = [h for h in handlers if not _is_keepout_hook(h)]
+        if kept == handlers:
+            out.append(group)
+        elif kept:
+            out.append({**group, "hooks": kept})
+    if command:
+        # Synchronous: background hooks cannot reject a prompt.
+        out.append({"hooks": [{"type": "command", "command": command}]})
+    if out:
+        settings.setdefault("hooks", {})["UserPromptSubmit"] = out
+    elif "UserPromptSubmit" in hooks:
+        del hooks["UserPromptSubmit"]
+        if not hooks:
+            settings.pop("hooks", None)
+
+
+def _write_codex_keepout():
+    current = load_json(CODEX_HOOKS)
+    _merge_keepout_hooks(current)
+    if current or CODEX_HOOKS.exists():
+        save_json_atomic(CODEX_HOOKS, current)
+        print("  wrote %s (new/changed hooks need trust via /hooks)" % CODEX_HOOKS)
+    # Current Codex enables hooks by default; no feature flag needs adding.
+    # Do not alter unrelated config.toml keys or fabricate hook trust records.
+
+
+KIMI_KEEPOUT = re.compile(r"\n*^# BEGIN harnesses:keepout\n.*?^# END harnesses:keepout\n?", re.S | re.M)
+
+
+def _write_kimi_keepout():
+    """Our [[hooks]] row lives in a marked block at the end of config.toml."""
+    original = KIMI_CONFIG.read_text() if KIMI_CONFIG.exists() else ""
+    text = KIMI_KEEPOUT.sub("", original)
+    command = _keepout_command()
+    if command:
+        # A JSON string is also a valid TOML basic string.
+        block = ('# BEGIN harnesses:keepout\n[[hooks]]\nevent = "UserPromptSubmit"\n'
+                 'command = %s\n# END harnesses:keepout\n' % json.dumps(command))
+        text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block
+    if text != original:
+        save_text_atomic(KIMI_CONFIG, text)
+        print("  wrote %s" % KIMI_CONFIG)
+
+
 def _write_claude_settings(servers):
     spec = MANIFEST["settings"]["claude"]
     overlay = spec["json"]
@@ -598,6 +670,8 @@ def _write_claude_settings(servers):
         merged["permissions"]["allow"] = [
             e for e in existing if not (retired and e.startswith(retired))
         ]
+    if any(h["name"] == "claude" for h in MANIFEST.get("harnesses", [])):
+        _merge_keepout_hooks(merged)
     save_json_atomic(CLAUDE_SETTINGS, merged)
     print("  wrote %s" % CLAUDE_SETTINGS)
 
@@ -714,6 +788,14 @@ def cmd_settings(names):
     # lock; without it an overlapping pass could drop the other's change.
     with _consumer_sync_lock():
         _write_claude_settings(servers)
+        managed = {h["name"] for h in MANIFEST.get("harnesses", [])}
+        for name, writer in (("codex", _write_codex_keepout), ("kimi", _write_kimi_keepout)):
+            if name in managed:
+                try:
+                    writer()
+                except ValueError as exc:
+                    eprint("  cannot render %s keepout hook: %s; existing config preserved" % (name, exc))
+                    rc = 1
     _write_t3_settings()
     print("settings applied. t3 custom models appear in the picker; routing them")
     print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
@@ -1714,7 +1796,7 @@ Install, update, and configure the fleet's AI coding harnesses.
 
   install [name...]   Install missing harnesses (default: claude, codex).
   update [name...]    Run each installed harness's own self-updater.
-  settings [name...]  Render claude + t3 settings from the manifest.
+  settings [name...]  Render settings + keepout hooks from the manifest.
   mcp [server...]     Enroll MCP servers through declared credential sources.
   proxy               Ensure the opencodex proxy is up and export ANTHROPIC_BASE_URL.
   refresh             The scheduled pass: proxy apply, settings, mcp, update.
@@ -1732,7 +1814,7 @@ Every action takes optional names to narrow the run: harness names, except
 def menu():
     if not (shutil.which("fzf") and sys.stdin.isatty()):
         print(USAGE); return 2
-    preview = "case {1} in install) echo Install missing harnesses, default claude + codex;; update) echo Self-update installed harnesses;; settings) echo Render claude + t3 settings from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
+    preview = "case {1} in install) echo Install missing harnesses, default claude + codex;; update) echo Self-update installed harnesses;; settings) echo Render settings + keepout hooks from the manifest;; mcp) echo Enroll MCP servers through Common Auth or passage;; proxy) echo Ensure the opencodex proxy service is up and export ANTHROPIC_BASE_URL;; schedule) echo Install the daily 11:00 timer that runs harnesses refresh;; refresh) echo Proxy apply, settings, mcp, update -- the scheduled pass;; esac"
     # Only stdout is captured. fzf draws its interface on stderr in --height
     # mode, so capturing stderr too renders the whole menu into a pipe and the
     # terminal shows nothing at all.
