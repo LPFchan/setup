@@ -149,6 +149,9 @@
           "pr": ""
         },
         "effortLevel": "high",
+        "env": {
+          "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "272000"
+        },
         "disableClaudeAiConnectors": true
       },
       "permissionsAllowAdd": [
