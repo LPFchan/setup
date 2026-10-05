@@ -91,8 +91,18 @@ m["_refresh"].__globals__["_request"] = request
 m["_refresh"].__globals__["_request"] = context_must_not_request
 cached_output = io.StringIO()
 with contextlib.redirect_stdout(cached_output):
-    m["cmd_token"]("today", cached=True)
+    m["cmd_token_cached"]("today")
 assert cached_output.getvalue().strip() == "global-secret" and not requested
+# It never hands out a token saved for another Auth origin.
+saved_origin = m["cmd_token_cached"].__globals__["ORIGIN"]
+m["cmd_token_cached"].__globals__["ORIGIN"] = "https://elsewhere.example"
+try:
+    m["cmd_token_cached"]("today")
+except m["AuthError"] as exc:
+    assert "another Auth origin" in str(exc)
+else:
+    raise AssertionError("cached token from another origin was accepted")
+m["cmd_token_cached"].__globals__["ORIGIN"] = saved_origin
 m["_refresh"].__globals__["_request"] = request
 
 # Rotated server credentials replace the local bearer without another login.

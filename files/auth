@@ -308,7 +308,7 @@ def _refresh_or_cached(data):
         return data, exc
 
 
-def cmd_token(scope, expected_context=None, cached=False):
+def cmd_token(scope, expected_context=None):
     with _store_lock():
         data = _load()
         if data is None:
@@ -320,11 +320,7 @@ def cmd_token(scope, expected_context=None, cached=False):
             }
             if actual_context != expected_context:
                 raise AuthError("setup login changed during credential sync", exit_code=5)
-        if cached:
-            # No network: for hot paths like the keepout hook. The nightly
-            # harnesses refresh keeps the saved tokens current.
-            refreshed = data
-        elif data.get("version") == 1:
+        if data.get("version") == 1:
             print("auth: saved login cannot refresh; run: auth login", file=sys.stderr)
             refreshed = data
         else:
@@ -342,6 +338,23 @@ def cmd_token(scope, expected_context=None, cached=False):
             f"no active credential for {scope}",
             exit_code=3 if refreshed.get("version") == 2 else 1,
         )
+    print(token)
+
+
+def cmd_token_cached(scope):
+    """The saved token, with no network and no lock wait (saves are atomic
+    renames): for hot paths like the keepout hook. The nightly harnesses
+    refresh keeps it current."""
+    data = _load()
+    if data is None:
+        raise AuthError("not logged in; run: auth login")
+    if data.get("origin") != ORIGIN:
+        raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
+    if data.get("session_state") == "invalid":
+        raise AuthError("setup session is invalid, expired, or revoked; run: auth login", 401, exit_code=4)
+    token = data["tokens"].get("*" if data["mode"] == "global" else scope)
+    if not isinstance(token, str) or not token:
+        raise AuthError(f"no active credential for {scope}", exit_code=3)
     print(token)
 
 
@@ -400,7 +413,7 @@ def main():
         cmd_token(args[1])
         return 0
     if len(args) == 3 and args[:2] == ["token", "--cached"]:
-        cmd_token(args[2], cached=True)
+        cmd_token_cached(args[2])
         return 0
     if len(args) == 4 and args[0] == "token" and args[2] == "--expect-context":
         try:
