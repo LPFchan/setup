@@ -126,7 +126,9 @@ print('keepout hooks: add/preserve/replace/idempotence/disable ok (Claude, Codex
 # Stubs emulate auth/curl failures, including failure after emitting a lock body.
 bin_dir = home/'stubs'
 bin_dir.mkdir()
-auth = bin_dir/'auth'
+# Desktop-launched harnesses may lack ~/.local/bin on PATH; the hook uses the full path.
+auth = home/'.local/bin/auth'
+auth.parent.mkdir(parents=True, exist_ok=True)
 auth.write_text('''#!/bin/sh
 [ "$*" = "token --cached today" ] || exit 99
 printf '%s' "${AUTH_BODY-test-token}"
