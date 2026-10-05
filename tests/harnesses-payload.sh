@@ -108,6 +108,24 @@ assert not any(a.startswith("mcp__") for a in manifest["settings"]["claude"]["pe
     "MCP grants are derived from the enrolled set; the manifest must not list them"
 
 assert ns["cmd_settings"]([]) == 0
+
+launcher = HOME/".local/bin/claude-gpt-context"
+assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == str(launcher)
+with tempfile.TemporaryDirectory() as fake_bin:
+    fake_claude = Path(fake_bin)/"claude"
+    fake_claude.write_text("#!/usr/bin/env python3\nimport os\nprint(os.environ.get('CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'unset'))\n")
+    fake_claude.chmod(0o755)
+    launch_env = dict(os.environ, PATH=fake_bin + os.pathsep + os.environ["PATH"])
+    launch_env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
+    for model, expected in [("gpt-6.1-sol", "272000"), ("gpt-6-luna", "272000"),
+                            ("claude-opus-5-5", "unset"), ("operator/small-model", "unset")]:
+        result = subprocess.run([str(launcher), "--model", model], env=launch_env,
+                                capture_output=True, text=True, check=True)
+        assert result.stdout.strip() == expected, (model, result.stdout)
+    launch_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "128000"
+    result = subprocess.run([str(launcher), "--model=operator/small-model"], env=launch_env,
+                            capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "128000", "non-GPT context override was changed"
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
 assert d["effortLevel"] == "high", "manifest scalar not applied"
@@ -538,9 +556,8 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": s
 assert ns["cmd_proxy"]([]) == 1
 zshenv2 = (HOME/".zshenv").read_text()
 assert "ANTHROPIC_BASE_URL" not in zshenv2, "base-url export left behind on inactive proxy"
-env = json.loads((HOME/".claude/settings.json").read_text())["env"]
-assert "ANTHROPIC_BASE_URL" not in env, "settings base URL left behind on inactive proxy"
-assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "272000"
+assert "env" not in json.loads((HOME/".claude/settings.json").read_text()), \
+    "settings env left behind on inactive proxy"
 
 # macOS: ocx registers a launchd agent, not a systemd unit, and the systemd
 # half of the export has no equivalent there.
@@ -570,9 +587,7 @@ for name in ("cmd_settings", "cmd_mcp", "cmd_update"):
 g["_proxy_stop_budget"] = lambda: None
 g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_refresh"]([]) == 0
-env = json.loads((HOME/".claude/settings.json").read_text())["env"]
-assert "ANTHROPIC_BASE_URL" not in env
-assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "272000"
+assert "env" not in json.loads((HOME/".claude/settings.json").read_text())
 g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_refresh"]([]) == 0
 assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
