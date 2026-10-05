@@ -350,7 +350,9 @@ def cmd_token_cached(scope):
         raise AuthError("not logged in; run: auth login")
     if data.get("origin") != ORIGIN:
         raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
-    if data.get("session_state") == "invalid":
+    expires_at = (data.get("session") or {}).get("expires_at")
+    expired = isinstance(expires_at, int) and not isinstance(expires_at, bool) and expires_at <= time.time()
+    if data.get("session_state") == "invalid" or expired:
         raise AuthError("setup session is invalid, expired, or revoked; run: auth login", 401, exit_code=4)
     token = data["tokens"].get("*" if data["mode"] == "global" else scope)
     if not isinstance(token, str) or not token:

@@ -103,6 +103,18 @@ except m["AuthError"] as exc:
 else:
     raise AssertionError("cached token from another origin was accepted")
 m["cmd_token_cached"].__globals__["ORIGIN"] = saved_origin
+# Nor one whose session has expired.
+expired_store = json.load(open(os.environ["LOST_AUTH_STORE"]))
+live_store = json.dumps(expired_store)
+expired_store["session"]["expires_at"] = 1
+open(os.environ["LOST_AUTH_STORE"], "w").write(json.dumps(expired_store))
+try:
+    m["cmd_token_cached"]("today")
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+else:
+    raise AssertionError("cached token from an expired session was accepted")
+open(os.environ["LOST_AUTH_STORE"], "w").write(live_store)
 m["_refresh"].__globals__["_request"] = request
 
 # Rotated server credentials replace the local bearer without another login.

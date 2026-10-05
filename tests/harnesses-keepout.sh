@@ -136,6 +136,7 @@ exit "${AUTH_RC:-0}"
 curl = bin_dir/'curl'
 curl.write_text('''#!/bin/sh
 printf '%s\\n' "$@" > "$HOME/curl-args"
+/bin/cat > "$HOME/curl-stdin"
 printf '%s|%s' "${CURL_BODY-}" "${HTTP_CODE:-200}"
 echo curl-diagnostic >&2
 exit "${CURL_RC:-0}"
@@ -168,8 +169,10 @@ for shell in shells:
             assert not args.exists(), 'curl ran despite exemption/auth failure'
         if args.exists():
             argv = args.read_text().splitlines()
-            assert argv == ['-fsS', '-m', '2', '-w', '|%{http_code}', '-H', 'Authorization: Bearer test-token',
+            assert argv == ['-fsS', '-m', '2', '-w', '|%{http_code}', '-H', '@-',
                             '-H', 'Accept: text/plain', 'https://' + marker]
+            # The bearer travels on stdin, not in curl's argv.
+            assert (home/'curl-stdin').read_text() == 'Authorization: Bearer test-token\n'
     for missing in (auth, curl, awk):
         hidden = missing.with_name(missing.name + '.hidden')
         missing.rename(hidden)
