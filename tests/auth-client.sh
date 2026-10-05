@@ -87,6 +87,14 @@ else:
 assert not requested
 m["_refresh"].__globals__["_request"] = request
 
+# --cached reads the saved token without touching the network.
+m["_refresh"].__globals__["_request"] = context_must_not_request
+cached_output = io.StringIO()
+with contextlib.redirect_stdout(cached_output):
+    m["cmd_token"]("today", cached=True)
+assert cached_output.getvalue().strip() == "global-secret" and not requested
+m["_refresh"].__globals__["_request"] = request
+
 # Rotated server credentials replace the local bearer without another login.
 server["tokens"] = {"*":"rotated-secret"}
 with contextlib.redirect_stdout(io.StringIO()):

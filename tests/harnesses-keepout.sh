@@ -128,7 +128,7 @@ bin_dir = home/'stubs'
 bin_dir.mkdir()
 auth = bin_dir/'auth'
 auth.write_text('''#!/bin/sh
-[ "$*" = "token today" ] || exit 99
+[ "$*" = "token --cached today" ] || exit 99
 printf '%s' "${AUTH_BODY-test-token}"
 echo auth-diagnostic >&2
 exit "${AUTH_RC:-0}"
