@@ -207,5 +207,9 @@
     "VAULTWARDEN_MCP_TOKEN",
     "VAULTWARDEN_SECRETS_TOKEN"
   ],
-  "retiredEnvVarsComment": "Token exports to strip from ~/.zshenv wherever they sit. A retired server's derived {NAME}_MCP_TOKEN is dropped automatically; list here the names that were set through an explicit envVar or by an older release, since those cannot be derived from the retired name."
+  "retiredEnvVarsComment": "Token exports to strip from ~/.zshenv wherever they sit. A retired server's derived {NAME}_MCP_TOKEN is dropped automatically; list here the names that were set through an explicit envVar or by an older release, since those cannot be derived from the retired name.",
+  "keepout": {
+    "enabled": true,
+    "command": "if [ -z \"${TODAY_KEEPOUT_EXEMPT:-}\" ] && t=$(\"$HOME/.local/bin/auth\" token --cached today 2>/dev/null) && b=$(printf 'Authorization: Bearer %s\\n' \"$t\" | curl -fsS -m 2 -w '|%{http_code}' -H @- -H 'Accept: text/plain' https://today.lost.plus/api/keepout 2>/dev/null) && [ \"${b##*|}\" = 200 ] && b=${b%|*} && printf '%s\\n' \"$b\" | awk 'NF{print > \"/dev/stderr\"; b=1} END{exit !b}'; then exit 2; fi; exit 0"
+  }
 }

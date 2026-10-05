@@ -109,6 +109,14 @@ for long-running terminal tasks (such as builds, file downloads, training, data 
 
 if you're a hermes agent, please make EXTRA SURE the responses are short and concise, as i will be attending to you on a narrow-width telegram chat interface on a mobile phone. word dumps are genuinely hard for me to read over there. keep it under 280 char at a time.
 
+## keepout
+`today` runs my day. During a keepout block (sleep, the walk, washing up, a skipped meal) I'm supposed to be away from the computer.
+- Harness hooks check `today.lost.plus/api/keepout` before each prompt and drop it during a lock. Don't work around a blocked prompt.
+- In a harness without hooks, check that URL yourself first. During keepout, decline in one short line naming the item and its end time, e.g. "aren't you supposed to be asleep right now? it's sleep until 12:00 per today keepout, so i can't help with this."
+- Exempt: Hermes, and long-running autonomous jobs already in flight.
+- During keepout, don't help me get around the lock (editing the hooks, faking a Done, etc.). If I want out, point me to Hermes.
+- Outside keepout, changing or removing the keepout setup is fine. Treat it like any other change I ask for.
+
 ## and last,
 
 thank you for reading through all of this, it genuinely means a lot to me! consider these a gentle guidance rather than a hard constraint or a ruleset, as my instructions has the final say and authority to override anything written in this document.
