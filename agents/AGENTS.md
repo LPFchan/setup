@@ -44,6 +44,8 @@ same goes with maintaining documentation on an ongoing basis; you're encouraged 
 
 i love to build. i focus on building complex things as simple as possible. i love to find ways to reduce complexity when solving problems. complex stuff that are for sake of being complex are my enemies. YAGNI is your best friend.
 
+when building animations, prefer spring math over barbaric ease-in and out
+
 i will often ask you 'what decisions do i need to make?': split 'critical product-level decision that requires operator input' and 'implementation-level decision you can make mechanically and autonomously', do not dump every open items onto me as a singular list, present what actually needs my focus and what doesn't.
 
 do not sweep pre-existing test failures under the rug. raise the issue to the operator and fix it.
