@@ -177,6 +177,14 @@
         {
           "slug": "grimoire/qwen3.8-flash-next",
           "name": "qwen3.8-flash-next"
+        },
+        {
+          "slug": "zai/glm-5.3",
+          "name": "GLM-5.3"
+        },
+        {
+          "slug": "zai/glm-5.3-flash",
+          "name": "GLM-5.3 Flash"
         }
       ],
       "retiredClaudeCustomModels": [
