@@ -238,3 +238,12 @@ the public internet:
 
 Record the deployed hub, gateway, and service commits. Smoke-test production
 after the coordinated rollout is complete.
+
+To test a signed-in page yourself instead of asking the operator, sign in as
+the Common Auth test account `agent@lost.plus` (an administrator who can see
+every service). Its software passkey is passage `infra` /
+`COMMON_AUTH_TEST_PASSKEY`. From an `LPFchan/auth` checkout,
+`node scripts/test-passkey.mjs login` prints an `lp_auth` session, and
+`logout` ends it. Pass secrets through the environment or stdin, never a
+command line, and log out when you are done. `deploy/RUNBOOK.md` ("The agent
+test account") has the full snippet (DEC-20261008-001).
