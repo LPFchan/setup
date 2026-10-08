@@ -56,7 +56,6 @@ services that remain on that machine.
 - home to all macOS/iOS xcode builds and testing
 - Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`
 
-
 ## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
 - spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
 - Ubuntu 24.04 / DGX OS 7.6.0; 20-core Arm CPU, 128 GB unified memory, 1 TB NVMe
