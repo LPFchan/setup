@@ -109,7 +109,7 @@ assert not any(a.startswith("mcp__") for a in manifest["settings"]["claude"]["pe
 
 assert ns["cmd_settings"]([]) == 0
 
-launcher = HOME/".local/bin/claude-gpt-context"
+launcher = HOME/".local/bin/claude-context"
 assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == str(launcher)
 with tempfile.TemporaryDirectory() as fake_bin:
     fake_claude = Path(fake_bin)/"claude"
@@ -117,7 +117,8 @@ with tempfile.TemporaryDirectory() as fake_bin:
     fake_claude.chmod(0o755)
     launch_env = dict(os.environ, PATH=fake_bin + os.pathsep + os.environ["PATH"])
     launch_env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
-    for model, expected in [("gpt-6.1-sol", "272000"), ("gpt-6-luna", "272000"),
+    for model, expected in [("gpt-6.1-sol", "350000"), ("gpt-6-luna", "350000"),
+                            ("zai/glm-5.3", "350000"), ("grimoire/qwen3.8-flash-next", "350000"),
                             ("claude-opus-5-5", "unset"), ("operator/small-model", "unset"),
                             ("gpt-operator-small", "unset")]:
         result = subprocess.run([str(launcher), "--model", model], env=launch_env,
@@ -126,7 +127,16 @@ with tempfile.TemporaryDirectory() as fake_bin:
     launch_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "128000"
     result = subprocess.run([str(launcher), "--model=operator/small-model"], env=launch_env,
                             capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "128000", "non-GPT context override was changed"
+    assert result.stdout.strip() == "128000", "unmanaged model context override was changed"
+legacy = HOME/".local/bin/claude-gpt-context"
+legacy.write_text("#!/bin/sh\n")
+t3 = json.loads(t3_path.read_text())
+t3["providerInstances"]["claudeAgent"]["config"]["binaryPath"] = str(legacy)
+t3_path.write_text(json.dumps(t3))
+assert ns["cmd_settings"]([]) == 0
+assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == str(launcher), \
+    "the old GPT-only launcher path was not moved to the managed launcher"
+assert not legacy.exists(), "the old GPT-only launcher was left behind"
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
 assert d["effortLevel"] == "high", "manifest scalar not applied"
