@@ -51,18 +51,11 @@ services that remain on that machine.
 
 - dumpling.tailaa113.ts.net · user yeowool
 - login password `0000` (tailnet-only machine; auto-login on)
-- home to all computer-use: Cua Driver (below), or Codex's via the a2a skill
+- home to all computer-use: [Cua Driver](https://github.com/trycua/cua) (`open -n -g -a CuaDriver --args serve`, then `cua-driver call <tool> '<json>'`; real keystrokes need `press_key` with `"delivery_mode":"foreground"` + `window_id`), or Codex's via the a2a skill
+- test code-signing identity "Parakeet Test (dumpling)" in `~/Library/Keychains/parakeet-test.keychain-db` (password `parakeet-test`); signing test builds with it keeps TCC grants across rebuilds
 - home to all macOS/iOS xcode builds and testing
 - Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`
 
-### Cua Driver (computer-use)
-
-- [trycua/cua](https://github.com/trycua/cua) driver 0.34, MIT: `~/.local/bin/cua-driver` + `/Applications/CuaDriver.app`. Cua Spaces needs macOS 26, so only the driver runs here.
-- Start the daemon with `open -n -g -a CuaDriver --args serve`; CuaDriver holds Accessibility + Screen Recording.
-- Drive it from the shell: `cua-driver list-tools`, `cua-driver describe <tool>`, `cua-driver call <tool> '<json>'`. Screen is 1920×1080 at scale 1, so `get_desktop_state` pixels are click coordinates.
-- Background input (the default) never reaches global hotkeys or another app's key window. For real keystrokes use `press_key` with `modifiers`, `"delivery_mode":"foreground"` and a `window_id`; the `hotkey` tool doesn't fire Carbon hotkeys even in foreground. Drags and screen clicks: `"scope":"desktop"`.
-- Video: `start_recording` with `"record_video":true` from one MCP session (`cua-driver mcp`) kept open; it stops when that client disconnects. `cua-driver recording start <dir>` saves per-action screenshots only.
-- Test signing: `~/Library/Keychains/parakeet-test.keychain-db` (password `parakeet-test`) holds the self-signed "Parakeet Test (dumpling)" code-signing identity. Sign test builds with it so Screen Recording and other grants survive rebuilds.
 
 ## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
 - spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
