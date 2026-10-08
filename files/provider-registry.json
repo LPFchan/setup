@@ -152,6 +152,18 @@
       },
       "enabled": true,
       "models_dev": "opencode-go"
+    },
+    "zai": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "zai"
+      },
+      "enabled": true
     }
   },
   "retired_providers": [
