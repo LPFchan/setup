@@ -32,6 +32,8 @@ always match my prompt language exactly. If I write in English, respond strictly
 
 always assume other agents are working in the checkout concurrently. treat the workspace as read-only: see `parallel-tree` skill for more.
 
+assume the worktree is out-of-date and git pull from remote when starting your work
+
 do not run subagents or enter plan mode unless explicitly requested by the operator
 
 my repos use a two-pathway landing rule: **direct push to main for changes with no practical consequences (e.g. simple documentation edits); pull request for changes expected to have consequences (e.g. feature implementations).** when opening a PR, babysit it by default using the `babysit` skill until automated review is complete and CI is green, then squash-merge with a contract-compliant message — never the GitHub web UI green button. `mutual-agreement` and `sharpen-the-tip` still apply as the in-conversation review layer before/around PRs.
