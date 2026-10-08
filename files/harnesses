@@ -767,7 +767,6 @@ def _write_t3_settings():
                          .replace("@TOKENS@", CLAUDE_CONTEXT_TOKENS))
         launcher.chmod(0o755)
         config["binaryPath"] = str(launcher)
-        legacy.unlink(missing_ok=True)
     existing = config.get("customModels", [])
     # Append what is missing, and refresh the fields the manifest owns on rows
     # that are already there -- an entry added before the manifest grew a
@@ -804,6 +803,9 @@ def _write_t3_settings():
     existing = out
     config["customModels"] = existing
     save_json_atomic(T3_SETTINGS, current)
+    # Only once settings name the new launcher can the old one go.
+    if config.get("binaryPath") == str(launcher):
+        legacy.unlink(missing_ok=True)
     print("  wrote %s (%d claude customModels)" % (T3_SETTINGS, len(existing)))
 
 def cmd_settings(names):
