@@ -50,6 +50,7 @@ services that remain on that machine.
 ## dumpling — Mac mini (M1, 8 GB unified)
 
 - dumpling.tailaa113.ts.net · user yeowool
+- login password `0000` (tailnet-only machine; auto-login on)
 - home to all computer-use: Cua Driver (below), or Codex's via the a2a skill
 - home to all macOS/iOS xcode builds and testing
 - Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`
