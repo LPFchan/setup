@@ -163,7 +163,8 @@
         "store": "opencode",
         "key": "zai"
       },
-      "enabled": true
+      "enabled": true,
+      "models_dev": "zai-coding-plan"
     }
   },
   "retired_providers": [

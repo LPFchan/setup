@@ -87,7 +87,7 @@ fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-go'
+    'cloudflare', 'openrouter', 'opencode-go', 'zai'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
@@ -133,7 +133,7 @@ m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-go'
+    'cloudflare', 'openrouter', 'opencode-go', 'zai'
 }
 m.REGISTRY_PATH = original_registry
 
