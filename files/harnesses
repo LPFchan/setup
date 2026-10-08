@@ -729,10 +729,14 @@ def _effort_descriptors_by_slug():
 
 
 # T3 launches this shim with the selected --model on every session start.
-CLAUDE_GPT_CONTEXT_LAUNCHER = """#!/usr/bin/env python3
+# Claude assumes a 200K window for a model it does not recognize, so every
+# picker model routed through opencodex gets an explicit window instead.
+CLAUDE_CONTEXT_TOKENS = "350000"
+CLAUDE_CONTEXT_LAUNCHER = """#!/usr/bin/env python3
 import os
 import sys
 
+MODELS = @MODELS@
 args = sys.argv[1:]
 model = os.environ.get("ANTHROPIC_MODEL", "")
 for index, arg in enumerate(args):
@@ -740,8 +744,8 @@ for index, arg in enumerate(args):
         model = args[index + 1]
     elif arg.startswith("--model="):
         model = arg.split("=", 1)[1]
-if model in ("gpt-6.1-sol", "gpt-6-luna"):
-    os.environ["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "272000"
+if model in MODELS:
+    os.environ["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "@TOKENS@"
 os.execvp("claude", ["claude", *args])
 """
 
@@ -752,10 +756,15 @@ def _write_t3_settings():
     inst = current.setdefault("providerInstances", {})
     claude = inst.setdefault("claudeAgent", {"driver":"claudeAgent","enabled":True,"config":{}})
     config = claude.setdefault("config", {})
-    launcher = HOME / ".local/bin/claude-gpt-context"
-    if config.get("binaryPath", "claude") in ("claude", str(launcher)):
+    launcher = HOME / ".local/bin/claude-context"
+    # The launcher was GPT-only and named for it until every picker model
+    # needed a window; a settings file still pointing there is ours too.
+    legacy = HOME / ".local/bin/claude-gpt-context"
+    if config.get("binaryPath", "claude") in ("claude", str(launcher), str(legacy)):
         launcher.parent.mkdir(parents=True, exist_ok=True)
-        save_text_atomic(launcher, CLAUDE_GPT_CONTEXT_LAUNCHER)
+        save_text_atomic(launcher, CLAUDE_CONTEXT_LAUNCHER
+                         .replace("@MODELS@", json.dumps(sorted(m["slug"] for m in models)))
+                         .replace("@TOKENS@", CLAUDE_CONTEXT_TOKENS))
         launcher.chmod(0o755)
         config["binaryPath"] = str(launcher)
     existing = config.get("customModels", [])
@@ -794,6 +803,9 @@ def _write_t3_settings():
     existing = out
     config["customModels"] = existing
     save_json_atomic(T3_SETTINGS, current)
+    # Only once settings name the new launcher can the old one go.
+    if config.get("binaryPath") == str(launcher):
+        legacy.unlink(missing_ok=True)
     print("  wrote %s (%d claude customModels)" % (T3_SETTINGS, len(existing)))
 
 def cmd_settings(names):
