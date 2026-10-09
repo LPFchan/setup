@@ -139,7 +139,7 @@
   ],
   "settings": {
     "claude": {
-      "comment": "Merged into ~/.claude/settings.json. Scalar/dict keys deep-merge (existing preserved). 'permissionsAllowAdd' is union-merged into permissions.allow so the module can never clobber an operator's existing allow list. disableClaudeAiConnectors stops claude fetching the claude.ai cloud connectors: everything worth keeping is administered here, and the duplicates were showing up twice with different auth shapes.",
+      "comment": "Merged into ~/.claude/settings.json. Scalar/dict keys deep-merge (existing preserved). 'permissionsAllowAdd' is union-merged into permissions.allow so the module can never clobber an operator's existing allow list. disableClaudeAiConnectors stops claude fetching the claude.ai cloud connectors: everything worth keeping is administered here, and the duplicates were showing up twice with different auth shapes. autoCompactWindow holds every model to 400K; Claude caps it at the window it believes the model has, which is 200K for a model ID it does not recognize (everything routed through opencodex), so env.CLAUDE_CODE_MAX_CONTEXT_TOKENS raises that belief to 400K. That variable only applies to unrecognized IDs and leaves Claude models alone.",
       "json": {
         "permissions": {
           "defaultMode": "auto"
@@ -149,7 +149,11 @@
           "pr": ""
         },
         "effortLevel": "high",
-        "disableClaudeAiConnectors": true
+        "disableClaudeAiConnectors": true,
+        "autoCompactWindow": 400000,
+        "env": {
+          "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"
+        }
       },
       "permissionsAllowAdd": [
         "Read",

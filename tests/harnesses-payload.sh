@@ -109,34 +109,30 @@ assert not any(a.startswith("mcp__") for a in manifest["settings"]["claude"]["pe
 
 assert ns["cmd_settings"]([]) == 0
 
-launcher = HOME/".local/bin/claude-context"
-assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == str(launcher)
-with tempfile.TemporaryDirectory() as fake_bin:
-    fake_claude = Path(fake_bin)/"claude"
-    fake_claude.write_text("#!/usr/bin/env python3\nimport os\nprint(os.environ.get('CLAUDE_CODE_MAX_CONTEXT_TOKENS', 'unset'))\n")
-    fake_claude.chmod(0o755)
-    launch_env = dict(os.environ, PATH=fake_bin + os.pathsep + os.environ["PATH"])
-    launch_env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
-    for model, expected in [("gpt-6.1-sol", "350000"), ("gpt-6-luna", "350000"),
-                            ("zai/glm-5.3", "350000"), ("grimoire/qwen3.8-flash-next", "350000"),
-                            ("claude-opus-5-5", "unset"), ("operator/small-model", "unset"),
-                            ("gpt-operator-small", "unset")]:
-        result = subprocess.run([str(launcher), "--model", model], env=launch_env,
-                                capture_output=True, text=True, check=True)
-        assert result.stdout.strip() == expected, (model, result.stdout)
-    launch_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "128000"
-    result = subprocess.run([str(launcher), "--model=operator/small-model"], env=launch_env,
-                            capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "128000", "unmanaged model context override was changed"
-legacy = HOME/".local/bin/claude-gpt-context"
-legacy.write_text("#!/bin/sh\n")
+# Every model gets one 400K window from claude's own settings; the per-model
+# T3 launchers are retired and a settings file still naming one moves back.
+settings = json.loads(claude.read_text())
+assert settings["autoCompactWindow"] == 400000, "claude auto-compact window not set"
+assert settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "400000", \
+    "unrecognized-model context window not set"
+assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"].get("binaryPath", "claude") == "claude"
+for name in ("claude-context", "claude-gpt-context"):
+    legacy = HOME/".local/bin"/name
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("#!/bin/sh\n")
+    t3 = json.loads(t3_path.read_text())
+    t3["providerInstances"]["claudeAgent"]["config"]["binaryPath"] = str(legacy)
+    t3_path.write_text(json.dumps(t3))
+    assert ns["cmd_settings"]([]) == 0
+    assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == "claude", \
+        "%s was not retired from the T3 binary path" % name
+    assert not legacy.exists(), "%s was left behind" % name
 t3 = json.loads(t3_path.read_text())
-t3["providerInstances"]["claudeAgent"]["config"]["binaryPath"] = str(legacy)
+t3["providerInstances"]["claudeAgent"]["config"]["binaryPath"] = "/opt/operator/claude"
 t3_path.write_text(json.dumps(t3))
 assert ns["cmd_settings"]([]) == 0
-assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == str(launcher), \
-    "the old GPT-only launcher path was not moved to the managed launcher"
-assert not legacy.exists(), "the old GPT-only launcher was left behind"
+assert json.loads(t3_path.read_text())["providerInstances"]["claudeAgent"]["config"]["binaryPath"] == "/opt/operator/claude", \
+    "an operator-configured binary path was changed"
 d = json.loads(claude.read_text())
 assert d["custom_key"] == "keepme", "custom key lost"
 assert d["effortLevel"] == "high", "manifest scalar not applied"
@@ -567,7 +563,7 @@ g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": s
 assert ns["cmd_proxy"]([]) == 1
 zshenv2 = (HOME/".zshenv").read_text()
 assert "ANTHROPIC_BASE_URL" not in zshenv2, "base-url export left behind on inactive proxy"
-assert "env" not in json.loads((HOME/".claude/settings.json").read_text()), \
+assert "ANTHROPIC_BASE_URL" not in json.loads((HOME/".claude/settings.json").read_text()).get("env", {}), \
     "settings env left behind on inactive proxy"
 
 # macOS: ocx registers a launchd agent, not a systemd unit, and the systemd
@@ -598,7 +594,7 @@ for name in ("cmd_settings", "cmd_mcp", "cmd_update"):
 g["_proxy_stop_budget"] = lambda: None
 g["subprocess"] = type("P", (), {"run": staticmethod(run_inactive), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_refresh"]([]) == 0
-assert "env" not in json.loads((HOME/".claude/settings.json").read_text())
+assert "ANTHROPIC_BASE_URL" not in json.loads((HOME/".claude/settings.json").read_text()).get("env", {})
 g["subprocess"] = type("P", (), {"run": staticmethod(run_active), "DEVNULL": subprocess.DEVNULL, "TimeoutExpired": subprocess.TimeoutExpired})
 assert ns["cmd_refresh"]([]) == 0
 assert json.loads((HOME/".claude/settings.json").read_text())["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:10101"
