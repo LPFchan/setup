@@ -41,7 +41,8 @@ Use `hostname`, `uname -m`, and either `sw_vers`/`sysctl` on macOS or
 `/etc/os-release`/`lscpu`/`free -h` on Linux.
 
 On Linux, also ask the operator whether the machine should run headless (no
-desktop session). If yes, follow [Run headless](#run-headless-linux) once
+desktop session), and plan the [burn-in](#burn-in-and-benchmark-linux) before
+the machine takes real work. If yes, follow [Run headless](#run-headless-linux) once
 Tailscale SSH access is verified. Check the current state with
 `systemctl get-default`.
 
@@ -314,6 +315,162 @@ attached ([NVIDIA forum](https://forums.developer.nvidia.com/t/dgx-spark-gb10-fa
 unresolved as of 2026-10). After the first headless boot, let it idle and
 check `nvidia-smi --query-gpu=temperature.gpu,power.draw --format=csv`; report
 to the operator if the idle GPU climbs toward 70 °C.
+
+## Burn in and benchmark (Linux)
+
+Run this on every new Linux machine before it takes real work. It loads the
+whole machine for about 40 minutes and writes a 16 GB scratch file, so ask the
+operator first if anything already runs there. Keep results in `~/burnin`.
+macOS hosts are not covered yet.
+
+Install the tools and take a baseline. `smartctl` needs the disk's device
+path (`lsblk -d`):
+
+```sh
+sudo apt-get install -y stress-ng fio iperf3 smartmontools lm-sensors   # dnf on Fedora
+mkdir -p ~/burnin && cd ~/burnin
+sudo smartctl -a /dev/<disk> > smart-before.txt
+date -Iseconds > start.txt
+```
+
+Short benchmarks (about 5 minutes). stress-ng reports memory bandwidth per
+worker, so sum the workers:
+
+```sh
+stress-ng --cpu 1 --cpu-method int64 -t 30 --metrics-brief   # single-core
+stress-ng --cpu 0 --cpu-method int64 -t 30 --metrics-brief   # all cores
+stress-ng --stream 0 -t 30 -v 2>&1 | grep 'memory rate' |
+    awk '{r+=$7; w+=$10} END {printf "%.1f GB/s read, %.1f GB/s write\n", r/1000, w/1000}'
+for spec in "read 1M 1" "write 1M 1" "randread 4k 4" "randwrite 4k 4"; do
+    set -- $spec
+    fio --name=$1 --filename=fio.tmp --size=16G --rw=$1 --bs=$2 --numjobs=$3 \
+        --iodepth=32 --ioengine=libaio --direct=1 --runtime=30 --time_based \
+        --group_reporting | grep -E 'IOPS='
+done
+rm -f fio.tmp
+```
+
+Test each network link the machine will use (LAN, Wi-Fi, direct cables)
+against a fleet host that has `iperf3`. `-1` makes the peer's server exit
+after one test:
+
+```sh
+ssh <peer> 'iperf3 -s -1 -D'
+iperf3 -c <peer-address> -t 15 -P 4        # upload
+ssh <peer> 'iperf3 -s -1 -D'
+iperf3 -c <peer-address> -t 15 -P 4 -R     # download
+```
+
+Then a 30-minute stability soak: all cores plus 75% of RAM with result
+verification, logging the hottest thermal zone and the average CPU clock every
+30 seconds. Run it with `systemd-run --user --unit=burnin-soak bash soak.sh`
+so it survives a dropped SSH session (this needs lingering, set above). It
+stops itself if anything reaches 95 °C:
+
+```sh
+# soak.sh
+cd ~/burnin
+stress-ng --cpu 0 --vm 4 --vm-bytes 75% --verify -t 30m --metrics-brief > soak.txt 2>&1 &
+pid=$!
+while kill -0 $pid 2>/dev/null; do
+    t=$(( $(cat /sys/class/thermal/thermal_zone*/temp | sort -n | tail -1) / 1000 ))
+    f=$(awk '{s+=$1} END {printf "%d", s/NR/1000}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq)
+    echo "$(date +%T) ${t}C ${f}MHz" >> soak-thermal.txt
+    [ "$t" -ge 95 ] && pkill -f stress-ng
+    sleep 30
+done
+wait $pid; echo "exit=$?" >> soak.txt
+```
+
+Pass when all of these hold:
+
+- stress-ng exits 0 and reports every stressor as passed, with no
+  verification failures.
+- Temperatures level off instead of climbing for the whole run, and clocks stay
+  steady.
+- The kernel logged no hardware errors during the run:
+  `journalctl -k --since "$(cat start.txt)" | grep -iE 'mce|edac|aer|hardware error|thermal|throttl|oom'`
+- SMART is unchanged apart from usage counters: diff
+  `smart-before.txt` against a fresh `smartctl -a`. Media errors, error-log
+  entries, and critical warnings must not grow.
+- The machine did not reboot (`uptime`).
+
+Report the headline numbers and the pass/fail outcome to the operator. Keep
+them out of the fleet skill; `~/burnin` on the machine holds the raw output.
+
+If the machine has a GPU or other accelerator, also load-test it with tools
+for that hardware: a sustained compute burn that checks its own results, plus
+a memory bandwidth measurement, while watching temperatures the same way.
+Run it after the CPU soak, not alongside it, so each soak's temperatures are
+attributable.
+
+### NVIDIA GPUs
+
+Needs the driver and the CUDA toolkit (`nvcc`; on most installs
+`export PATH=/usr/local/cuda/bin:$PATH`). Build
+[gpu-burn](https://github.com/wilicc/gpu-burn) for the GPU's compute
+capability:
+
+```sh
+cd ~/burnin
+git clone --depth 1 https://github.com/wilicc/gpu-burn
+cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1)
+make -C gpu-burn COMPUTE="$cc"
+```
+
+Measure memory bandwidth with a plain copy kernel. Save it as `membw.cu`,
+build with `nvcc -O3 -arch=sm_${cc/./} -o membw membw.cu`, and run `./membw`
+(set `CUDA_VISIBLE_DEVICES` to test each GPU):
+
+```cuda
+#include <cstdio>
+#include <cuda_runtime.h>
+__global__ void copy(const float4* __restrict__ a, float4* __restrict__ b, size_t n) {
+    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x)
+        b[i] = a[i];
+}
+int main() {
+    size_t bytes = 8ull << 30, n = bytes / sizeof(float4);   // 2 x 8 GiB; shrink for small cards
+    float4 *a, *b;
+    cudaMalloc(&a, bytes); cudaMalloc(&b, bytes);
+    cudaMemset(a, 1, bytes); cudaMemset(b, 0, bytes);
+    cudaEvent_t s, e; cudaEventCreate(&s); cudaEventCreate(&e);
+    copy<<<1024, 512>>>(a, b, n); cudaDeviceSynchronize();
+    int iters = 20; cudaEventRecord(s);
+    for (int i = 0; i < iters; i++) copy<<<1024, 512>>>(a, b, n);
+    cudaEventRecord(e); cudaEventSynchronize(e);
+    float ms; cudaEventElapsedTime(&ms, s, e);
+    printf("copy: %.1f GB/s (read+write)\n", 2.0 * bytes * iters / (ms / 1e3) / 1e9);
+    printf("%s\n", cudaGetErrorString(cudaGetLastError()));
+}
+```
+
+Expect roughly 80–90% of the GPU's rated memory bandwidth.
+
+Then a 10-minute burn on every GPU, sampled every 30 seconds and run under
+`systemd-run --user` like the CPU soak. gpu-burn takes 90% of GPU memory by
+default; on a GPU that shares system RAM (unified memory, such as GB10 or
+Jetson) that means 90% of the machine's RAM, so cap it with `-m 30%`:
+
+```sh
+# gpusoak.sh
+cd ~/burnin
+(cd gpu-burn && ./gpu_burn -m 30% 600) > gpusoak.txt 2>&1 &
+pid=$!
+while kill -0 $pid 2>/dev/null; do
+    echo "$(date +%T) $(nvidia-smi --query-gpu=index,temperature.gpu,clocks.sm,power.draw,clocks_event_reasons.active \
+        --format=csv,noheader | tr '\n' ' ')" >> gpusoak-thermal.txt
+    sleep 30
+done
+wait $pid; echo "exit=$?" >> gpusoak.txt
+```
+
+Pass when every GPU reports `OK` with `errors: 0` at the end of `gpusoak.txt`,
+temperatures level off, and the kernel log has no `Xid` errors
+(`journalctl -k --since ... | grep -i xid`). In `clocks_event_reasons`,
+`0x4` (software power cap) is normal under full load; `0x8` (hardware
+slowdown), `0x20`/`0x40` (thermal slowdown), or `0x80` (power brake) are not.
+
 
 ## Record the host
 
