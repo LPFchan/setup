@@ -728,26 +728,12 @@ def _effort_descriptors_by_slug():
     return out
 
 
-# T3 launches this shim with the selected --model on every session start.
-# Claude assumes a 200K window for a model it does not recognize, so every
-# picker model routed through opencodex gets an explicit window instead.
-CLAUDE_CONTEXT_TOKENS = "350000"
-CLAUDE_CONTEXT_LAUNCHER = """#!/usr/bin/env python3
-import os
-import sys
-
-MODELS = @MODELS@
-args = sys.argv[1:]
-model = os.environ.get("ANTHROPIC_MODEL", "")
-for index, arg in enumerate(args):
-    if arg == "--model" and index + 1 < len(args):
-        model = args[index + 1]
-    elif arg.startswith("--model="):
-        model = arg.split("=", 1)[1]
-if model in MODELS:
-    os.environ["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "@TOKENS@"
-os.execvp("claude", ["claude", *args])
-"""
+# Earlier versions pointed T3 at a launcher that set a context window per
+# model; the claude settings now set one window for every model.
+RETIRED_CLAUDE_LAUNCHERS = (
+    HOME / ".local/bin/claude-context",
+    HOME / ".local/bin/claude-gpt-context",
+)
 
 
 def _write_t3_settings():
@@ -756,17 +742,8 @@ def _write_t3_settings():
     inst = current.setdefault("providerInstances", {})
     claude = inst.setdefault("claudeAgent", {"driver":"claudeAgent","enabled":True,"config":{}})
     config = claude.setdefault("config", {})
-    launcher = HOME / ".local/bin/claude-context"
-    # The launcher was GPT-only and named for it until every picker model
-    # needed a window; a settings file still pointing there is ours too.
-    legacy = HOME / ".local/bin/claude-gpt-context"
-    if config.get("binaryPath", "claude") in ("claude", str(launcher), str(legacy)):
-        launcher.parent.mkdir(parents=True, exist_ok=True)
-        save_text_atomic(launcher, CLAUDE_CONTEXT_LAUNCHER
-                         .replace("@MODELS@", json.dumps(sorted(m["slug"] for m in models)))
-                         .replace("@TOKENS@", CLAUDE_CONTEXT_TOKENS))
-        launcher.chmod(0o755)
-        config["binaryPath"] = str(launcher)
+    if config.get("binaryPath") in {str(p) for p in RETIRED_CLAUDE_LAUNCHERS}:
+        config["binaryPath"] = "claude"
     existing = config.get("customModels", [])
     # Append what is missing, and refresh the fields the manifest owns on rows
     # that are already there -- an entry added before the manifest grew a
@@ -803,9 +780,10 @@ def _write_t3_settings():
     existing = out
     config["customModels"] = existing
     save_json_atomic(T3_SETTINGS, current)
-    # Only once settings name the new launcher can the old one go.
-    if config.get("binaryPath") == str(launcher):
-        legacy.unlink(missing_ok=True)
+    # Only once settings stop naming a retired launcher can it go.
+    if config.get("binaryPath", "claude") == "claude":
+        for path in RETIRED_CLAUDE_LAUNCHERS:
+            path.unlink(missing_ok=True)
     print("  wrote %s (%d claude customModels)" % (T3_SETTINGS, len(existing)))
 
 def cmd_settings(names):
