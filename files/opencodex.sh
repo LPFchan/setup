@@ -230,35 +230,29 @@ _wait_live_proxy() {
 }
 
 # A package swap leaves the previous build serving until something restarts it.
-# `service install` re-registers and restarts, so it is the whole job when it
-# works; the version probe is what proves it did, because a failure here used
-# to be invisible.
+# Bare `ocx service` installs when no service is registered and otherwise
+# repairs, which reloads the service only when its definition changed. Never
+# `service install` over a running service: it unloads the service, then asks
+# the still-answering proxy to stop, and a proxy that is shutting down refuses,
+# so install aborts with the service unloaded and nothing serving. The version
+# probe below restarts a proxy the repair left on the old build.
 #
-# `service install` only gives the fresh proxy ~20s to answer /healthz, and a
+# The service command only gives the fresh proxy ~20s to answer /healthz, and a
 # cold start can spend longer than that syncing providers and the model catalog
 # — so it exits 1 while the proxy is still coming up. Believing that exit
 # failed the module before record_script_state, and `setup update` re-swapped
-# and re-failed every night. On a failed install, keep polling until
+# and re-failed every night. On a failure, keep polling until
 # OPENCODEX_ACTIVATE_WAIT (default 120s) expires before deciding; a proxy that
 # answers inside the window with the installed version is a success.
 _activate_runtime() {
-    local install_rc=0 installed live
-    "$OPENCODEX_BIN" service install || install_rc=$?
+    local service_rc=0 installed live
+    "$OPENCODEX_BIN" service || service_rc=$?
     installed=$(_installed_version)
-    if (( install_rc != 0 )); then
-        echo "opencodex: service install exited $install_rc; waiting up to ${OPENCODEX_ACTIVATE_WAIT:-120}s for /healthz" >&2
+    if (( service_rc != 0 )); then
+        echo "opencodex: ocx service exited $service_rc; waiting up to ${OPENCODEX_ACTIVATE_WAIT:-120}s for /healthz" >&2
         if ! live=$(_wait_live_proxy "${OPENCODEX_ACTIVATE_WAIT:-120}"); then
-            # Installing over a loaded LaunchAgent boots it out first, then asks
-            # any proxy still answering to stop. One that is still shutting down
-            # refuses ("running as the installed service"), and the install
-            # aborts with the service unloaded: nothing serves until a repair
-            # loads it again. Repair once before calling it a failure.
-            echo "opencodex: no proxy answered /healthz within ${OPENCODEX_ACTIVATE_WAIT:-120}s; repairing the service" >&2
-            "$OPENCODEX_BIN" service repair || true
-            if ! live=$(_wait_live_proxy "${OPENCODEX_ACTIVATE_WAIT:-120}"); then
-                echo "opencodex: no proxy answered /healthz after repair; install treated as failed" >&2
-                return 1
-            fi
+            echo "opencodex: no proxy answered /healthz within ${OPENCODEX_ACTIVATE_WAIT:-120}s; activation treated as failed" >&2
+            return 1
         fi
     else
         live=$(_live_proxy_version)

@@ -142,25 +142,20 @@ rm -f "$HOME/.opencodex/restarts"
 if _activate_runtime 2>/dev/null; then
     fail "activation reported success while the previous build kept serving"
 fi
-# A failed install that leaves nothing serving gets one repair before failing:
-# installing over a loaded LaunchAgent can abort with the service unloaded.
+# Activation goes through bare `ocx service` (install when absent, else repair).
+# `service install` over a loaded service unloads it, then a proxy still shutting
+# down refuses to stop, and the install aborts with nothing serving.
 cat > "$OPENCODEX_BIN" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then echo 'opencodex 2.7.42'; fi
-if [ "${1:-}" = service ] && [ "${2:-}" = install ]; then exit 1; fi
-if [ "${1:-}" = service ] && [ "${2:-}" = repair ]; then echo repaired >> "$HOME/.opencodex/repairs"; fi
+if [ "${1:-}" = service ]; then echo "service ${2:-}" >> "$HOME/.opencodex/service-calls"; fi
 EOF
 chmod +x "$OPENCODEX_BIN"
-rm -f "$HOME/.opencodex/repairs"
-_wait_live_proxy() { [[ -e "$HOME/.opencodex/repairs" ]] && print '2.7.42' || return 1 }
-_activate_runtime 2>/dev/null || fail "activation did not repair a service the failed install left unloaded"
-[[ "$(wc -l < "$HOME/.opencodex/repairs")" -eq 1 ]] || fail "activation did not repair exactly once"
-_wait_live_proxy() { return 1 }
-if _activate_runtime 2>/dev/null; then
-    fail "activation reported success while nothing answered after repair"
-fi
-unfunction _wait_live_proxy
-source "$ROOT/files/opencodex.sh"
+rm -f "$HOME/.opencodex/service-calls"
+_live_proxy_version() { print '2.7.42' }
+_activate_runtime || fail "activation failed with the installed build serving"
+[[ "$(cat "$HOME/.opencodex/service-calls")" == "service " ]] \
+    || fail "activation did not use bare ocx service: $(cat "$HOME/.opencodex/service-calls")"
 _live_proxy_version() { print '' }
 install_surfaces
 expect_status 0 current
