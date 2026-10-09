@@ -56,9 +56,11 @@ services that remain on that machine.
 - home to all macOS/iOS xcode builds and testing
 - Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`
 
-## spark1 — ASUS Ascent GX10 (NVIDIA GB10)
-- spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · user yeowool
-- Ubuntu 24.04 / DGX OS 7.6.0; 20-core Arm CPU, 128 GB unified memory, 1 TB NVMe
+## spark1, spark2 — NVIDIA GB10 pair
+- user yeowool on both; Ubuntu 24.04 / DGX OS 7.6.0, 20-core Arm CPU, 128 GB unified memory; headless (`multi-user.target`)
+- spark1: ASUS Ascent GX10 · spark1.tailaa113.ts.net (Tailscale 100.94.227.60) · 1 TB NVMe · wired LAN
+- spark2: NVIDIA DGX Spark · spark2.tailaa113.ts.net (Tailscale 100.120.192.122) · 4 TB NVMe · LAN over Wi-Fi (power saving off) until mangchi is sold
+- linked to each other by one QSFP DAC at 200GbE (`enp1s0f1np1` + `enP2p1s0f1np1` on both); link-local only, no IPv4 configured yet
 
 ## mangchi — NVIDIA Jetson AGX Thor (T5000)
 - mangchi.lost.plus (10.0.0.53) · user yeowool

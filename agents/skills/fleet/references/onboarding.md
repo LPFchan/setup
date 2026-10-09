@@ -40,6 +40,11 @@ role. Confirm the chosen fleet name with the operator if it is unspecified.
 Use `hostname`, `uname -m`, and either `sw_vers`/`sysctl` on macOS or
 `/etc/os-release`/`lscpu`/`free -h` on Linux.
 
+On Linux, also ask the operator whether the machine should run headless (no
+desktop session). If yes, follow [Run headless](#run-headless-linux) once
+Tailscale SSH access is verified. Check the current state with
+`systemctl get-default`.
+
 Set the machine's hostname to the fleet name. On macOS, set all three names;
 an unset `HostName` makes macOS take one from the network (for example a
 router's `Macmini.lan`), and that name is what `auth` reports to Common Auth:
@@ -68,6 +73,24 @@ the distribution's package manager. Enable the SSH server (`ssh` on Ubuntu,
 `sshd` on Fedora). Retain the existing SSH/firewall settings unless the task
 requires a change. Install `gh` following the
 [official distro instructions](https://github.com/cli/cli/blob/trunk/docs/install_linux.md).
+On Ubuntu with Ubuntu Pro ESM enabled (DGX OS ships it), ESM's older `gh`
+outranks GitHub's repository. Pin `gh` to GitHub's origin, reinstall, and check
+`apt-cache policy gh`:
+
+```sh
+printf 'Package: gh\nPin: origin cli.github.com\nPin-Priority: 600\n' |
+    sudo tee /etc/apt/preferences.d/github-cli
+```
+
+If Docker is installed on Linux, add the operator account to the `docker`
+group so containers run without sudo. Skip this on machines without Docker.
+The new membership applies from the next login:
+
+```sh
+getent group docker && sudo usermod -aG docker "$(id -un)"
+```
+
+Verify from a fresh SSH login with `id -nG` and `docker ps`.
 
 ## Set the default login shell
 
@@ -252,6 +275,45 @@ Start a fresh interactive shell to check the prompt, syntax highlighting, and
 tmux integration. Dismiss the AI menu with Esc if installed. Confirm both the
 Tailscale daemon and setup scheduler's persisted configuration; do not reboot
 an occupied machine solely to test onboarding.
+
+## Run headless (Linux)
+
+Only when the operator asked for it. Headless means the machine boots to a
+text console with no desktop; SSH, Docker, and systemd services are
+unaffected. Confirm a second SSH login over Tailscale works first.
+
+Stopping the display manager ends any logged-in desktop session and its apps.
+Check `loginctl list-sessions` for a seat session and see what runs inside it
+(`loginctl session-status <id>`) before stopping it. No reboot is needed;
+later boots come up headless too:
+
+```sh
+sudo systemctl set-default multi-user.target
+sudo systemctl stop display-manager
+systemctl get-default
+systemctl is-active display-manager
+```
+
+Revert with `sudo systemctl set-default graphical.target` and
+`sudo systemctl start display-manager`.
+
+If the machine reaches the LAN over Wi-Fi, turn off Wi-Fi power saving so it
+stays reachable while idle. Find the connection and interface with
+`nmcli -t -f NAME,TYPE,DEVICE con show --active`, then:
+
+```sh
+sudo nmcli con modify <wifi-connection> 802-11-wireless.powersave 2
+sudo iw dev <wifi-interface> set power_save off
+iw dev <wifi-interface> get power_save
+```
+
+The `nmcli` setting persists from the next activation; `iw` applies it now.
+
+On a DGX Spark, some units keep their fans off after booting with no monitor
+attached ([NVIDIA forum](https://forums.developer.nvidia.com/t/dgx-spark-gb10-fans-do-not-spin-in-headless-boot-mode-temperature-rises-to-70-c/361960),
+unresolved as of 2026-10). After the first headless boot, let it idle and
+check `nvidia-smi --query-gpu=temperature.gpu,power.draw --format=csv`; report
+to the operator if the idle GPU climbs toward 70 °C.
 
 ## Record the host
 

@@ -17,6 +17,7 @@ OWNER_KEYS_URL="${SETUP_OWNER_KEYS_URL:-https://github.com/LPFchan.keys}"
 # alias | hostname | user | optional TERM fallback
 FLEET=(
     "spark1|spark1.tailaa113.ts.net|yeowool"
+    "spark2|spark2.tailaa113.ts.net|yeowool"
     "mangchi|mangchi.lost.plus|yeowool"
     "yeowoolmac|mac.lost.plus|yeowool"
     "grimoire|grimoire.lost.plus|yeowool"
