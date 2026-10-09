@@ -46,6 +46,10 @@ the machine takes real work. If yes, follow [Run headless](#run-headless-linux) 
 Tailscale SSH access is verified. Check the current state with
 `systemctl get-default`.
 
+On macOS, ask whether the machine is an always-on host (a Mac mini or Mac
+Studio serving the fleet). If yes, follow [Run unattended](#run-unattended-macos)
+once Tailscale SSH access is verified.
+
 Set the machine's hostname to the fleet name. On macOS, set all three names;
 an unset `HostName` makes macOS take one from the network (for example a
 router's `Macmini.lan`), and that name is what `auth` reports to Common Auth:
@@ -278,6 +282,59 @@ Start a fresh interactive shell to check the prompt, syntax highlighting, and
 tmux integration. Dismiss the AI menu with Esc if installed. Confirm both the
 Tailscale daemon and setup scheduler's persisted configuration; do not reboot
 an occupied machine solely to test onboarding.
+
+## Run unattended (macOS)
+
+Only for always-on Macs; ask the operator before applying this to a laptop.
+These settings keep the Mac awake and reachable, bring it back after a power
+cut, and log it straight into the desktop so GUI-only services (LaunchAgents,
+menu bar apps, Screen Sharing) come up without anyone at the keyboard.
+
+Power: never sleep, keep the display on, wake for network access, and start up
+after a power failure.
+
+```sh
+sudo pmset -a sleep 0 displaysleep 0 womp 1 autorestart 1
+pmset -g custom
+```
+
+Screen saver and lock: never start the screen saver, and never ask for a
+password after it or after the display turns off. Run these as the operator
+account, not with sudo; `-password -` prompts for the account password:
+
+```sh
+defaults -currentHost write com.apple.screensaver idleTime -int 0
+sysadminctl -screenLock off -password -
+sysadminctl -screenLock status
+```
+
+Automatic login needs FileVault off. Check it with `fdesetup status`; if it is
+on, `sudo fdesetup disable` prompts for the password and decrypts in the
+background (`fdesetup status` shows progress). Then:
+
+```sh
+sudo sysadminctl -autologin set -userName "$(id -un)" -password -
+sudo sysadminctl -autologin status
+```
+
+Gatekeeper: allow apps from anywhere. On macOS 15 and later the command only
+unlocks the option; the operator must then pick **Anywhere** under System
+Settings → Privacy & Security → Security:
+
+```sh
+sudo spctl --master-disable
+spctl --status    # "assessments disabled" once confirmed
+```
+
+Leave these to the operator in System Settings → General → Sharing, since macOS
+no longer allows turning them on from the command line:
+
+- **Remote Management** on, with the menu bar status shown, VNC viewer and
+  "anyone may request" off, and access for the operator account
+  ([Apple: kickstart can't enable it since macOS 12.1](https://support.apple.com/guide/remote-desktop/enable-remote-management-apd8b1c65bd/mac)).
+- **Remote Login**'s "Allow full disk access for remote users". Remote Login
+  itself is already on if onboarding runs over SSH; access is limited to
+  Administrators.
 
 ## Run headless (Linux)
 
