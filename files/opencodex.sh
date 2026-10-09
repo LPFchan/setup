@@ -248,8 +248,17 @@ _activate_runtime() {
     if (( install_rc != 0 )); then
         echo "opencodex: service install exited $install_rc; waiting up to ${OPENCODEX_ACTIVATE_WAIT:-120}s for /healthz" >&2
         if ! live=$(_wait_live_proxy "${OPENCODEX_ACTIVATE_WAIT:-120}"); then
-            echo "opencodex: no proxy answered /healthz within ${OPENCODEX_ACTIVATE_WAIT:-120}s; install treated as failed" >&2
-            return 1
+            # Installing over a loaded LaunchAgent boots it out first, then asks
+            # any proxy still answering to stop. One that is still shutting down
+            # refuses ("running as the installed service"), and the install
+            # aborts with the service unloaded: nothing serves until a repair
+            # loads it again. Repair once before calling it a failure.
+            echo "opencodex: no proxy answered /healthz within ${OPENCODEX_ACTIVATE_WAIT:-120}s; repairing the service" >&2
+            "$OPENCODEX_BIN" service repair || true
+            if ! live=$(_wait_live_proxy "${OPENCODEX_ACTIVATE_WAIT:-120}"); then
+                echo "opencodex: no proxy answered /healthz after repair; install treated as failed" >&2
+                return 1
+            fi
         fi
     else
         live=$(_live_proxy_version)
