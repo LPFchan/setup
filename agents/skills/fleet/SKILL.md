@@ -74,6 +74,7 @@ services that remain on that machine.
 - Tailscale exit node + subnet advertise
 - UniFi console (jacobalberty-unifi) on unifi.lost.plus
 - Google Photos nightly backup (gphotos-backup)
+- read-only NFS exports of homes, yeowooldrop, lightroom, video and onedrive to grimoire (for search.lost.plus)
 
 ## grimoire — headless Ubuntu dual-RTX 3090 inference server
 - grimoire.lost.plus (10.0.0.51) · user yeowool
@@ -90,6 +91,7 @@ services that remain on that machine.
 	- all credentials in passage
 - hosts heatmap at heatmap.lost.plus
 - hosts Muum at muum.lost.plus (repo ~/muum), behind the local gateway
+- hosts search at search.lost.plus (repo ~/search): semantic search + MCP over the bingus NAS, behind the local gateway; NAS shares NFS-mounted read-only at /mnt/bingus/<share>
 - fronts the ComfyUI MCP for comfy.lost.plus behind the local gateway (ingress is the OCI tunnel → Grimoire Tailscale Serve)
 - second RTX 3090 currently vacant due to board-level repair work
 

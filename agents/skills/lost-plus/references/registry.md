@@ -73,6 +73,7 @@ Reached through the `grimoire` Cloudflare tunnel. Gateway config:
 | --- | --- | --- | --- |
 | `comfy.lost.plus` | ComfyUI MCP (`:9100`) | grimoire · mcp (scope `comfyui`); ingress is the OCI tunnel → Grimoire Tailscale Serve | `inference` skill |
 | `muum.lost.plus` | Muum (`:8779`) | grimoire · oauth (visibility `muum`) | `~/muum` |
+| `search.lost.plus` | bingus NAS search portal + MCP (`:8790`) | grimoire · `/healthz` public, `/mcp` mcp (scope `search`), rest oauth (visibility `search`) | `~/search` (`LPFchan/search`) |
 | `chat.lost.plus` | OpenAI-compatible inference API | none (own key) | `~/inference`, `inference` skill |
 | `dash.lost.plus` | inference telemetry dashboard | none | `~/inference` |
 | `heatmap.lost.plus` | heatmap + MCP | none | `~/heatmap` |
