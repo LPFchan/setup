@@ -217,11 +217,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Install modules individually, checking each result. Every fleet machine gets
 the default set; add `schedule` on Linux, where `setup schedule` and the
-module timers render through it (macOS uses launchd instead):
+module timers render through it (macOS uses launchd instead). The default set
+includes `fzf-multicolumn` because the `setup` picker requires it, and a `list`
+bootstrap never opens the picker that would otherwise pull it in:
 
 ```sh
-fleet_modules=(zsh-basics zsh-omnibar zsh-syntax-highlighting starship tmux \
-    ssh-aliases agents auth)
+fleet_modules=(fzf-multicolumn zsh-basics zsh-omnibar zsh-syntax-highlighting \
+    starship tmux ssh-aliases agents auth)
 [[ $(uname) == Linux ]] && fleet_modules+=(schedule)
 for module in $fleet_modules; do
     setup install "$module" || break
