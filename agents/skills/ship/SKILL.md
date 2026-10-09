@@ -22,10 +22,23 @@ Ask the operator only for the icon direction and the first version number.
   pt-PT ro ru sk sv tr uk vi zh-Hans, via string catalogs.
 - First-launch onboarding window (`onboarded` default;
   `--onboarding` re-shows it upon reset/logout): welcome screen (optional: with the real UI running as a demo)
-  one step per permission (say why, raise the system prompt, then open
-  System Settings; poll and advance once granted), then where the app lives
-  plus an "Open at login" switch, applied only if finished. No bare
-  permission prompt at launch while it's up.
+  one step per permission (say why, then ask; poll and advance once
+  granted), then where the app lives plus an "Open at login" switch,
+  applied only if finished. No bare permission prompt at launch while it's up.
+- Permissions granted by adding the app to a System Settings list
+  (Accessibility, Screen Recording, Input Monitoring, Full Disk Access) go
+  through [PermissionFlow](https://github.com/jaywcjlove/PermissionFlow),
+  pinned exactly (2.11.2; its manifest needs Xcode 26+, so CI selects
+  Xcode 26.3): one shared controller with
+  `requiredAppURLs: [Bundle.main.bundleURL]` opens the pane with a panel to
+  drag the app in; no system prompt on top of it. Poll the grant from a
+  fresh copy of the app (`--check-<permission>` exiting 0/1): a running
+  process keeps its first answer, so a grant made in Settings never shows
+  in-process. On the grant, `closePanel()`, `NSApp.activate()`, advance.
+  If macOS may quit and reopen the app to apply it (Screen Recording), mark
+  onboarding done before asking. Ship `PermissionFlow_PermissionFlow.bundle`
+  in Contents/Resources and its license. Prompt-based permissions (camera,
+  microphone, audio capture) keep the system prompt. Threek is the reference.
 - Version = the `v*` tag; build number = commit count (Sparkle compares it).
 - Sparkle key per app: `generate_keys --account <app>` (without `--account`
   it reuses the shared default key).
