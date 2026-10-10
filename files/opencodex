@@ -389,7 +389,7 @@ def desired_opencodex_config(
     # refresh its service unless OPENCODEX_API_AUTH_TOKEN is exported in the
     # calling shell — a variable that only lives inside the unit's own
     # ExecStart. An unattended `setup update` never has it, so the
-    # `ocx service install` that restarts the proxy after a package swap fails,
+    # `ocx service` that restarts the proxy after a package swap fails,
     # and the previous build keeps serving with nothing left to restart it.
     # Agents reach the proxy over loopback anyway; nothing off-box dials it.
     config["hostname"] = "127.0.0.1"

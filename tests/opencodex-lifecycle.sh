@@ -142,6 +142,20 @@ rm -f "$HOME/.opencodex/restarts"
 if _activate_runtime 2>/dev/null; then
     fail "activation reported success while the previous build kept serving"
 fi
+# Activation goes through bare `ocx service` (install when absent, else repair).
+# `service install` over a loaded service unloads it, then a proxy still shutting
+# down refuses to stop, and the install aborts with nothing serving.
+cat > "$OPENCODEX_BIN" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then echo 'opencodex 2.7.42'; fi
+if [ "${1:-}" = service ]; then echo "service ${2:-}" >> "$HOME/.opencodex/service-calls"; fi
+EOF
+chmod +x "$OPENCODEX_BIN"
+rm -f "$HOME/.opencodex/service-calls"
+_live_proxy_version() { print '2.7.42' }
+_activate_runtime || fail "activation failed with the installed build serving"
+[[ "$(cat "$HOME/.opencodex/service-calls")" == "service " ]] \
+    || fail "activation did not use bare ocx service: $(cat "$HOME/.opencodex/service-calls")"
 _live_proxy_version() { print '' }
 install_surfaces
 expect_status 0 current
