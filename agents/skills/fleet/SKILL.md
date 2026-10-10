@@ -93,6 +93,7 @@ services that remain on that machine.
 - hosts Muum at muum.lost.plus (repo ~/muum), behind the local gateway
 - hosts search at search.lost.plus (repo ~/search): semantic search + MCP over the bingus NAS, behind the local gateway; NAS shares NFS-mounted read-only at /mnt/bingus/<share>
 - fronts the ComfyUI MCP for comfy.lost.plus behind the local gateway (ingress is the OCI tunnel → Grimoire Tailscale Serve)
+- hosts Music Assistant at :8095 (LAN-only, ~/music-assistant); ufw allows all from 10.0.0.0/24 for it
 - second RTX 3090 currently vacant due to board-level repair work
 
 ## yeowoolmac — Mac mini (M4 Pro, 24 GB unified)
