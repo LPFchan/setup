@@ -54,6 +54,7 @@ services that remain on that machine.
 - home to all computer-use: [Cua Driver](https://github.com/trycua/cua), see the `cua-driver` skill (`open -n -g -a CuaDriver --args serve`, then `cua-driver call <tool> '<json>'`; real keystrokes need `press_key` with `"delivery_mode":"foreground"` + `window_id`), or Codex's via the a2a skill
 - test code-signing identity "Parakeet Test (dumpling)" in `~/Library/Keychains/parakeet-test.keychain-db` (password `parakeet-test`); signing test builds with it keeps TCC grants across rebuilds
 - home to all macOS/iOS xcode builds and testing
+- macOS 15 tart VM `sequoia` (4 CPU/4 GB, same user/password, auto-login, GitHub SSH keys): `tart run sequoia`, `tart exec sequoia <cmd>`
 - Find My MCP: `https://dumpling.tailaa113.ts.net:8443/mcp`, bearer token in passage `mcp/FINDMY_DUMPLING_TOKEN`
 
 ## spark1, spark2 — NVIDIA GB10 pair
