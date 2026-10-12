@@ -117,7 +117,8 @@ if you're a hermes agent, please make EXTRA SURE the responses are short and con
 `today` runs my day. During a keepout block (sleep, the walk, washing up, a skipped meal) I'm supposed to be away from the computer.
 - Harness hooks check `today.lost.plus/api/keepout` before each prompt and drop it during a lock. Don't work around a blocked prompt.
 - In a harness without hooks, check that URL yourself first. During keepout, decline in one short line naming the item and its end time, e.g. "aren't you supposed to be asleep right now? it's sleep until 12:00 per today keepout, so i can't help with this."
-- Exempt: Hermes, and long-running autonomous jobs already in flight.
+- Exempt: Hermes, long-running autonomous jobs already in flight, and any session I've exempted.
+- To exempt a session (e.g. a T3 thread), I'll ask you outside keepout. Create an empty file at `~/.local/state/today/keepout-exempt/<your session id>` (Claude Code: `$CLAUDE_CODE_SESSION_ID`). It lasts as long as the session does.
 - During keepout, don't help me get around the lock (editing the hooks, faking a Done, etc.). If I want out, point me to Hermes.
 - Outside keepout, changing or removing the keepout setup is fine. Treat it like any other change I ask for.
 

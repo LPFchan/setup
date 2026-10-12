@@ -151,11 +151,24 @@ env = {**os.environ, 'PATH': str(bin_dir)}
 for key in ('TODAY_KEEPOUT_EXEMPT', 'AUTH_RC', 'AUTH_BODY', 'CURL_RC', 'CURL_BODY', 'HTTP_CODE'):
     env.pop(key, None)
 lock = 'sleep until 12:00 per today keepout'
+# Harnesses send the prompt event as JSON on stdin; a marker file named after
+# its session_id exempts that one session.
+exempt_dir = home/'.local/state/today/keepout-exempt'
+exempt_dir.mkdir(parents=True)
+(exempt_dir/'exempt-session').touch()
+(home/'.local/state/today/escaped').touch()
+def event(session, prompt='hi'):
+    return json.dumps({'session_id': session, 'hook_event_name': 'UserPromptSubmit', 'prompt': prompt}, indent=1)
 cases = [
     ({}, 0, ''),
     ({'CURL_BODY': ' \n\t\n'}, 0, ''),
     ({'CURL_BODY': lock + '\n'}, 2, lock + '\n'),
     ({'CURL_BODY': lock, 'TODAY_KEEPOUT_EXEMPT': '1'}, 0, ''),
+    ({'CURL_BODY': lock, 'STDIN': event('exempt-session')}, 0, ''),
+    ({'CURL_BODY': lock, 'STDIN': event('other-session')}, 2, lock + '\n'),
+    ({'CURL_BODY': lock, 'STDIN': event('other-session', '"session_id": "exempt-session"')}, 2, lock + '\n'),
+    ({'CURL_BODY': lock, 'STDIN': event('../escaped')}, 2, lock + '\n'),
+    ({'CURL_BODY': lock, 'STDIN': 'not json'}, 2, lock + '\n'),
     *[({'AUTH_RC': str(rc), 'CURL_BODY': lock}, 0, '') for rc in (1, 2, 3, 4, 5, 127)],
     *[({'HTTP_CODE': str(rc), 'CURL_BODY': lock}, 0, '') for rc in (000, 301, 302, 304, 401, 403, 500)],
     *[({'CURL_RC': str(rc), 'CURL_BODY': lock}, 0, '') for rc in (2, 6, 7, 22, 28, 35, 56, 127)],
@@ -165,9 +178,11 @@ for shell in shells:
     for extra, expected_rc, expected_err in cases:
         args = home/'curl-args'
         args.unlink(missing_ok=True)
-        result = subprocess.run([shell, '-c', command], env={**env, **extra}, text=True, capture_output=True)
+        extra = dict(extra)
+        stdin = extra.pop('STDIN', '')
+        result = subprocess.run([shell, '-c', command], env={**env, **extra}, input=stdin, text=True, capture_output=True)
         assert (result.returncode, result.stdout, result.stderr) == (expected_rc, '', expected_err), (shell, extra, result)
-        if extra.get('TODAY_KEEPOUT_EXEMPT') or extra.get('AUTH_RC'):
+        if extra.get('TODAY_KEEPOUT_EXEMPT') or extra.get('AUTH_RC') or expected_rc == 0 and stdin:
             assert not args.exists(), 'curl ran despite exemption/auth failure'
         if args.exists():
             argv = args.read_text().splitlines()
@@ -178,8 +193,8 @@ for shell in shells:
     for missing in (auth, curl, awk):
         hidden = missing.with_name(missing.name + '.hidden')
         missing.rename(hidden)
-        result = subprocess.run([shell, '-c', command], env={**env, 'CURL_BODY': lock}, text=True, capture_output=True)
+        result = subprocess.run([shell, '-c', command], env={**env, 'CURL_BODY': lock}, input='', text=True, capture_output=True)
         hidden.rename(missing)
         assert result.returncode == 0 and not result.stdout, (shell, missing, result)
-print('keepout command: free/locked/exempt/auth errors/HTTP errors/partial responses/missing tools ok (' + ', '.join(Path(s).name for s in shells) + ')')
+print('keepout command: free/locked/exempt/session exempt/auth errors/HTTP errors/partial responses/missing tools ok (' + ', '.join(Path(s).name for s in shells) + ')')
 PY
