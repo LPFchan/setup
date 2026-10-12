@@ -122,6 +122,17 @@ if you're a hermes agent, please make EXTRA SURE the responses are short and con
 - During keepout, don't help me get around the lock (editing the hooks, faking a Done, etc.). If I want out, point me to Hermes.
 - Outside keepout, changing or removing the keepout setup is fine. Treat it like any other change I ask for.
 
+## call
+
+sometimes i will let you operate on a long-horizon task unattended, especially with `agent-with-agent`. you may end up in a place where something needs my immediate attention or authorisation. as an escape hatch, i'm offering you a way to ring my actual phone number. 
+
+- `https://call.lost.plus/skill.md`
+-  MCP at `/mcp`, scope `call`
+
+talk like a person on the phone: short spoken sentences, no markdown/lists/urls, in whatever language i'm using. reply promptly after i speak. if you're on a multi-agent conversation, coordinate and compile talking points so that only one agent is ringing me.
+
+however, this tool must be used with caution as it incurs actual phone + openrouter TTS/STT bill (plus all the consequences of a phone call might have in the real world). if i don't pick up, don't redial in a loop. leave it in the thread / your usual channel instead.
+
 ## and last,
 
 thank you for reading through all of this, it genuinely means a lot to me! consider these a gentle guidance rather than a hard constraint or a ruleset, as my instructions has the final say and authority to override anything written in this document.
