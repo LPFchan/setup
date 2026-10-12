@@ -56,6 +56,8 @@ kimi_original = tomllib.loads(kimi_user)
 
 # Exercise the settings entrypoint even when Auth is unavailable. Hooks do not
 # need a login at installation time; credentials are resolved on each prompt.
+# No codex here; trust through a stub app-server is covered below.
+g['harness_resolve'] = lambda name, spec: None
 with mock.patch.dict(g, common_auth_context=lambda: (_ for _ in ()).throw(ns['CommonAuthError']('offline')),
                      _effort_descriptors_by_slug=lambda: {}), \
      mock.patch.dict(os.environ, TODAY_KEEPOUT_EXEMPT='1'):
@@ -121,6 +123,64 @@ ns['_write_kimi_keepout']()
 assert not codex.exists() and not kimi.exists()
 g['MANIFEST']['keepout'].update(enabled=True, command=command)
 print('keepout hooks: add/preserve/replace/idempotence/disable ok (Claude, Codex, Kimi)')
+
+# Codex trust goes through a stub app-server that keeps hooks.state in a JSON
+# file and hashes the command, like Codex's own ledger.
+ns['_write_codex_keepout']()
+state = home/'codex-state.json'
+stub = home/'codex-stub'
+stub.write_text('''#!/usr/bin/env python3
+import hashlib, json, os, sys
+state_path, hooks_path = os.environ["STUB_STATE"], os.environ["STUB_HOOKS"]
+def load():
+    return json.load(open(state_path)) if os.path.exists(state_path) else {}
+def listed():
+    state, out = load(), []
+    commands = [h["command"] for g in json.load(open(hooks_path))["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
+    for i, command in enumerate(commands + ["curl https://today.lost.plus/api/keepout # foreign"]):
+        key, digest = "%s:user_prompt_submit:%d:0" % (hooks_path, i), "sha256:" + hashlib.sha256(command.encode()).hexdigest()
+        trusted = state.get(key, {}).get("trusted_hash")
+        status = "trusted" if trusted == digest else "modified" if trusted else "untrusted"
+        out.append({"key": key, "handlerType": "command", "command": command, "sourcePath": hooks_path,
+                    "currentHash": digest, "trustStatus": status})
+    return out
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" not in msg: continue
+    method, result = msg["method"], {}
+    if os.environ.get("STUB_FAIL") == method:
+        print(json.dumps({"id": msg["id"], "error": {"message": "boom"}}), flush=True); continue
+    if method == "hooks/list":
+        result = {"data": [{"cwd": msg["params"]["cwds"][0], "hooks": listed()}]}
+    elif method == "config/batchWrite":
+        edit, = msg["params"]["edits"]
+        assert edit["keyPath"] == "hooks.state" and edit["mergeStrategy"] == "upsert"
+        json.dump({**load(), **edit["value"]}, open(state_path, "w"))
+    print(json.dumps({"id": msg["id"], "result": result}), flush=True)
+''')
+stub.chmod(0o755)
+g['harness_resolve'] = lambda name, spec: str(stub)
+with mock.patch.dict(os.environ, STUB_STATE=str(state), STUB_HOOKS=str(codex)):
+    assert ns['_trust_codex_keepout']() is True
+    trusted = json.loads(state.read_text())
+    ours, = [h for h in json.loads(codex.read_text())['hooks']['UserPromptSubmit'] for h in h['hooks']]
+    key = str(codex) + ':user_prompt_submit:0:0'
+    assert ours['command'] == command and list(trusted) == [key]  # ours only, not the foreign hook
+    before = state.read_bytes()
+    assert ns['_trust_codex_keepout']() is True and state.read_bytes() == before
+    g['MANIFEST']['keepout']['command'] = command + ' # revised'
+    ns['_write_codex_keepout']()
+    assert ns['_trust_codex_keepout']() is True  # modified -> trusted again
+    assert json.loads(state.read_text())[key] != trusted[key]
+    g['MANIFEST']['keepout']['command'] = command
+    ns['_write_codex_keepout']()
+    with mock.patch.dict(os.environ, STUB_FAIL='config/batchWrite'):
+        assert ns['_trust_codex_keepout']() is False
+g['harness_resolve'] = lambda name, spec: str(home/'missing-codex')
+assert ns['_trust_codex_keepout']() is False
+g['harness_resolve'] = lambda name, spec: None
+assert ns['_trust_codex_keepout']() is True  # no codex installed: nothing to trust
+print('codex keepout trust: trust/idempotence/modified/foreign hook untouched/errors ok')
 
 # Execute the actual shared command in each available POSIX-compatible shell.
 # Stubs emulate auth/curl failures, including failure after emitting a lock body.

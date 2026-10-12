@@ -16,7 +16,7 @@ MCP, folder=mcp.
 """
 
 from __future__ import annotations
-import contextlib, fcntl, glob, json, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, fcntl, glob, json, os, pathlib, re, shutil, subprocess, sys, tempfile, threading
 import urllib.error, urllib.request
 import shlex
 
@@ -617,9 +617,75 @@ def _write_codex_keepout():
     _merge_keepout_hooks(current)
     if current or CODEX_HOOKS.exists():
         save_json_atomic(CODEX_HOOKS, current)
-        print("  wrote %s (new/changed hooks need trust via /hooks)" % CODEX_HOOKS)
+        print("  wrote %s" % CODEX_HOOKS)
     # Current Codex enables hooks by default; no feature flag needs adding.
-    # Do not alter unrelated config.toml keys or fabricate hook trust records.
+    # Do not alter unrelated config.toml keys; trust goes through Codex itself.
+
+
+CODEX_TRUST_TIMEOUT_SECONDS = 30
+
+
+def _trust_codex_keepout():
+    """Trust our keepout hook the way /hooks does, through codex app-server.
+
+    Codex skips a hook whose hash it has not recorded as trusted, so every
+    changed command would silently turn the gate off. Only the exact command
+    this module wrote, in its own hooks.json, is trusted; other hooks are left
+    for the operator to review. Returns False when that hook stays untrusted.
+    """
+    command = _keepout_command()
+    codex = harness_resolve("codex", dict(harnesses()).get("codex", {}))
+    if not command or not codex:
+        return True
+    ids = iter(range(1, 100))
+
+    def call(rid, method, params):
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}) + "\n")
+        proc.stdin.flush()
+        for line in proc.stdout:
+            msg = json.loads(line)
+            if msg.get("id") == rid:
+                if "error" in msg:
+                    raise RuntimeError("%s: %s" % (method, msg["error"].get("message", msg["error"])))
+                return msg["result"]
+        raise RuntimeError("codex app-server exited during " + method)
+
+    def ours():
+        listed = call(next(ids), "hooks/list", {"cwds": [str(HOME)]})
+        return [h for entry in listed.get("data", []) for h in entry.get("hooks", [])
+                if h.get("command") == command and h.get("sourcePath") == str(CODEX_HOOKS)]
+
+    try:
+        proc = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+    except OSError as exc:
+        eprint("  cannot trust the codex keepout hook: %s; trust it via /hooks" % exc)
+        return False
+    timer = threading.Timer(CODEX_TRUST_TIMEOUT_SECONDS, proc.kill)
+    timer.start()
+    try:
+        call(next(ids), "initialize", {"clientInfo": {"name": "harnesses", "version": "1"}})
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+        hooks = ours()
+        pending = {h["key"]: {"trusted_hash": h["currentHash"]} for h in hooks
+                   if h.get("trustStatus") in ("untrusted", "modified")}
+        if pending:
+            call(next(ids), "config/batchWrite", {
+                "edits": [{"keyPath": "hooks.state", "value": pending, "mergeStrategy": "upsert"}],
+                "reloadUserConfig": True})
+            hooks = ours()
+        if not hooks or any(h.get("trustStatus") != "trusted" for h in hooks):
+            raise RuntimeError("keepout hook is %s" % ([h.get("trustStatus") for h in hooks] or "not listed"))
+        if pending:
+            print("  trusted the keepout hook in codex")
+        return True
+    except (OSError, ValueError, RuntimeError) as exc:
+        eprint("  cannot trust the codex keepout hook: %s; trust it via /hooks" % exc)
+        return False
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
 
 
 KIMI_KEEPOUT = re.compile(r"\n*^# BEGIN harnesses:keepout\n.*?^# END harnesses:keepout\n?", re.S | re.M)
@@ -809,6 +875,9 @@ def cmd_settings(names):
                 except ValueError as exc:
                     eprint("  cannot render %s keepout hook: %s; existing config preserved" % (name, exc))
                     rc = 1
+                else:
+                    if name == "codex" and not _trust_codex_keepout():
+                        rc = 1
     _write_t3_settings()
     print("settings applied. t3 custom models appear in the picker; routing them")
     print("requires ANTHROPIC_BASE_URL=http://127.0.0.1:%d (a local opencodex proxy)." % _proxy_port())
