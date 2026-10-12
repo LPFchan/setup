@@ -23,6 +23,7 @@ OCI that is exported from `~/.zshenv`, outside the `setup:api-keys` block so
 | Hostname | Service | Worker · state | Gateway · policy | Repo |
 | --- | --- | --- | --- | --- |
 | `auth.lost.plus` | Common Auth hub | `auth-lost-plus` · D1 `auth` | none (it is the hub) | `LPFchan/auth` `workers/` |
+| `jobhunt.lost.plus` | private job research desk | `jobhunt` · server-bundled research | cloud · `/` oauth (visibility `jobhunt`), backend restricted to owner subject `1` | `LPFchan/jobhunt` |
 | `awa.lost.plus` | agent-with-agent chatrooms | `awa` · Durable Objects | cloud · `/` public, `/_auth/logout` oauth, `/api/manage` api (scope `awa-v1`), `/api/rooms` public (WebSocket, `X-AWA-Participant-Token`), `/r` + `/assets` + `/skill.md` + `/icon.svg` + `/healthz` public GET | `LPFchan/agent-with-agent` |
 | `today.lost.plus` | today: plan timer, shared board, Pebble feed | `today` · D1 `today` | cloud · `/` oauth (visibility `today`), `/api/watch` api (scope `today`, hub OAuth token from the watch), `/pair` public (watch pairing mailbox) | `LPFchan/today` |
 | `okdam.lost.plus` | Songbook | `okdam-songbook` · D1 `okdam-songbook` | cloud · `/` public, `/api/catalog` public GET, `/api` oauth, `/mcp` mcp (scope `okdam-mcp`) | `LPFchan/okdam-songbook` |
