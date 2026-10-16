@@ -899,9 +899,7 @@ def pull(account, settle_old=False):
                 shutil.move(str(moved), str(AGENTS_DIR))
                 _report("put the other account's ~/.agents back, since this account's copy "
                         "could not be put in place")
-            for path, saved in reversed(displaced):
-                if not os.path.lexists(path):
-                    shutil.move(str(saved), str(path))
+            _restore_displaced(displaced, backup)
             raise
         if old:
             if displaced:
@@ -1169,6 +1167,15 @@ def _displace_old_payload(backup):
         if os.path.lexists(path):
             moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
     return moved
+
+
+def _restore_displaced(displaced, backup):
+    """Put the old payload back after a failed sync, moving aside what the
+    sync left in its place."""
+    for path, saved in reversed(displaced):
+        if os.path.lexists(path):
+            backup.move(path, f"incomplete/{path.relative_to(HOME)}")
+        shutil.move(str(saved), str(path))
 
 
 def _report_displaced(backup):
