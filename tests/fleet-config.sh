@@ -262,6 +262,11 @@ mkdir -p "$HOME/.agents/skills/Mine"; printf 'upper\n' > "$HOME/.agents/skills/M
 fleet sync >/dev/null 2>&1 && fail "pushed paths that differ only in case"
 [[ "$(server_has skills/Mine/SKILL.md)" == "<none>" ]] || fail "a case-colliding path reached the account"
 rm -rf "$HOME/.agents/skills/Mine"
+# Folders count too: skills/Mine/a and skills/mine/b would share one folder.
+server_put skills/Mine/other.md 'upper folder'
+fleet sync --pull >/dev/null 2>&1 && fail "pulled folders that differ only in case"
+[[ ! -e "$HOME/.agents/skills/Mine" ]] || fail "applied a case-colliding folder"
+server_del skills/Mine/other.md
 
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'
@@ -362,6 +367,14 @@ rc=0; fleet sync >/dev/null 2>&1 || rc=$?
 [[ $rc == 3 ]] || fail "failed fetch exited $rc"
 [[ -e "$HOME/.agents/skills/mine" && -L "$HOME/.claude/skills/mine" ]] || fail "a failed fetch moved the old account's files"
 rm "$FAKE/fetch-down"
+# A copy that cannot be written (a file where a folder must go) puts the old
+# account's files back, links and record with them.
+printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+server_put skills/clash 'a file'; server_put skills/clash/SKILL.md 'and a folder'
+fleet sync >/dev/null 2>&1 && fail "applied a copy that cannot be written"
+[[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
+    || fail "a failed apply left the old account's links dangling"
+grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "a failed apply dropped the old record"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 fleet sync >/dev/null 2>&1 || fail "sync as another account"
 [[ ! -e "$HOME/.agents/skills/mine" ]] || fail "another account's files kept"
