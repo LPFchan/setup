@@ -200,6 +200,13 @@ chmod 000 "$HOME/.claude/CLAUDE.md"
 rc=0; out=$(fleet onboard 2>&1) || rc=$?
 chmod 600 "$HOME/.claude/CLAUDE.md"
 [[ $rc != 0 && "$out" == *"cannot read"*"CLAUDE.md"* ]] || fail "onboarded past unreadable instructions: $out"
+# So does an unreadable folder inside a harness skill that matches one in
+# ~/.agents everywhere else.
+cp -r "$HOME/.agents/skills/mine" "$HOME/.codex/skills/mine"; mkdir "$HOME/.codex/skills/mine/sub"
+chmod 000 "$HOME/.codex/skills/mine/sub"
+rc=0; out=$(fleet onboard 2>&1) || rc=$?
+chmod 700 "$HOME/.codex/skills/mine/sub" 2>/dev/null || true; rm -rf "$HOME/.codex/skills/mine"
+[[ $rc != 0 && "$out" == *"cannot read"*"mine/sub"* ]] || fail "onboarded past an unreadable skill subfolder: $out"
 [[ ! -f "$FAKE/pushes" && ! -e "$XDG_STATE_HOME/fleet/config.json" ]] || fail "an unreadable source still uploaded"
 # A harness skill folder that cannot move puts back the ones already moved,
 # and no record is saved, so the next sync joins the account and moves them.
@@ -216,7 +223,13 @@ fleet onboard >/dev/null 2>&1 && fail "onboard read an unsaved record as success
 chmod 700 "$XDG_STATE_HOME/fleet"
 [[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" && -d "$HOME/.codex/skills/both" ]] \
     || fail "an unsaved onboarding record left the skill folders in the backup"
+# A harness skill whose SKILL.md is a link stays where it is.
+mkdir "$HOME/.codex/skills/linked"; printf 'linked\n' > "$TMP/linked.md"
+ln -s "$TMP/linked.md" "$HOME/.codex/skills/linked/SKILL.md"
 fleet sync >/dev/null 2>&1 || fail "sync after a failed onboarding move"
+[[ -L "$HOME/.codex/skills/linked/SKILL.md" && "$(server_has skills/linked/SKILL.md)" == "<none>" ]] \
+    || fail "a harness skill with a linked SKILL.md was moved"
+rm -r "$HOME/.codex/skills/linked"
 [[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$HOME/.agents/AGENTS.md")" == 0o600 ]] \
     || fail "an owner-only CLAUDE.md was copied world-readable"
 [[ "$(server_has AGENTS.md)" == "my instructions" ]] || fail "AGENTS.md not taken from CLAUDE.md"
@@ -231,6 +244,12 @@ fleet sync >/dev/null 2>&1 || fail "sync after a failed onboarding move"
 [[ "$(readlink "$HOME/AGENTS.md")" == "$HOME/.agents/AGENTS.md" ]] || fail "~/AGENTS.md not linked"
 [[ ! -e "$HOME/.config/opencode/AGENTS.md" ]] || fail "linked for a harness that is not installed"
 [[ ! -f "$XDG_STATE_HOME/fleet/onboarding.pending" ]] || fail "onboarding marker kept"
+# A harness folder that is ~/.agents by another name keeps AGENTS.md a file.
+mkdir -p "$HOME/.config"; ln -s "$HOME/.agents" "$HOME/.config/opencode"
+fleet sync >/dev/null 2>&1 || fail "sync with a harness folder aliasing ~/.agents"
+rm "$HOME/.config/opencode"
+[[ -f "$HOME/.agents/AGENTS.md" && ! -L "$HOME/.agents/AGENTS.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "my instructions" ]] \
+    || fail "a harness folder aliasing ~/.agents replaced AGENTS.md"
 find "$XDG_STATE_HOME/fleet/backup" -path '*codex/skills/both/SKILL.md' | grep -q . || fail "codex original not in backup"
 
 # A local edit waits for a direct sync; setup's pull leaves it alone.

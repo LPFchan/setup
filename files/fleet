@@ -818,7 +818,9 @@ def _skill_folders(directory):
     # the links are refreshed; they are not skills of their own.
     return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
             and not e.name.endswith(".pre-agents.bak")
-            and _is(e, stat.S_ISDIR) and _is(e/"SKILL.md", stat.S_ISREG)]
+            and _is(e, stat.S_ISDIR) and _is(e/"SKILL.md", stat.S_ISREG)
+            # A linked SKILL.md is not uploaded; the folder would go without it.
+            and not (e/"SKILL.md").is_symlink()]
 
 
 def _is(path, kind):
@@ -833,13 +835,20 @@ def _is(path, kind):
 
 
 def _same_tree(a, b):
+    # os.walk, not rglob: rglob skips a folder it cannot read, and the trees
+    # would match without it.
     def tree(root):
-        return {p.relative_to(root).as_posix(): p.read_bytes()
-                for p in root.rglob("*") if p.is_file() and not p.is_symlink()}
+        files = {}
+        for top, _, names in os.walk(root, onerror=_unreadable):
+            for name in names:
+                p = pathlib.Path(top)/name
+                if p.is_file() and not p.is_symlink():
+                    files[p.relative_to(root).as_posix()] = p.read_bytes()
+        return files
     try:
         return tree(a) == tree(b)
-    except OSError:
-        return False
+    except OSError as exc:
+        _unreadable(exc)
 
 
 def _move_harness_skills(backup):
@@ -1185,8 +1194,14 @@ def refresh_links():
         agents_md = AGENTS_DIR/"AGENTS.md"
         if agents_md.is_file():
             for target in AGENTS_LINKS:
-                if target == HOME/"AGENTS.md" or target.parent.is_dir():
-                    _link(target, agents_md, links, backup)
+                if target != HOME/"AGENTS.md" and not target.parent.is_dir():
+                    continue
+                # A harness folder that is ~/.agents by another name would
+                # have AGENTS.md replaced by a link to itself.
+                if os.path.realpath(target.parent) == os.path.realpath(agents_md.parent):
+                    eprint(f"fleet: {target.parent} is {AGENTS_DIR}; not linking AGENTS.md into it")
+                    continue
+                _link(target, agents_md, links, backup)
         else:
             for target in AGENTS_LINKS:
                 _unlink_restoring(target, links)
