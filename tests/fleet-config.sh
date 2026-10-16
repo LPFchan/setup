@@ -165,7 +165,15 @@ fleet onboard >/dev/null 2>&1 && fail "onboard read a failed copy as success"
 rm -f "$HOME/.codex/skills/both/locked.md"
 [[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" && ! -e "$HOME/.agents/skills/both" ]] \
     || fail "a failed staging kept what it copied into ~/.agents"
-fleet onboard >/dev/null 2>&1 || fail "onboard"
+# A harness skill folder that cannot move puts back the ones already moved,
+# and no record is saved, so the next sync joins the account and moves them.
+chmod 500 "$HOME/.codex/skills"
+fleet onboard >/dev/null 2>&1 && fail "onboard read a failed skill move as success"
+chmod 700 "$HOME/.codex/skills"
+[[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" ]] \
+    || fail "a failed move left an earlier skill folder in the backup"
+[[ ! -e "$XDG_STATE_HOME/fleet/config.json" ]] || fail "a failed move saved the record"
+fleet sync >/dev/null 2>&1 || fail "sync after a failed onboarding move"
 [[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$HOME/.agents/AGENTS.md")" == 0o600 ]] \
     || fail "an owner-only CLAUDE.md was copied world-readable"
 [[ "$(server_has AGENTS.md)" == "my instructions" ]] || fail "AGENTS.md not taken from CLAUDE.md"
@@ -472,7 +480,17 @@ fleet sync --pull >/dev/null 2>&1 && fail "a pass with an unwritable skill folde
 chmod 700 "$HOME/.claude/skills"
 fleet sync --pull >/dev/null 2>&1 || fail "pull after the skill folder came back"
 rm -rf "$HOME/.claude/skills"
+# The old agents module's links go too, with what they replaced back.
+mkdir -p "$HOME/.gemini" "$HOME/.config/muse/skills"
+printf 'gemini own\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
+ln -s "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
+mkdir -p "$HOME/.config/muse/skills/mine.pre-agents.bak"
+ln -s "$HOME/.agents/skills/mine" "$HOME/.config/muse/skills/mine"
 fleet __unlink
+[[ ! -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" ]] \
+    || fail "uninstall left the old module's instructions link"
+[[ -d "$HOME/.config/muse/skills/mine" && ! -L "$HOME/.config/muse/skills/mine" ]] \
+    || fail "uninstall left the old module's skill link"
 [[ "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] || fail "uninstall stranded a displaced skill"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine, late" ]] || fail "CLAUDE.md not restored"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link kept"

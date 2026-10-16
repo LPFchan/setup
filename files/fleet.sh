@@ -117,14 +117,18 @@ status() {
 uninstall() {
     # Through python3, so a binary that lost its executable bit still cleans up;
     # a deleted one is fetched again, since only it can put the links back.
-    local cli="$BIN" staged="" ok=""
+    local cli="$BIN" staged="" ok="" timer=""
     if [[ ! -f "$cli" ]]; then
         staged=$(mktemp)
         _stage "$staged" && cli="$staged"
     fi
-    # A timer left on would run a binary about to go.
-    if [[ -f "$cli" ]] && python3 "$cli" schedule status 2>/dev/null | grep -q ' on$' \
-        && ! python3 "$cli" schedule disable >/dev/null 2>&1; then
+    # A timer left on would run a binary about to go. One that cannot say
+    # (broken, or older than `schedule status`) hands over to the current CLI.
+    if [[ -f "$cli" ]] && ! timer=$(python3 "$cli" schedule status 2>/dev/null) && [[ -z "$staged" ]]; then
+        staged=$(mktemp)
+        _stage "$staged" && cli="$staged" && timer=$(python3 "$cli" schedule status 2>/dev/null)
+    fi
+    if [[ "$timer" == *' on' ]] && ! python3 "$cli" schedule disable >/dev/null 2>&1; then
         [[ -n "$staged" ]] && rm -f "$staged"
         echo "fleet: could not turn off the nightly sync; nothing was removed, try again" >&2
         return 1
