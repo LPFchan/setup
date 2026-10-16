@@ -1813,7 +1813,8 @@ def _block_context():
 def resolve_tokens(servers, context, warnings):
     """(exports {VAR: value}, names to drop, servers left out for want of a
     token). A failed lookup keeps the value already in the block unless Auth
-    said the credential is gone."""
+    said the credential is gone; a Passage item falls back further to the
+    environment, which holds it before the first render writes the block."""
     existing = managed_exports()
     drop = set()
     if _block_context() != context:
@@ -1847,7 +1848,8 @@ def resolve_tokens(servers, context, warnings):
         except TokenError as exc:
             if exc.authoritative:
                 drop.add(var)
-            value = None if exc.authoritative else existing.get(var)
+            value = None if exc.authoritative else existing.get(var) or (
+                os.environ.get(var) if source == "passage" else None)
             eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
         value = mcp_token_value(value)
         if value:
@@ -2630,17 +2632,24 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
 
 
 def restart_hermes():
+    """False when the gateway's restart failed; the marker then stays, so the
+    next pass tries again."""
     if not HERMES_RESTART.exists():
-        return
+        return True
     if shutil.which("systemctl"):
         result = subprocess.run(["systemctl", "--user", "try-restart", "hermes-gateway.service"],
-                                capture_output=True)
+                                capture_output=True, text=True)
         if result.returncode == 0:
             print("fleet: restarted the hermes gateway")
             HERMES_RESTART.unlink(missing_ok=True)
-            return
+            return True
+        # 5: no such unit here, so nothing to retry.
+        if result.returncode != 5:
+            eprint("fleet: could not restart the hermes gateway: " + (result.stderr.strip() or f"exit {result.returncode}"))
+            return False
     eprint("fleet: hermes config changed; restart hermes to pick it up")
     HERMES_RESTART.unlink(missing_ok=True)
+    return True
 
 
 def _harnesses_is_alias():
@@ -2729,7 +2738,8 @@ def heavy_pass():
     rc = cmd_sync(direct=False, force=True)
     if config_sync_enabled() and harness_update():
         failed.append("harness updates")
-    restart_hermes()
+    if not restart_hermes():
+        failed.append("hermes restart")
     if failed:
         eprint("fleet: " + ", ".join(failed) + " failed")
         return 1
