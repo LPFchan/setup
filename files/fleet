@@ -2175,6 +2175,12 @@ def _claude_json_remove(name):
     return True
 
 
+def _rendered_on(record, surface):
+    """Whether fleet put this recorded server on `surface`. Records from
+    before fleet kept track count as on every surface."""
+    return isinstance(record, dict) and surface in record.get("rendered", [surface])
+
+
 def render_claude_mcp(claude, servers, previous, retired):
     """(ok, kept, found): kept holds the previous records of servers claude
     would not remove, so the applied record keeps owning them and the next run
@@ -2212,7 +2218,7 @@ def render_claude_mcp(claude, servers, previous, retired):
                 ok = _claude_add(argv) and ok
             else:
                 ok = False
-        elif server["name"] not in (previous.get("mcp") or {}):
+        elif not _rendered_on((previous.get("mcp") or {}).get(server["name"]), "claude"):
             found.add(server["name"])
     return ok, kept, found
 
@@ -2573,7 +2579,7 @@ def render_hermes(servers, previous, retired, clear=False):
         elif name in wanted:
             seen.add(name)
             if body == wanted[name]:
-                if name not in recorded:
+                if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
                 continue
             if urls[name] not in body:
@@ -2772,7 +2778,8 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False)}
-        kept_mcp, users = {}, {}
+        kept_mcp, users, rendered = {}, {}, set()
+        prev_mcp = previous.get("mcp") or {}
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
@@ -2783,6 +2790,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
                 claude_ok, kept_mcp, found = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
+                rendered.add("claude")
                 for name in found:
                     users.setdefault(name, set()).add("claude")
                 rc = rc if claude_ok else 1
@@ -2795,6 +2803,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                             if r.get("claude") and name not in wanted}
             if present["codex"]:
                 rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
+                rendered.add("codex")
                 if CODEX_DIR.is_dir():
                     # codex loads ~/.codex/.env however it was started.
                     _mirror_dotenv(CODEX_DIR/".env", exports, retired_env)
@@ -2808,7 +2817,14 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 except ConfigError as exc:
                     eprint(f"fleet: {exc}")
                     rc = 1
+                    # Its file untouched, fleet keeps owning what it put
+                    # there, so the run after the fix still removes it.
+                    wanted = {s["name"] for s in on("hermes")}
+                    for name, r in prev_mcp.items():
+                        if name not in wanted and r.get("url") and _rendered_on(r, "hermes"):
+                            kept_mcp.setdefault(name, r)
             if hermes:
+                rendered.add("hermes")
                 changed, record["hermesSkills"], found = hermes
                 for name in found:
                     users.setdefault(name, set()).add("hermes")
@@ -2833,7 +2849,12 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             return 1
         record["mcp"] = {s["name"]: {"url": s.get("url"),
                                      "env": mcp_env_var(s) if s["auth"] != "none" else None,
-                                     "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None}
+                                     "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None,
+                                     # Where fleet put it: this run's surfaces, and
+                                     # those a harness absent now got before.
+                                     "rendered": sorted(set(mcp_surfaces(s)) & rendered | {
+                                         x for x in SURFACES if x not in rendered
+                                         and _rendered_on(prev_mcp.get(s["name"]), x)})}
                          for s in servers.values()}
         record["mcp"].update(kept_mcp)
         # An entry the user already had stays theirs while fleet wants it.
