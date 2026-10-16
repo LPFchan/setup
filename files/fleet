@@ -1245,6 +1245,11 @@ def _manifest_path():
     return None
 
 
+def _version_key(path):
+    """Sorts v20 after v9: the digit runs compare as numbers."""
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", str(path))]
+
+
 def manifest():
     if not _MANIFEST:
         path = _manifest_path()
@@ -1267,7 +1272,7 @@ def _heal_path():
     end, there to be found rather than to win.
     """
     mine = [HOME/".local/bin", HOME/".opencode/bin"]
-    toolchains = sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
+    toolchains = sorted((HOME/".nvm/versions/node").glob("*/bin"), key=_version_key, reverse=True)
     toolchains += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
@@ -1366,13 +1371,11 @@ def harness_specs():
 
 def _expand_candidates(patterns):
     """~ and globs expanded; a glob yields its matches newest version first."""
-    def version_key(path):
-        return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", path)]
     out = []
     for pattern in patterns:
         pattern = os.path.expanduser(pattern)
         if any(ch in pattern for ch in "*?["):
-            out.extend(sorted(glob.glob(pattern), key=version_key, reverse=True))
+            out.extend(sorted(glob.glob(pattern), key=_version_key, reverse=True))
         else:
             out.append(pattern)
     return out
@@ -1387,7 +1390,7 @@ def _node_bin_dirs():
         dirs.append("/opt/node/bin")
     for base in (HOME/".nvm/versions/node", pathlib.Path("/opt")):
         if base.exists():
-            dirs += [str(d) for d in sorted(base.glob("*/bin"), reverse=True)]
+            dirs += [str(d) for d in sorted(base.glob("*/bin"), key=_version_key, reverse=True)]
     return dirs
 
 
@@ -2080,12 +2083,13 @@ def render_claude_mcp(claude, servers, previous, retired):
             print(f"  unregistering MCP server {name}")
             subprocess.run([claude, "mcp", "remove", name, "-s", "user"], capture_output=True,
                            env=_claude_env())
+    ok = True
     for server in servers.values():
         want = _claude_mcp_entry(server)
         argv = [claude, "mcp", "add-json", "--scope", "user", server["name"], json.dumps(want)]
         scope = _claude_mcp_scope(claude, server["name"])
         if scope is None:
-            subprocess.run(argv, capture_output=True, env=_claude_env())
+            ok = _claude_add(argv) and ok
         elif scope not in ("", "user"):
             # A local or project registration is the user's and shadows ours.
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
@@ -2093,7 +2097,17 @@ def render_claude_mcp(claude, servers, previous, retired):
             print(f"  re-enrolling {server['name']}")
             subprocess.run([claude, "mcp", "remove", server["name"], "-s", "user"],
                            capture_output=True, env=_claude_env())
-            subprocess.run(argv, capture_output=True, env=_claude_env())
+            ok = _claude_add(argv) and ok
+    return ok
+
+
+def _claude_add(argv):
+    """Whether claude took the server; a failure renders again next run."""
+    result = subprocess.run(argv, capture_output=True, text=True, env=_claude_env())
+    if result.returncode != 0:
+        eprint(f"fleet: claude did not add MCP server {argv[5]}: "
+               f"{(result.stderr or result.stdout).strip() or f'exit {result.returncode}'}")
+    return result.returncode == 0
 
 
 def _codex_mcp_block(server):
@@ -2440,13 +2454,16 @@ def render_kimi():
 
 # --- harnesses: passes ---
 
-def harnesses_present():
+def harnesses_present(clear=False):
     """Which harnesses get settings: {name: present}. claude's value is its
-    binary, for the MCP commands."""
+    binary, for the MCP commands. Taking settings back, a harness the
+    manifest does not list is looked for on PATH."""
     specs = harness_specs()
 
     def found(name):
-        return harness_resolve(name, specs[name]) if name in specs else None
+        if name in specs:
+            return harness_resolve(name, specs[name])
+        return shutil.which(name) if clear else None
     return {"claude": found("claude"), "codex": bool(found("codex") or CODEX_DIR.is_dir()),
             "t3": bool(found("t3") or T3_SETTINGS.parent.is_dir()),
             "hermes": HERMES_CONFIG.is_file(), "kimi": KIMI_CONFIG.is_file()}
@@ -2483,6 +2500,13 @@ def harness_render(force=False, clear=False):
         # While setup's old modules run, what is rendered is still theirs.
         if not previous or not config_sync_enabled():
             return 0
+        try:
+            manifest()
+        except ConfigError as exc:
+            # The record names what was written; the manifest only adds
+            # retired entries to clear, which can wait for a reinstall.
+            eprint(f"fleet: {exc}; taking back what fleet's record names")
+            _MANIFEST.update(_digest=None)
         return _harness_apply(previous.get("account"), None, empty_tier(), [], [], previous, True, True)
     if not config_sync_enabled():
         return 0
@@ -2510,7 +2534,7 @@ def harness_render(force=False, clear=False):
 
 def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
     m = {} if clear else manifest()
-    present = harnesses_present()
+    present = harnesses_present(clear)
     opencodex = not clear and os.access(OPENCODEX, os.X_OK)
     servers = {}
     # A later tier wins a name: manifest, local plugins, hub, the account.
@@ -2567,9 +2591,11 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 allow = list(tier["allow"])
                 allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
-                render_claude_mcp(present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
+                if not render_claude_mcp(present["claude"], {s["name"]: s for s in on("claude")},
+                                         previous, retired):
+                    rc = 1
             if present["codex"]:
-                rc = 0 if render_codex_mcp(on("codex"), previous, retired) else 1
+                rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
                 if CODEX_DIR.is_dir():
                     # codex loads ~/.codex/.env however it was started.
                     _mirror_dotenv(CODEX_DIR/".env", exports, drop, retired_env)
