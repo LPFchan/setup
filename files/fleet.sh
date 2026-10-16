@@ -137,26 +137,36 @@ uninstall() {
     # Through python3, so a binary that lost its executable bit still cleans up;
     # a deleted one is fetched again, since only it can take the rendered
     # settings and links back down.
-    local cli="$BIN" staged=""
+    local cli="$BIN" staged="" ok="" was_on=""
     if [[ ! -f "$cli" ]]; then
         staged=$(mktemp -d)
         _stage "$staged" && cli="$staged/fleet"
     fi
-    # The timer stops first, so a nightly run cannot render again mid-way, and
-    # comes back if the cleanup fails, since fleet then stays installed.
-    local was_on=""
+    # The timer stops first, so a nightly run cannot render again mid-way; one
+    # that will not turn off would run a binary about to go.
     [[ -f "$cli" ]] && python3 "$cli" schedule status 2>/dev/null | grep -q ' on$' && was_on=1
-    [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
+    if [[ -n "$was_on" ]] && ! python3 "$cli" schedule disable >/dev/null 2>&1; then
+        [[ -n "$staged" ]] && rm -rf "$staged"
+        echo "fleet: could not turn off the nightly sync; nothing was removed, try again" >&2
+        return 1
+    fi
     # Only the CLI knows what fleet rendered and which links and backups are
     # its own, so without it nothing else goes either. __unrender first:
-    # claude's MCP entries call the binary for their tokens.
-    if [[ ! -f "$cli" ]] || ! python3 "$cli" __unrender || ! python3 "$cli" __unlink; then
-        [[ -n "$was_on" ]] && python3 "$cli" schedule enable >/dev/null 2>&1
-        [[ -n "$staged" ]] && rm -rf "$staged"
+    # claude's MCP entries call the binary for their tokens. An installed one
+    # older than this module may not know how, so the current one gets a
+    # second try.
+    [[ -f "$cli" ]] && python3 "$cli" __unrender && python3 "$cli" __unlink && ok=1
+    if [[ -z "$ok" && -z "$staged" ]]; then
+        staged=$(mktemp -d)
+        _stage "$staged" && python3 "$staged/fleet" __unrender && python3 "$staged/fleet" __unlink && ok=1
+    fi
+    [[ -n "$staged" ]] && rm -rf "$staged"
+    if [[ -z "$ok" ]]; then
+        # fleet stays installed, so its nightly sync comes back.
+        [[ -n "$was_on" && -f "$BIN" ]] && python3 "$BIN" schedule enable >/dev/null 2>&1
         echo "fleet: could not take back the rendered settings and links; nothing was removed, try again" >&2
         return 1
     fi
-    [[ -n "$staged" ]] && rm -rf "$staged"
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
     # The harnesses alias fleet left in place of the old client.
