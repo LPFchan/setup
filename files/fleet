@@ -769,10 +769,11 @@ def _move_harness_skills(backup):
     return moved
 
 
-def _apply_changes(take, remove, contents, server, backup):
+def _apply_changes(take, remove, contents, server, backup, then=None):
     """Replaced and deleted local copies, symlinks included, go to the backup.
-    If a write fails, the files already written go and the moved ones come
-    back, so ~/.agents stays as it was."""
+    If a write fails, or `then` (run once all are written) does, the files
+    already written go and the moved ones come back, so ~/.agents stays as it
+    was."""
     moved, written = [], []
     try:
         for rel in sorted(remove) + sorted(take):
@@ -784,6 +785,8 @@ def _apply_changes(take, remove, contents, server, backup):
         for rel in sorted(take):
             _write_file(rel, contents[rel], server[rel][1])
             written.append(rel)
+        if then:
+            then()
     except BaseException:
         for rel in written:
             _remove_file(rel)
@@ -852,12 +855,13 @@ def pull(account):
         moved = _move_foreign(backup) if foreign else None
         harness = []
         new_record = {"account": account, "counter": counter, "version": version, "files": server}
-        try:
-            _apply_changes(take, remove, contents, server, backup)
+        def finish():
             if record is None:
-                harness = _move_harness_skills(backup)
-            # The switch is done only once its record is saved.
+                harness.extend(_move_harness_skills(backup))
+            # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
+        try:
+            _apply_changes(take, remove, contents, server, backup, then=finish)
         except BaseException:
             for folder, saved in reversed(harness):
                 if not os.path.lexists(folder):

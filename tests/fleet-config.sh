@@ -291,6 +291,12 @@ server_del skills/Mine/other.md
 
 # A pull that cannot finish writing leaves this account's files as they were.
 before=$(cat "$HOME/.agents/skills/mine/SKILL.md")
+# So does one whose record cannot be saved.
+server_put skills/mine/SKILL.md 'unsaved'
+chmod 500 "$XDG_STATE_HOME/fleet"
+fleet sync --pull >/dev/null 2>&1 && fail "a pull that could not save its record reported success"
+chmod 700 "$XDG_STATE_HOME/fleet"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "$before" ]] || fail "an unsaved pull left its changes applied"
 mkdir -p "$HOME/.agents/skills/zz"; chmod 500 "$HOME/.agents/skills/zz"
 server_put skills/mine/SKILL.md 'half applied'; server_put skills/zz/new.md 'blocked'
 fleet sync --pull >/dev/null 2>&1 && fail "a pull that could not write reported success"
