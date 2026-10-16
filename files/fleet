@@ -1358,6 +1358,9 @@ HUB_SUFFIX = ".lost.plus"
 # The marker names harnesses used, so fleet edits the same blocks in place.
 TOKENS_BEGIN, TOKENS_END = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
 CODEX_MCP_BEGIN, CODEX_MCP_END = "# BEGIN harnesses:mcp-servers", "# END harnesses:mcp-servers"
+# An mcp_servers entry's head: a plain or simply quoted name, then a comment
+# at most.
+HERMES_HEAD = re.compile(r"""^  (?:([^\s#'"][^:#]*)|"([^"\\]+)"|'([^']+)'):\s*(?:#.*)?$""")
 KIMI_KEEPOUT = re.compile(r"\n*^# BEGIN harnesses:keepout\n.*?^# END harnesses:keepout\n?", re.S | re.M)
 KEEPOUT_MARKER = "today.lost.plus/api/keepout"
 MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -2594,13 +2597,24 @@ def _hermes_entries(lines, start, end):
     if indents and min(indents) != 2:
         raise ConfigError(f"{HERMES_CONFIG}: mcp_servers entries are indented by {min(indents)} "
                           f"spaces; fleet edits only two-space entries")
-    heads = [k for k in range(start + 1, end) if re.match(r"^  [^\s#][^:]*:\s*$", lines[k])]
+    # A name fleet cannot read would go unseen, and ours would go in beside
+    # it as a second key of the same name.
+    heads = []
+    for k in range(start + 1, end):
+        line = lines[k]
+        if len(line) - len(line.lstrip()) != 2 or line.lstrip().startswith("#"):
+            continue
+        match = HERMES_HEAD.match(line)
+        if not match:
+            raise ConfigError(f"{HERMES_CONFIG}: cannot read the mcp_servers entry {line.strip()!r}; "
+                              f"fleet edits only entries headed `name:`")
+        heads.append((k, next(g for g in match.groups() if g is not None).strip()))
     out = []
-    for n, k in enumerate(heads):
-        stop = heads[n + 1] if n + 1 < len(heads) else end
+    for n, (k, name) in enumerate(heads):
+        stop = heads[n + 1][0] if n + 1 < len(heads) else end
         while stop > k + 1 and lines[stop - 1].strip() == "":
             stop -= 1
-        out.append((lines[k].strip()[:-1], k, stop))
+        out.append((name, k, stop))
     return out
 
 

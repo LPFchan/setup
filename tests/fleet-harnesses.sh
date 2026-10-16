@@ -568,6 +568,47 @@ import sys
 t = open(sys.argv[1]).read().replace("  cust:\n    url: https://c.example/mcp\n    headers:\n      X-Mine: y\n", "", 1)
 open(sys.argv[1], "w").write(t)
 PY
+# The same entry headed by a quoted name and a comment is still the user's
+# cust, not a second key beside fleet's.
+python3 - "$HOME/.hermes/config.yaml" <<'PY'
+import sys
+t = open(sys.argv[1]).read().replace("mcp_servers:\n", "mcp_servers:\n  \"cust\": # mine\n    url: https://c.example/mcp\n    headers:\n      X-Mine: y\n", 1)
+open(sys.argv[1], "w").write(t)
+PY
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "cust", "url": "https://c.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass with the user's quoted hermes entry"
+grep -q '^  cust:' "$HOME/.hermes/config.yaml" && fail "hermes added cust beside the user's quoted cust"
+grep -q '^      X-Mine: y$' "$HOME/.hermes/config.yaml" || fail "hermes replaced the user's quoted entry"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the quoted cust"
+grep -q '^  "cust": # mine$' "$HOME/.hermes/config.yaml" || fail "hermes removed the user's quoted entry"
+python3 - "$HOME/.hermes/config.yaml" <<'PY'
+import sys
+t = open(sys.argv[1]).read().replace("  \"cust\": # mine\n    url: https://c.example/mcp\n    headers:\n      X-Mine: y\n", "", 1)
+open(sys.argv[1], "w").write(t)
+PY
+# An entry head fleet cannot read is refused, not overlooked.
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+sed -i 's/^mcp_servers:$/mcp_servers:\n  odd: {url: https:\/\/odd.example\/mcp}/' "$HOME/.hermes/config.yaml"
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.flow"
+server_put mcp.json "$with_extra"
+fleet sync --pull > "$TMP/out" 2>&1 && fail "rendered past an unreadable hermes entry"
+cmp -s "$HOME/.hermes/config.yaml" "$TMP/hermes.flow" || fail "edited a hermes file with an unreadable entry"
+grep -q 'cannot read the mcp_servers entry' "$TMP/out" || fail "an unreadable hermes entry went unreported"
+mv "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the unreadable hermes entry"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra after the unreadable hermes entry"
 
 # A server fleet added while claude was missing is not fleet's on claude: an
 # entry the user then adds there by hand stays when the server is dropped.
