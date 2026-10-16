@@ -2183,10 +2183,15 @@ def render_claude(desired, allow, previous, command):
     current = load_json(CLAUDE_SETTINGS)
     before = json.dumps(current, sort_keys=True)
     wanted = _leaves(desired)
-    for key, value in (previous.get("claude") or {}).items():
+    recorded_leaves = previous.get("claude") or {}
+    for key, value in recorded_leaves.items():
         path = json.loads(key)
         if key not in wanted and _get_path(current, path) == value:
             _drop_path(current, path)
+    # A leaf the user already had at this value stays theirs: left out of
+    # the record, it is never taken off.
+    owned_leaves = {k: v for k, v in wanted.items()
+                    if k in recorded_leaves or _get_path(current, json.loads(k)) != v}
     merged = deep_merge(current, desired)
     if not isinstance(merged.get("permissions", {}), dict):
         merged["permissions"] = {}
@@ -2213,7 +2218,7 @@ def render_claude(desired, allow, previous, command):
     if json.dumps(merged, sort_keys=True) != before:
         save_json_atomic(CLAUDE_SETTINGS, merged)
         print(f"  wrote {CLAUDE_SETTINGS}")
-    return wanted, owned
+    return owned_leaves, owned
 
 
 def _claude_mcp_entry(server):
@@ -2980,8 +2985,15 @@ def _prospective_settings(previous, desired, allow, t3_models, present):
         return value
     out = {}
     if present["claude"]:
-        out["claude"] = {**(previous.get("claude") or {}), **_leaves(desired)}
-        existing = dig(load_json(CLAUDE_SETTINGS), "permissions", "allow")
+        # A leaf fleet already owns keeps its old value until the write: a
+        # run stopped before it leaves that value in place. A leaf the user
+        # already has at the wanted value is not fleet's.
+        current = load_json(CLAUDE_SETTINGS)
+        recorded_leaves = previous.get("claude") or {}
+        out["claude"] = {**recorded_leaves, **{
+            k: v for k, v in _leaves(desired).items()
+            if k not in recorded_leaves and _get_path(current, json.loads(k)) != v}}
+        existing = dig(current, "permissions", "allow")
         existing = existing if isinstance(existing, list) else []
         recorded = previous.get("allow") or []
         out["allow"] = recorded + [e for e in allow if e not in recorded and e not in existing]

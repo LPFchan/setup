@@ -178,8 +178,10 @@ uninstall() {
     if [[ -z "$ok" ]]; then
         # fleet stays installed: a sync puts back whatever the cleanup took
         # before it failed, and its nightly sync comes back.
+        # The staged CLI whenever there is one: it is the current version, and
+        # an installed one it stood in for may not render what it removed.
         local again="$BIN" back=""
-        [[ -f "$again" || -z "$staged" ]] || again="$staged/fleet"
+        [[ -n "$staged" && -f "$staged/fleet" ]] && again="$staged/fleet"
         [[ -f "$again" ]] && python3 "$again" sync --pull >/dev/null 2>&1 && back=1
         [[ -n "$was_on" && -f "$cli" ]] && python3 "$cli" schedule enable >/dev/null 2>&1
         [[ -n "$staged" ]] && rm -rf "$staged"

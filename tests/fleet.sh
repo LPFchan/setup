@@ -181,8 +181,8 @@ if sys.argv[1:] == ["schedule", "status"]:
     print("fleet: nightly sync on")
 sys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)
 EOF
-rm -f "$FAKE/ran"
-FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+rm -f "$FAKE/ran"; cp "$FLEET_BIN" "$TMP/failing-rec.py"
+FLEET_SOURCE="$TMP/failing-rec.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
 # And a sync puts back what the cleanup took before it failed.
 grep -qx "sync --pull" "$FAKE/ran" || fail "a failed uninstall did not put back what it took"
@@ -193,6 +193,15 @@ rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/recorder.py" module uninstall >/dev/null 2>&1 || fail "uninstall with an old binary"
 grep -qx __unlink "$FAKE/ran" || fail "an old binary's failed __unlink was not retried with the current one"
 [[ ! -e "$FLEET_BIN" ]] || fail "uninstall with an old binary left it"
+# When the current CLI stood in for that old one and failed too, it is the
+# one that puts things back: the old one may not render what it removed.
+module install >/dev/null 2>&1 || fail "reinstall"
+printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("old " + " ".join(sys.argv[1:]) + "\\n")\nsys.exit(2 if sys.argv[1:] == ["__unrender"] else 0)\n' > "$FLEET_BIN"
+printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("new " + " ".join(sys.argv[1:]) + "\\n")\nsys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$TMP/newfail.py"
+rm -f "$FAKE/ran"
+FLEET_SOURCE="$TMP/newfail.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after the current CLI's __unlink failed"
+grep -qx "new sync --pull" "$FAKE/ran" && ! grep -q "old sync" "$FAKE/ran" \
+    || fail "a failed stand-in cleanup was put back by the old binary: $(cat "$FAKE/ran")"
 # A nightly sync that will not turn off keeps everything.
 module install >/dev/null 2>&1 || fail "reinstall"
 cat > "$FLEET_BIN" <<'EOF'

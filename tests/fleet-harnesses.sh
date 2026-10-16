@@ -935,6 +935,29 @@ for f in .zshenv .codex/.env .codex/config.toml; do
     cp "$TMP/stray.keep" "$HOME/$f"
 done
 fleet schedule run >/dev/null 2>&1 || fail "nightly pass after the stray markers"
+# A setting the user already had at the tier's value stays theirs.
+python3 - "$settings" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); v["verbose"] = True; json.dump(v, open(sys.argv[1], "w"))
+EOF
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high", "verbose": true}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass naming the user's own setting"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the user's own setting"
+[[ "$(json "$settings" 'v.get("verbose")')" == True ]] || fail "dropped a setting the user had before the tier named it"
+# A setting changed by a render that stops before claude stays fleet's at
+# its old value, so dropping it later still takes it off.
+cp "$HOME/.zshenv" "$TMP/stray.keep"
+{ printf '# BEGIN harnesses:mcp-tokens\nexport MINE=1\n'; cat "$TMP/stray.keep"; } > "$HOME/.zshenv"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "low"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 && fail "a render passed a stray marker"
+cp "$TMP/stray.keep" "$HOME/.zshenv"
+[[ "$(json "$settings" 'v["effortLevel"]')" == high ]] || fail "claude written past a stray marker"
+server_put settings/claude.json '{"json": {"theme": "dark"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a setting a stopped render changed"
+[[ "$(json "$settings" '"effortLevel" in v')" == False ]] || fail "a setting a stopped render changed was left when dropped"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass putting the setting back"
 # A server Auth has no credential for is left out, and an ordinary sync
 # brings it back once there is one.
 grep -q '^\[mcp_servers.heatmap\]' "$codex" && fail "a server with no credential was rendered"
