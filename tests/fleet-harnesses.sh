@@ -710,6 +710,25 @@ exports, drop, skipped, missing = fleet.resolve_tokens([server], {"origin": "o",
 print(exports.get(fleet.mcp_env_var(server)))' "$ROOT/files/fleet" 2>/dev/null)
 [[ "$kept" == from-env ]] || fail "a Passage outage dropped the environment's token: $kept"
 
+# After another account's render, a Passage outage keeps none of its token,
+# from the block or the environment.
+mkdir -p "$TMP/switch"
+printf '# BEGIN harnesses:mcp-tokens\n# common-auth-context {"origin":"old","subject":"1"}\nexport VAULT_MCP_TOKEN=old-secret\n# END harnesses:mcp-tokens\n' > "$TMP/switch/.zshenv"
+switched=$(HOME="$TMP/switch" VAULT_MCP_TOKEN=old-secret python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_switch", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.common_auth_token = lambda scope, context: "passage-access"
+def down(token, item): raise fleet.TokenError("passage unreachable")
+fleet._vault_get = down
+server = {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}
+exports, drop, skipped, missing = fleet.resolve_tokens([server], {"origin": "new", "subject": "1"}, [])
+print(sorted(exports), sorted(drop), sorted(skipped))' "$ROOT/files/fleet" 2>/dev/null)
+rm -r "$TMP/switch"
+[[ "$switched" == "[] ['PASSAGE_MCP_TOKEN', 'VAULT_MCP_TOKEN'] ['vault']" ]] \
+    || fail "another account's Passage token carried over: $switched"
+
 # With nothing to fall back on, the outage fails the render, so the next sync looks again.
 missing=$(HOME="$TMP/nvm" python3 -c '
 import importlib.machinery, importlib.util, sys

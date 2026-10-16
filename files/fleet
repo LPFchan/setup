@@ -1985,9 +1985,10 @@ def resolve_tokens(servers, context, warnings):
     environment, which holds it before the first render writes the block."""
     existing = managed_exports()
     drop = set()
-    if _block_context() != context:
-        # Another account: nothing Common Auth gave the old one carries over.
-        drop.update(mcp_env_var(s) for s in servers if s.get("credentialSource") == "common-auth")
+    block_context = _block_context()
+    if block_context != context:
+        # Another account: no token the old one got carries over.
+        drop.update(mcp_env_var(s) for s in servers if s.get("credentialSource") in ("common-auth", "passage"))
         drop.add("PASSAGE_MCP_TOKEN")
         for name in drop:
             existing.pop(name, None)
@@ -2016,8 +2017,10 @@ def resolve_tokens(servers, context, warnings):
         except TokenError as exc:
             if exc.authoritative:
                 drop.add(var)
+            # The environment holds a Passage token before the first render
+            # writes the block; once one has, it may hold another account's.
             value = None if exc.authoritative else existing.get(var) or (
-                os.environ.get(var) if source == "passage" else None)
+                os.environ.get(var) if source == "passage" and block_context is None else None)
             eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
             if not value:
                 # No credential at all: a connector would only fail. Skipped,
