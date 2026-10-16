@@ -518,6 +518,18 @@ m = v["providerInstances"]["claudeAgent"]["config"]["customModels"]
 m[:] = [r for r in m if r["slug"] != "own-model"]
 json.dump(v, open(sys.argv[1], "w"))
 EOF2
+# With no models to add, T3 settings without a claude provider stay as they are.
+mkdir -p "$TMP/t3home/.t3/userdata"
+printf '{"theme": "dark"}' > "$TMP/t3home/.t3/userdata/settings.json"
+HOME="$TMP/t3home" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_t3", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.render_t3([], {})' "$ROOT/files/fleet" || fail "render_t3 with no models failed"
+[[ "$(cat "$TMP/t3home/.t3/userdata/settings.json")" == '{"theme": "dark"}' ]] \
+    || fail "created a t3 claude provider with no models: $(cat "$TMP/t3home/.t3/userdata/settings.json")"
+rm -r "$TMP/t3home"
 
 # A hermes key written on one line is left alone, not followed by a second
 # block that would replace it.

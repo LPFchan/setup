@@ -2517,6 +2517,11 @@ def render_t3(models, previous):
     user's left alone. Returns the record: slug -> row as written, marked
     user when the row was there before fleet."""
     current = load_json(T3_SETTINGS)
+    if not models and "claudeAgent" not in (current.get("providerInstances") or {}):
+        # Nothing to add and nothing of fleet's there: no provider to create.
+        for path in RETIRED_CLAUDE_LAUNCHERS:
+            path.unlink(missing_ok=True)
+        return {}
     before = json.dumps(current, sort_keys=True)
     instances = current.setdefault("providerInstances", {})
     claude = instances.setdefault("claudeAgent", {"driver": "claudeAgent", "enabled": True, "config": {}})
@@ -2554,7 +2559,8 @@ def render_t3(models, previous):
                   and {k: v for k, v in row.items() if k != "capabilities"} == recorded[slug]):
             out.append(row)
     out += wanted.values()
-    config["customModels"] = out
+    if out or "customModels" in config:
+        config["customModels"] = out
     if json.dumps(current, sort_keys=True) != before:
         save_json_atomic(T3_SETTINGS, current)
         print(f"  wrote {T3_SETTINGS} ({len(out)} claude custom models)")
