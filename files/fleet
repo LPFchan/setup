@@ -89,14 +89,16 @@ def _auth_bin():
     return str(installed) if os.access(installed, os.X_OK) else shutil.which("auth")
 
 
-def _auth(*args, stdin=None, timeout=60):
-    """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session."""
+def _auth(*args, stdin=None, timeout=60, origin=None):
+    """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session.
+    `origin` pins the Auth origin; a login saved for another one exits 5."""
     binary = _auth_bin()
     if not binary:
         return 4, ""
+    env = {**os.environ, "LOST_AUTH_ORIGIN": origin} if origin else None
     try:
         result = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True,
-                                timeout=timeout)
+                                timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return result.returncode, result.stdout
@@ -499,6 +501,10 @@ def _digest(path):
     return [hashlib.sha256(data).hexdigest(), bool(path.stat().st_mode & 0o100)]
 
 
+def _unreadable(exc):
+    raise ConfigError(f"cannot read {exc.filename}: {exc.strerror}")
+
+
 def scan_local():
     """({path: [sha256, executable]}, symlinks skipped) under ~/.agents/.
     Installed skills are the account's installs, not its own files."""
@@ -518,7 +524,11 @@ def scan_local():
         if root.is_symlink():
             symlinks.append(top)
             continue
-        for folder, dirs, names in os.walk(root):
+        if not os.path.lexists(root):
+            continue
+        # An unreadable folder fails the scan: skipped, its files would read
+        # as deleted and the deletions would reach every machine.
+        for folder, dirs, names in os.walk(root, onerror=_unreadable):
             base = pathlib.Path(folder)
             for name in list(dirs):
                 if name.casefold() in SKIPPED_NAMES or (base == AGENTS_DIR/"skills" and name in installed):
@@ -545,16 +555,19 @@ def _safe_target(rel):
     return target
 
 
-def _request(method, path, body=None, expect=dict):
+def _request(method, path, body=None, expect=dict, origin=None):
     """The parsed answer of a session-authenticated request. Raises Rejected
-    for a refused session, ConfigError for anything else."""
+    for a refused session, ConfigError for anything else. With `origin`, a
+    login that moved to another Auth origin raises ConfigError."""
     args = ["request", method, path] + (["-"] if body is not None else [])
     stdin = json.dumps(body) if body is not None else None
     for attempt in range(3):
-        rc, out = _auth(*args, stdin=stdin, timeout=300)
+        rc, out = _auth(*args, stdin=stdin, timeout=300, origin=origin)
         if rc == 4:
             _set_login_marker(True)
             raise Rejected()
+        if rc == 5 and origin:
+            raise ConfigError("the session changed during the sync")
         try:
             value = json.loads(out) if out.strip() else None
         except ValueError:
@@ -953,10 +966,11 @@ def _move_harness_skills(backup):
     return moved
 
 
-def _apply_changes(take, remove, contents, server, backup):
+def _apply_changes(take, remove, contents, server, backup, then=None):
     """Replaced and deleted local copies, symlinks included, go to the backup.
-    If a write fails, the files already written go and the moved ones come
-    back, so ~/.agents stays as it was."""
+    If a write fails, or `then` (run once all are written) does, the files
+    already written go and the moved ones come back, so ~/.agents stays as it
+    was."""
     moved, written = [], []
     try:
         for rel in sorted(remove) + sorted(take):
@@ -968,6 +982,8 @@ def _apply_changes(take, remove, contents, server, backup):
         for rel in sorted(take):
             _write_file(rel, contents[rel], server[rel][1])
             written.append(rel)
+        if then:
+            then()
     except BaseException:
         for rel in written:
             _remove_file(rel)
@@ -1021,6 +1037,10 @@ def pull(account, settle_old=False):
             moved = _move_foreign(backup) if foreign else None
             try:
                 _apply_installs(installs, writes, drops, fetched, backup)
+                # A clone that cannot be dropped puts the payload back too, so
+                # a retry still finds it where the next attempt expects.
+                if old:
+                    _drop_old_clone(operator=False)
             except BaseException:
                 # The other account's tree, which its record and links still
                 # name, comes back until this account's installs are in place.
@@ -1032,10 +1052,8 @@ def pull(account, settle_old=False):
                             "installed skills could not be put in place")
                 _restore_displaced(displaced, backup)
                 raise
-            if old:
-                if displaced:
-                    _report_displaced(backup)
-                _drop_old_clone(operator=False)
+            if displaced:
+                _report_displaced(backup)
             if other or writes or drops:
                 # Even with no tree to move, the other account's links go. Its
                 # record stays until they have, so a retry finishes the job.
@@ -1074,13 +1092,16 @@ def pull(account, settle_old=False):
         moved = _move_foreign(backup) if foreign else None
         harness = []
         new_record = {"account": account, "counter": counter, "version": version, "files": server}
-        try:
-            _apply_changes(take, remove, contents, server, backup)
+        def finish():
+            # Inside the account files' transaction: a failed install puts
+            # them back too. installed.json follows each install on its own.
             _apply_installs(installs, writes, drops, fetched, backup)
             if record is None:
-                harness = _move_harness_skills(backup)
-            # The switch is done only once its record is saved.
+                harness.extend(_move_harness_skills(backup))
+            # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
+        try:
+            _apply_changes(take, remove, contents, server, backup, then=finish)
         except BaseException:
             for folder, saved in reversed(harness):
                 if not os.path.lexists(folder):
@@ -1107,12 +1128,12 @@ def pull(account, settle_old=False):
     raise ConfigError("the account kept changing during the sync; try again")
 
 
-def _check_json_objects(paths):
-    for rel in paths:
+def _check_json_objects(payloads):
+    for rel, data in payloads.items():
         if rel == "mcp.json" or (rel.startswith("settings/") and rel.endswith(".json")):
             try:
-                value = json.loads((AGENTS_DIR/rel).read_text())
-            except (OSError, ValueError):
+                value = json.loads(data)
+            except ValueError:
                 value = None
             if not isinstance(value, dict):
                 raise ConfigError(f"{rel} is not a JSON object; fix it before uploading")
@@ -1123,26 +1144,34 @@ def _check_json_objects(paths):
 
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
-    _check_json_objects(puts)
-    clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts))
+    # Each file is read once, so what is checked, sent, and recorded as sent
+    # is the same version even while an editor saves over it.
+    payloads = {rel: (AGENTS_DIR/rel).read_bytes() for rel in sorted(puts)}
+    _check_json_objects(payloads)
+    # Installed skills count too: an owned skills/Foo next to an installed
+    # skills/foo uploads, and every later listing then refuses the pair.
+    installed = {f"skills/{name}" for name in _load_json(INSTALLED, {})}
+    clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts) | installed)
     if clashes:
         raise ConfigError("not pushing paths a case-insensitive disk would merge into one file; "
                           "rename one of each: " + "; ".join(clashes))
-    # Two accounts can share a counter, so Auth also checks the push is for
-    # the account this machine pulled, not one signed in to since.
-    body = {"base": record["counter"], "subject": record["account"].split(" ", 1)[1],
-            "put": [{"path": rel, "content": base64.b64encode((AGENTS_DIR/rel).read_bytes()).decode(),
-                     "executable": local[rel][1]} for rel in sorted(puts)],
+    # Two accounts can share a counter, so the push is pinned to the account
+    # this machine pulled, not one signed in to since: the auth CLI refuses a
+    # login from another origin, and Auth refuses another subject.
+    origin, subject = record["account"].split(" ", 1)
+    body = {"base": record["counter"], "subject": subject,
+            "put": [{"path": rel, "content": base64.b64encode(data).decode(),
+                     "executable": local[rel][1]} for rel, data in payloads.items()],
             "delete": sorted(deletes)}
     try:
-        value = _request("POST", "/api/fleet/config/push", body)
+        value = _request("POST", "/api/fleet/config/push", body, origin=origin)
     except HttpError as exc:
         if exc.status == 409 and str(exc) == "account changed":
             raise ConfigError("the session changed during the sync") from None
         raise
     files = dict(record.get("files") or {})
-    for rel in puts:
-        files[rel] = local[rel]
+    for rel, data in payloads.items():
+        files[rel] = [hashlib.sha256(data).hexdigest(), local[rel][1]]
     for rel in deletes:
         files.pop(rel, None)
     return {**record, "counter": value["counter"], "version": value["version"], "files": files}
@@ -1226,11 +1255,15 @@ def _unlink_restoring(target, links):
         target.unlink()
     elif os.path.lexists(target):
         return
-    moved = links.pop(str(target), None)
+    # The mapping goes only once the file is back, so a failed move leaves
+    # the next run to find it.
+    moved = links.get(str(target))
     if moved and os.path.lexists(moved):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(moved, target)
+        del links[str(target)]
     else:
+        links.pop(str(target), None)
         _restore_old_backup(target)
 
 
@@ -1361,20 +1394,33 @@ def settle_old_agents(operator):
     tools may have added skills there."""
     if not os.path.lexists(OLD_AGENTS_CLONE):
         return
-    if not operator:
-        backup = Backup()
-        if _displace_old_payload(backup):
-            _report_displaced(backup)
-    _drop_old_clone(operator)
+    if operator:
+        _drop_old_clone(operator)
+        return
+    # A clone that cannot be dropped puts the payload back, so a retry
+    # still finds it where the next attempt expects.
+    backup = Backup()
+    displaced = _displace_old_payload(backup)
+    try:
+        _drop_old_clone(operator)
+    except BaseException:
+        _restore_displaced(displaced, backup)
+        raise
+    if displaced:
+        _report_displaced(backup)
 
 
 def _displace_old_payload(backup):
     """Move the operator's AGENTS.md and skills the old module left to the
     backup; the (path, saved) pairs, so a failed sync can put them back."""
     moved = []
-    for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
-        if os.path.lexists(path):
-            moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
+    try:
+        for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
+            if os.path.lexists(path):
+                moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
+    except BaseException:
+        _restore_displaced(moved, backup)
+        raise
     return moved
 
 
@@ -1457,7 +1503,8 @@ def onboard(account):
         for directory in HARNESS_SKILL_DIRS:
             for folder in _skill_folders(directory):
                 mine = skills/folder.name
-                if mine.exists():
+                # lexists: a dangling link there is the user's, not staged.
+                if os.path.lexists(mine):
                     if not _same_tree(folder, mine):
                         listed.append(str(folder))
                 else:
@@ -2580,7 +2627,8 @@ def render_claude_mcp(claude, servers, previous, retired):
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
         elif "claude" in (((previous.get("mcp") or {}).get(server["name"]) or {}).get("users") or []):
             # The user's own entry, which matched ours once, stays theirs
-            # when ours changes.
+            # when ours changes. Once they delete it, the one fleet adds back
+            # is fleet's.
             found.add(server["name"])
         elif _claude_user_entry(server["name"]) != want:
             print(f"  re-enrolling {server['name']}")
@@ -2954,11 +3002,18 @@ def render_hermes(servers, previous, retired, clear=False):
             del lines[k:stop]
         elif name in wanted:
             seen.add(name)
+            if "hermes" in (recorded.get(name, {}).get("users") or []):
+                found.add(name)
+                continue
             if body == wanted[name]:
                 if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
                 continue
-            if urls[name] not in body:
+            # Fleet's entry still names the URL fleet last wrote, when the
+            # account has moved the server since.
+            old = recorded.get(name, {}).get("url")
+            if urls[name] not in body and not (old and _rendered_on(recorded[name], "hermes")
+                                               and f"    url: {old}" in body):
                 print(f"  hermes: {name} points somewhere else; leaving it alone")
                 continue
             lines[k:stop] = wanted[name]
@@ -3242,8 +3297,11 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                          for s in servers.values()}
         record["mcp"].update(kept_mcp)
         # An entry the user already had stays theirs while fleet wants it.
+        # Where this run rendered, the renderer said whose it still is; on a
+        # harness absent now, the last answer stands.
         for name, entry in record["mcp"].items():
-            mine = users.get(name, set()) | set((previous.get("mcp") or {}).get(name, {}).get("users") or [])
+            mine = users.get(name, set()) | {x for x in (previous.get("mcp") or {}).get(name, {}).get("users") or []
+                                             if x not in rendered}
             if mine:
                 entry["users"] = sorted(mine)
         # A failed part renders again on the next run.

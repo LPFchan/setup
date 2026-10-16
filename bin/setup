@@ -605,9 +605,15 @@ swap_retired_modules() {
             failures=$((failures + 1))
             continue
         fi
+        # The marker is what retries an unfinished takeover once the old
+        # state entry is gone, so without it the old module stays.
         if [[ "$mode" == script && " $swapped " != *" $successor "* ]]; then
+            if ! printf '%s\n' "$successor" 2>/dev/null >> "$SWAP_PENDING_FILE"; then
+                echo "Warning: could not record $successor's pending takeover; keeping $old for now." >&2
+                failures=$((failures + 1))
+                continue
+            fi
             swapped="$swapped $successor"
-            printf '%s\n' "$successor" >> "$SWAP_PENDING_FILE"
         fi
         remove_script_state "$old"
         echo "$old is replaced by $successor."
@@ -1506,6 +1512,14 @@ cmd_update() {
             echo "Installing $dep, required by $dependent"
             if install_one "$dep" "$dep_target" "$dep_mode" "$dep_source"; then
                 dep_mark "$dep"
+                # Installed here, it is skipped below, so it is enabled here.
+                if is_service_module "$dep" \
+                    && [[ "$(module_service_unit "$dep" 2>/dev/null || true)" != tool ]] \
+                    && ! module_service_transition enable "$dep"; then
+                    echo "Warning: $dep installed but its service could not be enabled." >&2
+                    failure_count=$((failure_count + 1))
+                    failure_names+=("$dep")
+                fi
             else
                 echo "Warning: $dep dependency install failed; $dependent waits for it." >&2
                 failure_count=$((failure_count + 1))
