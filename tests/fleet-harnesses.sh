@@ -86,6 +86,8 @@ cat > "$FAKE/services.json" <<'JSON'
   "mcp_url": "https://heatmap.lost.plus/mcp", "token_key": "heatmap", "admin_only": false, "alias": ""},
  {"key": "wiki.lost.plus", "label": "Wiki", "group": "tools", "url": "https://wiki.lost.plus",
   "mcp_url": "https://wiki.lost.plus/mcp", "token_key": "", "admin_only": false, "alias": ""},
+ {"key": "odd.example.com", "label": "Odd", "group": "tools", "url": "https://odd.example.com",
+  "mcp_url": "https://odd.example.com/mcp", "token_key": "", "admin_only": false, "alias": ""},
  {"key": "today.lost.plus", "label": "Today", "group": "tools", "url": "https://today.lost.plus",
   "mcp_url": "", "token_key": "today", "admin_only": false, "alias": ""}]
 JSON
@@ -239,6 +241,7 @@ grep -q '^\[mcp_servers.heatmap\]' "$codex" && grep -q 'bearer_token_env_var = "
     || fail "codex MCP: $(cat "$codex")"
 [[ "$(grep -c '^\[mcp_servers.open\]' "$codex")" == 1 ]] || fail "codex emitted a server the user declared"
 grep -q 'notion' "$codex" && fail "codex got a claude-only server"
+grep -q 'odd' "$codex" "$HOME/.claude.json" && fail "a hub service with a dotted name was rendered"
 python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$codex" || fail "codex config does not parse"
 grep -q '^HEATMAP_MCP_TOKEN=tok-heatmap$' "$HOME/.codex/.env" || fail "codex .env"
 [[ -s "$FAKE/codex-trust.json" ]] || fail "codex keepout hook not trusted"
@@ -443,5 +446,13 @@ grep -q 'skills' "$hermes" && fail "unrender left fleet's hermes skills folder: 
 [[ "$(cat "$hermes")" == "$(printf 'model: x\nmcp_servers:\n  personal:\n    url: https://p.example/mcp')" ]] \
     || fail "hermes after unrender: $(cat -A "$hermes")"
 [[ ! -e "$XDG_STATE_HOME/fleet/applied.json" ]] || fail "applied record left"
+# With hermes' config gone, its .env still loses the tokens fleet wrote.
+fleet sync --pull >/dev/null 2>&1 || fail "sync before the hermes .env test"
+printf 'MINE=1\n# BEGIN harnesses:mcp-tokens\nHEATMAP_MCP_TOKEN=tok-old\n# END harnesses:mcp-tokens\n' > "$HOME/.hermes/.env"
+mv "$hermes" "$TMP/hermes.away"
+fleet __unrender >/dev/null 2>&1 || fail "unrender without hermes' config"
+mv "$TMP/hermes.away" "$hermes"
+grep -q tok-old "$HOME/.hermes/.env" && fail "tokens left in hermes .env without its config"
+grep -qx MINE=1 "$HOME/.hermes/.env" || fail "unrender took the user's hermes .env line"
 
 echo "fleet harness tests passed"

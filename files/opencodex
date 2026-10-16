@@ -2532,7 +2532,9 @@ def remove_base_url_export() -> None:
         _remove_legacy_service_env()
         settings = _claude_settings()
         env = settings.get("env")
-        if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+        # Only the loopback proxy URL is ours; a gateway the user set stays.
+        if isinstance(env, dict) and re.fullmatch(
+                r"http://127\.0\.0\.1:\d+", str(env.get("ANTHROPIC_BASE_URL", ""))):
             del env["ANTHROPIC_BASE_URL"]
             if not env:
                 del settings["env"]
