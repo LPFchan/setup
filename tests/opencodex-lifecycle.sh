@@ -239,7 +239,9 @@ printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claud
 rm "$BIN"
 LAUNCHER_SOURCE="$TEST_TMP/missing" uninstall 2>/dev/null && fail "opencodex uninstall passed a route it had no launcher for"
 [[ -e "$REGISTRY" ]] || fail "a missing launcher still tore down opencodex"
-# Even fetched without its executable bit.
+# So does an installed one too old to know how; the current one, fetched,
+# takes the route off. Even fetched without its executable bit.
+printf 'import sys\nsys.exit(2)\n' > "$BIN"
 cp "$ROOT/files/opencodex" "$TEST_TMP/launcher"; chmod -x "$TEST_TMP/launcher"
 LAUNCHER_SOURCE="$TEST_TMP/launcher" uninstall
 ! grep -q ANTHROPIC_BASE_URL "$HOME/.zshenv" "$HOME/.claude/settings.json" \

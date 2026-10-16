@@ -342,7 +342,7 @@ PYTHONPATH="$TMP/nosave" fleet sync --pull > "$TMP/out" 2>&1 && fail "a pass who
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] && grep -q extra "$HOME/.hermes/config.yaml" \
     || fail "the render before a lost record did not add the server: $(cat "$TMP/out")"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after a lost record"
-[[ "$(json "$XDG_STATE_HOME/fleet/applied.json" 'v.get("hermesSkills")')" == True ]] \
+[[ "$(json "$XDG_STATE_HOME/fleet/applied.json" 'bool(v.get("hermesSkills"))')" == True ]] \
     || fail "a hermes skills folder added before a lost record was read as the user's"
 server_put mcp.json '{"mcpServers": [
   {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
@@ -1111,14 +1111,16 @@ loader = importlib.machinery.SourceFileLoader("fleet_skills", sys.argv[1])
 fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
 loader.exec_module(fleet)
 out = []
-for text in ["skills:\n  external_dirs:\n  - ~/.agents/skills\n", "skills:\n  external_dirs:\n  - ~/mine\n"]:
+for text in ["skills:\n  external_dirs:\n  - ~/.agents/skills\n", "skills:\n  external_dirs:\n  - ~/mine\n",
+             "model: x\n", "skills:\n  other: 1\n", "skills:\n  external_dirs:\n", "skills:\n  external_dirs: []\n",
+             "model: x\nskills:\n"]:
     fleet.HERMES_CONFIG.write_text(text)
     _, ours, _ = fleet.render_hermes([], {}, set())
     fleet.render_hermes([], {"hermesSkills": ours}, set(), clear=True)
     after = fleet.HERMES_CONFIG.read_text()
-    out.append(after.startswith(text) and after.count("skills") == text.count("skills"))
+    out.append(after == text)
 open(sys.argv[2], "w").write(str(out))' "$ROOT/files/fleet" "$TMP/skills.out" >/dev/null 2>&1; cat "$TMP/skills.out")
-[[ "$skills" == "[True, True]" ]] || fail "uninstall took the wrong hermes skills folder: $skills"
+[[ "$skills" == "[True, True, True, True, True, True, True]" ]] || fail "uninstall took the wrong hermes skills folder: $skills"
 # A skills block indented otherwise is left for the user.
 printf 'skills:\n    external_dirs:\n    - ~/mine\n' > "$TMP/hermes-wide.yaml"
 cp "$TMP/hermes-wide.yaml" "$TMP/hermes-wide.keep"
@@ -1174,6 +1176,7 @@ servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
 grep -q "fleet" "$HOME/.claude.json" && fail "a claude entry still calls fleet"
 [[ "$(json "$settings" 'v["myKey"]')" == 1 ]] || fail "unrender dropped the user's key"
 grep -q MCP_TOKEN "$HOME/.zshenv" "$HOME/.codex/.env" && fail "tokens left after unrender"
+grep -q 'harnesses:mcp-tokens' "$HOME/.codex/.env" "$HOME/.hermes/.env" && fail "unrender left token block markers"
 grep -q heatmap "$codex" "$hermes" && fail "codex or hermes kept a fleet server"
 grep -q 'elsewhere.example' "$codex" || fail "unrender took the user's codex server"
 grep -q 'skills' "$hermes" && fail "unrender left fleet's hermes skills folder: $(cat "$hermes")"

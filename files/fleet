@@ -2084,7 +2084,14 @@ def _mirror_dotenv(path, exports, retired):
     original = path.read_text() if path.exists() else ""
     body = [f"{k}={_dotenv_value(v)}" for k, v in exports.items()]
     block = "\n".join([TOKENS_BEGIN, *body, TOKENS_END]) + "\n"
-    if _whole_block(original, TOKENS_BEGIN, TOKENS_END, path):
+    if not exports:
+        # No tokens, no block: cleanup leaves no markers behind.
+        text = original
+        if _whole_block(original, TOKENS_BEGIN, TOKENS_END, path):
+            text = re.sub(r"\n*" + re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
+                          "\n", original, flags=re.S)
+            text = text.lstrip("\n") if text.strip() else ""
+    elif _whole_block(original, TOKENS_BEGIN, TOKENS_END, path):
         text = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                       lambda _: block, original, flags=re.S)
     else:
@@ -2671,13 +2678,15 @@ def _hermes_entries(lines, start, end):
 
 def _hermes_skills(lines, warn=True):
     """Add ~/.agents/skills to skills.external_dirs, where hermes looks for
-    skills beyond its bundled ones. True when fleet added it."""
+    skills beyond its bundled ones. False when fleet did not add it, else
+    what it added: "skills" the whole block, "dirs" the external_dirs key,
+    "item" only the folder, "item[]" the folder into an `[]`."""
     start, end = _yaml_block(lines, "skills")
     if start is None:
         if lines and lines[-1].strip():
             lines.append("")
         lines += ["skills:", "  external_dirs:", "  - ~/.agents/skills"]
-        return True
+        return "skills"
     # Keys indented otherwise would read as none, and ours would go in beside
     # them at two spaces.
     indents = {len(l) - len(l.lstrip()) for l in lines[start + 1:end]
@@ -2691,8 +2700,6 @@ def _hermes_skills(lines, warn=True):
         match = re.match(r"^  external_dirs:\s*(\[\s*\])?\s*$", lines[k])
         if not match:
             continue
-        if match.group(1):
-            lines[k] = "  external_dirs:"
         j = k + 1
         items = []
         while j < end and re.match(r"^\s*- ", lines[j]):
@@ -2700,20 +2707,24 @@ def _hermes_skills(lines, warn=True):
             j += 1
         if {"~/.agents/skills", str(AGENTS_DIR/"skills")} & set(items):
             return False
+        if match.group(1):
+            lines[k] = "  external_dirs:"
         indent = re.match(r"^(\s*)- ", lines[k + 1]).group(1) if items else "  "
         lines.insert(j, f"{indent}- ~/.agents/skills")
-        return True
+        return "item[]" if match.group(1) else "item"
     if any(re.match(r"^  external_dirs:", lines[k]) for k in range(start + 1, end)):
         if warn:
             eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
                    "add ~/.agents/skills to it by hand")
         return False
     lines[start + 1:start + 1] = ["  external_dirs:", "  - ~/.agents/skills"]
-    return True
+    return "dirs"
 
 
-def _hermes_unskills(lines):
-    """Take back the skills folder fleet added, and the keys left empty."""
+def _hermes_unskills(lines, added):
+    """Take back the skills folder fleet added, and the keys it added that
+    are left empty; the user's own keys stay, an `[]` as it was. A record
+    from before fleet said what it added (True) takes back any left empty."""
     start, end = _yaml_block(lines, "skills")
     if start is None:
         return
@@ -2724,10 +2735,13 @@ def _hermes_unskills(lines):
     start, end = _yaml_block(lines, "skills")
     for k in range(start + 1, end):
         if re.match(r"^  external_dirs:\s*$", lines[k]) and not (k + 1 < end and re.match(r"^\s*- ", lines[k + 1])):
-            del lines[k]
+            if added == "item[]":
+                lines[k] = "  external_dirs: []"
+            elif added in ("skills", "dirs", True):
+                del lines[k]
             break
     start, end = _yaml_block(lines, "skills")
-    if not any(line.strip() for line in lines[start + 1:end]):
+    if added in ("skills", True) and not any(line.strip() for line in lines[start + 1:end]):
         del lines[start:end]
 
 
@@ -2791,10 +2805,10 @@ def render_hermes(servers, previous, retired, clear=False):
     # With nothing to put in it, a block the file did not have stays out.
     if created and not servers:
         lines = original.split("\n")
-    skills = bool(previous.get("hermesSkills"))
+    skills = previous.get("hermesSkills") or False
     if clear:
         if skills:
-            _hermes_unskills(lines)
+            _hermes_unskills(lines, skills)
         skills = False
     else:
         skills = _hermes_skills(lines) or skills
@@ -3023,7 +3037,7 @@ def _prospective_settings(previous, desired, allow, t3_models, present):
             if model["slug"] not in have and model["slug"] not in out["t3"]:
                 out["t3"][model["slug"]] = {k: v for k, v in model.items() if k != "effortsFrom"}
     if present["hermes"] and HERMES_CONFIG.is_file():
-        out["hermesSkills"] = bool(previous.get("hermesSkills")) or _hermes_skills(
+        out["hermesSkills"] = previous.get("hermesSkills") or _hermes_skills(
             HERMES_CONFIG.read_text().split("\n"), warn=False)
     return out
 
