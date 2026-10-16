@@ -245,6 +245,14 @@ grep -q "export HEATMAP_MCP_TOKEN=tok-heatmap" "$HOME/.zshenv" || fail "hub toke
 grep -q "export MINE_TOKEN=mine-secret" "$HOME/.zshenv" || fail "env token not mirrored"
 [[ "$("$BIN/harnesses" mcp-headers bearer HEATMAP_MCP_TOKEN)" == '{"Authorization": "Bearer tok-heatmap"}' ]] \
     || fail "the harnesses alias does not forward mcp-headers"
+# A staged copy standing in for the installed one renders the installed path.
+self_path=$(FLEET_PATH=/opt/fleet python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_self", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+print(fleet._self_path())' "$ROOT/files/fleet")
+[[ "$self_path" == /opt/fleet ]] || fail "FLEET_PATH not rendered: $self_path"
 codex="$HOME/.codex/config.toml"
 grep -q '^\[mcp_servers.heatmap\]' "$codex" && grep -q 'bearer_token_env_var = "HEATMAP_MCP_TOKEN"' "$codex" \
     || fail "codex MCP: $(cat "$codex")"
@@ -1180,6 +1188,14 @@ fleet __unrender >/dev/null 2>&1 || fail "unrender without hermes' config"
 mv "$TMP/hermes.away" "$hermes"
 grep -q tok-old "$HOME/.hermes/.env" && fail "tokens left in hermes .env without its config"
 grep -qx MINE=1 "$HOME/.hermes/.env" || fail "unrender took the user's hermes .env line"
+# A hermes config made after the last render is left as it is.
+fleet sync --pull >/dev/null 2>&1 || fail "sync before the late hermes config"
+mv "$hermes" "$TMP/hermes.away"
+fleet sync --pull >/dev/null 2>&1 || fail "sync without hermes' config"
+printf 'model: y\n' > "$hermes"
+fleet __unrender >/dev/null 2>&1 || fail "unrender with a late hermes config"
+[[ "$(cat "$hermes")" == "model: y" ]] || fail "unrender changed a hermes config made after the render: $(cat -A "$hermes")"
+mv "$TMP/hermes.away" "$hermes"
 
 # A takeover while claude is away still owns what the old client registered,
 # so the pass that finds claude again removes what the account dropped.

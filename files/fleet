@@ -2239,6 +2239,10 @@ def _claude_mcp_entry(server):
 
 
 def _self_path():
+    # A staged copy standing in for the installed one renders the installed
+    # path: the staged one is deleted once it has run.
+    if os.environ.get("FLEET_PATH"):
+        return os.environ["FLEET_PATH"]
     return os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else str(HOME/".local/bin/fleet")
 
 
@@ -2734,7 +2738,8 @@ def render_hermes(servers, previous, retired, clear=False):
     original = HERMES_CONFIG.read_text()
     lines = original.split("\n")
     start, end = _yaml_block(lines, "mcp_servers")
-    if start is None:
+    created = start is None
+    if created:
         if lines and lines[-1].strip():
             lines.append("")
         lines.append("mcp_servers:")
@@ -2783,6 +2788,9 @@ def render_hermes(servers, previous, retired, clear=False):
     while at > start + 1 and (not lines[at - 1].strip() or lines[at - 1].startswith("#")):
         at -= 1
     lines[at:at] = [line for s in servers if s["name"] not in seen for line in wanted[s["name"]]]
+    # With nothing to put in it, a block the file did not have stays out.
+    if created and not servers:
+        lines = original.split("\n")
     skills = bool(previous.get("hermesSkills"))
     if clear:
         if skills:

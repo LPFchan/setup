@@ -197,11 +197,13 @@ grep -qx __unlink "$FAKE/ran" || fail "an old binary's failed __unlink was not r
 # one that puts things back: the old one may not render what it removed.
 module install >/dev/null 2>&1 || fail "reinstall"
 printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("old " + " ".join(sys.argv[1:]) + "\\n")\nsys.exit(2 if sys.argv[1:] == ["__unrender"] else 0)\n' > "$FLEET_BIN"
-printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("new " + " ".join(sys.argv[1:]) + "\\n")\nsys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$TMP/newfail.py"
+printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("new " + " ".join(sys.argv[1:]) + "\\n")\nsys.argv[1:2] == ["sync"] and open(os.environ["FAKE"] + "/path", "w").write(os.environ.get("FLEET_PATH", ""))\nsys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$TMP/newfail.py"
 rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/newfail.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after the current CLI's __unlink failed"
 grep -qx "new sync --pull" "$FAKE/ran" && ! grep -q "old sync" "$FAKE/ran" \
     || fail "a failed stand-in cleanup was put back by the old binary: $(cat "$FAKE/ran")"
+# It renders the installed path, not its own, which is deleted after.
+[[ "$(cat "$FAKE/path")" == "$FLEET_BIN" ]] || fail "the stand-in put back settings pointing at itself"
 # A nightly sync that will not turn off keeps everything.
 module install >/dev/null 2>&1 || fail "reinstall"
 cat > "$FLEET_BIN" <<'EOF'

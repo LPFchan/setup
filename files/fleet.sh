@@ -182,7 +182,7 @@ uninstall() {
         # an installed one it stood in for may not render what it removed.
         local again="$BIN" back=""
         [[ -n "$staged" && -f "$staged/fleet" ]] && again="$staged/fleet"
-        [[ -f "$again" ]] && python3 "$again" sync --pull >/dev/null 2>&1 && back=1
+        [[ -f "$again" ]] && FLEET_PATH="$BIN" python3 "$again" sync --pull >/dev/null 2>&1 && back=1
         [[ -n "$was_on" && -f "$cli" ]] && python3 "$cli" schedule enable >/dev/null 2>&1
         [[ -n "$staged" ]] && rm -rf "$staged"
         if [[ -n "$back" ]]; then
