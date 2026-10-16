@@ -142,11 +142,16 @@ uninstall() {
         staged=$(mktemp -d)
         _stage "$staged" && cli="$staged/fleet"
     fi
+    # The timer stops first, so a nightly run cannot render again mid-way, and
+    # comes back if the cleanup fails, since fleet then stays installed.
+    local was_on=""
+    [[ -f "$cli" ]] && python3 "$cli" schedule status 2>/dev/null | grep -q ' on$' && was_on=1
     [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
     # Only the CLI knows what fleet rendered and which links and backups are
     # its own, so without it nothing else goes either. __unrender first:
     # claude's MCP entries call the binary for their tokens.
     if [[ ! -f "$cli" ]] || ! python3 "$cli" __unrender || ! python3 "$cli" __unlink; then
+        [[ -n "$was_on" ]] && python3 "$cli" schedule enable >/dev/null 2>&1
         [[ -n "$staged" ]] && rm -rf "$staged"
         echo "fleet: could not take back the rendered settings and links; nothing was removed, try again" >&2
         return 1
