@@ -644,6 +644,19 @@ server_put mcp.json '{"mcpServers": [
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra after the unreadable hermes entry"
+# A quoted mcp_servers key is the same key, edited in place, not a second
+# one beside it.
+sed -i 's/^mcp_servers:$/"mcp_servers":/' "$HOME/.hermes/config.yaml"
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass with a quoted hermes mcp_servers key"
+[[ $(grep -c 'mcp_servers' "$HOME/.hermes/config.yaml") == 1 ]] || fail "hermes added a second mcp_servers beside the quoted one"
+grep -q '^  extra:$' "$HOME/.hermes/config.yaml" || fail "hermes did not edit the quoted mcp_servers"
+sed -i 's/^"mcp_servers":$/mcp_servers:/' "$HOME/.hermes/config.yaml"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra after the quoted hermes key"
 
 # A server fleet added while claude was missing is not fleet's on claude: an
 # entry the user then adds there by hand stays when the server is dropped.

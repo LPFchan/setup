@@ -2600,12 +2600,14 @@ def _hermes_entry(server):
 def _yaml_block(lines, key):
     """(start, end) of a top-level `key:` block, end exclusive, or (None, None).
     A key written on one line ({...} or [...]) is not edited: a second block
-    after it would replace it in the loader."""
+    after it would replace it in the loader. The key may be quoted: a second,
+    bare one would be the same key twice."""
+    head = rf"""^(?:{key}|"{key}"|'{key}')\s*:"""
     for i, line in enumerate(lines):
-        if re.match(rf"^{key}:\s*[^\s#]", line):
+        if re.match(rf"{head}\s*[^\s#]", line):
             raise ConfigError(f"{HERMES_CONFIG}: {key} is written on one line; "
                               f"write it as an indented block for fleet to edit it")
-        if re.match(rf"^{key}:\s*(#.*)?$", line):
+        if re.match(rf"{head}\s*(#.*)?$", line):
             j = i + 1
             while j < len(lines) and (lines[j].strip() == "" or lines[j][0] in " \t" or lines[j].startswith("#")):
                 j += 1
