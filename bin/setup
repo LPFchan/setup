@@ -576,7 +576,7 @@ _swap_dependencies() {
 # installed, since the successor keeps or rewrites the old target. This runs
 # before a command builds its module list.
 swap_retired_modules() {
-    local old successor target mode source failures=0 swapped=""
+    local old successor target mode source recorded failures=0 swapped=""
     local -a kept
     # A successor whose rerun after the swap failed is still owed one: the old
     # state entry is gone by then, so nothing else would bring it back.
@@ -646,8 +646,19 @@ swap_retired_modules() {
         IFS=$'\t' read -r target mode source < <(
             awk -F '\t' -v m="$successor" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
         )
-        # One uninstalled or gone from the catalog since owes nothing.
-        if [[ -n "$target" ]] && grep -q "^${successor}"$'\t' "$SCRIPT_STATE_FILE" 2>/dev/null \
+        # One uninstalled or gone from the catalog since owes nothing; a state
+        # file that cannot be read says nothing, so the takeover stays owed.
+        recorded=1
+        if [[ -e "$SCRIPT_STATE_FILE" ]]; then
+            recorded=0
+            grep -q "^${successor}"$'\t' "$SCRIPT_STATE_FILE" 2>/dev/null || recorded=$?
+        fi
+        if (( recorded > 1 )); then
+            echo "Warning: could not read $SCRIPT_STATE_FILE; $successor's takeover waits for the next run." >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        if [[ -n "$target" ]] && (( recorded == 0 )) \
             && ! _script_update "$successor" "$target" "$source"; then
             echo "Warning: $successor could not finish taking over after the swap; the next run tries again." >&2
             failures=$((failures + 1))

@@ -123,6 +123,15 @@ chmod 600 "$SWAP_PENDING_FILE"
 grep -qx next "$SWAP_PENDING_FILE" || fail "an unreadable retry marker lost the takeover"
 swap_retired_modules >/dev/null 2>&1 || fail "swap once the retry marker can be cleared"
 [[ ! -e "$SWAP_PENDING_FILE" ]] || fail "retry marker left once it can be cleared"
+# A state file that cannot be read keeps a takeover owed, not settled as
+# though its successor were gone.
+printf 'next\n' > "$SWAP_PENDING_FILE"; chmod 000 "$STATE_DIR/script-state.tsv"; : > "$LOG"
+swap_retired_modules >/dev/null 2>&1 && fail "swap passed with a state file it could not read"
+chmod 600 "$STATE_DIR/script-state.tsv"
+grep -qx next "$SWAP_PENDING_FILE" || fail "an unreadable state file cleared the retry marker"
+swap_retired_modules >/dev/null 2>&1 || fail "swap once the state file can be read"
+grep -q "next update" "$LOG" || fail "the owed takeover did not run once the state file could be read: $(cat "$LOG")"
+[[ ! -e "$SWAP_PENDING_FILE" ]] || fail "retry marker left once the state file can be read"
 
 # An outdated dependency is updated before the successor goes in.
 printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"

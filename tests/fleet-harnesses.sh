@@ -664,6 +664,16 @@ rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
 cmp -s "$settings" "$TMP/settings.before" || fail "an unreadable auth store cleared the settings"
 [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" ]] || fail "an unreadable auth store settled the clone"
 rm -f "$FAKE/store-unreadable"; touch "$FAKE/no-session"
+# So does a key of this machine's that cannot be read: whose machine it is
+# stays unknown.
+for locked in "$FLEET_SSH_DIR/id_ed25519.pub" "$FLEET_SSH_DIR"; do
+    chmod 000 "$locked"
+    rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
+    chmod u+rwx "$FLEET_SSH_DIR"; chmod 600 "$FLEET_SSH_DIR/id_ed25519.pub"
+    [[ $rc == 3 ]] || fail "an unreadable $locked returned $rc"
+    cmp -s "$settings" "$TMP/settings.before" || fail "an unreadable $locked cleared the settings"
+    [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" ]] || fail "an unreadable $locked settled the clone"
+done
 # Logged out on a machine GitHub definitely does not list: as if it pulled an
 # empty account, so what fleet wrote comes off, and the clone is settled.
 fleet sync --pull >/dev/null 2>&1 && fail "a sync without a session reported success"

@@ -182,12 +182,20 @@ def fetch_owner_keys():
 
 
 def _local_keys():
+    """This machine's public keys. One that cannot be read makes the answer
+    unknown: left out, the machine could read as someone else's."""
+    try:
+        names = sorted(os.listdir(SSH_DIR)) if os.path.lexists(SSH_DIR) else []
+    except OSError as exc:
+        raise Unavailable(f"cannot read {SSH_DIR}: {exc}") from None
     keys = []
-    for path in sorted(SSH_DIR.glob("*.pub")):
-        try:
-            fields = path.read_text().split()
-        except (OSError, ValueError):
+    for name in names:
+        if not name.endswith(".pub"):
             continue
+        try:
+            fields = (SSH_DIR/name).read_text().split()
+        except (OSError, ValueError) as exc:
+            raise Unavailable(f"cannot read {SSH_DIR/name}: {exc}") from None
         if len(fields) >= 2:
             keys.append(" ".join(fields[:2]))
     return keys
