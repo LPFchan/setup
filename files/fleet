@@ -637,6 +637,12 @@ class Backup:
     def move(self, path, label):
         """Move `path` (file, folder, or link) under `label` in the backup."""
         destination = self._dir()/label
+        # A folder replaced by a file can back up a descendant first; give the
+        # folder its own name rather than moving it inside that copy.
+        n = 1
+        while os.path.lexists(destination):
+            n += 1
+            destination = self._dir()/f"{label}.{n}"
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(path), str(destination))
         return destination
