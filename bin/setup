@@ -443,8 +443,10 @@ fetch_manifest() {
         # A retired row that names its successor (column 9) leaves the catalog
         # entirely: setup swaps it for the successor and never runs it again.
         # Older binaries print only the first eight columns and ignore this.
+        # Its target, mode and source stay here so an uninstall before the
+        # swap can still run its cleanup.
         awk -F '\t' 'BEGIN { OFS="\t" }
-            $1 !~ /^#/ && $7 == "retired" && $9 != "" { print $1, $9 }
+            $1 !~ /^#/ && $7 == "retired" && $9 != "" { print $1, $9, $2, $3, $4 }
         ' "$tmp" > "$successors"
         kept=""
         if [[ "$include_fleet" == installed ]]; then
@@ -575,7 +577,7 @@ _swap_dependencies() {
 swap_retired_modules() {
     [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] || return 0
     local old successor target mode source failures=0 swapped=""
-    while IFS=$'\t' read -r old successor <&3; do
+    while IFS=$'\t' read -r old successor _ <&3; do
         grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
         target=""
         IFS=$'\t' read -r target mode source < <(
@@ -1626,6 +1628,22 @@ cmd_uninstall() {
 
     local -a removed
     removed=()
+    # A retired module this machine has not swapped yet is out of the catalog
+    # but still installed, so its own cleanup runs from what was kept of it.
+    if [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]]; then
+        local old successor
+        while IFS=$'\t' read -r old successor target mode source <&3; do
+            module_selected "$old" "$@" || continue
+            grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
+            [[ "$mode" == script ]] || continue
+            found=1
+            if uninstall_one "$old" "$target" "$mode" "$source" && ! is_script_installed "$old"; then
+                dep_unmark "$old"
+            else
+                failures=$((failures + 1)); echo "Failed: uninstall $old" >&2
+            fi
+        done 3< "$SUCCESSOR_FILE"
+    fi
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if module_selected "$module" "$@"; then

@@ -125,6 +125,12 @@ hidden=$(awk -F '\t' '$1 !~ /^#/ { audience[$1] = $5; if ($7 == "retired" && $9 
     END { for (m in want) if (audience[m] != "") print m }' "$ROOT/manifest.tsv")
 [[ -z "$hidden" ]] || fail "a successor is operator-only: $hidden"
 
+# A retired module not swapped yet still uninstalls through its own script.
+printf 'old\tx\t1\t1\n' > "$STATE_DIR/script-state.tsv"; : > "$LOG"
+BATCH=1 cmd_uninstall old >/dev/null 2>&1 || fail "uninstall of an unswapped retired module"
+grep -qx "old uninstall" "$LOG" || fail "the retired module's cleanup did not run: $(cat "$LOG")"
+state_has old && fail "uninstall kept the retired module's state entry"
+
 # The cached manifest stays four columns for older binaries.
 [[ "$(awk -F '\t' 'NF { print NF }' "$MANIFEST_FILE" | sort -u)" == 4 ]] || fail "cached manifest is not four columns"
 echo "retired successor tests passed"
