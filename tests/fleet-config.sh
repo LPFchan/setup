@@ -466,4 +466,19 @@ fleet __unlink
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine, late" ]] || fail "CLAUDE.md not restored"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link kept"
 
+# Overlapping runs take turns on ~/.agents and the links.
+python3 - "$XDG_STATE_HOME/fleet/config.lock" "$TMP/locked" <<'PY' &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+time.sleep(10)
+PY
+holder=$!
+until [[ -e "$TMP/locked" ]]; do sleep 0.1; done
+rc=0; timeout 2 python3 "$ROOT/files/fleet" __unlink </dev/null || rc=$?
+kill $holder; wait $holder 2>/dev/null || true
+[[ $rc == 124 ]] || fail "a run did not wait for the one holding the config lock"
+fleet __unlink || fail "a run after the lock was released"
+
 echo "fleet config tests passed"
