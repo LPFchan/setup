@@ -772,10 +772,11 @@ def _move_harness_skills(backup):
     return moved
 
 
-def _apply_changes(take, remove, contents, server, backup):
+def _apply_changes(take, remove, contents, server, backup, then=None):
     """Replaced and deleted local copies, symlinks included, go to the backup.
-    If a write fails, the files already written go and the moved ones come
-    back, so ~/.agents stays as it was."""
+    If a write fails, or `then` (run once all are written) does, the files
+    already written go and the moved ones come back, so ~/.agents stays as it
+    was."""
     moved, written = [], []
     try:
         for rel in sorted(remove) + sorted(take):
@@ -787,6 +788,8 @@ def _apply_changes(take, remove, contents, server, backup):
         for rel in sorted(take):
             _write_file(rel, contents[rel], server[rel][1])
             written.append(rel)
+        if then:
+            then()
     except BaseException:
         for rel in written:
             _remove_file(rel)
@@ -855,12 +858,13 @@ def pull(account):
         moved = _move_foreign(backup) if foreign else None
         harness = []
         new_record = {"account": account, "counter": counter, "version": version, "files": server}
-        try:
-            _apply_changes(take, remove, contents, server, backup)
+        def finish():
             if record is None:
-                harness = _move_harness_skills(backup)
-            # The switch is done only once its record is saved.
+                harness.extend(_move_harness_skills(backup))
+            # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
+        try:
+            _apply_changes(take, remove, contents, server, backup, then=finish)
         except BaseException:
             for folder, saved in reversed(harness):
                 if not os.path.lexists(folder):
@@ -2266,7 +2270,8 @@ def render_claude_mcp(claude, servers, previous, retired):
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
         elif "claude" in (((previous.get("mcp") or {}).get(server["name"]) or {}).get("users") or []):
             # The user's own entry, which matched ours once, stays theirs
-            # when ours changes.
+            # when ours changes. Once they delete it, the one fleet adds back
+            # is fleet's.
             found.add(server["name"])
         elif _claude_user_entry(server["name"]) != want:
             print(f"  re-enrolling {server['name']}")
@@ -2640,6 +2645,9 @@ def render_hermes(servers, previous, retired, clear=False):
             del lines[k:stop]
         elif name in wanted:
             seen.add(name)
+            if "hermes" in (recorded.get(name, {}).get("users") or []):
+                found.add(name)
+                continue
             if body == wanted[name]:
                 if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
@@ -2920,8 +2928,11 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                          for s in servers.values()}
         record["mcp"].update(kept_mcp)
         # An entry the user already had stays theirs while fleet wants it.
+        # Where this run rendered, the renderer said whose it still is; on a
+        # harness absent now, the last answer stands.
         for name, entry in record["mcp"].items():
-            mine = users.get(name, set()) | set((previous.get("mcp") or {}).get(name, {}).get("users") or [])
+            mine = users.get(name, set()) | {x for x in (previous.get("mcp") or {}).get(name, {}).get("users") or []
+                                             if x not in rendered}
             if mine:
                 entry["users"] = sorted(mine)
         # A failed part renders again on the next run.
