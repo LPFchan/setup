@@ -631,7 +631,8 @@ def _write_file(rel, data, executable):
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.chmod(temporary, 0o755 if executable else 0o644)
+        # Account files can hold credentials: readable by the owner only.
+        os.chmod(temporary, 0o700 if executable else 0o600)
         os.replace(temporary, target)
     except BaseException:
         pathlib.Path(temporary).unlink(missing_ok=True)
@@ -748,6 +749,7 @@ def pull(account):
         if record is None and counter == 0:
             if foreign:
                 _move_foreign(backup)
+                refresh_links()
             ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
             ONBOARDING_MARKER.touch()
             return "pending", None, []
@@ -876,13 +878,23 @@ def _link(target, source, links, backup):
 
 
 def _unlink_restoring(target, links):
-    """Drop a link into ~/.agents and put back the file it displaced."""
-    if not _points_into(target, AGENTS_DIR):
+    """Drop a link into ~/.agents and put back the file it displaced, also
+    when the link itself is already gone."""
+    if _points_into(target, AGENTS_DIR):
+        target.unlink()
+    elif os.path.lexists(target):
         return
-    target.unlink()
     moved = links.pop(str(target), None)
     if moved and os.path.lexists(moved):
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(moved, target)
+
+
+def _skill_link_targets(links):
+    """Entries in claude's skill folder plus recorded ones since removed."""
+    found = set(SKILL_LINK_DIR.iterdir()) if SKILL_LINK_DIR.is_dir() else set()
+    found |= {pathlib.Path(k) for k in links if pathlib.Path(k).parent == SKILL_LINK_DIR}
+    return sorted(found)
 
 
 def _points_into(path, root):
@@ -910,10 +922,9 @@ def refresh_links():
     if SKILL_LINK_DIR.parent.is_dir():
         for name in sorted(names):
             _link(SKILL_LINK_DIR/name, skills/name, links, backup)
-        if SKILL_LINK_DIR.is_dir():
-            for entry in SKILL_LINK_DIR.iterdir():
-                if entry.name not in names:
-                    _unlink_restoring(entry, links)
+        for entry in _skill_link_targets(links):
+            if entry.name not in names:
+                _unlink_restoring(entry, links)
     for target in OLD_AGENTS_LINKS:
         if _points_into(target, AGENTS_DIR):
             target.unlink()
@@ -938,10 +949,7 @@ def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
     links = _load_json(LINKS_STATE, {})
-    targets = list(AGENTS_LINKS)
-    if SKILL_LINK_DIR.is_dir():
-        targets += sorted(SKILL_LINK_DIR.iterdir())
-    for path in targets:
+    for path in list(AGENTS_LINKS) + _skill_link_targets(links):
         _unlink_restoring(path, links)
     LINKS_STATE.unlink(missing_ok=True)
 

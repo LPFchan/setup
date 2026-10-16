@@ -227,6 +227,7 @@ server_put skills/mine/SKILL.md 'from another machine'
 fleet sync --check >/dev/null 2>&1 && fail "check missed a server change"
 fleet sync --pull >/dev/null 2>&1
 [[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from another machine" ]] || fail "server change not taken"
+find "$HOME/.agents/skills/mine/SKILL.md" -perm 600 | grep -q . || fail "an account file is readable by others"
 server_put skills/new/SKILL.md 'new skill'
 fleet sync --pull >/dev/null 2>&1
 [[ -L "$HOME/.claude/skills/new" ]] || fail "new skill not linked"
@@ -296,6 +297,9 @@ rm "$FAKE/fetch-down"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 fleet sync >/dev/null 2>&1 || fail "sync as another account"
 [[ ! -e "$HOME/.agents/skills/mine" ]] || fail "another account's files kept"
+[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
+    || fail "CLAUDE.md left dangling while the other account waits for onboarding"
+[[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link left dangling for the other account"
 find "$XDG_STATE_HOME/fleet/backup" -maxdepth 2 -name agents-other-account | grep -q . || fail "other account's files not backed up"
 printf '7' > "$FAKE/subject"
 
@@ -305,7 +309,12 @@ rm -f "$XDG_STATE_HOME/fleet/config.json"
 printf 'mine again\n' > "$TMP/claude.md"; rm -f "$HOME/.claude/CLAUDE.md"; cp "$TMP/claude.md" "$HOME/.claude/CLAUDE.md"
 fleet sync >/dev/null 2>&1 || fail "rejoin"
 [[ -L "$HOME/.claude/CLAUDE.md" ]] || fail "CLAUDE.md not linked on rejoin"
+mkdir -p "$HOME/.claude/skills/shadow"; printf 'hand-made\n' > "$HOME/.claude/skills/shadow/SKILL.md"
+server_put skills/shadow/SKILL.md 'account shadow'
+fleet sync --pull >/dev/null 2>&1 || fail "pull before uninstall"
+rm -rf "$HOME/.claude/skills"
 fleet __unlink
+[[ "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] || fail "uninstall stranded a displaced skill"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine again" ]] || fail "CLAUDE.md not restored"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link kept"
 
