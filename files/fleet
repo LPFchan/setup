@@ -1235,8 +1235,11 @@ def _unlink_restoring(target, links):
 
 
 def _skill_link_targets(links):
-    """Entries in claude's skill folder plus recorded ones since removed."""
+    """Entries in claude's skill folder plus recorded ones since removed. A
+    sidecar the old agents module left stands for its link, deleted or not."""
     found = set(SKILL_LINK_DIR.iterdir()) if SKILL_LINK_DIR.is_dir() else set()
+    found = {e.with_name(e.name[:-len(".pre-agents.bak")]) if e.name.endswith(".pre-agents.bak") else e
+             for e in found}
     found |= {pathlib.Path(k) for k in links if pathlib.Path(k).parent == SKILL_LINK_DIR}
     return sorted(found)
 
@@ -1274,6 +1277,7 @@ def refresh_links():
     """AGENTS.md where each harness reads it, and each skill in claude's
     folder, adding new skills and pruning removed ones."""
     links = _load_json(LINKS_STATE, {})
+    before = dict(links)
     backup = Backup()
     # Saved however far this gets: a retry finds what it already displaced
     # linked and would not record it again.
@@ -1296,7 +1300,18 @@ def refresh_links():
                     _unlink_restoring(entry, links)
         _drop_old_links()
     finally:
-        _save_json(LINKS_STATE, links)
+        try:
+            _save_json(LINKS_STATE, links)
+        except OSError:
+            # Unrecorded, what this run displaced could never come back: put
+            # it back now.
+            for target, moved in links.items():
+                target = pathlib.Path(target)
+                if before.get(str(target)) != moved and backup.root and pathlib.Path(moved).is_relative_to(backup.root) \
+                        and _points_into(target, AGENTS_DIR) and os.path.lexists(moved):
+                    target.unlink()
+                    shutil.move(moved, target)
+            raise
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
 
@@ -2563,6 +2578,10 @@ def render_claude_mcp(claude, servers, previous, retired):
         elif scope not in ("", "user"):
             # A local or project registration is the user's and shadows ours.
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
+        elif "claude" in (((previous.get("mcp") or {}).get(server["name"]) or {}).get("users") or []):
+            # The user's own entry, which matched ours once, stays theirs
+            # when ours changes.
+            found.add(server["name"])
         elif _claude_user_entry(server["name"]) != want:
             print(f"  re-enrolling {server['name']}")
             if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
@@ -2770,7 +2789,8 @@ def _effort_descriptors():
 
 def render_t3(models, previous):
     """T3's claude custom models: ours appended or refreshed by slug, the
-    user's left alone. Returns the record: slug -> row as written."""
+    user's left alone. Returns the record: slug -> row as written, marked
+    user when the row was there before fleet."""
     current = load_json(T3_SETTINGS)
     before = json.dumps(current, sort_keys=True)
     instances = current.setdefault("providerInstances", {})
@@ -2800,6 +2820,11 @@ def render_t3(models, previous):
             merged = dict(row) if isinstance(row, dict) else {"slug": slug}
             merged.update(wanted.pop(slug))
             out.append(merged)
+            # A row fleet did not add is the user's: refreshed while fleet
+            # ships its slug, but never removed.
+            mine = recorded.get(slug) if isinstance(recorded.get(slug), dict) else None
+            if mine is None or mine.get("user"):
+                record[slug] = {**record[slug], "user": True}
         elif not (slug in recorded and isinstance(row, dict)
                   and {k: v for k, v in row.items() if k != "capabilities"} == recorded[slug]):
             out.append(row)
