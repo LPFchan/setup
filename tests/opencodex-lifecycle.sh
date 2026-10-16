@@ -197,6 +197,11 @@ cp "$ROOT/files/provider-registry.json" "$providers_registry"
 mkdir -p "$HOME/.claude"
 printf 'export KEEP=1\n# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n# END harnesses:anthropic-base-url\n' >> "$HOME/.zshenv"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
+# While the route cannot come off, nothing is torn down.
+printf '{' > "$HOME/.claude/settings.json"
+uninstall 2>/dev/null && fail "opencodex uninstall passed a route it could not remove"
+[[ -e "$BIN" && -e "$REGISTRY" ]] || fail "a failed route removal still tore down opencodex"
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
 # Even from a launcher that lost its executable bit.
 chmod -x "$BIN"
 uninstall
