@@ -822,6 +822,7 @@ market_put $FOO alice foo run.sh 'echo v2'
 fleet sync --check >/dev/null 2>&1 && fail "an author's update read as current"
 fleet sync --pull >/dev/null 2>&1 || fail "pull of an author's update"
 [[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "author's update not written"
+grep -q '^\.installing-' "$XDG_STATE_HOME/fleet/staging" || fail "a pull's staging folder went unrecorded"
 # A local edit is reported, then put back, and kept in the backup.
 printf 'edited\n' >> "$installed/run.sh"
 fleet status 2>&1 | grep -q 'installed skills changed here.*foo' || fail "status missed an edited install"
@@ -1036,6 +1037,16 @@ PY2
 fleet sync --pull >/dev/null 2>&1 && fail "applied installs that cannot be written"
 [[ "$(cat "$HOME/.agents/AGENTS.md")" == "edited here" ]] || fail "failed installs left the account's copy over a local edit"
 
+# A pull's own staging folder left by a stopped run goes; one it did not
+# make stays.
+mkdir -p "$HOME/.agents/.installing-mine" "$HOME/.agents/.installing-stopped"
+: > "$HOME/.agents/.installing-mine/keep"; : > "$HOME/.agents/.installing-stopped/half"
+printf '.installing-stopped\n' > "$XDG_STATE_HOME/fleet/staging"
+fleet sync --pull >/dev/null 2>&1 || true
+[[ -e "$HOME/.agents/.installing-mine/keep" ]] || fail "a pull removed a staging-like folder it did not make"
+[[ ! -e "$HOME/.agents/.installing-stopped" ]] || fail "a pull left its own stopped staging folder"
+rm -rf "$HOME/.agents/.installing-mine"
+
 # An installed folder the disk spells otherwise (HFS+ decomposes accents)
 # is still the install, not the account's own files.
 mkdir -p "$TMP/nfd"
@@ -1048,6 +1059,9 @@ folder = m.AGENTS_DIR/"skills"/unicodedata.normalize("NFD", name)
 folder.mkdir(parents=True); (folder/"SKILL.md").write_text("x")
 m.INSTALLED.write_text(json.dumps({name: {}}))
 assert m.scan_local()[0] == {}, m.scan_local()
+# Where the disk keeps both spellings apart, the other one is the account's.
+(m.AGENTS_DIR/"skills"/name).mkdir(); (m.AGENTS_DIR/"skills"/name/"SKILL.md").write_text("y")
+assert list(m.scan_local()[0]) == [f"skills/{folder.name}/SKILL.md"], m.scan_local()
 PY
 rm -rf "$TMP/nfd"
 

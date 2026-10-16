@@ -434,6 +434,9 @@ CONFIG_STATE = STATE_HOME/"fleet/config.json"
 # The account's installed skills as pull last wrote them: {local name: {"id",
 # "server": the account's copy, "local": what pull wrote}}. Never pushed.
 INSTALLED = AGENTS_DIR/"installed.json"
+# The staging folders a pull made, so one it could not finish is removed
+# by the next and nothing else under ~/.agents is.
+STAGING = STATE_HOME/"fleet/staging"
 LINKS_STATE = STATE_HOME/"fleet/links.json"
 CONFIG_LOCK = STATE_HOME/"fleet/config.lock"
 NOTICES = STATE_HOME/"fleet/notices.json"
@@ -513,7 +516,18 @@ def scan_local():
     # and its files would then read as the account's own. Case it keeps, so
     # a folder differing in case is the account's (and refused as a clash).
     nfc = lambda name: unicodedata.normalize("NFC", name)
-    installed = {nfc(name) for name in _load_json(INSTALLED, {})}
+    installed = {nfc(name): name for name in _load_json(INSTALLED, {})}
+
+    def is_install(base, name):
+        # Another spelling is the install only when it is the same folder:
+        # a disk that keeps both spellings can hold an owned one beside it.
+        key = installed.get(nfc(name))
+        if key is None or key == name:
+            return key is not None
+        if not os.path.lexists(base/key):
+            return True
+        here, there = os.lstat(base/name), os.lstat(base/key)
+        return (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
 
     def add(path, rel):
         if path.is_symlink():
@@ -535,7 +549,7 @@ def scan_local():
         for folder, dirs, names in os.walk(root, onerror=_unreadable):
             base = pathlib.Path(folder)
             for name in list(dirs):
-                if name.casefold() in SKIPPED_NAMES or (base == AGENTS_DIR/"skills" and nfc(name) in installed):
+                if name.casefold() in SKIPPED_NAMES or (base == AGENTS_DIR/"skills" and is_install(base, name)):
                     dirs.remove(name)
                 elif (base/name).is_symlink():
                     dirs.remove(name)
@@ -787,8 +801,14 @@ def _apply_installs(installs, write, remove, contents, backup):
     follows each folder, so a failure partway leaves it true."""
     mine = _load_json(INSTALLED, {})
     kept = []
-    for stale in AGENTS_DIR.glob(".installing-*"):
-        shutil.rmtree(stale, ignore_errors=True)
+    try:
+        left = STAGING.read_text().split("\n")
+    except FileNotFoundError:
+        left = []
+    for stale in left:
+        if stale.startswith(".installing-") and "/" not in stale:
+            shutil.rmtree(AGENTS_DIR/stale, ignore_errors=True)
+    STAGING.unlink(missing_ok=True)
 
     def clear(name):
         # The folder itself may be a symlink put here; it is what gets replaced.
@@ -818,6 +838,9 @@ def _apply_installs(installs, write, remove, contents, backup):
         AGENTS_DIR.mkdir(parents=True, exist_ok=True)
         staging = pathlib.Path(tempfile.mkdtemp(prefix=".installing-", dir=AGENTS_DIR))
         try:
+            STAGING.parent.mkdir(parents=True, exist_ok=True)
+            with open(STAGING, "a") as record:
+                record.write(staging.name + "\n")
             for rel, data in contents[name].items():
                 path = staging/rel
                 path.parent.mkdir(parents=True, exist_ok=True)
