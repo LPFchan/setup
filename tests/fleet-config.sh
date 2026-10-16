@@ -618,6 +618,34 @@ rc=0; out=$(fleet sync 2>&1) || rc=$?
 [[ $rc != 0 && "$out" == *"is damaged"* && "$(cat "$XDG_STATE_HOME/fleet/links.json")" == '{"x": 1}' ]] \
     || fail "synced over a damaged links record: $out"
 mv "$TMP/links.keep" "$XDG_STATE_HOME/fleet/links.json"
+# Restoring moves a record's file onto its link, so one naming anything
+# but fleet's links, or a file outside the backup, is damaged too.
+for entry in "\"$HOME/.bashrc\": \"$XDG_STATE_HOME/fleet/backup/x\"" \
+             "\"$HOME/.claude/CLAUDE.md\": \"$TMP/elsewhere\"" \
+             "\"$HOME/.claude/CLAUDE.md\": \"$XDG_STATE_HOME/fleet/backup/../../x\""; do
+    cp "$XDG_STATE_HOME/fleet/links.json" "$TMP/links.keep"; printf '{%s}' "$entry" > "$XDG_STATE_HOME/fleet/links.json"
+    rc=0; out=$(fleet sync 2>&1) || rc=$?
+    [[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "read a links record of {$entry}: $out"
+    mv "$TMP/links.keep" "$XDG_STATE_HOME/fleet/links.json"
+done
+# A linked claude skill folder is left alone: linking through it would move
+# what it leads to, here ~/.agents/skills itself, into the backup.
+mv "$HOME/.claude/skills" "$TMP/claude-skills"; ln -s "$HOME/.agents/skills" "$HOME/.claude/skills"
+before=$(cd "$HOME/.agents/skills" && find . | sort)
+out=$(fleet sync 2>&1) || fail "sync with a linked claude skill folder: $out"
+[[ "$out" == *"is a link"* && "$(cd "$HOME/.agents/skills" && find . | sort)" == "$before" ]] \
+    || fail "linked skills through a linked claude skill folder: $out"
+fleet __unlink >/dev/null 2>&1 || fail "unlink with a linked claude skill folder"
+[[ "$(cd "$HOME/.agents/skills" && find . | sort)" == "$before" ]] || fail "unlinked through a linked claude skill folder"
+python3 - "$ROOT/files/fleet" "$HOME/.claude/skills" <<'PY' || fail "onboarding gathers skills through a linked harness folder"
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_test", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+assert m._skill_folders(pathlib.Path(sys.argv[2])) == []
+PY
+rm "$HOME/.claude/skills"; mv "$TMP/claude-skills" "$HOME/.claude/skills"
+fleet sync >/dev/null 2>&1 || fail "sync after the claude skill folder came back"
 
 # Another account while ~/.agents is gone still drops this account's links.
 cp "$FAKE/server.json" "$TMP/server.keep"

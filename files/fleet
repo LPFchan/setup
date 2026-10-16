@@ -755,7 +755,21 @@ def _load_links():
     """{link: what it displaced}. Read as empty, a damaged one would forget
     the user files the links displaced."""
     return _load_record(LINKS_STATE, lambda r: all(
-        isinstance(v, str) for v in r.values()))
+        _link_entry_ok(k, v) for k, v in r.items()))
+
+
+def _link_entry_ok(link, moved):
+    """A link fleet makes, mapped to the backup or the old agents module's
+    sidecar beside it: restoring moves `moved` onto `link`, so anything else
+    would move arbitrary files around."""
+    if not isinstance(moved, str):
+        return False
+    link, moved = pathlib.Path(link), pathlib.Path(moved)
+    if not (link in AGENTS_LINKS or link.parent == SKILL_LINK_DIR):
+        return False
+    return (moved == _old_backup(link)
+            or (moved.is_absolute() and ".." not in moved.parts
+                and moved.is_relative_to(BACKUP_DIR)))
 
 
 def _save_json(path, value):
@@ -784,7 +798,11 @@ def _report(text):
 
 
 def _skill_folders(directory):
-    """The real, non-dot folders holding a SKILL.md in a harness skill folder."""
+    """The real, non-dot folders holding a SKILL.md in a harness skill folder.
+    A linked harness folder is skipped: it may lead into ~/.agents/skills,
+    whose folders would then be moved out from under it."""
+    if directory.is_symlink():
+        return []
     # Only a missing folder holds no skills; an unreadable one fails
     # onboarding, which would otherwise record the account without them.
     try:
@@ -1137,7 +1155,11 @@ def refresh_links():
                 _unlink_restoring(target, links)
         skills = AGENTS_DIR/"skills"
         names = {e.name for e in _skill_entries(skills)}
-        if SKILL_LINK_DIR.parent.is_dir():
+        if SKILL_LINK_DIR.is_symlink():
+            # Linking through it would move what it leads to, ~/.agents/skills
+            # included, into the backup.
+            eprint(f"fleet: {SKILL_LINK_DIR} is a link; not linking skills into it")
+        elif SKILL_LINK_DIR.parent.is_dir():
             for name in sorted(names):
                 _link(SKILL_LINK_DIR/name, skills/name, links, backup)
             for entry in _skill_link_targets(links):
