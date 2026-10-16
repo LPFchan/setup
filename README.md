@@ -74,7 +74,7 @@ The current edges:
 | `opencodex` | `providers` | Without it, 11 of 12 registry providers lose model filtering |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
-| `system-updates` | `schedule`, `miniharness` | `schedule` for the timer; `miniharness` because `system-updates enable` refuses to run without the model summon its 07:00 reboot check asks |
+| `system-updates` | `schedule`, `fleet` | `schedule` for the timer; `fleet` because `system-updates enable` installs miniharness through it, the model summon its 07:00 reboot check asks, and fleet's nightly pass keeps it current |
 | `setup` | `fzf-multicolumn` | The interactive module picker has no stock-`fzf` fallback by design |
 | `ai-menu` | `fzf-multicolumn` | The `ai` menu falls back to plain `fzf`, but loses its folder column and re-installs the picker on every run |
 | `tmux` | `zsh-basics` | The status bar reads `SYSTEM_COLOR_HEX`, which only `zsh-basics` exports; without it every machine's bar is the same blue |
@@ -95,7 +95,7 @@ Some modules need tools that are not modules, so the `requires` column cannot re
 | Module | Needs | Where it comes from |
 |--------|-------|---------------------|
 | `backup` | restic ≥ 0.17, `flock`, `ssh-keygen` | System packages |
-| `system-updates` | `hermes` on the operator's PATH | `harnesses install hermes` (Hermes's own installer, run non-interactively); not part of a bare `harnesses install` |
+| `system-updates` | `hermes` on the operator's PATH | `fleet install hermes` (Hermes's own installer, run non-interactively) |
 | `miniharness` | node and npm | nvm or `/opt/node`; the module reports what to do rather than installing node itself |
 
 ---

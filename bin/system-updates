@@ -421,7 +421,7 @@ record_advisor_tooling() {
     fi
     hermes=$(resolve_operator_tool "$operator" hermes) \
         || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts (fleet install hermes)"
-    enable_fleet_schedule "$operator" "$fleet"
+    ADVISOR_OPERATOR=$operator ADVISOR_FLEET=$fleet
     atomic_write_text "$OPERATOR_FILE" 0644 "$operator"
     tmp=$(mktemp "$STATE_DIR/.tooling.XXXXXXXX")
     printf 'miniharness\t%s\nhermes\t%s\n' "$miniharness" "$hermes" > "$tmp"
@@ -504,6 +504,9 @@ cmd_enable() {
     systemctl enable --now system-updates.timer system-updates-reboot.timer || return 1
     trap - EXIT
     rm -rf "$stage" "$transaction"
+    # Last, so a failed enable leaves the operator's own timers as they were;
+    # the rollback above only knows the system ones.
+    enable_fleet_schedule "$ADVISOR_OPERATOR" "$ADVISOR_FLEET"
     info "system-updates enabled ($backend): updates 03:00–03:30; unattended reboot check 07:00"
 }
 

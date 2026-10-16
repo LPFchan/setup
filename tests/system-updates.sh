@@ -196,6 +196,7 @@ assert_contains "$TIMER_STATE_FILE" $'apt-daily-upgrade.timer\tenabled\tactive'
 [[ $(cat "$STUB_STATE/apt-daily-upgrade.timer.enabled") == disabled ]] || fail 'native Apt install timer left enabled'
 [[ $(cat "$STUB_STATE/apt-daily-upgrade.timer.active") == inactive ]] || fail 'native Apt install timer left active'
 ! grep -q 'apt-daily.timer' "$LOG" || fail 'metadata-only Apt timer was changed'
+assert_contains "$LOG" 'fleet schedule on'
 # Re-enabling refreshes module artifacts without forgetting the pre-module
 # native timer state that disable must eventually restore.
 cmd_enable >/dev/null
@@ -266,8 +267,7 @@ grep -q 'fleet is not on' <<< "$enable_err" \
     || fail "enable failed for the wrong reason: $enable_err"
 mv "$TEST_TMP/fleet.hidden" "$FAKE_BIN/fleet"
 
-# A missing miniharness is installed through fleet, and fleet's nightly pass,
-# which keeps it updated, is turned on.
+# A missing miniharness is installed through fleet.
 mv "$FAKE_BIN/miniharness" "$TEST_TMP/miniharness.hidden"
 enable_err=$(STUB_FLEET_RC=1 cmd_enable 2>&1) && fail 'enable succeeded when fleet could not install miniharness'
 grep -q 'fleet could not install miniharness' <<< "$enable_err" \
@@ -275,7 +275,6 @@ grep -q 'fleet could not install miniharness' <<< "$enable_err" \
 : > "$LOG"
 (record_advisor_tooling) >/dev/null || fail 'tooling not recorded after fleet installed miniharness'
 assert_contains "$LOG" 'fleet install miniharness'
-assert_contains "$LOG" 'fleet schedule on'
 assert_contains "$TOOLING_FILE" $'miniharness\t'"$FAKE_BIN/miniharness"
 [[ -x "$FAKE_BIN/miniharness" ]] || mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"
 
@@ -347,7 +346,11 @@ printf 'ID=ubuntu\nID_LIKE=debian\n' > "$FIXTURE/etc/os-release"
 touch "$STUB_STATE/apt-daily-upgrade.timer.exists"
 echo enabled > "$STUB_STATE/apt-daily-upgrade.timer.enabled"; echo active > "$STUB_STATE/apt-daily-upgrade.timer.active"
 STUB_FAIL_ENABLE=1; export STUB_FAIL_ENABLE
+: > "$LOG"
 if (cmd_enable >/dev/null 2>&1); then fail 'partial enable unexpectedly succeeded'; fi
+# fleet's nightly pass is the operator's timer, outside this rollback, so a
+# failed enable must not have turned it on.
+! grep -q 'fleet schedule on' "$LOG" || fail 'a failed enable turned on fleet schedule'
 assert_absent "$ROOT_COPY"; assert_absent "$APT_CONFIG"; assert_absent "$UPDATE_TIMER"; assert_absent "$REBOOT_TIMER"
 [[ $(cat "$STUB_STATE/apt-daily-upgrade.timer.enabled") == enabled && $(cat "$STUB_STATE/apt-daily-upgrade.timer.active") == active ]] \
     || fail 'rollback did not restore native timer state'
