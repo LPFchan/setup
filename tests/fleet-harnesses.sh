@@ -631,6 +631,21 @@ sed -i.bak '/^HEATMAP_MCP_TOKEN=mine$/d' "$HOME/.codex/.env" && rm -f "$HOME/.co
 grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env token"
 grep -qx update "$FAKE/claude.log" && grep -qx 'codex update' "$FAKE/claude.log" || fail "harnesses not updated"
 grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "hermes not restarted"
+# While setup still records the old harnesses module, it updates what it
+# installed; a miniharness fleet installed beside it is fleet's to update.
+printf 'agents\tclone\ta\tb\nharnesses\tscript\ta\tb\n' > "$STATE_DIR/script-state.tsv"
+printf '#!/bin/sh\necho "npm $*" >> "$FAKE/claude.log"\n' > "$TMP/bin/npm"
+printf '#!/bin/sh\necho 1.0\n' > "$TMP/bin/miniharness"
+chmod +x "$TMP/bin/npm" "$TMP/bin/miniharness"
+: > "$FAKE/claude.log"
+fleet schedule run >/dev/null 2>&1 || fail "nightly pass beside the old modules"
+grep -qx 'npm install -g miniharness@latest' "$FAKE/claude.log" || fail "a fleet-installed miniharness went without updates"
+grep -qx update "$FAKE/claude.log" && fail "fleet updated a harness the old module still updates"
+printf 'miniharness\tscript\ta\tb\n' >> "$STATE_DIR/script-state.tsv"
+: > "$FAKE/claude.log"
+fleet schedule run >/dev/null 2>&1 || fail "nightly pass beside the old miniharness module"
+grep -q npm "$FAKE/claude.log" && fail "fleet updated a miniharness the old module still updates"
+rm "$STATE_DIR/script-state.tsv" "$TMP/bin/npm" "$TMP/bin/miniharness"
 # A proxy route the nightly pass could not export is reported too.
 mkdir -p "$HOME/.local/bin"
 printf 'import sys\nsys.exit(sys.argv[1:] == ["__export"])\n' > "$HOME/.local/bin/opencodex"
