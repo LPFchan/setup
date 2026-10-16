@@ -2287,7 +2287,7 @@ def render_claude_mcp(claude, servers, previous, retired):
     ours, which stay theirs; failed names the servers claude would not add,
     which fleet does not claim. Without claude (only when taking settings
     back) the file is edited."""
-    ok, kept, found, failed = True, {}, set(), set()
+    ok, kept, found, failed, was = True, {}, set(), set(), {}
     for name in sorted(retired):
         if _claude_mcp_scope(claude, name) is not None:
             print(f"  unregistering retired MCP server {name}")
@@ -2298,7 +2298,8 @@ def render_claude_mcp(claude, servers, previous, retired):
             continue
         entry = _claude_user_entry(name)
         if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
-                                        or (record.get("claude") and entry == record["claude"])):
+                                        or (record.get("claude") and entry == record["claude"])
+                                        or (record.get("claudeWas") and entry == record["claudeWas"])):
             print(f"  unregistering MCP server {name}")
             if not (_claude_remove([claude, "mcp", "remove", name, "-s", "user"]) if claude
                     else _claude_json_remove(name)):
@@ -2319,17 +2320,20 @@ def render_claude_mcp(claude, servers, previous, retired):
             # when ours changes. Once they delete it, the one fleet adds back
             # is fleet's.
             found.add(server["name"])
-        elif _claude_user_entry(server["name"]) != want:
+        elif (entry := _claude_user_entry(server["name"])) != want:
             print(f"  re-enrolling {server['name']}")
             if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
                 if not _claude_add(argv):
                     ok = False
                     failed.add(server["name"])
             else:
+                # Fleet's old entry stays: the record names it too, so a
+                # removal before the next re-enroll still finds it.
                 ok = False
+                was[server["name"]] = entry
         elif not _rendered_on((previous.get("mcp") or {}).get(server["name"]), "claude"):
             found.add(server["name"])
-    return ok, kept, found, failed
+    return ok, kept, found, failed, was
 
 
 def _claude_remove(argv):
@@ -2758,8 +2762,10 @@ def render_hermes(servers, previous, retired, clear=False):
                 print(f"  hermes: {name} points somewhere else; leaving it alone")
                 continue
             lines[k:stop] = wanted[name]
-        elif (recorded.get(name, {}).get("url") and "hermes" not in (recorded[name].get("users") or [])
-              and f"    url: {recorded[name]['url']}" in body):
+        elif ("hermes" not in (recorded.get(name, {}).get("users") or [])
+              # Or, after a render hermes refused, the one before.
+              and any(f"    url: {recorded[name][k]}" in body for k in ("url", "hermesUrl")
+                      if recorded.get(name, {}).get(k))):
             print(f"  hermes: removing MCP server {name}")
             del lines[k:stop]
     start, end = _yaml_block(lines, "mcp_servers")
@@ -3055,13 +3061,13 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False),
                   "codexReclaimed": previous.get("codexReclaimed", False)}
-        kept_mcp, users, rendered, hermes_urls, missed = {}, {}, set(), {}, set()
+        kept_mcp, users, rendered, hermes_urls, missed, claude_was = {}, {}, set(), {}, set(), {}
         prev_mcp = previous.get("mcp") or {}
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command)
-                claude_ok, kept_mcp, found, missed = render_claude_mcp(
+                claude_ok, kept_mcp, found, missed, claude_was = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
                 rendered.add("claude")
                 for name in found:
@@ -3076,6 +3082,8 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 kept_mcp = {name: r for name, r in (previous.get("mcp") or {}).items()
                             if (r.get("claude") or r.get("url")) and _rendered_on(r, "claude")
                             and name not in wanted}
+                claude_was = {name: r["claudeWas"] for name, r in prev_mcp.items()
+                              if name in wanted and r.get("claudeWas")}
             if present["codex"]:
                 if render_codex_mcp(on("codex"), previous, retired):
                     record["codexReclaimed"] = True
@@ -3143,6 +3151,9 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         for name, url in hermes_urls.items():
             if url and url != record["mcp"][name]["url"]:
                 record["mcp"][name]["hermesUrl"] = url
+        for name, entry in claude_was.items():
+            if isinstance(entry, dict) and name in record["mcp"]:
+                record["mcp"][name]["claudeWas"] = entry
         # An entry the user already had stays theirs while fleet wants it.
         # Where this run rendered, the renderer said whose it still is; on a
         # harness absent now, the last answer stands.

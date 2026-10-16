@@ -437,6 +437,42 @@ grep -q '^    url: https://open2.example/mcp$' "$HOME/.hermes/config.yaml" || fa
 cp "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
 fleet sync --pull >/dev/null 2>&1 || fail "pass moving open back"
 grep -q '^    url: https://open.example/mcp$' "$HOME/.hermes/config.yaml" || fail "hermes stayed on a URL moved while it was refused"
+# A move claude failed to make, then a drop, still takes fleet's old entry.
+open2='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open2.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+noopen='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+withopen='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+server_put mcp.json "$open2"
+touch "$FAKE/claude-remove-fail"
+fleet sync --pull >/dev/null 2>&1 && fail "a failed claude re-enroll went unreported"
+rm "$FAKE/claude-remove-fail"
+# Even past a run without claude.
+mv "$BIN/claude" "$TMP/claude.away"
+fleet sync --pull >/dev/null 2>&1 || fail "pass without claude after a failed move"
+mv "$TMP/claude.away" "$BIN/claude"
+server_put mcp.json "$noopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server claude failed to move"
+[[ "$(json "$HOME/.claude.json" '"open" in v["mcpServers"]')" == False ]] || fail "claude kept fleet's entry from before a failed move"
+# So does a move hermes refused, once its file is fixed.
+server_put mcp.json "$withopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back"
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+sed -i 's/^mcp_servers:$/mcp_servers:\n odd: 1/' "$HOME/.hermes/config.yaml"
+server_put mcp.json "$open2"
+fleet sync --pull >/dev/null 2>&1 && fail "a refused hermes file went unreported"
+cp "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
+server_put mcp.json "$noopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server hermes refused to move"
+grep -q '^  open:' "$HOME/.hermes/config.yaml" && fail "hermes kept fleet's entry from before a refused move"
+server_put mcp.json "$withopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back after the move tests"
 
 # An entry the user already had, matching ours, stays theirs: dropping the
 # server from the account does not remove it.
