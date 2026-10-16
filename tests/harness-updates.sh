@@ -86,20 +86,14 @@ grep -q "All modules up to date" "$TMP/out" \
     || fail "module summary missing: $(cat "$TMP/out")"
 
 # --- setup's service-module wiring ------------------------------------
-# setup enable/disable/status drive the module's own timer, the same way they
-# already drive the providers timer.
+# The harnesses timer is fleet's now; setup no longer drives it.
 unset -f is_service_module
 is_service_module() {
     local m
     for m in ${SERVICE_MODULES}; do [[ "$m" == "$1" ]] && return 0; done
     return 1
 }
-is_service_module harnesses || fail "harnesses is not registered as a service module"
-[[ "$(module_service_unit harnesses)" == harnesses-update.timer ]] \
-    || fail "harnesses service unit is wrong: $(module_service_unit harnesses)"
-[[ "$(module_enable_cmd harnesses)" == *"harnesses schedule" ]] \
-    || fail "setup enable harnesses does not call the module: $(module_enable_cmd harnesses)"
-[[ "$(module_disable_cmd harnesses)" == *"harnesses schedule disable" ]] \
-    || fail "setup disable harnesses does not call the module: $(module_disable_cmd harnesses)"
+is_service_module harnesses && fail "the retired harnesses module is still a service module"
+is_service_module fleet || fail "fleet is not registered as a service module"
 
 echo "ok"

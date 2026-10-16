@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""One-off: push agents/ and the operator-personal settings and MCP entries
+as the operator's fleet account, before the agents, harnesses and miniharness
+modules retire. Run from the setup checkout with the operator signed in
+(`auth login`); `--dry-run` shows what would be pushed.
+
+agents/ goes up exactly, not through onboarding, which would also gather the
+harness skill folders. The settings and MCP entries are the ones fleet's
+seededRemovals names as operator-personal, with the values the harnesses
+manifest holds today, so the operator's machines keep what friend machines
+shed. Refuses an account that already holds files."""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def load_fleet(agents_dir):
+    os.environ["FLEET_AGENTS_DIR"] = str(agents_dir)
+    loader = importlib.machinery.SourceFileLoader("fleet_seed", str(ROOT/"files/fleet"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def personal_tier():
+    """settings/ and mcp.json contents: the seededRemovals parts of the
+    harnesses manifest, each checked to still hold the seeded value."""
+    old = json.loads((ROOT/"files/harnesses-manifest.json").read_text())
+    seeded = json.loads((ROOT/"files/fleet-manifest.json").read_text())["seededRemovals"]
+    claude = old["settings"]["claude"]
+
+    def pick(want, have, where):
+        out = {}
+        for key, value in want.items():
+            if key not in have:
+                sys.exit(f"fleet-seed: {where}{key} is not in the harnesses manifest")
+            if isinstance(value, dict):
+                out[key] = pick(value, have[key], f"{where}{key}.")
+            elif have[key] != value:
+                sys.exit(f"fleet-seed: {where}{key} differs from seededRemovals")
+            else:
+                out[key] = value
+        return out
+
+    names = [row["name"] for row in seeded["mcpServers"]]
+    servers = [row for row in old["mcpServers"] if row["name"] in names]
+    if [row["name"] for row in servers] != names:
+        sys.exit("fleet-seed: seededRemovals names an MCP server the harnesses manifest lacks")
+    if [f"mcp__{name}__*" for name in names] != seeded["allow"]:
+        sys.exit("fleet-seed: seededRemovals allow does not match its MCP servers")
+    return {
+        "settings/claude.json": {"json": pick(seeded["claude"], claude["json"], ""),
+                                 "permissionsAllowAdd": claude["permissionsAllowAdd"]},
+        "settings/keepout.json": {"enabled": old["keepout"]["enabled"] is True},
+        "mcp.json": {"mcpServers": servers},
+    }
+
+
+def main(argv):
+    dry = argv == ["--dry-run"]
+    if argv and not dry:
+        sys.exit("usage: scripts/fleet-seed [--dry-run]")
+    staging = pathlib.Path(tempfile.mkdtemp(prefix="fleet-seed."))
+    try:
+        shutil.copytree(ROOT/"agents", staging, symlinks=True, dirs_exist_ok=True)
+        for rel, value in personal_tier().items():
+            if (staging/rel).exists():
+                sys.exit(f"fleet-seed: agents/ already has {rel}")
+            (staging/rel).parent.mkdir(parents=True, exist_ok=True)
+            (staging/rel).write_text(json.dumps(value, indent=2) + "\n")
+        fleet = load_fleet(staging)
+        local, symlinks = fleet.scan_local()
+        every = sorted(p.relative_to(staging).as_posix() for p in staging.rglob("*")
+                       if p.is_file() or p.is_symlink())
+        if symlinks or sorted(local) != every:
+            left = sorted(set(every) - set(local)) + symlinks
+            sys.exit("fleet-seed: these would not upload as they are: " + ", ".join(left))
+        warnings = []
+        fleet.read_tier(fleet.OPERATOR_SUBJECT, warnings)
+        if warnings:
+            sys.exit("fleet-seed: fleet would skip parts of the tier: " + "; ".join(warnings))
+        for rel in ("settings/claude.json", "settings/keepout.json", "mcp.json"):
+            print(f"--- {rel}\n{(staging/rel).read_text()}", end="")
+        print(f"{len(local)} files")
+        if dry:
+            return
+        account = fleet._context()
+        if not account or account.split(" ", 1)[1] != fleet.OPERATOR_SUBJECT:
+            sys.exit("fleet-seed: sign in as the operator first (auth login)")
+        counter, version, server = fleet._listing()
+        if server:
+            sys.exit(f"fleet-seed: the account already holds {len(server)} files; not seeding over them")
+        record = {"account": account, "counter": counter, "version": version, "files": {}}
+        record = fleet.push(record, local, list(local), [])
+        print(f"pushed; the account is at counter {record['counter']}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

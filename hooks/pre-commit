@@ -24,13 +24,21 @@ for f in files/auth files/passage files/harnesses files/providers files/opencode
     python3 -c "import py_compile; py_compile.compile('$f', doraise=True)" || exit 1
 done
 
-# Every skill must declare its visibility with an audience line, so the agents
-# installer can decide whether the skill lands on a given machine. A missing
-# line silently hides nothing today but reads as "unset", which is how skills
-# drift into the wrong audience; fail the commit instead.
+# The modules fleet replaced stay fetchable, unchanged, until every machine
+# has swapped: their clients still fetch these from main and would misread
+# an edit. The account now holds the agent instructions and skills, so an
+# edit under agents/ would never reach it. Deleting them is allowed.
+frozen=(agents/ files/agents.sh files/harnesses.sh files/harnesses files/harnesses-manifest.json
+        files/miniharness.sh files/ssh-aliases.sh)
 while IFS= read -r f; do
-    grep -q '^audience:' "$f" || { echo "missing audience: tag in $f — commit blocked" >&2; exit 1; }
-done < <(find agents/skills -name SKILL.md -type f | sort)
+    for path in "${frozen[@]}"; do
+        if [[ "$f" == "$path" || ( "$path" == */ && "$f" == "$path"* ) ]]; then
+            echo "$f belongs to a module fleet replaced and stays as it is — commit blocked" >&2
+            [[ "$path" == agents/ ]] && echo "  agent instructions and skills live in the account now: edit ~/.agents and run fleet sync" >&2
+            exit 1
+        fi
+    done
+done < <(git diff --cached --name-only --diff-filter=d)
 
 scripts/checksums
 git add checksums.tsv
