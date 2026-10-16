@@ -170,7 +170,8 @@ module install >/dev/null 2>&1 || fail "reinstall"
 rm -f "$FLEET_BIN"
 FLEET_SOURCE="$TMP/missing" module uninstall >/dev/null 2>&1 && fail "uninstall went on without a CLI"
 printf 'import sys\nsys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)\n' > "$FLEET_BIN"
-module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+cp "$FLEET_BIN" "$TMP/failing.py"
+FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ -e "$FLEET_BIN" ]] || fail "a failed uninstall removed the binary"
 # A failed cleanup leaves fleet installed, so its nightly sync comes back on.
 cat > "$FLEET_BIN" <<'EOF'
@@ -181,7 +182,24 @@ if sys.argv[1:] == ["schedule", "status"]:
 sys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)
 EOF
 rm -f "$FAKE/ran"
-module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
+# An installed binary older than this module, without __unlink, hands the
+# cleanup to the current one.
+printf 'import sys\nsys.exit(2 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$FLEET_BIN"
+rm -f "$FAKE/ran"
+FLEET_SOURCE="$TMP/recorder.py" module uninstall >/dev/null 2>&1 || fail "uninstall with an old binary"
+grep -qx __unlink "$FAKE/ran" || fail "an old binary's failed __unlink was not retried with the current one"
+[[ ! -e "$FLEET_BIN" ]] || fail "uninstall with an old binary left it"
+# A nightly sync that will not turn off keeps everything.
+module install >/dev/null 2>&1 || fail "reinstall"
+cat > "$FLEET_BIN" <<'EOF'
+import sys
+if sys.argv[1:] == ["schedule", "status"]:
+    print("fleet: nightly sync on")
+sys.exit(1 if sys.argv[1:] == ["schedule", "disable"] else 0)
+EOF
+module uninstall >/dev/null 2>&1 && fail "uninstall went on with the nightly sync still on"
+[[ -e "$FLEET_BIN" ]] || fail "an uninstall that left the timer on removed the binary"
 
 echo "fleet tests passed"
