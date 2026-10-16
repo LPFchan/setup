@@ -315,10 +315,18 @@ server_put mcp.json '{"mcpServers": [
   {"name": "extra", "url": "https://extra.example/mcp"},
   {"name": "own", "url": "https://own.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+# As does the hermes skills folder, added by that render too.
+sed -i '/^skills:$/,/^  - ~\/.agents\/skills$/d' "$HOME/.hermes/config.yaml"
+python3 - "$XDG_STATE_HOME/fleet/applied.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); v["hermesSkills"] = False; json.dump(v, open(sys.argv[1], "w"))
+PY
 PYTHONPATH="$TMP/nosave" fleet sync --pull > "$TMP/out" 2>&1 && fail "a pass whose record was lost succeeded"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] && grep -q extra "$HOME/.hermes/config.yaml" \
     || fail "the render before a lost record did not add the server: $(cat "$TMP/out")"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after a lost record"
+[[ "$(json "$XDG_STATE_HOME/fleet/applied.json" 'v.get("hermesSkills")')" == True ]] \
+    || fail "a hermes skills folder added before a lost record was read as the user's"
 server_put mcp.json '{"mcpServers": [
   {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
   {"name": "open", "url": "https://open.example/mcp"},

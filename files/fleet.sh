@@ -176,10 +176,18 @@ uninstall() {
         _stage "$staged" && python3 "$staged/fleet" __unrender && python3 "$staged/fleet" __unlink && ok=1
     fi
     if [[ -z "$ok" ]]; then
-        # fleet stays installed, so its nightly sync comes back.
+        # fleet stays installed: a sync puts back whatever the cleanup took
+        # before it failed, and its nightly sync comes back.
+        local again="$BIN" back=""
+        [[ -f "$again" || -z "$staged" ]] || again="$staged/fleet"
+        [[ -f "$again" ]] && python3 "$again" sync --pull >/dev/null 2>&1 && back=1
         [[ -n "$was_on" && -f "$cli" ]] && python3 "$cli" schedule enable >/dev/null 2>&1
         [[ -n "$staged" ]] && rm -rf "$staged"
-        echo "fleet: could not take back the rendered settings and links; nothing was removed, try again" >&2
+        if [[ -n "$back" ]]; then
+            echo "fleet: could not take back the rendered settings and links; fleet stays installed, try again" >&2
+        else
+            echo "fleet: could not take back the rendered settings and links, nor put them back; run fleet sync, then try again" >&2
+        fi
         return 1
     fi
     [[ -n "$staged" ]] && rm -rf "$staged"

@@ -2651,7 +2651,7 @@ def _hermes_entries(lines, start, end):
     return out
 
 
-def _hermes_skills(lines):
+def _hermes_skills(lines, warn=True):
     """Add ~/.agents/skills to skills.external_dirs, where hermes looks for
     skills beyond its bundled ones. True when fleet added it."""
     start, end = _yaml_block(lines, "skills")
@@ -2665,8 +2665,9 @@ def _hermes_skills(lines):
     indents = {len(l) - len(l.lstrip()) for l in lines[start + 1:end]
                if l.strip() and not l.lstrip().startswith("#")}
     if indents and min(indents) != 2:
-        eprint(f"  {HERMES_CONFIG}: skills is indented by {min(indents)} spaces, which fleet does "
-               "not edit; add ~/.agents/skills to skills.external_dirs by hand")
+        if warn:
+            eprint(f"  {HERMES_CONFIG}: skills is indented by {min(indents)} spaces, which fleet does "
+                   "not edit; add ~/.agents/skills to skills.external_dirs by hand")
         return False
     for k in range(start + 1, end):
         match = re.match(r"^  external_dirs:\s*(\[\s*\])?\s*$", lines[k])
@@ -2685,8 +2686,9 @@ def _hermes_skills(lines):
         lines.insert(j, f"{indent}- ~/.agents/skills")
         return True
     if any(re.match(r"^  external_dirs:", lines[k]) for k in range(start + 1, end)):
-        eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
-               "add ~/.agents/skills to it by hand")
+        if warn:
+            eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
+                   "add ~/.agents/skills to it by hand")
         return False
     lines[start + 1:start + 1] = ["  external_dirs:", "  - ~/.agents/skills"]
     return True
@@ -2985,6 +2987,9 @@ def _prospective_settings(previous, desired, allow, t3_models, present):
         for model in t3_models:
             if model["slug"] not in have and model["slug"] not in out["t3"]:
                 out["t3"][model["slug"]] = {k: v for k, v in model.items() if k != "effortsFrom"}
+    if present["hermes"] and HERMES_CONFIG.is_file():
+        out["hermesSkills"] = bool(previous.get("hermesSkills")) or _hermes_skills(
+            HERMES_CONFIG.read_text().split("\n"), warn=False)
     return out
 
 

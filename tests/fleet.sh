@@ -184,6 +184,8 @@ EOF
 rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
+# And a sync puts back what the cleanup took before it failed.
+grep -qx "sync --pull" "$FAKE/ran" || fail "a failed uninstall did not put back what it took"
 # An installed binary older than this module, without __unlink, hands the
 # cleanup to the current one.
 printf 'import sys\nsys.exit(2 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$FLEET_BIN"
