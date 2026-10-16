@@ -739,17 +739,24 @@ def _with_name(data, name):
 
 def _scan_folder(folder):
     """{path: [sha256, executable]} of every file under `folder`, a symlink as
-    None; None for a folder that is not a real folder."""
+    None and what cannot be read as "unreadable", which never matches what
+    pull wrote; None for a folder that is not a real folder."""
     if folder.is_symlink() or not folder.is_dir():
         return None
     found = {}
-    for base, dirs, names in os.walk(folder):
+
+    def unreadable(exc):
+        found[pathlib.Path(exc.filename).relative_to(folder).as_posix()] = "unreadable"
+    for base, dirs, names in os.walk(folder, onerror=unreadable):
         for name in dirs + names:
             path = pathlib.Path(base)/name
             if path.is_symlink():
                 found[path.relative_to(folder).as_posix()] = None
             elif name in names:
-                found[path.relative_to(folder).as_posix()] = _digest(path)
+                try:
+                    found[path.relative_to(folder).as_posix()] = _digest(path)
+                except OSError:
+                    found[path.relative_to(folder).as_posix()] = "unreadable"
     return found
 
 

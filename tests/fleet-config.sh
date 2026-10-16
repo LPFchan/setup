@@ -829,6 +829,15 @@ fleet sync --check >/dev/null 2>&1 && fail "an edited install read as current"
 fleet sync --pull >/dev/null 2>&1 || fail "pull over an edited install"
 [[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "edited install not put back"
 grep -rq edited "$XDG_STATE_HOME/fleet/backup" || fail "the edit was not backed up"
+# So is one left unreadable: a file, or a folder whose files cannot be listed.
+for locked in "$installed/run.sh" "$installed/sub"; do
+    [[ $locked == */sub ]] && mkdir "$locked"
+    chmod 000 "$locked"
+    fleet status 2>&1 | grep -q 'installed skills changed here.*foo' || fail "status missed an unreadable ${locked##*/}"
+    fleet sync --pull >/dev/null 2>&1 || fail "pull over an unreadable ${locked##*/}"
+    [[ "$(cat "$installed/run.sh")" == "echo v2" && ! -e "$installed/sub" ]] || fail "an unreadable ${locked##*/} was not put back"
+done
+chmod -R u+rwx "$XDG_STATE_HOME/fleet/backup"
 # Local names are unique; --as picks another, which SKILL.md then carries.
 fleet install bob/foo >/dev/null 2>&1 && fail "installed a second skill under a taken name"
 fleet install $OTHER --as bob-foo >/dev/null 2>&1 || fail "install by id with --as"
