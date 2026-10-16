@@ -35,6 +35,8 @@ if cmd == "refresh":
     sys.exit(0)
 if cmd == "context":
     if os.path.exists(f"{fake}/no-session"):
+        sys.exit(4)
+    if os.path.exists(f"{fake}/store-unreadable"):
         sys.exit(1)
     print(json.dumps({"origin": "https://auth.lost.plus", "subject": open(f"{fake}/subject").read()}))
     sys.exit(0)
@@ -337,9 +339,17 @@ rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
 [[ $rc == 3 ]] || fail "logged-out owner machine returned $rc"
 cmp -s "$settings" "$TMP/settings.before" || fail "rendered on a logged-out owner machine"
 [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" ]] || fail "settled the clone without a login"
+printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
+# A credential store Auth cannot read is not a logout: on a machine GitHub
+# does not list, nothing comes off and the clone stays.
+rm -f "$FAKE/no-session"; touch "$FAKE/store-unreadable"
+rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
+[[ $rc == 3 ]] || fail "an unreadable auth store returned $rc"
+cmp -s "$settings" "$TMP/settings.before" || fail "an unreadable auth store cleared the settings"
+[[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" ]] || fail "an unreadable auth store settled the clone"
+rm -f "$FAKE/store-unreadable"; touch "$FAKE/no-session"
 # Logged out on a machine GitHub definitely does not list: as if it pulled an
 # empty account, so what fleet wrote comes off, and the clone is settled.
-printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
 fleet sync --pull >/dev/null 2>&1 && fail "a sync without a session reported success"
 [[ "$(json "$settings" '"effortLevel" in v, v["myKey"]')" == "(False, 1)" ]] \
     || fail "the account's settings stayed on a logged-out friend machine: $(cat "$settings")"

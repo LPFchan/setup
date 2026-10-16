@@ -112,17 +112,28 @@ def _set_login_marker(needed):
         pass
 
 
-def _context():
-    """'<origin> <subject>' of the session, or None."""
+def _session():
+    """('in', '<origin> <subject>'), ('out', None) when Auth answers that this
+    machine has no usable login, or ('unknown', None) when it cannot say: no
+    auth CLI, an unreadable credential store, a timeout."""
+    if not _auth_bin():
+        return "unknown", None
     rc, context = _auth("context")
+    if rc == 4:
+        return "out", None
     try:
         value = json.loads(context) if rc == 0 else {}
         origin, subject = value["origin"], value["subject"]
     except (ValueError, TypeError, KeyError):
-        return None
+        return "unknown", None
     if not all(isinstance(v, str) and v and " " not in v for v in (origin, subject)):
-        return None
-    return f"{origin} {subject}"
+        return "unknown", None
+    return "in", f"{origin} {subject}"
+
+
+def _context():
+    """'<origin> <subject>' of the session, or None."""
+    return _session()[1]
 
 
 def _subject():
@@ -1162,10 +1173,10 @@ def config_sync(direct):
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: account config: refusing a symlinked {AGENTS_DIR}")
         return 1
-    account = _context()
+    state, account = _session()
     try:
         if account is None:
-            if os.path.lexists(OLD_AGENTS_CLONE) and not_the_operators():
+            if state == "out" and os.path.lexists(OLD_AGENTS_CLONE) and not_the_operators():
                 settle_old_agents(operator=False)
             return 3
         settle_old_agents(operator=account.split(" ", 1)[1] == OPERATOR_SUBJECT)
@@ -2561,12 +2572,13 @@ def harness_render(force=False, clear=False):
         return _harness_apply(previous.get("account"), None, empty_tier(), [], [], previous, True, True)
     if not config_sync_enabled():
         return 0
-    account = _context()
+    state, account = _session()
     # With no session, a machine known not to be the operator's is rendered
     # as if it had pulled an empty account, so the operator's settings and
     # MCP entries the old client wrote come off. Without a session it gets
-    # no lost.plus servers either.
-    friend = account is None and not_the_operators()
+    # no lost.plus servers either. Only Auth saying there is no login counts:
+    # a store it cannot read leaves what is rendered alone.
+    friend = state == "out" and not_the_operators()
     if account is None and not friend:
         return 3
     origin, subject = account.split(" ", 1) if account else (None, None)

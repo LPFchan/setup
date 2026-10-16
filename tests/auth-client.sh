@@ -113,6 +113,16 @@ for changed, wanted_exit in (
         assert exc.exit_code == wanted_exit, exc.exit_code
     else:
         raise AssertionError("context reported an account it no longer speaks for")
+# No store at all is a definite logout (4); one that cannot be read is not (1).
+for write, wanted_exit in ((lambda: os.remove(store_path), 4),
+                           (lambda: open(store_path, "w").write("{broken"), 1)):
+    write()
+    try:
+        m["cmd_context"]()
+    except m["AuthError"] as exc:
+        assert exc.exit_code == wanted_exit, exc.exit_code
+    else:
+        raise AssertionError("context answered without a readable login")
 json.dump(current, open(store_path, "w"))
 os.chmod(store_path, 0o600)
 
