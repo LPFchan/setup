@@ -14,7 +14,8 @@ MODULE="fleet"
 BIN="${FLEET_BIN:-$HOME/.local/bin/fleet}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${FLEET_SOURCE:-$SOURCE_BASE/files/fleet}"
-MANIFEST="${FLEET_MANIFEST_TARGET:-$HOME/.config/fleet/manifest.json}"
+# Where fleet itself looks for it.
+MANIFEST="$HOME/.config/fleet/manifest.json"
 MANIFEST_SOURCE="${FLEET_MANIFEST_SOURCE:-$SOURCE_BASE/files/fleet-manifest.json}"
 HARNESSES_BIN="$HOME/.local/bin/harnesses"
 

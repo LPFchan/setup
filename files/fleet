@@ -2555,6 +2555,13 @@ def _yaml_block(lines, key):
 
 def _hermes_entries(lines, start, end):
     """[(name, first, stop)] of each entry in the mcp_servers block."""
+    # Entries indented otherwise would read as none, and ours would go in
+    # beside them at two spaces.
+    indents = {len(l) - len(l.lstrip()) for l in lines[start + 1:end]
+               if l.strip() and not l.lstrip().startswith("#")}
+    if indents and min(indents) != 2:
+        raise ConfigError(f"{HERMES_CONFIG}: mcp_servers entries are indented by {min(indents)} "
+                          f"spaces; fleet edits only two-space entries")
     heads = [k for k in range(start + 1, end) if re.match(r"^  [^\s#][^:]*:\s*$", lines[k])]
     out = []
     for n, k in enumerate(heads):
@@ -2647,6 +2654,12 @@ def render_hermes(servers, previous, retired, clear=False):
             if body == wanted[name]:
                 if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
+                continue
+            # An entry fleet never wrote is the user's, even at our URL: it
+            # can carry their own headers or OAuth settings.
+            if not _rendered_on(recorded.get(name), "hermes"):
+                print(f"  hermes: {name} is your own entry; leaving it alone")
+                found.add(name)
                 continue
             # Fleet's entry still names the URL fleet last wrote, when the
             # account has moved the server since.
@@ -2869,8 +2882,10 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 # put there, so the run that finds claude again (or an
                 # uninstall) still removes them.
                 wanted = {s["name"] for s in on("claude")}
+                # Seeded records carry only the URL, which removal also matches.
                 kept_mcp = {name: r for name, r in (previous.get("mcp") or {}).items()
-                            if r.get("claude") and name not in wanted}
+                            if (r.get("claude") or r.get("url")) and _rendered_on(r, "claude")
+                            and name not in wanted}
             if present["codex"]:
                 rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
                 rendered.add("codex")
@@ -3006,8 +3021,13 @@ def harness_takeover():
             eprint("fleet: could not take over the harnesses timer; run: fleet schedule")
             return 1
         if sys.platform == "darwin":
-            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.lost.plus.{HARNESSES_TIMER}"],
-                           capture_output=True)
+            target = f"gui/{os.getuid()}/com.lost.plus.{HARNESSES_TIMER}"
+            # bootout also fails on an agent that was never loaded; only one
+            # still loaded keeps its plist, so a later run retries.
+            if subprocess.run(["launchctl", "bootout", target], capture_output=True).returncode != 0 \
+                    and subprocess.run(["launchctl", "print", target], capture_output=True).returncode == 0:
+                eprint("fleet: could not unload the harnesses timer; run: fleet schedule")
+                return 1
             HARNESSES_PLIST.unlink(missing_ok=True)
         elif _run_schedule("uninstall-timer", "user", HARNESSES_TIMER) != 0:
             eprint("fleet: could not remove the harnesses timer")

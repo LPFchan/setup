@@ -137,7 +137,7 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 serve '{}' 4
 rm -f "$FLEET_SSH_DIR/id_ed25519.pub"
 export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet"
-export FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" FLEET_MANIFEST_TARGET="$HOME/.config/fleet/manifest.json"
+export FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json"
 module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }

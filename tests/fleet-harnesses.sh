@@ -457,6 +457,40 @@ server_put mcp.json '{"mcpServers": [
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass after the one-line hermes test"
+# Entries indented other than by two spaces are refused, not joined by ours.
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+printf 'model: x\nmcp_servers:\n    personal:\n        url: https://p.example/mcp\n' > "$HOME/.hermes/config.yaml"
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.wide"
+server_put mcp.json "$with_extra"
+fleet sync --pull > "$TMP/out" 2>&1 && fail "rendered into a four-space hermes mcp_servers: $(cat "$TMP/out")"
+cmp -s "$HOME/.hermes/config.yaml" "$TMP/hermes.wide" || fail "edited a four-space hermes mcp_servers"
+grep -q 'two-space' "$TMP/out" || fail "a four-space hermes mcp_servers went unreported"
+mv "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
+# The user's own entry at an account server's URL keeps its own fields, and
+# stays when the account drops the server.
+python3 - "$HOME/.hermes/config.yaml" <<'PY'
+import sys
+t = open(sys.argv[1]).read().replace("mcp_servers:\n", "mcp_servers:\n  cust:\n    url: https://c.example/mcp\n    headers:\n      X-Mine: y\n", 1)
+open(sys.argv[1], "w").write(t)
+PY
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "cust", "url": "https://c.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass with the user's own hermes entry"
+grep -q '^      X-Mine: y$' "$HOME/.hermes/config.yaml" || fail "hermes replaced the user's own entry at our URL"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping cust"
+grep -q '^  cust:$' "$HOME/.hermes/config.yaml" || fail "hermes removed the user's own entry"
+python3 - "$HOME/.hermes/config.yaml" <<'PY'
+import sys
+t = open(sys.argv[1]).read().replace("  cust:\n    url: https://c.example/mcp\n    headers:\n      X-Mine: y\n", "", 1)
+open(sys.argv[1], "w").write(t)
+PY
 
 # A server fleet added while claude was missing is not fleet's on claude: an
 # entry the user then adds there by hand stays when the server is dropped.
@@ -668,5 +702,21 @@ fleet __unrender >/dev/null 2>&1 || fail "unrender without hermes' config"
 mv "$TMP/hermes.away" "$hermes"
 grep -q tok-old "$HOME/.hermes/.env" && fail "tokens left in hermes .env without its config"
 grep -qx MINE=1 "$HOME/.hermes/.env" || fail "unrender took the user's hermes .env line"
+
+# A takeover while claude is away still owns what the old client registered,
+# so the pass that finds claude again removes what the account dropped.
+fleet __unrender >/dev/null 2>&1 || fail "unrender before the late-claude takeover"
+python3 - "$HOME/.claude.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); v["mcpServers"]["jina"] = {"type": "http", "url": "https://mcp.jina.ai/v1"}
+json.dump(v, open(sys.argv[1], "w"))
+PY
+mkdir -p "$HOME/.config/harnesses"; printf '{}\n' > "$HOME/.config/harnesses/manifest.json"
+mv "$BIN/claude" "$TMP/claude.away"
+fleet sync --pull >/dev/null 2>&1 || fail "takeover without claude"
+mv "$TMP/claude.away" "$BIN/claude"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back to a takeover"
+[[ "$(json "$HOME/.claude.json" '"jina" in v["mcpServers"]')" == False ]] \
+    || fail "a seeded server stayed after a takeover without claude"
 
 echo "fleet harness tests passed"
