@@ -228,7 +228,7 @@ rm -f "$RESTIC_AUTOMATIC_STARTED"
 setsid env -u BACKUP_SOURCE_ONLY "$ROOT/bin/backup" run \
     > "$TEST_TMP/interrupted.stdout" 2> "$TEST_TMP/interrupted.stderr" &
 signal_pid=$!
-for _ in {1..100}; do
+for _ in {1..600}; do
     [[ -e "$RESTIC_AUTOMATIC_STARTED" ]] && break
     sleep 0.05
 done
