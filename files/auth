@@ -481,9 +481,18 @@ def cmd_context():
         data = _load()
     if data is None or data.get("version") != 2:
         raise AuthError("no renewable setup login; run: auth login")
-    # A session Auth already invalidated (expired or revoked) no longer
-    # speaks for its account.
-    if data.get("session_state") == "invalid":
+    # A login from another Auth origin says nothing about this one.
+    if data.get("origin") != ORIGIN:
+        raise AuthError(
+            f"saved login belongs to {data.get('origin') or 'an unknown Auth origin'}; "
+            "restore LOST_AUTH_ORIGIN or run: auth login"
+        )
+    # An invalidated or expired session no longer speaks for its account.
+    session = data.get("session")
+    expires_at = session.get("expires_at") if isinstance(session, dict) else None
+    expired = (isinstance(expires_at, int) and not isinstance(expires_at, bool)
+               and expires_at <= int(time.time()))
+    if data.get("session_state") == "invalid" or expired:
         raise AuthError(
             "setup session is invalid, expired, or revoked; run: auth login",
             401,
