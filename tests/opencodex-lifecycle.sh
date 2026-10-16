@@ -201,6 +201,10 @@ printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claud
 printf '{' > "$HOME/.claude/settings.json"
 uninstall 2>/dev/null && fail "opencodex uninstall passed a route it could not remove"
 [[ -e "$BIN" && -e "$REGISTRY" ]] || fail "a failed route removal still tore down opencodex"
+# A gateway the user set in place of the proxy is not opencodex's to remove.
+printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
+python3 "$BIN" __unexport >/dev/null || fail "unexport with a user gateway"
+grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "unexport removed the user's own base URL"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
 # Even from a launcher that lost its executable bit.
 chmod -x "$BIN"
