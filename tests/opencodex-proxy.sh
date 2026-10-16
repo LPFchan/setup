@@ -144,5 +144,15 @@ if python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
     fail "proxy overwrote unparseable settings"
 fi
 [[ $(<"$HOME/.claude/settings.json") == '{broken' ]] || fail "unparseable settings were rewritten"
+# Removing the route reads them before touching the legacy exports, so a
+# refusal leaves service-started claude its route.
+touch "$HOME/proxy-down" "$HOME/.config/environment.d/10-harnesses-anthropic.conf"
+: > "$HOME/systemctl.log"
+if python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
+    fail "proxy removed the route past unparseable settings"
+fi
+[[ -e "$HOME/.config/environment.d/10-harnesses-anthropic.conf" ]] \
+    || fail "a refused removal took the legacy environment.d export"
+! grep -q 'unset-environment' "$HOME/systemctl.log" || fail "a refused removal unset the systemd user export"
 
 echo "opencodex proxy tests passed"

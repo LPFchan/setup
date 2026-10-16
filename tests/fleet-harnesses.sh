@@ -106,7 +106,12 @@ try:
 except OSError:
     data = {}
 servers = data.setdefault("mcpServers", {})
+local_path = os.environ["FAKE"] + "/claude-local.json"
+local = json.load(open(local_path)) if os.path.exists(local_path) else {}
 if args[:2] == ["mcp", "get"]:
+    if args[2] in local:
+        print(f"{args[2]}:\n  Scope: Local config (private to you in this project)")
+        sys.exit(0)
     if args[2] in servers:
         print(f"{args[2]}:\n  Scope: User config (available in all your projects)")
         sys.exit(0)
@@ -121,7 +126,11 @@ elif args[:2] == ["mcp", "remove"]:
     if os.path.exists(os.environ["FAKE"] + "/claude-remove-fail"):
         print("could not write the config", file=sys.stderr)
         sys.exit(1)
-    servers.pop(args[2], None)
+    if args[3:5] != ["-s", "user"] and args[2] in local:
+        del local[args[2]]
+        json.dump(local, open(local_path, "w"))
+    else:
+        servers.pop(args[2], None)
 else:
     sys.exit(2)
 json.dump(data, open(path, "w"))
@@ -415,6 +424,25 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass without claude"
 mv "$TMP/claude.away" "$BIN/claude"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a server dropped while claude was missing stayed"
+
+# A retired name goes from the user scope, where the old harness wrote it,
+# and is left alone at the user's other scopes.
+printf '{"obsidian-direct": {"type": "http", "url": "https://mine.example/obs"}}' > "$FAKE/claude-local.json"
+python3 - "$HOME/.claude.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); v["mcpServers"]["vaultwarden-secrets"] = {"type": "http", "url": "https://vault.example/mcp"}
+json.dump(v, open(sys.argv[1], "w"))
+PY
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass with retired names"
+[[ "$(json "$HOME/.claude.json" '"vaultwarden-secrets" in v["mcpServers"]')" == False ]] || fail "a retired user-scope server stayed"
+[[ "$(json "$FAKE/claude-local.json" '"obsidian-direct" in v')" == True ]] || fail "removed the user's local server with a retired name"
+rm "$FAKE/claude-local.json"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra after the retired names"
 
 # A server the account moves to another URL moves on every harness.
 server_put mcp.json '{"mcpServers": [
@@ -958,6 +986,25 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a setting a stopped ren
 [[ "$(json "$settings" '"effortLevel" in v')" == False ]] || fail "a setting a stopped render changed was left when dropped"
 server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass putting the setting back"
+# One changed by a render that stops after claude stays fleet's at its new
+# value.
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "low"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_crash", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+def boom(*args): raise OSError("disk gone")
+fleet.render_hermes = boom
+sys.argv = ["fleet", "sync", "--pull"]
+sys.exit(fleet.main())' "$ROOT/files/fleet" </dev/null >/dev/null 2>&1 && fail "a run stopped after claude rendered as done"
+[[ "$(json "$settings" 'v["effortLevel"]')" == low ]] || fail "the stopped run did not write the new value"
+server_put settings/claude.json '{"json": {"theme": "dark"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a setting a render stopped after changing"
+[[ "$(json "$settings" '"effortLevel" in v')" == False ]] || fail "a setting a render stopped after changing was left when dropped"
+[[ "$(json "$XDG_STATE_HOME/fleet/applied.json" '"claudeAfter" in v')" == False ]] || fail "a completed render kept the pending values"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass putting the setting back again"
 # A server Auth has no credential for is left out, and an ordinary sync
 # brings it back once there is one.
 grep -q '^\[mcp_servers.heatmap\]' "$codex" && fail "a server with no credential was rendered"

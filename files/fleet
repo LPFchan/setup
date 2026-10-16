@@ -2184,9 +2184,12 @@ def render_claude(desired, allow, previous, command):
     before = json.dumps(current, sort_keys=True)
     wanted = _leaves(desired)
     recorded_leaves = previous.get("claude") or {}
+    # A run stopped after writing a leaf's new value left that value instead.
+    after = previous.get("claudeAfter") or {}
     for key, value in recorded_leaves.items():
         path = json.loads(key)
-        if key not in wanted and _get_path(current, path) == value:
+        if key not in wanted and (_get_path(current, path) == value
+                                  or (key in after and _get_path(current, path) == after[key])):
             _drop_path(current, path)
     # A leaf the user already had at this value stays theirs: left out of
     # the record, it is never taken off.
@@ -2294,10 +2297,12 @@ def render_claude_mcp(claude, servers, previous, retired):
     back) the file is edited."""
     ok, kept, found, failed, was = True, {}, set(), set(), {}
     for name in sorted(retired):
-        if _claude_mcp_scope(claude, name) is not None:
+        # The old harness wrote these at user scope; one at another scope is
+        # the user's own.
+        if _claude_user_entry(name) is not None:
             print(f"  unregistering retired MCP server {name}")
-            # No -s: the CLI then removes it from whichever scope holds it.
-            ok = _claude_remove([claude, "mcp", "remove", name]) and ok
+            ok = (_claude_remove([claude, "mcp", "remove", name, "-s", "user"]) if claude
+                  else _claude_json_remove(name)) and ok
     for name, record in (previous.get("mcp") or {}).items():
         if name in servers or name in retired or "claude" in (record.get("users") or []):
             continue
@@ -2985,14 +2990,18 @@ def _prospective_settings(previous, desired, allow, t3_models, present):
         return value
     out = {}
     if present["claude"]:
-        # A leaf fleet already owns keeps its old value until the write: a
-        # run stopped before it leaves that value in place. A leaf the user
-        # already has at the wanted value is not fleet's.
+        # A leaf fleet already owns keeps its old value, and its new one is
+        # kept beside it: a run stopped before the write leaves the old value
+        # in place, one stopped after it the new. A leaf the user already has
+        # at the wanted value is not fleet's.
         current = load_json(CLAUDE_SETTINGS)
         recorded_leaves = previous.get("claude") or {}
+        leaves = _leaves(desired)
         out["claude"] = {**recorded_leaves, **{
-            k: v for k, v in _leaves(desired).items()
+            k: v for k, v in leaves.items()
             if k not in recorded_leaves and _get_path(current, json.loads(k)) != v}}
+        out["claudeAfter"] = {**(previous.get("claudeAfter") or {}), **{
+            k: v for k, v in leaves.items() if k in recorded_leaves and recorded_leaves[k] != v}}
         existing = dig(current, "permissions", "allow")
         existing = existing if isinstance(existing, list) else []
         recorded = previous.get("allow") or []

@@ -2544,8 +2544,8 @@ def remove_base_url_export() -> None:
         # Checked before anything changes, so a refusal leaves the route whole.
         text = ZSHENV.read_text() if ZSHENV.exists() else ""
         block = _base_url_block(text)
-        _remove_legacy_service_env()
         settings = _claude_settings()
+        _remove_legacy_service_env()
         env = settings.get("env")
         # Only the loopback proxy URL is ours; a gateway the user set stays.
         if isinstance(env, dict) and re.fullmatch(
