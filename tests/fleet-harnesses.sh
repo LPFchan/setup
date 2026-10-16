@@ -112,6 +112,9 @@ if args[:2] == ["mcp", "get"]:
     print(f"No MCP server named {args[2]} found.")
     sys.exit(1)
 if args[:2] == ["mcp", "add-json"]:
+    if os.path.exists(os.environ["FAKE"] + "/claude-add-fail"):
+        print("could not write the config", file=sys.stderr)
+        sys.exit(1)
     servers[args[4]] = json.loads(args[5])
 elif args[:2] == ["mcp", "remove"]:
     servers.pop(args[2], None)
@@ -252,6 +255,29 @@ grep -q 'add-json\|remove' "$FAKE/claude.log" && fail "second pass touched claud
 grep -q 'wrote' "$TMP/out" && fail "second pass wrote: $(cat "$TMP/out")"
 fleet sync --check >/dev/null 2>&1 || fail "check after the pass"
 
+# A server claude failed to add is tried again on the next run.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "extra", "url": "https://extra.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+touch "$FAKE/claude-add-fail"
+fleet sync --pull >/dev/null 2>&1 && fail "a failed claude add went unreported"
+rm "$FAKE/claude-add-fail"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "the failing claude added a server"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "a failed claude add was not retried"
+
+# Node toolchains are tried newest version first, v20 ahead of v9.
+mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
+first=$(HOME="$TMP/nvm" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_nvm", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+print(fleet._node_bin_dirs()[0])' "$ROOT/files/fleet")
+[[ "$first" == */v20.0.0/bin ]] || fail "node toolchains in the wrong order: $first"
+
 # What the account drops comes off; what the user added stays.
 server_put settings/claude.json '{"json": {"effortLevel": "high"}}'
 server_put mcp.json '{"mcpServers": [{"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"}]}'
@@ -330,7 +356,9 @@ out=$(fleet install kimi 2>&1) && fail "installed a retired harness"
 fleet install nope >/dev/null 2>&1 && fail "installed an unknown harness"
 
 # Uninstalling takes back what fleet rendered; the user's own entries stay.
-fleet __unrender >/dev/null 2>&1 || fail "unrender"
+# A broken manifest does not stop it: claude is found on PATH.
+printf '{' > "$TMP/broken-manifest.json"
+FLEET_MANIFEST="$TMP/broken-manifest.json" fleet __unrender > "$TMP/unrender.out" 2>&1 || fail "unrender: $(cat "$TMP/unrender.out")"
 servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
 [[ "$servers" == "['personal']" ]] || fail "claude MCP after unrender: $servers"
 grep -q "fleet" "$HOME/.claude.json" && fail "a claude entry still calls fleet"
