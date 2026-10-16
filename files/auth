@@ -88,6 +88,16 @@ def _machine_key():
         SSH_KEY.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if _output(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(SSH_KEY)]) is None:
             return ""
+    if not public.exists():
+        # Only the private half is left: derive the public one from it. A
+        # passphrase-protected key fails here rather than prompting.
+        derived = _output(["ssh-keygen", "-y", "-P", "", "-f", str(SSH_KEY)])
+        if not derived:
+            return ""
+        try:
+            public.write_text(derived + "\n")
+        except OSError:
+            return " ".join(derived.split()[:2])
     try:
         return " ".join(public.read_text().split()[:2])
     except OSError:

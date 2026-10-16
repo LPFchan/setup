@@ -15,6 +15,10 @@ key = report["key"].split(" ")
 assert key[0] == "ssh-ed25519" and len(key) == 2, report
 assert os.path.exists(os.environ["LOST_AUTH_SSH_KEY"])
 assert m["_machine_report"]()["key"] == report["key"]
+# A private key whose public half went missing still reports the same key.
+os.unlink(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
+assert m["_machine_report"]()["key"] == report["key"]
+assert os.path.exists(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
 assert report["hostname"] and "." not in report["hostname"]
 assert isinstance(report["needs_term"], bool)
 PY
