@@ -2859,6 +2859,15 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             eprint("fleet: the login changed during the sync; run: fleet sync")
             return 3
         absent = {n for n in skipped if servers[n].get("credentialSource") in ("common-auth", "passage")}
+        # What this run adds is fleet's only once its record saves, or the
+        # next run reads it as the user's and never takes it off. So the
+        # record must save before any harness file changes; marked unrendered,
+        # a run stopped partway renders again.
+        try:
+            _save_json(APPLIED, dict(previous, hash=None))
+        except OSError as exc:
+            eprint(f"fleet: harness settings: {exc}")
+            return 1
         for name in skipped:
             servers.pop(name)
         rc = 1 if missing else rc

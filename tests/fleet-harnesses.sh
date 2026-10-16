@@ -265,6 +265,27 @@ fleet sync --check >/dev/null 2>&1 && fail "check missed a harness gone since th
 mv "$TMP/hermes.away" "$HOME/.hermes/config.yaml"
 fleet sync --check >/dev/null 2>&1 || fail "check after the harness came back"
 
+# A record that cannot be saved stops the pass before any harness changes.
+mkdir -p "$TMP/nosave"
+cat > "$TMP/nosave/sitecustomize.py" <<'PY'
+import os
+real = os.replace
+def replace(src, dst, *a, **k):
+    if str(dst).endswith("applied.json"):
+        raise OSError(28, "No space left on device", str(dst))
+    return real(src, dst, *a, **k)
+os.replace = replace
+PY
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "extra", "url": "https://extra.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+rc=0; PYTHONPATH="$TMP/nosave" fleet sync --pull > "$TMP/out" 2>&1 || rc=$?
+[[ $rc != 0 ]] || fail "a pass that cannot save its record succeeded"
+grep -q extra "$HOME/.claude.json" "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml" \
+    && fail "rendered a server without a saved record"
+
 # A server claude failed to add is tried again on the next run.
 server_put mcp.json '{"mcpServers": [
   {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
