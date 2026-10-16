@@ -38,6 +38,8 @@ body = json.load(sys.stdin) if sys.argv[4:] == ["-"] else None
 open(f"{fake}/log", "a").write(f"{method} {path}\n")
 if os.path.exists(f"{fake}/down"):
     sys.exit(1)
+if path == "/api/fleet/config/fetch" and os.path.exists(f"{fake}/fetch-down"):
+    sys.exit(1)
 state = load()
 if path == "/api/fleet":
     answer(200, {"version": "v", "self": {"served": True}, "keys": ["ssh-ed25519 AAAASelf"], "hosts": []})
@@ -54,6 +56,12 @@ if path == "/api/fleet/config/fetch":
                  "remaining": [p for p in paths if p in state["files"] and p not in first],
                  "missing": [p for p in paths if p not in state["files"]]})
 if path == "/api/fleet/config/push":
+    if os.path.exists(f"{fake}/switch"):
+        # The machine signed in to another account after its pull.
+        os.remove(f"{fake}/switch")
+        open(f"{fake}/subject", "w").write("9")
+    if body.get("subject") != open(f"{fake}/subject").read():
+        answer(409, {"error": "account changed"})
     if os.path.exists(f"{fake}/limited"):
         answer(429, {"error": "too many pushes", "retry_after": 600})
     if os.path.exists(f"{fake}/race"):
@@ -95,6 +103,16 @@ state["counter"] += 1; state["version"] += 1
 json.dump(state, open(f, "w"))
 PY
 }
+server_del() {
+    python3 - "$1" <<'PY'
+import json, os, sys
+f = f"{os.environ['FAKE']}/server.json"
+state = json.load(open(f))
+state["files"].pop(sys.argv[1])
+state["counter"] += 1; state["version"] += 1
+json.dump(state, open(f, "w"))
+PY
+}
 server_has() {
     python3 - "$1" <<'PY'
 import base64, json, os, sys
@@ -127,6 +145,12 @@ fleet sync --check >/dev/null 2>&1 || fail "pending onboarding reads as outdated
 
 # Onboarding uploads ~/.agents plus the harness folders' own skills and
 # instructions, moves the originals to the backup, and links them back.
+touch "$FAKE/limited"
+fleet onboard >/dev/null 2>&1 && fail "onboard read a refused upload as success"
+rm "$FAKE/limited"
+[[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" ]] \
+    || fail "a refused onboarding moved the harness skills"
+[[ -d "$HOME/.codex/skills/both" ]] || fail "a refused onboarding moved codex's skills"
 fleet onboard >/dev/null 2>&1 || fail "onboard"
 [[ "$(server_has AGENTS.md)" == "my instructions" ]] || fail "AGENTS.md not taken from CLAUDE.md"
 [[ "$(server_has skills/claude-only/SKILL.md)" == "claude skill" ]] || fail "claude skill not uploaded"
@@ -150,6 +174,27 @@ fleet status | grep -q '1 local changes wait' || fail "status missed the local e
 fleet sync >/dev/null 2>&1 || fail "direct sync"
 [[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "direct sync did not upload"
 cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record"
+
+# Signing in to another account between pull and push uploads nothing.
+printf 'meant for 7\n' > "$HOME/.agents/skills/mine/SKILL.md"
+touch "$FAKE/switch"
+fleet sync >"$TMP/out" 2>&1 && fail "pushed after the account changed"
+grep -q 'session changed' "$TMP/out" || fail "account change not reported: $(cat "$TMP/out")"
+[[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "a push landed for the wrong account"
+printf '7' > "$FAKE/subject"
+printf 'edited\n' > "$HOME/.agents/skills/mine/SKILL.md"
+
+# A skill link that displaced a real folder puts it back when the skill
+# leaves the account.
+mkdir -p "$HOME/.claude/skills/shadow"; printf 'hand-made\n' > "$HOME/.claude/skills/shadow/SKILL.md"
+server_put skills/shadow/SKILL.md 'account shadow'
+fleet sync --pull >/dev/null 2>&1 || fail "pull with a displaced skill"
+[[ -L "$HOME/.claude/skills/shadow" ]] || fail "shadow skill not linked"
+server_del skills/shadow/SKILL.md
+fleet sync --pull >/dev/null 2>&1 || fail "pull removing a skill"
+[[ ! -L "$HOME/.claude/skills/shadow" && "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] \
+    || fail "pruning did not restore the displaced skill"
+rm -rf "$HOME/.claude/skills/shadow"
 
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'
@@ -214,8 +259,14 @@ HOME="$SECOND" XDG_STATE_HOME="$TMP/state2" fleet sync >/dev/null 2>&1 || fail "
 [[ ! -e "$SECOND/.claude/skills/stray" || -L "$SECOND/.claude/skills/stray" ]] || fail "stray skill folder kept"
 [[ -L "$SECOND/.claude/skills/mine" ]] || fail "join did not link skills"
 
-# Another account on the same machine: its ~/.agents goes to the backup first.
+# Another account on the same machine: its ~/.agents goes to the backup, but
+# only once the new account's copy is fetched.
 printf '9' > "$FAKE/subject"
+touch "$FAKE/fetch-down"
+rc=0; fleet sync >/dev/null 2>&1 || rc=$?
+[[ $rc == 3 ]] || fail "failed fetch exited $rc"
+[[ -e "$HOME/.agents/skills/mine" && -L "$HOME/.claude/skills/mine" ]] || fail "a failed fetch moved the old account's files"
+rm "$FAKE/fetch-down"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 fleet sync >/dev/null 2>&1 || fail "sync as another account"
 [[ ! -e "$HOME/.agents/skills/mine" ]] || fail "another account's files kept"

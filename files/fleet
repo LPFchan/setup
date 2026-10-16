@@ -724,6 +724,12 @@ def _apply_changes(take, remove, contents, server, backup):
         _write_file(rel, contents[rel], server[rel][1])
 
 
+def _move_foreign(backup):
+    backup.move(AGENTS_DIR, "agents-other-account")
+    CONFIG_STATE.unlink(missing_ok=True)
+    _report(f"moved another account's ~/.agents to {backup.root}")
+
+
 def pull(account):
     """Bring ~/.agents/ in step with the account. Returns ('synced', record,
     conflicts) or ('pending', None, []) when the account was never pushed."""
@@ -734,13 +740,14 @@ def pull(account):
         state = _load_json(CONFIG_STATE, {})
         record = state if state.get("account") == account else None
         backup = Backup()
-        if state and record is None and AGENTS_DIR.exists():
-            # Another account's files: they are not this account's to push.
-            backup.move(AGENTS_DIR, "agents-other-account")
-            CONFIG_STATE.unlink(missing_ok=True)
-            _report(f"moved another account's ~/.agents to {backup.root}")
-        local, _ = scan_local()
+        # Another account's files: they are not this account's to push. They
+        # move aside only once this account's copy is in hand, so a failed
+        # fetch leaves the old copy, and its links, working.
+        foreign = bool(state) and record is None and AGENTS_DIR.exists()
+        local = {} if foreign else scan_local()[0]
         if record is None and counter == 0:
+            if foreign:
+                _move_foreign(backup)
             ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
             ONBOARDING_MARKER.touch()
             return "pending", None, []
@@ -763,6 +770,8 @@ def pull(account):
             contents = fetch_contents(take, counter, server)
         except Changed:
             continue
+        if foreign:
+            _move_foreign(backup)
         _apply_changes(take, remove, contents, server, backup)
         if record is None:
             _move_harness_skills(backup)
@@ -790,11 +799,18 @@ def _check_json_objects(paths):
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
     _check_json_objects(puts)
-    body = {"base": record["counter"],
+    # Two accounts can share a counter, so Auth also checks the push is for
+    # the account this machine pulled, not one signed in to since.
+    body = {"base": record["counter"], "subject": record["account"].split(" ", 1)[1],
             "put": [{"path": rel, "content": base64.b64encode((AGENTS_DIR/rel).read_bytes()).decode(),
                      "executable": local[rel][1]} for rel in sorted(puts)],
             "delete": sorted(deletes)}
-    value = _request("POST", "/api/fleet/config/push", body)
+    try:
+        value = _request("POST", "/api/fleet/config/push", body)
+    except HttpError as exc:
+        if exc.status == 409 and str(exc) == "account changed":
+            raise ConfigError("the session changed during the sync") from None
+        raise
     files = dict(record.get("files") or {})
     for rel in puts:
         files[rel] = local[rel]
@@ -882,7 +898,9 @@ def refresh_links():
             for entry in SKILL_LINK_DIR.iterdir():
                 if _points_into(entry, skills) and entry.name not in names:
                     entry.unlink()
-                    links.pop(str(entry), None)
+                    moved = links.pop(str(entry), None)
+                    if moved and os.path.lexists(moved):
+                        shutil.move(moved, entry)
     for target in OLD_AGENTS_LINKS:
         if _points_into(target, AGENTS_DIR):
             target.unlink()
@@ -948,7 +966,6 @@ def onboard(account):
                     listed.append(str(folder))
             else:
                 shutil.copytree(folder, mine, symlinks=True)
-    _move_harness_skills(backup)
     if listed:
         _report("these differ from what was uploaded and were left out: " + ", ".join(listed))
     local, symlinks = scan_local()
@@ -964,6 +981,8 @@ def onboard(account):
     _save_json(CONFIG_STATE, record)
     ONBOARDING_MARKER.unlink(missing_ok=True)
     print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
+    # Only now: a refused upload leaves the harness skill folders in use.
+    _move_harness_skills(backup)
     refresh_links()
 
 
