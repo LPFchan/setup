@@ -593,12 +593,13 @@ swap_retired_modules() {
             failures=$((failures + 1))
             continue
         fi
-        if ! module_is_installed "$successor" "$target" "$mode"; then
-            if ! SETUP_SWAP_FROM="$old" install_one "$successor" "$target" "$mode" "$source"; then
-                echo "Warning: $successor install failed; keeping $old for now." >&2
-                failures=$((failures + 1))
-                continue
-            fi
+        # Install even when the successor already looks installed: a half-done
+        # earlier attempt can leave its state entry behind, and only a whole
+        # install that succeeded may retire the old module.
+        if ! SETUP_SWAP_FROM="$old" install_one "$successor" "$target" "$mode" "$source"; then
+            echo "Warning: $successor install failed; keeping $old for now." >&2
+            failures=$((failures + 1))
+            continue
         fi
         remove_script_state "$old"
         echo "$old is replaced by $successor."

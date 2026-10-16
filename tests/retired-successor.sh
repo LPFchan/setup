@@ -60,6 +60,11 @@ printf 'old\tx\t1\t1\n' > "$STATE_DIR/script-state.tsv"
 touch "$TEST_TMP/broken"; : > "$LOG"
 swap_retired_modules >/dev/null 2>&1 && fail "swap reported success after a failed install"
 state_has old || fail "a failed install dropped the old state entry"
+# A failed install that left the successor's state entry behind is retried,
+# not taken as done.
+printf 'next\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"
+swap_retired_modules >/dev/null 2>&1 && fail "swap took a half-installed successor as done"
+state_has old || fail "a half-installed successor dropped the old state entry"
 [[ "$(head -1 "$LOG")" == "dep install"* ]] || fail "dependency not installed first: $(cat "$LOG")"
 rm "$TEST_TMP/broken"; : > "$LOG"
 swap_retired_modules >/dev/null 2>&1 || fail "swap"
