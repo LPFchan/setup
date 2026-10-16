@@ -21,7 +21,9 @@ _stage() {
         fetch_source_url "$BIN_SOURCE" -o "$destination"
     else
         curl -fsSL "$BIN_SOURCE" -o "$destination"
-    fi
+    fi || return 1
+    # An empty file parses too.
+    [[ -s "$destination" ]] || return 1
     chmod +x "$destination"
     python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$destination"
 }
@@ -121,7 +123,13 @@ uninstall() {
         _stage "$staged" && cli="$staged"
     fi
     [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
-    [[ -f "$cli" ]] && python3 "$cli" __unlink
+    # Only the CLI knows which links and backups are fleet's, so without it
+    # nothing else goes either.
+    if [[ ! -f "$cli" ]] || ! python3 "$cli" __unlink; then
+        [[ -n "$staged" ]] && rm -f "$staged"
+        echo "fleet: could not take back the agent links; nothing was removed, try again" >&2
+        return 1
+    fi
     [[ -n "$staged" ]] && rm -f "$staged"
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"

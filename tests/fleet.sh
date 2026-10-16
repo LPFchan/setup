@@ -160,5 +160,12 @@ rm -f "$FLEET_BIN" "$FAKE/ran"
 cp "$TMP/recorder" "$TMP/recorder.py"
 FLEET_SOURCE="$TMP/recorder.py" module uninstall >/dev/null 2>&1 || fail "uninstall without the binary"
 grep -qx __unlink "$FAKE/ran" || fail "uninstall skipped __unlink when the binary was gone"
+# Without a CLI that put the links back, uninstall keeps everything.
+module install >/dev/null 2>&1 || fail "reinstall"
+rm -f "$FLEET_BIN"
+FLEET_SOURCE="$TMP/missing" module uninstall >/dev/null 2>&1 && fail "uninstall went on without a CLI"
+printf 'import sys\nsys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)\n' > "$FLEET_BIN"
+module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+[[ -e "$FLEET_BIN" ]] || fail "a failed uninstall removed the binary"
 
 echo "fleet tests passed"
