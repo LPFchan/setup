@@ -657,6 +657,12 @@ class Backup:
     def move(self, path, label):
         """Move `path` (file, folder, or link) under `label` in the backup."""
         destination = self._dir()/label
+        # A folder replaced by a file can back up a descendant first; give the
+        # folder its own name rather than moving it inside that copy.
+        n = 1
+        while os.path.lexists(destination):
+            n += 1
+            destination = self._dir()/f"{label}.{n}"
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(path), str(destination))
         return destination
@@ -1767,6 +1773,10 @@ def hub_servers():
             continue
         key = row["key"]
         name = key[:-len(HUB_SUFFIX)] if key.endswith(HUB_SUFFIX) else key
+        # The same names an account may use: a harness config can hold them as is.
+        if not MCP_NAME.match(name):
+            _report(f"skipped the hub service {key!r}: not a usable MCP name")
+            continue
         server = {"name": name, "url": row["mcp_url"], "auth": "none"}
         if row["token_key"]:
             server.update(auth="bearer", credentialSource="common-auth", scope=row["token_key"])
@@ -2802,6 +2812,9 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 # Uninstalling leaves no nightly pass to restart it.
                 if clear and not restart_hermes():
                     rc = 1
+            elif clear and HERMES_ENV.exists():
+                # Its config gone, hermes still has the tokens fleet wrote.
+                _mirror_dotenv(HERMES_ENV, exports, retired_env)
             if present["kimi"]:
                 render_kimi()
         except OSError as exc:

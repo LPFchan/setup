@@ -321,6 +321,17 @@ fleet sync --pull >/dev/null 2>&1 && fail "a pull that could not write reported 
 chmod 700 "$HOME/.agents/skills/zz"; rm -rf "$HOME/.agents/skills/zz"
 server_del skills/zz/new.md
 fleet sync --pull >/dev/null 2>&1 || fail "pull after the blocked write went"
+# A folder the account turned into a file comes back whole too.
+server_put skills/mine/sub/x.md 'in the folder'
+fleet sync --pull >/dev/null 2>&1 || fail "pull of a nested file"
+mkdir -p "$HOME/.agents/skills/zz"; chmod 500 "$HOME/.agents/skills/zz"
+server_del skills/mine/sub/x.md; server_put skills/mine/sub 'now a file'; server_put skills/zz/new.md 'blocked'
+fleet sync --pull >/dev/null 2>&1 && fail "a blocked folder-to-file pull reported success"
+[[ "$(cat "$HOME/.agents/skills/mine/sub/x.md")" == "in the folder" && ! -e "$HOME/.agents/skills/mine/sub/sub" ]] \
+    || fail "a failed folder-to-file pull did not restore the folder: $(find "$HOME/.agents/skills/mine/sub")"
+chmod 700 "$HOME/.agents/skills/zz"; rm -rf "$HOME/.agents/skills/zz"
+server_del skills/zz/new.md; server_del skills/mine/sub
+fleet sync --pull >/dev/null 2>&1 || fail "pull after the folder-to-file test"
 
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'
