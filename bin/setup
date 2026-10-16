@@ -1454,9 +1454,42 @@ cmd_update() {
         failure_count=$((failure_count + 1))
         failure_names+=(swap)
     fi
+    # A dependency an installed module gained since it was installed comes in
+    # before anything is updated, so a module that re-enables itself below
+    # finds it; script modules included, which the loop only reports as new.
+    local -a dep_tried=()
+    local dependent dep dep_target dep_mode dep_source
+    while IFS=$'\t' read -r dependent target mode _ <&3; do
+        [[ -n "${dependent:-}" && "$dependent" != \#* ]] || continue
+        module_is_installed "$dependent" "$target" "$mode" || continue
+        for dep in ${(f)"$(resolve_install_order "$dependent" 2>/dev/null)"}; do
+            [[ "$dep" != "$dependent" ]] || continue
+            if (( ${#filters[@]} > 0 )) && ! _list_contains "$dependent" "${filters[@]}" \
+                && ! _list_contains "$dep" "${filters[@]}"; then
+                continue
+            fi
+            _list_contains "$dep" ${dep_tried[@]+"${dep_tried[@]}"} && continue
+            IFS=$'\t' read -r dep_target dep_mode dep_source < <(
+                awk -F '\t' -v m="$dep" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+            )
+            [[ -n "${dep_target:-}" ]] || continue
+            module_is_installed "$dep" "$dep_target" "$dep_mode" && continue
+            dep_tried+=("$dep")
+            echo "Installing $dep, required by $dependent"
+            if install_one "$dep" "$dep_target" "$dep_mode" "$dep_source"; then
+                dep_mark "$dep"
+            else
+                echo "Warning: $dep dependency install failed." >&2
+                failure_count=$((failure_count + 1))
+                failure_names+=("$dep")
+            fi
+        done
+    done 3< "$MANIFEST_FILE"
     manifest_input="$MANIFEST_FILE"
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
+        # Installed or reported by the dependency pass above.
+        _list_contains "$module" ${dep_tried[@]+"${dep_tried[@]}"} && continue
         if [[ ${#filters[@]} -gt 0 ]]; then
             local found=0
             for f in "${filters[@]}"; do
@@ -1520,23 +1553,8 @@ cmd_update() {
                 continue
             fi
             if [[ -z "$local_hash" ]]; then
-                # A dependency of something already installed is not a "new
-                # module available" — it is missing, so bring it in now.
-                local needed_by
-                needed_by=$(installed_dependents_of "$module" | tr '\n' ' ')
-                if [[ -n "${needed_by// /}" ]]; then
-                    echo "Installing $module, required by: ${needed_by% }"
-                    if install_one "$module" "$target" "$mode" "$source"; then
-                        dep_mark "$module"
-                    else
-                        echo "Warning: $module dependency install failed." >&2
-                        failure_count=$((failure_count + 1))
-                        failure_names+=("$module")
-                    fi
-                else
-                    new_count=$((new_count + 1))
-                    new_names+=("$module")
-                fi
+                new_count=$((new_count + 1))
+                new_names+=("$module")
             else
                 disk_hash_before=$(sha256 "$target_path" 2>/dev/null || true)
                 was_active=0

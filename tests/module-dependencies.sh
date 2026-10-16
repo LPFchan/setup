@@ -99,7 +99,7 @@ unfunction uname
 saved_manifest="$TMP/manifest.saved"
 cp "$MANIFEST_FILE" "$saved_manifest"
 printf '%b' 'schedule\t~/schedule\tscript\tx\nfleet\t~/fleet\tscript\tx\n' > "$MANIFEST_FILE"
-functions[saved_is_installed]=$functions[module_is_installed]
+functions[saved_is_installed]=${functions[module_is_installed]}
 module_is_installed() { return 0; }
 uname() { echo Linux; }
 [[ "$(installed_dependents_of schedule)" == fleet ]] || fail "schedule dependents on Linux: '$(installed_dependents_of schedule)'"
@@ -107,7 +107,32 @@ uname() { echo Linux; }
 uname() { echo Darwin; }
 [[ -z "$(installed_dependents_of schedule)" ]] || fail "schedule dependents on macOS: '$(installed_dependents_of schedule)'"
 unfunction uname
-functions[module_is_installed]=$functions[saved_is_installed]
+functions[module_is_installed]=${functions[saved_is_installed]}
+cp "$saved_manifest" "$MANIFEST_FILE"
+
+# --- update installs a dependency gained since install, first ---------
+# u (a plain file) now needs s (a script module). s comes in before u is
+# updated, so a u that re-enables itself finds s; s is not "new available".
+printf '%b' 'u\t~/u\t0755\tx\ns\t~/s\tscript\tx\nother\t~/other\tscript\tx\n' > "$MANIFEST_FILE"
+write_requires 'u\ts\n'
+rm -f "$HOME/s" "$HOME/u" "$SCRIPT_STATE_FILE" "$DEP_FILE"
+: > "$HOME/u"
+printf '%s\tH\n' "$HOME/u" > "$HASH_FILE"
+swap_retired_modules() { return 0; }
+script_status_fields() {
+    module_is_installed "$1" "$2" script && printf '%s\tcurrent\n' "$2" || printf '%s\tuninstalled\n' "$2"
+}
+: > "$TMP/installed"
+install_one() {
+    printf '%s ' "$1" >> "$TMP/installed"
+    [[ "$3" == script ]] && printf '%s\tx\n' "$1" >> "$SCRIPT_STATE_FILE"
+    return 0
+}
+out=$(cmd_update 2>&1) || fail "update failed: $out"
+[[ "$(<"$TMP/installed")" == "s u " ]] || fail "update sequence was '$(<"$TMP/installed")', expected 's u '"
+dep_is_marked s || fail "the dependency update installed was not marked"
+[[ "$out" == *"1 new module(s) available: other"* ]] || fail "update reported: $out"
+rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
 cp "$saved_manifest" "$MANIFEST_FILE"
 
 echo "module-dependencies: ok"

@@ -296,6 +296,26 @@ rm "$FAKE/claude-remove-fail"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a failed claude remove was not retried"
 
+# A server dropped while claude is missing stays fleet's, so the run that
+# finds claude again removes it.
+with_extra='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "extra", "url": "https://extra.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding extra back"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "extra was not added back"
+mv "$BIN/claude" "$TMP/claude.away"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass without claude"
+mv "$TMP/claude.away" "$BIN/claude"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a server dropped while claude was missing stayed"
+
 # Node toolchains are tried newest version first, v20 ahead of v9.
 mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
 first=$(HOME="$TMP/nvm" python3 -c '
@@ -305,6 +325,20 @@ fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.n
 loader.exec_module(fleet)
 print(fleet._node_bin_dirs()[0])' "$ROOT/files/fleet")
 [[ "$first" == */v20.0.0/bin ]] || fail "node toolchains in the wrong order: $first"
+
+# nvm's default goes first, through its alias chain, as a login shell picks it.
+mkdir -p "$TMP/nvm/.nvm/alias/lts" "$TMP/nvm/.nvm/versions/node/v9.2.0/bin"
+echo 'lts/*' > "$TMP/nvm/.nvm/alias/default"
+echo 'lts/old' > "$TMP/nvm/.nvm/alias/lts/*"
+echo '9' > "$TMP/nvm/.nvm/alias/lts/old"
+first=$(HOME="$TMP/nvm" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_nvm2", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+print(" ".join(d.split("/")[-2] for d in fleet._node_bin_dirs() if "/.nvm/" in d))' "$ROOT/files/fleet")
+[[ "$first" == "v9.11.2 v20.0.0 v9.2.0" ]] || fail "nvm's default was not first: $first"
+rm -rf "$TMP/nvm/.nvm/alias" "$TMP/nvm/.nvm/versions/node/v9.2.0"
 
 # A Passage outage before the first render keeps the token the environment holds.
 kept=$(HOME="$TMP/nvm" VAULT_MCP_TOKEN=from-env python3 -c '
