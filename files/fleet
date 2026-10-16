@@ -719,9 +719,15 @@ def _with_name(data, name):
     plain = (re.fullmatch(r"[A-Za-z][\w.-]*", name)
              and name.lower() not in {"y", "n", "yes", "no", "on", "off", "true", "false", "null"})
     line = b"name: " + (name if plain else json.dumps(name, ensure_ascii=False)).encode()
+    # The top-level key however YAML spells it, and an indented value
+    # continuing on the lines after it.
+    key = re.compile(rb"""(?:name|"name"|'name')[ \t]*:(?:[ \t]|\r?$)""")
     for i in range(1, end):
-        if lines[i].startswith(b"name:"):
-            lines[i] = line + (b"\r" if lines[i].endswith(b"\r") else b"")
+        if key.match(lines[i]):
+            stop = i + 1
+            while stop < end and lines[stop][:1] in (b" ", b"\t"):
+                stop += 1
+            lines[i:stop] = [line + (b"\r" if lines[i].endswith(b"\r") else b"")]
             break
     else:
         lines.insert(1, line)
