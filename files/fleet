@@ -1011,38 +1011,42 @@ def refresh_links():
     folder, adding new skills and pruning removed ones."""
     links = _load_json(LINKS_STATE, {})
     backup = Backup()
-    agents_md = AGENTS_DIR/"AGENTS.md"
-    if agents_md.is_file():
-        for target in AGENTS_LINKS:
-            if target == HOME/"AGENTS.md" or target.parent.is_dir():
-                _link(target, agents_md, links, backup)
-    else:
-        for target in AGENTS_LINKS:
-            _unlink_restoring(target, links)
-    skills = AGENTS_DIR/"skills"
-    names = {e.name for e in _skill_entries(skills)}
-    if SKILL_LINK_DIR.parent.is_dir():
-        for name in sorted(names):
-            _link(SKILL_LINK_DIR/name, skills/name, links, backup)
-        for entry in _skill_link_targets(links):
-            if entry.name not in names:
-                _unlink_restoring(entry, links)
-    # The old agents module's links go, and what they replaced comes back,
-    # also when the link was already deleted: fleet is the only one left to
-    # return it.
-    for target in OLD_AGENTS_LINKS:
-        if _points_into(target, AGENTS_DIR):
-            target.unlink()
-        _restore_old_backup(target)
-    for directory in OLD_SKILL_LINK_DIRS:
-        if directory.is_dir():
-            for entry in list(directory.iterdir()):
-                if _points_into(entry, skills):
-                    entry.unlink()
-                    _restore_old_backup(entry)
-                elif entry.name.endswith(".pre-agents.bak"):
-                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
-    _save_json(LINKS_STATE, links)
+    # Saved however far this gets: a retry finds what it already displaced
+    # linked and would not record it again.
+    try:
+        agents_md = AGENTS_DIR/"AGENTS.md"
+        if agents_md.is_file():
+            for target in AGENTS_LINKS:
+                if target == HOME/"AGENTS.md" or target.parent.is_dir():
+                    _link(target, agents_md, links, backup)
+        else:
+            for target in AGENTS_LINKS:
+                _unlink_restoring(target, links)
+        skills = AGENTS_DIR/"skills"
+        names = {e.name for e in _skill_entries(skills)}
+        if SKILL_LINK_DIR.parent.is_dir():
+            for name in sorted(names):
+                _link(SKILL_LINK_DIR/name, skills/name, links, backup)
+            for entry in _skill_link_targets(links):
+                if entry.name not in names:
+                    _unlink_restoring(entry, links)
+        # The old agents module's links go, and what they replaced comes back,
+        # also when the link was already deleted: fleet is the only one left to
+        # return it.
+        for target in OLD_AGENTS_LINKS:
+            if _points_into(target, AGENTS_DIR):
+                target.unlink()
+            _restore_old_backup(target)
+        for directory in OLD_SKILL_LINK_DIRS:
+            if directory.is_dir():
+                for entry in list(directory.iterdir()):
+                    if _points_into(entry, skills):
+                        entry.unlink()
+                        _restore_old_backup(entry)
+                    elif entry.name.endswith(".pre-agents.bak"):
+                        _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
+    finally:
+        _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
 
@@ -1894,7 +1898,8 @@ def _block_context():
 
 def resolve_tokens(servers, context, warnings):
     """(exports {VAR: value}, names to drop, servers left out for want of a
-    token). A failed lookup keeps the value already in the block unless Auth
+    token, servers whose lookup failed with nothing to fall back on: the
+    render fails, so the next sync looks again). A failed lookup keeps the value already in the block unless Auth
     said the credential is gone; a Passage item falls back further to the
     environment, which holds it before the first render writes the block."""
     existing = managed_exports()
@@ -1905,7 +1910,7 @@ def resolve_tokens(servers, context, warnings):
         drop.add("PASSAGE_MCP_TOKEN")
         for name in drop:
             existing.pop(name, None)
-    tokens, exports, skipped = {}, {}, set()
+    tokens, exports, skipped, missing = {}, {}, set(), set()
 
     def common(scope):
         if scope not in tokens:
@@ -1933,11 +1938,13 @@ def resolve_tokens(servers, context, warnings):
             value = None if exc.authoritative else existing.get(var) or (
                 os.environ.get(var) if source == "passage" else None)
             eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
+            if not value and not exc.authoritative:
+                missing.add(server["name"])
         value = mcp_token_value(value)
         if value:
             exports[var] = value
             drop.discard(var)
-    return exports, drop, skipped
+    return exports, drop, skipped, missing
 
 
 def _mirror_zshenv(exports, drop, context, retired):
@@ -1978,7 +1985,7 @@ def _dotenv_value(value):
     return value if re.fullmatch(r"[A-Za-z0-9_./:=+@,-]+", value) else "'" + value.replace("'", "'\\''") + "'"
 
 
-def _mirror_dotenv(path, exports, drop, retired):
+def _mirror_dotenv(path, exports, retired):
     """The same tokens as a NAME=value block, for a harness that reads a .env
     rather than the shell: codex and the hermes gateway, started by services
     that never read ~/.zshenv."""
@@ -1990,7 +1997,9 @@ def _mirror_dotenv(path, exports, drop, retired):
                       lambda _: block, original, flags=re.S)
     else:
         text = original.rstrip("\n") + ("\n\n" if original.strip() else "") + block
-    for name in (set(retired) | set(drop)) - set(exports):
+    # The block is rewritten from exports; outside it only what setup's old
+    # modules wrote comes off, never a line the user wrote for a dropped name.
+    for name in set(retired) - set(exports):
         text = re.sub(r"^%s=.*\n?" % re.escape(name), "", text, flags=re.M)
     if text == original:
         return False
@@ -2142,19 +2151,36 @@ def _claude_mcp_scope(claude, name):
     return ""
 
 
+def _claude_json():
+    return pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
+
+
 def _claude_user_entry(name):
     """The stored user-scope entry, from the file: `claude mcp get` does not
     print a headersHelper."""
-    path = pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
     try:
-        return (json.loads(path.read_text()).get("mcpServers") or {}).get(name)
+        return (json.loads(_claude_json().read_text()).get("mcpServers") or {}).get(name)
     except (OSError, ValueError, AttributeError):
         return None
 
 
+def _claude_json_remove(name):
+    """Without the claude CLI, drop a user-scope entry from the file itself:
+    its headersHelper would call a fleet being uninstalled."""
+    try:
+        data = json.loads(_claude_json().read_text())
+        del data["mcpServers"][name]
+        save_json_atomic(_claude_json(), data)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        eprint(f"fleet: could not remove MCP server {name} from {_claude_json()}: {exc}")
+        return False
+    return True
+
+
 def render_claude_mcp(claude, servers, previous, retired):
     """(ok, kept): kept holds the previous records of servers claude would not
-    remove, so the applied record keeps owning them and the next run retries."""
+    remove, so the applied record keeps owning them and the next run retries.
+    Without claude (only when taking settings back) the file is edited."""
     ok, kept = True, {}
     for name in sorted(retired):
         if _claude_mcp_scope(claude, name) is not None:
@@ -2168,7 +2194,8 @@ def render_claude_mcp(claude, servers, previous, retired):
         if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
                                         or (record.get("claude") and entry == record["claude"])):
             print(f"  unregistering MCP server {name}")
-            if not _claude_remove([claude, "mcp", "remove", name, "-s", "user"]):
+            if not (_claude_remove([claude, "mcp", "remove", name, "-s", "user"]) if claude
+                    else _claude_json_remove(name)):
                 ok, kept[name] = False, record
     for server in servers.values():
         want = _claude_mcp_entry(server)
@@ -2464,13 +2491,13 @@ def _hermes_entries(lines, start, end):
 
 def _hermes_skills(lines):
     """Add ~/.agents/skills to skills.external_dirs, where hermes looks for
-    skills beyond its bundled ones."""
+    skills beyond its bundled ones. True when fleet added it."""
     start, end = _yaml_block(lines, "skills")
     if start is None:
         if lines and lines[-1].strip():
             lines.append("")
         lines += ["skills:", "  external_dirs:", "  - ~/.agents/skills"]
-        return
+        return True
     for k in range(start + 1, end):
         match = re.match(r"^  external_dirs:\s*(\[\s*\])?\s*$", lines[k])
         if not match:
@@ -2482,20 +2509,41 @@ def _hermes_skills(lines):
         while j < end and re.match(r"^\s*- ", lines[j]):
             items.append(lines[j].split("- ", 1)[1].strip().strip("\"'"))
             j += 1
-        if not {"~/.agents/skills", str(AGENTS_DIR/"skills")} & set(items):
-            indent = re.match(r"^(\s*)- ", lines[k + 1]).group(1) if items else "  "
-            lines.insert(j, f"{indent}- ~/.agents/skills")
-        return
+        if {"~/.agents/skills", str(AGENTS_DIR/"skills")} & set(items):
+            return False
+        indent = re.match(r"^(\s*)- ", lines[k + 1]).group(1) if items else "  "
+        lines.insert(j, f"{indent}- ~/.agents/skills")
+        return True
     if any(re.match(r"^  external_dirs:", lines[k]) for k in range(start + 1, end)):
         eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
                "add ~/.agents/skills to it by hand")
-        return
+        return False
     lines[start + 1:start + 1] = ["  external_dirs:", "  - ~/.agents/skills"]
+    return True
 
 
-def render_hermes(servers, previous, retired):
+def _hermes_unskills(lines):
+    """Take back the skills folder fleet added, and the keys left empty."""
+    start, end = _yaml_block(lines, "skills")
+    if start is None:
+        return
+    for k in range(start + 1, end):
+        if re.match(r"^\s*- ['\"]?~/\.agents/skills['\"]?\s*$", lines[k]):
+            del lines[k]
+            break
+    start, end = _yaml_block(lines, "skills")
+    for k in range(start + 1, end):
+        if re.match(r"^  external_dirs:\s*$", lines[k]) and not (k + 1 < end and re.match(r"^\s*- ", lines[k + 1])):
+            del lines[k]
+            break
+    start, end = _yaml_block(lines, "skills")
+    if not any(line.strip() for line in lines[start + 1:end]):
+        del lines[start:end]
+
+
+def render_hermes(servers, previous, retired, clear=False):
     """hermes's config.yaml: our MCP entries and the skills folder. Returns
-    whether the file changed."""
+    whether the file changed, and whether the skills folder is fleet's."""
     original = HERMES_CONFIG.read_text()
     lines = original.split("\n")
     start, end = _yaml_block(lines, "mcp_servers")
@@ -2530,13 +2578,19 @@ def render_hermes(servers, previous, retired):
     while at > start + 1 and not lines[at - 1].strip():
         at -= 1
     lines[at:at] = [line for s in servers if s["name"] not in seen for line in wanted[s["name"]]]
-    _hermes_skills(lines)
+    skills = bool(previous.get("hermesSkills"))
+    if clear:
+        if skills:
+            _hermes_unskills(lines)
+        skills = False
+    else:
+        skills = _hermes_skills(lines) or skills
     text = "\n".join(lines)
     if text == original:
-        return False
+        return False, skills
     save_text_atomic(HERMES_CONFIG, text)
     print(f"  wrote {HERMES_CONFIG} ({len(servers)} hermes MCP server(s))")
-    return True
+    return True, skills
 
 
 def render_kimi():
@@ -2636,7 +2690,9 @@ def harness_render(force=False, clear=False):
     return _harness_apply(account, context, tier, warnings, hub, previous, force, False)
 
 
-def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
+def _harness_inputs(account, tier, hub, clear):
+    """(manifest, present, opencodex, servers, digest): what a render reads,
+    and its hash, which a render unchanged since the last one matches."""
     m = {} if clear else manifest()
     present = harnesses_present(clear)
     opencodex = not clear and os.access(OPENCODEX, os.X_OK)
@@ -2644,26 +2700,50 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
     # A later tier wins a name: manifest, local plugins, hub, the account.
     for server in [] if clear else [*m.get("mcpServers", []), *local_plugin_servers(), *hub, *tier["mcp"]]:
         servers[server["name"]] = server
+    if clear:
+        return m, present, opencodex, servers, None
+    block = managed_exports()
+    env_values = {mcp_env_var(s): os.environ.get(mcp_env_var(s)) or block.get(mcp_env_var(s), "")
+                  for s in servers.values() if s.get("credentialSource") == "env"}
+    digest = hashlib.sha256(json.dumps({
+        "account": account, "tier": tier, "manifest": m["_digest"], "servers": servers,
+        "env": env_values, "present": present, "opencodex": opencodex, "fleet": _self_path(),
+        "self": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+    }, sort_keys=True).encode()).hexdigest()
+    return m, present, opencodex, servers, digest
+
+
+def harness_outdated():
+    """Whether a sync would render the harnesses' settings (for setup's
+    status): a failed render, or inputs changed since the last one. A tier
+    the account changed shows in config_outdated instead."""
+    if not config_sync_enabled():
+        return False
+    account = _context()
+    if account is None:
+        return False
+    previous = _load_json(APPLIED, {})
+    if previous.get("account") != account or not isinstance(previous.get("tier"), dict):
+        return True
+    try:
+        digest = _harness_inputs(account, previous["tier"], hub_servers(), False)[4]
+    except ConfigError:
+        return False
+    return previous.get("hash") != digest
+
+
+def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
+    m, present, opencodex, servers, digest = _harness_inputs(account, tier, hub, clear)
     retired = set(m.get("retiredMcpServers") or []) - set(servers)
-    digest = None
-    if not clear:
-        block = managed_exports()
-        env_values = {mcp_env_var(s): os.environ.get(mcp_env_var(s)) or block.get(mcp_env_var(s), "")
-                      for s in servers.values() if s.get("credentialSource") == "env"}
-        digest = hashlib.sha256(json.dumps({
-            "account": account, "tier": tier, "manifest": m["_digest"], "servers": servers,
-            "env": env_values, "present": present, "opencodex": opencodex, "fleet": _self_path(),
-            "self": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
-        }, sort_keys=True).encode()).hexdigest()
-        if not force and previous.get("hash") == digest:
-            return 0
+    if not clear and not force and previous.get("hash") == digest:
+        return 0
     for warning in warnings:
         eprint(f"fleet: {warning}")
     command = _keepout_command() if tier["keepout"] else None
     rc = 0
     with _consumer_sync_lock():
         try:
-            exports, drop, skipped = ({}, set(), []) if clear else \
+            exports, drop, skipped, missing = ({}, set(), [], set()) if clear else \
                 resolve_tokens(list(servers.values()), context, warnings)
         except Changed:
             eprint("fleet: the login changed during the sync; run: fleet sync")
@@ -2675,6 +2755,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             return 3
         for name in skipped:
             servers.pop(name)
+        rc = 1 if missing else rc
         live = {mcp_env_var(s) for s in servers.values() if s["auth"] != "none"}
         drop |= {r["env"] for r in (previous.get("mcp") or {}).values() if r.get("env")} - live
         retired_env = set() if clear else _retired_env_vars() - live
@@ -2687,10 +2768,11 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             return [s for s in servers.values() if surface in mcp_surfaces(s)]
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
-                  "t3": previous.get("t3") or {}}
+                  "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False)}
         kept_mcp = {}
         try:
-            if present["claude"]:
+            # Taking settings back needs no claude: its files are edited.
+            if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
                 desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {},
                                      tier["claude"])
                 allow = list(tier["allow"])
@@ -2703,19 +2785,23 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
                 if CODEX_DIR.is_dir():
                     # codex loads ~/.codex/.env however it was started.
-                    _mirror_dotenv(CODEX_DIR/".env", exports, drop, retired_env)
+                    _mirror_dotenv(CODEX_DIR/".env", exports, retired_env)
                 rc = rc if render_codex_keepout(command) else 1
             if present["t3"]:
                 record["t3"] = render_t3(_t3_models(tier, opencodex), previous)
             if present["hermes"]:
-                changed = render_hermes(on("hermes"), previous, retired)
-                if _mirror_dotenv(HERMES_ENV, exports, drop, retired_env) or changed:
+                changed, record["hermesSkills"] = render_hermes(on("hermes"), previous, retired, clear)
+                if _mirror_dotenv(HERMES_ENV, exports, retired_env) or changed:
                     # A live hermes gateway restarts only on the nightly pass,
                     # never under an agent mid-turn.
                     HERMES_RESTART.parent.mkdir(parents=True, exist_ok=True)
                     HERMES_RESTART.touch()
-                    _report("hermes config changed; the nightly pass restarts its gateway "
-                            "(or now: fleet schedule run)")
+                    if not clear:
+                        _report("hermes config changed; the nightly pass restarts its gateway "
+                                "(or now: fleet schedule run)")
+                # Uninstalling leaves no nightly pass to restart it.
+                if clear and not restart_hermes():
+                    rc = 1
             if present["kimi"]:
                 render_kimi()
         except OSError as exc:
@@ -2887,7 +2973,8 @@ def cmd_sync(check=False, direct=True, force=False):
     else:
         if check:
             return 0 if (is_current(config_lines, keys_lines) and not config_outdated()
-                         and not (config_sync_enabled() and harnesses_left())) else 1
+                         and not (config_sync_enabled() and harnesses_left())
+                         and not harness_outdated()) else 1
         changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
         try:
             SSH_DIR.chmod(0o700)

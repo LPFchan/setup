@@ -406,31 +406,37 @@ enable_fleet_schedule() {
 }
 
 record_advisor_tooling() {
-    local operator fleet miniharness hermes tmp
+    local operator fleet hermes
     operator="${SUDO_USER:-${USER:-}}"
     [[ -n "$operator" && "$operator" != root ]] \
         || die "cannot determine the operator account; run this through sudo rather than as root directly"
     fleet=$(resolve_operator_tool "$operator" fleet) \
         || die "fleet is not on ${operator}'s PATH; the reboot advisor needs it (setup install fleet)"
-    if ! miniharness=$(resolve_operator_tool "$operator" miniharness); then
-        info "installing miniharness for ${operator} through fleet"
-        as_operator_login "$operator" "$fleet" install miniharness \
-            || die "fleet could not install miniharness, which the reboot advisor needs"
-        miniharness=$(resolve_operator_tool "$operator" miniharness) \
-            || die "miniharness is not on ${operator}'s PATH after fleet installed it"
-    fi
     hermes=$(resolve_operator_tool "$operator" hermes) \
         || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts (fleet install hermes)"
-    ADVISOR_OPERATOR=$operator ADVISOR_FLEET=$fleet
+    ADVISOR_OPERATOR=$operator ADVISOR_FLEET=$fleet ADVISOR_HERMES=$hermes
     atomic_write_text "$OPERATOR_FILE" 0644 "$operator"
-    tmp=$(mktemp "$STATE_DIR/.tooling.XXXXXXXX")
-    printf 'miniharness\t%s\nhermes\t%s\n' "$miniharness" "$hermes" > "$tmp"
-    chmod 0644 "$tmp"; chown "$(root_owner)" "$tmp"; mv -f "$tmp" "$TOOLING_FILE"
     # Sessions are written by miniharness as the operator, so this one directory
     # is operator-owned while the rest of the state dir stays root's.
     mkdir -p "$ADVISOR_SESSION_DIR"
     chmod 0700 "$ADVISOR_SESSION_DIR"
     [[ "$TEST_MODE" == 1 ]] || chown "$operator" "$ADVISOR_SESSION_DIR"
+}
+
+# The last step of enable, so nothing earlier that fails leaves a miniharness
+# behind, and a failed install rolls the enable back.
+install_advisor_tooling() {
+    local operator="$ADVISOR_OPERATOR" miniharness tmp
+    if ! miniharness=$(resolve_operator_tool "$operator" miniharness); then
+        info "installing miniharness for ${operator} through fleet"
+        as_operator_login "$operator" "$ADVISOR_FLEET" install miniharness \
+            || die "fleet could not install miniharness, which the reboot advisor needs"
+        miniharness=$(resolve_operator_tool "$operator" miniharness) \
+            || die "miniharness is not on ${operator}'s PATH after fleet installed it"
+    fi
+    tmp=$(mktemp "$STATE_DIR/.tooling.XXXXXXXX")
+    printf 'miniharness\t%s\nhermes\t%s\n' "$miniharness" "$ADVISOR_HERMES" > "$tmp"
+    chmod 0644 "$tmp"; chown "$(root_owner)" "$tmp"; mv -f "$tmp" "$TOOLING_FILE"
 }
 
 cmd_enable() {
@@ -502,6 +508,7 @@ cmd_enable() {
     disable_backend_native_timers "$backend" || return 1
     systemctl daemon-reload || return 1
     systemctl enable --now system-updates.timer system-updates-reboot.timer || return 1
+    install_advisor_tooling
     trap - EXIT
     rm -rf "$stage" "$transaction"
     # Last, so a failed enable leaves the operator's own timers as they were;

@@ -467,10 +467,18 @@ fleet sync >/dev/null 2>&1 || fail "rejoin again"
 mkdir -p "$HOME/.claude/skills/shadow"; printf 'hand-made\n' > "$HOME/.claude/skills/shadow/SKILL.md"
 server_put skills/shadow/SKILL.md 'account shadow'
 fleet sync --pull >/dev/null 2>&1 || fail "pull before uninstall"
+# A pass that displaces a file and then fails on a later link still records
+# the first, so the retry and the uninstall can put it back.
+rm -f "$HOME/.claude/CLAUDE.md"; printf 'mine, late\n' > "$HOME/.claude/CLAUDE.md"
+server_put skills/late/SKILL.md 'late'
+chmod 500 "$HOME/.claude/skills"
+fleet sync --pull >/dev/null 2>&1 && fail "a pass with an unwritable skill folder reported success"
+chmod 700 "$HOME/.claude/skills"
+fleet sync --pull >/dev/null 2>&1 || fail "pull after the skill folder came back"
 rm -rf "$HOME/.claude/skills"
 fleet __unlink
 [[ "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] || fail "uninstall stranded a displaced skill"
-[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine again" ]] || fail "CLAUDE.md not restored"
+[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine, late" ]] || fail "CLAUDE.md not restored"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link kept"
 
 echo "fleet config tests passed"
