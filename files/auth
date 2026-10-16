@@ -26,6 +26,8 @@ STORE = pathlib.Path(os.path.expanduser(os.environ.get(
 )))
 LOCK = STORE.with_name(STORE.name + ".lock")
 DEVICE_NAME = socket.gethostname()
+SSH_KEY = pathlib.Path(os.path.expanduser(os.environ.get("LOST_AUTH_SSH_KEY", "~/.ssh/id_ed25519")))
+TAILSCALE_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
 
 class AuthError(RuntimeError):
@@ -36,9 +38,11 @@ class AuthError(RuntimeError):
         self.exit_code = exit_code
 
 
-def _request(path, *, form=None, json_body=None, token=None):
+def _request(path, *, form=None, json_body=None, token=None, session=None, method=None):
     data = None
     headers = {"Accept": "application/json", "User-Agent": "setup-auth/1.0"}
+    if session:
+        headers["X-Setup-Session"] = session
     if form is not None:
         data = urllib.parse.urlencode(form).encode()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -49,7 +53,7 @@ def _request(path, *, form=None, json_body=None, token=None):
         headers["Origin"] = ORIGIN
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(ORIGIN + path, data=data, headers=headers)
+    request = urllib.request.Request(ORIGIN + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.loads(response.read())
@@ -67,6 +71,82 @@ def _request(path, *, form=None, json_body=None, token=None):
         raise AuthError(f"Auth returned invalid JSON: {exc}") from exc
     except OSError as exc:
         raise AuthError(f"cannot reach {ORIGIN}: {exc}", transient=True) from exc
+
+
+def _output(command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _machine_key():
+    """The machine's public key, generated the first time it is needed. Any
+    failure reports no key rather than failing the login or refresh."""
+    try:
+        return _read_machine_key()
+    except (OSError, ValueError):
+        return ""
+
+
+def _read_machine_key():
+    public = SSH_KEY.with_name(SSH_KEY.name + ".pub")
+    if not SSH_KEY.exists():
+        SSH_KEY.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if _output(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(SSH_KEY)]) is None:
+            return ""
+    if not public.exists():
+        # Only the private half is left: derive the public one from it. A
+        # passphrase-protected key fails here rather than prompting.
+        derived = _output(["ssh-keygen", "-y", "-P", "", "-f", str(SSH_KEY)])
+        if not derived:
+            return ""
+        try:
+            public.write_text(derived + "\n")
+        except OSError:
+            return " ".join(derived.split()[:2])
+    try:
+        return " ".join(public.read_text().split()[:2])
+    except OSError:
+        return ""
+
+
+def _short_hostname():
+    # On macOS `hostname -s` follows the router's DNS, so ask the system.
+    if sys.platform == "darwin":
+        name = _output(["scutil", "--get", "HostName"]) or _output(["scutil", "--get", "LocalHostName"])
+        if name:
+            return name.split(".")[0]
+    return socket.gethostname().split(".")[0]
+
+
+def _tailnet_name():
+    # App Store installs leave the Tailscale CLI off PATH.
+    for binary in ("tailscale", TAILSCALE_APP):
+        raw = _output([binary, "status", "--json"])
+        if not raw:
+            continue
+        try:
+            name = (json.loads(raw).get("Self") or {}).get("DNSName") or ""
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if name:
+            return name.rstrip(".")
+    return ""
+
+
+def _machine_report():
+    """What this machine tells Auth about itself at login and on refresh, for
+    the Fleet tab (DEC-20261015-001). A field that cannot be read is left
+    empty; Auth drops anything that fails its own checks."""
+    return {
+        "key": _machine_key(),
+        "hostname": _short_hostname(),
+        "tailnet": _tailnet_name(),
+        "user": os.environ.get("USER", ""),
+        "needs_term": _output(["infocmp", "tmux-256color"]) is None,
+    }
 
 
 def _load():
@@ -163,6 +243,16 @@ def _updated_store(current, bundle, session=None):
     }
 
 
+def _invalidate(data):
+    invalid = dict(data)
+    invalid["session_state"] = "invalid"
+    invalid["tokens"] = {}
+    invalid["active_scopes"] = []
+    invalid["unavailable_scopes"] = []
+    invalid["invalidated_at"] = int(time.time())
+    _save(invalid)
+
+
 def _refresh(data):
     if data.get("version") != 2:
         raise AuthError("saved login cannot refresh; run: auth login")
@@ -188,30 +278,22 @@ def _refresh(data):
     if isinstance(expires_at, bool) or not isinstance(expires_at, int):
         raise AuthError("saved device session has no valid expiry; run: auth login")
     if expires_at <= int(time.time()):
-        invalid = dict(data)
-        invalid["session_state"] = "invalid"
-        invalid["tokens"] = {}
-        invalid["active_scopes"] = []
-        invalid["unavailable_scopes"] = []
-        invalid["invalidated_at"] = int(time.time())
-        _save(invalid)
+        _invalidate(data)
         raise AuthError(
             "setup session has expired; run: auth login", 401, exit_code=4
         )
     try:
         bundle = _request(
             "/api/device/session/token",
-            json_body={"refresh_token": refresh_token, "device_name": DEVICE_NAME},
+            json_body={
+                "refresh_token": refresh_token,
+                "device_name": DEVICE_NAME,
+                "machine": _machine_report(),
+            },
         )
     except AuthError as exc:
         if exc.status in (401, 403):
-            invalid = dict(data)
-            invalid["session_state"] = "invalid"
-            invalid["tokens"] = {}
-            invalid["active_scopes"] = []
-            invalid["unavailable_scopes"] = []
-            invalid["invalidated_at"] = int(time.time())
-            _save(invalid)
+            _invalidate(data)
             raise AuthError(str(exc), exc.status, exit_code=4) from exc
         raise
     updated = _updated_store(data, bundle)
@@ -261,9 +343,28 @@ def _open_browser(uri):
             pass
 
 
+def _previous_session():
+    """The session this CLI held before, which Auth ends once the new login
+    is approved, so the old key leaves the fleet."""
+    try:
+        data = _load()
+    except AuthError:
+        return ""
+    if not isinstance(data, dict) or data.get("origin") != ORIGIN:
+        return ""
+    session = data.get("session")
+    token = session.get("refresh_token") if isinstance(session, dict) else None
+    return token if isinstance(token, str) else ""
+
+
 def cmd_login():
     device = _request(
-        "/api/device", form={"client": "setup-auth", "device_name": DEVICE_NAME}
+        "/api/device",
+        form={
+            "client": "setup-auth",
+            "device_name": DEVICE_NAME,
+            "machine": json.dumps(_machine_report(), separators=(",", ":")),
+        },
     )
     device_code = device.get("device_code")
     user_code = device.get("user_code")
@@ -273,13 +374,17 @@ def cmd_login():
     print("Waiting for approval… Open :")
     print(uri)
     _open_browser(uri)
+    previous = _previous_session()
     deadline = time.monotonic() + int(device.get("expires_in", 600))
     interval = max(int(device.get("interval", 5)), 1)
     bundle = None
     while time.monotonic() < deadline:
         time.sleep(interval)
         try:
-            response = _request("/api/device/token", form={"device_code": device_code})
+            response = _request(
+                "/api/device/token",
+                form={"device_code": device_code, "previous_session": previous},
+            )
         except AuthError as exc:
             if str(exc) == "authorization_pending":
                 continue
@@ -383,6 +488,43 @@ def cmd_context():
     print(json.dumps({"origin": origin, "subject": subject}, separators=(",", ":")))
 
 
+def cmd_request(method, path, body=None):
+    """A request to Auth made with this machine's setup session rather than a
+    bearer token, so revoking the machine ends it (the Fleet endpoints)."""
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        raise AuthError(f"unsupported method {method}", exit_code=2)
+    if not path.startswith("/api/"):
+        raise AuthError("request path must start with /api/", exit_code=2)
+    json_body = None
+    if body is not None:
+        try:
+            json_body = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise AuthError(f"invalid JSON body: {exc}", exit_code=2) from exc
+    with _store_lock():
+        data = _load()
+        if data is None or data.get("version") != 2:
+            raise AuthError("no renewable setup login; run: auth login", exit_code=4)
+        if data.get("origin") != ORIGIN:
+            raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
+        session = data.get("session")
+        if not isinstance(session, dict):
+            session = {}
+        expires_at = session.get("expires_at")
+        expired = isinstance(expires_at, int) and not isinstance(expires_at, bool) and expires_at <= time.time()
+        token = session.get("refresh_token")
+        if data.get("session_state") == "invalid" or expired or not isinstance(token, str) or not token:
+            raise AuthError("setup session is invalid, expired, or revoked; run: auth login", 401, exit_code=4)
+        try:
+            response = _request(path, json_body=json_body, session=token, method=method)
+        except AuthError as exc:
+            if exc.status == 401:
+                _invalidate(data)
+                raise AuthError(str(exc), exc.status, exit_code=4) from exc
+            raise
+    print(json.dumps(response, separators=(",", ":")))
+
+
 def cmd_status():
     with _store_lock():
         data = _load()
@@ -404,6 +546,12 @@ def cmd_status():
     scopes = "all services" if data["mode"] == "global" and "*" in data["tokens"] else ", ".join(sorted(data["tokens"])) or "no bearer tokens"
     print(f"auth: logged in ({data['mode']}; {scopes}; {freshness})")
     return 0
+
+
+USAGE = (
+    "Usage: auth login | auth refresh | auth token [--cached] <service> | auth status | auth context\n"
+    "       auth request <METHOD> </api/path> [json-body]"
+)
 
 
 def main():
@@ -438,10 +586,13 @@ def main():
         return 0
     if args == ["status"]:
         return cmd_status()
-    if args in (["help"], ["--help"], ["-h"]):
-        print("Usage: auth login | auth refresh | auth token [--cached] <service> | auth status | auth context")
+    if len(args) in (3, 4) and args[0] == "request":
+        cmd_request(args[1].upper(), args[2], args[3] if len(args) == 4 else None)
         return 0
-    print("Usage: auth login | auth refresh | auth token [--cached] <service> | auth status | auth context", file=sys.stderr)
+    if args in (["help"], ["--help"], ["-h"]):
+        print(USAGE)
+        return 0
+    print(USAGE, file=sys.stderr)
     return 2
 
 

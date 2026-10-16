@@ -4,12 +4,44 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export LOST_AUTH_STORE="$TMP/auth.json"
+export LOST_AUTH_SSH_KEY="$TMP/ssh/id_ed25519"
+
+# The machine report generates the key on first use and reports it bare.
+python3 - "$ROOT/files/auth" <<'PY'
+import os, runpy, sys
+m = runpy.run_path(sys.argv[1], run_name="auth_client_test")
+report = m["_machine_report"]()
+key = report["key"].split(" ")
+assert key[0] == "ssh-ed25519" and len(key) == 2, report
+assert os.path.exists(os.environ["LOST_AUTH_SSH_KEY"])
+assert m["_machine_report"]()["key"] == report["key"]
+# A private key whose public half went missing still reports the same key.
+os.unlink(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
+assert m["_machine_report"]()["key"] == report["key"]
+assert os.path.exists(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
+# An undecodable public key reports no key instead of failing.
+good = open(os.environ["LOST_AUTH_SSH_KEY"] + ".pub", "rb").read()
+open(os.environ["LOST_AUTH_SSH_KEY"] + ".pub", "wb").write(b"\xff\xfe")
+assert m["_machine_report"]()["key"] == ""
+open(os.environ["LOST_AUTH_SSH_KEY"] + ".pub", "wb").write(good)
+# A key directory that cannot be created reports no key instead of failing.
+blocker = os.path.join(os.path.dirname(os.environ["LOST_AUTH_SSH_KEY"]), "file")
+open(blocker, "w").close()
+m["_machine_key"].__globals__["SSH_KEY"] = m["pathlib"].Path(blocker) / "ssh" / "id_ed25519"
+assert m["_machine_report"]()["key"] == ""
+assert report["hostname"] and "." not in report["hostname"]
+assert isinstance(report["needs_term"], bool)
+PY
 
 python3 - "$ROOT/files/auth" <<'PY'
 import contextlib, io, json, os, runpy, sys
 
 m = runpy.run_path(sys.argv[1], run_name="auth_client_test")
+REPORT = {"key":"ssh-ed25519 AAAA", "hostname":"fox", "tailnet":"fox.tail.ts.net",
+          "user":"fox", "needs_term":False}
+m["cmd_login"].__globals__["_machine_report"] = lambda: dict(REPORT)
 calls = []
+previous_sessions = []
 server = {
     "subject": "42",
     "mode": "global",
@@ -24,17 +56,20 @@ def request(path, **kwargs):
     if path == "/api/device":
         assert kwargs["form"] == {
             "client":"setup-auth", "device_name":m["DEVICE_NAME"],
+            "machine":json.dumps(REPORT, separators=(",", ":")),
         }
         return {"device_code":"device", "user_code":"FOX-1234",
                 "verification_uri_complete":"https://auth.lost.plus/device?code=FOX-1234",
                 "expires_in":30, "interval":1}
     if path == "/api/device/token":
+        previous_sessions.append(kwargs["form"]["previous_session"])
         return {**server, "session": {
             "id":"dev_one", "refresh_token":"refresh-secret", "expires_at":9999999999,
         }}
     if path == "/api/device/session/token":
         assert kwargs["json_body"] == {
             "refresh_token":"refresh-secret", "device_name":m["DEVICE_NAME"],
+            "machine":REPORT,
         }
         return dict(server)
     raise AssertionError(path)
@@ -51,6 +86,7 @@ assert login_output.getvalue().splitlines()[:2] == [
     "https://auth.lost.plus/device?code=FOX-1234",
 ]
 saved = json.load(open(os.environ["LOST_AUTH_STORE"]))
+assert previous_sessions == [""]
 assert saved["version"] == 2
 assert saved["session"]["refresh_token"] == "refresh-secret"
 assert saved["mode"] == "global" and saved["tokens"] == {"*":"global-secret"}
@@ -164,6 +200,8 @@ with contextlib.redirect_stdout(io.StringIO()):
     m["cmd_login"]()
 switched = json.load(open(os.environ["LOST_AUTH_STORE"]))
 assert switched["account_sub"] == "84" and switched["tokens"] == {}
+# A new login names the session it replaces, so Auth can end it.
+assert previous_sessions[-1] == "refresh-secret"
 server["subject"] = "42"
 with contextlib.redirect_stdout(io.StringIO()):
     m["cmd_login"]()
@@ -249,6 +287,49 @@ status_output = io.StringIO()
 with contextlib.redirect_stdout(status_output):
     assert m["cmd_status"]() == 1
 assert "needs renewal" in status_output.getvalue()
+
+# `auth request` sends the setup session itself, not a bearer token.
+json.dump({**saved, "session_state":"active"}, open(os.environ["LOST_AUTH_STORE"], "w"))
+sent = []
+def fleet(path, **kwargs):
+    sent.append((path, kwargs))
+    return {"version":"v1", "keys":[]}
+m["cmd_request"].__globals__["_request"] = fleet
+request_output = io.StringIO()
+with contextlib.redirect_stdout(request_output):
+    m["cmd_request"]("GET", "/api/fleet")
+assert json.loads(request_output.getvalue()) == {"version":"v1", "keys":[]}
+assert sent == [("/api/fleet", {"json_body":None, "session":"refresh-secret", "method":"GET"})]
+for method, path in (("GET", "https://elsewhere.example/api/fleet"), ("TRACE", "/api/fleet")):
+    try:
+        m["cmd_request"](method, path)
+    except m["AuthError"] as exc:
+        assert exc.exit_code == 2
+    else:
+        raise AssertionError("bad request was sent")
+# A rejected session is recorded, so setup offers the login again.
+def gone(path, **kwargs):
+    raise m["AuthError"]("setup session is invalid, expired, or revoked", 401)
+m["cmd_request"].__globals__["_request"] = gone
+try:
+    m["cmd_request"]("GET", "/api/fleet")
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+else:
+    raise AssertionError("rejected session was not reported")
+assert json.load(open(os.environ["LOST_AUTH_STORE"]))["session_state"] == "invalid"
+
+# A malformed saved session never blocks the login that would replace it.
+broken = json.load(open(os.environ["LOST_AUTH_STORE"]))
+broken["session"] = "garbage"
+json.dump(broken, open(os.environ["LOST_AUTH_STORE"], "w"))
+assert m["_previous_session"]() == ""
+try:
+    m["cmd_request"]("GET", "/api/fleet")
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+else:
+    raise AssertionError("malformed session was used")
 
 print("auth client tests passed")
 PY
