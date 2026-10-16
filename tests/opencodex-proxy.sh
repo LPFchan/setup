@@ -95,7 +95,12 @@ grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export removed the route
 
 # A failed repair leaves the export alone: the service may still be running.
 rm "$HOME/proxy-down"
-python3 "$ROOT/files/opencodex" proxy >/dev/null || fail "proxy failed to restore the export"
+# OPENCODEX_BIN names the install to repair, even with another ocx on PATH.
+mkdir -p "$TMP/other"
+printf '#!/bin/sh\ntouch "$HOME/wrong-ocx"\n' > "$TMP/other/ocx"
+chmod +x "$TMP/other/ocx"
+PATH="$TMP/other:$PATH" python3 "$ROOT/files/opencodex" proxy >/dev/null || fail "proxy failed to restore the export"
+[[ ! -e "$HOME/wrong-ocx" ]] || fail "proxy ran the ocx on PATH instead of OPENCODEX_BIN"
 touch "$HOME/ocx-fails"
 if OPENCODEX_ACTIVATE_WAIT=0 python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
     fail "proxy succeeded when ocx service failed"

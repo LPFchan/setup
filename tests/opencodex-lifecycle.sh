@@ -193,7 +193,14 @@ cp "$ROOT/files/provider-registry.json" "$providers_registry"
 [[ -f "$REGISTRY" ]] || fail "providers uninstall removed opencodex's independent snapshot"
 [[ ! -e "$providers_registry" ]] || fail "providers uninstall left its own snapshot"
 
+# Uninstalling takes down the route to the proxy it stops.
+mkdir -p "$HOME/.claude"
+printf 'export KEEP=1\n# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n# END harnesses:anthropic-base-url\n' >> "$HOME/.zshenv"
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
 uninstall
+! grep -q ANTHROPIC_BASE_URL "$HOME/.zshenv" "$HOME/.claude/settings.json" \
+    || fail "opencodex uninstall left the route to its stopped proxy"
+grep -q '^export KEEP=1$' "$HOME/.zshenv" || fail "opencodex uninstall dropped unrelated exports"
 [[ ! -e "$REGISTRY" ]] || fail "opencodex uninstall left its provider snapshot"
 [[ ! -e "$BIN" && ! -e "$OPENCODEX_ROOT" ]] || fail "opencodex uninstall left runtime files"
 [[ ! -e "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}" ]] || fail "opencodex uninstall left the stop-timeout drop-in"

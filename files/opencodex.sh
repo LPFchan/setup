@@ -369,6 +369,11 @@ uninstall() {
         "$OPENCODEX_BIN" service uninstall >/dev/null 2>&1 || true
         "$OPENCODEX_BIN" restore >/dev/null 2>&1 || true
     fi
+    # A route to the stopped proxy would send every Claude request nowhere.
+    if [[ -x "$BIN" ]]; then
+        python3 "$BIN" __unexport >/dev/null \
+            || echo "opencodex: could not remove ANTHROPIC_BASE_URL; check ~/.zshenv and ~/.claude/settings.json" >&2
+    fi
     if [[ -x "$BIN" && -f "$REGISTRY" ]]; then
         OPENCODEX_CONFIG="$OPENCODEX_CONFIG" OPENCODEX_MANAGED="$OPENCODEX_MANAGED" \
             python3 "$BIN" __remove "$REGISTRY" \

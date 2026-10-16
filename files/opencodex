@@ -2576,7 +2576,7 @@ def cmd_proxy() -> int:
     is the one place that removes it: the nightly pass only ever writes it, so
     a proxy caught mid-restart never strips the route.
     """
-    ocx = shutil.which("ocx") or str(OCX)
+    ocx = str(OCX)
     if not os.access(ocx, os.X_OK):
         raise UserError("ocx not installed; run: setup install opencodex")
     print(f"ensuring the opencodex proxy service ({proxy_service_name()}) ...")
@@ -2639,6 +2639,8 @@ def main() -> int:
             # never remove it, since a proxy caught mid-restart must keep it.
             if proxy_service_active():
                 write_base_url_export()
+        elif command == "__unexport":
+            remove_base_url_export()
         elif command == "__proxy-url":
             print(f"http://127.0.0.1:{proxy_port()}")
         else:
