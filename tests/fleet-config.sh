@@ -260,6 +260,13 @@ for files in '[]' '{"AGENTS.md": [null, false]}' '{"AGENTS.md": ["abc", false]}'
     mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
     [[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "synced over a record with files $files: $out"
 done
+# So does a folder where a synced file was, or a pipe in a skill folder.
+for odd in 'mkdir "$HOME/.agents/AGENTS.md"' 'mkfifo "$HOME/.agents/skills/mine/SKILL.md"'; do
+    f=$(eval "echo ${odd#* }"); mv "$f" "$TMP/odd.keep"; eval "$odd"
+    rc=0; out=$(fleet sync 2>&1) || rc=$?
+    rm -rf "$f"; mv "$TMP/odd.keep" "$f"
+    [[ $rc != 0 && "$out" == *"is not a regular file"* ]] || fail "synced past $odd: $out"
+done
 # A file where ~/.agents was stops the sync rather than reading as empty.
 mv "$HOME/.agents" "$TMP/agents.away"; printf 'x\n' > "$HOME/.agents"
 rc=0; out=$(fleet sync 2>&1) || rc=$?

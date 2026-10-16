@@ -494,7 +494,11 @@ def scan_local():
     def add(path, rel):
         if path.is_symlink():
             symlinks.append(rel)
-        elif path.is_file() and config_path(rel):
+        elif config_path(rel) and os.path.lexists(path):
+            # A folder or device here cannot be synced; skipped, the file it
+            # replaced would read as deleted on every machine.
+            if not path.is_file():
+                raise ConfigError(f"{path} is not a regular file")
             files[rel] = _digest(path)
 
     for name in ("AGENTS.md", "mcp.json"):
