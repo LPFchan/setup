@@ -686,8 +686,8 @@ def down(token, item): raise fleet.TokenError("passage unreachable")
 fleet._vault_get = down
 server = {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}
 exports, drop, skipped, missing = fleet.resolve_tokens([server], {"origin": "o", "subject": "1"}, [])
-print(sorted(missing))' "$ROOT/files/fleet" 2>/dev/null)
-[[ "$missing" == "['vault']" ]] || fail "a lookup with no fallback did not fail the render: $missing"
+print(sorted(missing), sorted(skipped))' "$ROOT/files/fleet" 2>/dev/null)
+[[ "$missing" == "['vault'] ['vault']" ]] || fail "a lookup with no fallback did not fail the render, skipping the server: $missing"
 
 # A new hub service whose token cannot be fetched yet fails the render, and
 # the next ordinary sync fetches it rather than taking the fast path.
@@ -701,6 +701,7 @@ json.dump(rows, open(sys.argv[1], "w"))
 PY
 touch "$FAKE/token-down-fresh"
 fleet sync --pull >/dev/null 2>&1 && fail "a token lookup with no fallback rendered as done"
+[[ "$(json "$HOME/.claude.json" '"fresh" in v["mcpServers"]')" == False ]] || fail "registered a server it has no token for"
 rm "$FAKE/token-down-fresh"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after the token came back"
 grep -q "tok-fresh" "$HOME/.zshenv" || fail "the missing token was not fetched again"

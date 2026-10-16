@@ -2013,8 +2013,11 @@ def resolve_tokens(servers, context, warnings):
             eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
             if not value:
                 # No credential at all: a connector would only fail. Skipped,
-                # it is looked up again next run.
-                (skipped if exc.authoritative else missing).add(server["name"])
+                # it is looked up again next run; a lookup that failed also
+                # fails the render, so the next sync looks again.
+                skipped.add(server["name"])
+                if not exc.authoritative:
+                    missing.add(server["name"])
                 continue
         value = mcp_token_value(value)
         if value:
