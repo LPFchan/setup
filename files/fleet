@@ -818,7 +818,18 @@ def _skill_folders(directory):
     # the links are refreshed; they are not skills of their own.
     return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
             and not e.name.endswith(".pre-agents.bak")
-            and e.is_dir() and (e/"SKILL.md").is_file()]
+            and _is(e, stat.S_ISDIR) and _is(e/"SKILL.md", stat.S_ISREG)]
+
+
+def _is(path, kind):
+    """Path.is_dir and is_file can hide an unreadable folder as "not one",
+    which would leave its skill behind; only a missing path is not one."""
+    try:
+        return kind(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as exc:
+        _unreadable(exc)
 
 
 def _same_tree(a, b):
@@ -885,6 +896,15 @@ def _move_foreign(backup):
     return moved
 
 
+def _put_foreign_back(moved, backup):
+    if moved:
+        if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
+            backup.move(AGENTS_DIR, "agents-incomplete")
+        shutil.move(str(moved), str(AGENTS_DIR))
+        _report("put the other account's ~/.agents back, since this account's copy "
+                "could not be put in place")
+
+
 def pull(account):
     """Bring ~/.agents/ in step with the account. Returns ('synced', record,
     conflicts) or ('pending', None, []) when the account was never pushed."""
@@ -902,12 +922,16 @@ def pull(account):
         foreign = other and AGENTS_DIR.exists()
         local = {} if foreign else scan_local()[0]
         if record is None and counter == 0:
-            if foreign:
-                _move_foreign(backup)
+            moved = _move_foreign(backup) if foreign else None
             if other:
                 # Even with no tree to move, the other account's links go. Its
-                # record stays until they have, so a retry finishes the job.
-                refresh_links()
+                # record stays until they have, so a retry finishes the job,
+                # and so does its tree, which the record and links still name.
+                try:
+                    refresh_links()
+                except BaseException:
+                    _put_foreign_back(moved, backup)
+                    raise
                 CONFIG_STATE.unlink(missing_ok=True)
             ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
             ONBOARDING_MARKER.touch()
@@ -950,12 +974,7 @@ def pull(account):
                     shutil.move(str(saved), str(folder))
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
-            if moved:
-                if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
-                    backup.move(AGENTS_DIR, "agents-incomplete")
-                shutil.move(str(moved), str(AGENTS_DIR))
-                _report("put the other account's ~/.agents back, since this account's copy "
-                        "could not be put in place")
+            _put_foreign_back(moved, backup)
             raise
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
