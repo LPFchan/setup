@@ -229,6 +229,33 @@ server_put AGENTS.md 'my instructions'
 fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md"
 [[ "$(readlink "$HOME/.claude/CLAUDE.md")" == "$HOME/.agents/AGENTS.md" ]] || fail "CLAUDE.md not relinked"
 
+# What the old agents module set aside as <target>.pre-agents.bak comes
+# back: at once for the links fleet drops, and when AGENTS.md leaves the
+# account for the links fleet takes over.
+rm -f "$HOME/.codex/AGENTS.md"
+printf 'codex own\n' > "$HOME/.codex/AGENTS.md.pre-agents.bak"
+ln -s "$HOME/.agents/AGENTS.md" "$HOME/.codex/AGENTS.md"
+mkdir -p "$HOME/.gemini"
+printf 'gemini own\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
+ln -s "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
+mkdir -p "$HOME/.codex/skills/mine.pre-agents.bak"
+ln -s "$HOME/.agents/skills/mine" "$HOME/.codex/skills/mine"
+mkdir -p "$HOME/.claude/skills/gone.pre-agents.bak"
+ln -s "$HOME/.agents/skills/gone" "$HOME/.claude/skills/gone"
+fleet sync --pull >/dev/null 2>&1 || fail "pull over the old agents links"
+[[ "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" && ! -L "$HOME/.gemini/GEMINI.md" ]] \
+    || fail "GEMINI.md not restored from the old backup"
+[[ -d "$HOME/.codex/skills/mine" && ! -L "$HOME/.codex/skills/mine" ]] || fail "old codex skill backup not restored"
+[[ -d "$HOME/.claude/skills/gone" && ! -L "$HOME/.claude/skills/gone" ]] || fail "old claude skill backup not restored"
+[[ "$(readlink "$HOME/.codex/AGENTS.md")" == "$HOME/.agents/AGENTS.md" ]] || fail "codex AGENTS.md not kept linked"
+server_del AGENTS.md
+fleet sync --pull >/dev/null 2>&1 || fail "pull removing AGENTS.md again"
+[[ "$(cat "$HOME/.codex/AGENTS.md")" == "codex own" && ! -e "$HOME/.codex/AGENTS.md.pre-agents.bak" ]] \
+    || fail "codex AGENTS.md not restored from the old backup"
+rm -rf "$HOME/.codex/AGENTS.md" "$HOME/.gemini" "$HOME/.codex/skills/mine" "$HOME/.claude/skills/gone"
+server_put AGENTS.md 'my instructions'
+fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md again"
+
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'
 fleet sync --check >/dev/null 2>&1 && fail "check missed a server change"
