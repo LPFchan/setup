@@ -342,6 +342,12 @@ fleet sync --pull >/dev/null 2>&1 || fail "pull removing AGENTS.md"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
     || fail "CLAUDE.md not restored when AGENTS.md left"
 [[ ! -L "$HOME/AGENTS.md" ]] || fail "~/AGENTS.md left dangling"
+# A user's link that only passes through ~/.agents by name is not fleet's.
+mv "$HOME/.claude/CLAUDE.md" "$TMP/claude.keep"; printf 'theirs\n' > "$HOME/instructions"
+ln -s "$HOME/.agents/../instructions" "$HOME/.claude/CLAUDE.md"
+fleet sync --pull >/dev/null 2>&1 || fail "pull with a link through ~/.agents/.."
+[[ "$(readlink "$HOME/.claude/CLAUDE.md")" == "$HOME/.agents/../instructions" ]] || fail "took a user's link through .. as fleet's"
+rm "$HOME/.claude/CLAUDE.md" "$HOME/instructions"; mv "$TMP/claude.keep" "$HOME/.claude/CLAUDE.md"
 server_put AGENTS.md 'my instructions'
 fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md"
 [[ "$(readlink "$HOME/.claude/CLAUDE.md")" == "$HOME/.agents/AGENTS.md" ]] || fail "CLAUDE.md not relinked"

@@ -1089,7 +1089,9 @@ def _skill_link_targets(links):
 
 def _points_into(path, root):
     try:
-        return path.is_symlink() and pathlib.Path(os.readlink(path)).is_relative_to(root)
+        # Resolved as the link would be, .. and all, but not followed further.
+        return path.is_symlink() and pathlib.Path(
+            os.path.normpath(os.path.join(path.parent, os.readlink(path)))).is_relative_to(root)
     except OSError:
         return False
 
