@@ -714,7 +714,11 @@ def add_notice(text):
         return
     notices = _load_json(NOTICES, [])
     if text not in notices:
-        _save_json(NOTICES, notices + [text])
+        # A notice that cannot be kept is still on stderr; the run goes on.
+        try:
+            _save_json(NOTICES, notices + [text])
+        except OSError:
+            pass
 
 
 def _report(text):
@@ -748,7 +752,8 @@ def _same_tree(a, b):
 def _move_harness_skills(backup):
     """Move the user's own skill folders out of the harness folders, so
     harnesses don't load them next to ~/.agents/skills; list them. A failed
-    move puts the ones already moved back."""
+    move puts the ones already moved back. Returns (folder, saved) pairs, for
+    a caller that has to undo the move later."""
     moved = []
     try:
         for directory in HARNESS_SKILL_DIRS:
@@ -761,7 +766,7 @@ def _move_harness_skills(backup):
         raise
     if moved:
         _report(f"moved skill folders to {backup.root}: " + ", ".join(str(f) for f, _ in moved))
-    return [str(f) for f, _ in moved]
+    return moved
 
 
 def _apply_changes(take, remove, contents, server, backup):
@@ -845,11 +850,18 @@ def pull(account):
         if _context() != account:
             raise ConfigError("the session changed during the sync")
         moved = _move_foreign(backup) if foreign else None
+        harness = []
+        new_record = {"account": account, "counter": counter, "version": version, "files": server}
         try:
             _apply_changes(take, remove, contents, server, backup)
             if record is None:
-                _move_harness_skills(backup)
+                harness = _move_harness_skills(backup)
+            # The switch is done only once its record is saved.
+            _save_json(CONFIG_STATE, new_record)
         except BaseException:
+            for folder, saved in reversed(harness):
+                if not os.path.lexists(folder):
+                    shutil.move(str(saved), str(folder))
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
             if moved:
@@ -862,10 +874,8 @@ def pull(account):
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(conflicts)))
-        record = {"account": account, "counter": counter, "version": version, "files": server}
-        _save_json(CONFIG_STATE, record)
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", record, sorted(conflicts)
+        return "synced", new_record, sorted(conflicts)
     raise ConfigError("the account kept changing during the sync; try again")
 
 
@@ -1463,7 +1473,9 @@ def schedule_disable():
     if sys.platform == "darwin":
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{PLIST_NAME}"], capture_output=True)
         _plist_path().unlink(missing_ok=True)
-    else:
+    # A timer that is not installed is already off; the helper refuses one it
+    # cannot find. An installed one goes whether or not it is running.
+    elif any((SYSTEMD_USER_DIR/f"{TIMER_NAME}.{kind}").exists() for kind in ("timer", "service")):
         rc = _run_schedule("uninstall-timer", "user", TIMER_NAME)
         if rc:
             return rc
