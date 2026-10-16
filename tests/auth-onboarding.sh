@@ -40,4 +40,12 @@ AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1 || true
 AUTH_LOG="$TMP/auth.log" AUTH_RC=0 run_driver >/dev/null 2>&1
 [[ ! -e "$marker" ]]
 [[ $(cat "$TMP/auth.log") == status ]]
+# A login declined earlier in the same run is skipped once, then offered again.
+touch "$marker" "$XDG_STATE_HOME/setup/auth.login-deferred"
+: > "$TMP/auth.log"
+AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1
+[[ -e "$marker" && ! -e "$XDG_STATE_HOME/setup/auth.login-deferred" ]]
+[[ ! -s "$TMP/auth.log" ]]
+AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1 || true
+[[ $(cat "$TMP/auth.log") == $'status\nlogin' ]]
 echo "auth onboarding tests passed"

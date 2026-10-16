@@ -2643,7 +2643,13 @@ cmd_reconfigure() {
 }
 
 _post_auth_setup() {
-    local marker="$STATE_DIR/auth.needs-login"
+    local marker="$STATE_DIR/auth.needs-login" deferred="$STATE_DIR/auth.login-deferred"
+    # Declined earlier in this run (fleet's swap prompt): skip once, so the
+    # next run asks again.
+    if [[ -f "$deferred" ]]; then
+        rm -f "$deferred"
+        return 0
+    fi
     [[ -f "$marker" ]] || return 0
 
     local auth_bin="$HOME/.local/bin/auth"

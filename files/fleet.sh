@@ -54,6 +54,10 @@ _login_if_needed() {
             "$SETUP_SWAP_FROM" >/dev/tty
         read -r answer </dev/tty || answer=n
         if [[ "$answer" == [nN]* ]]; then
+            # setup's own login step would ask again later in this run; this
+            # file tells it to skip once.
+            local deferred="${XDG_STATE_HOME:-$HOME/.local/state}/setup/auth.login-deferred"
+            mkdir -p "${deferred:h}" && touch "$deferred"
             echo "fleet: login skipped; setup offers it again after its next interactive run"
             return 0
         fi
