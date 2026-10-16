@@ -367,11 +367,19 @@ uninstall() {
     _require_safe_runtime_root || return 1
     # A route to the stopped proxy would send every Claude request nowhere, so
     # it comes off first; while it cannot, nothing is torn down.
-    # Through python3, so a launcher that lost its executable bit still cleans up.
-    if [[ -f "$BIN" ]] && ! python3 "$BIN" __unexport >/dev/null; then
+    # Through python3, so a launcher that lost its executable bit still cleans
+    # up; a deleted one is fetched again, since only it knows which route is ours.
+    local cli="$BIN" staged=""
+    if [[ ! -f "$cli" ]]; then
+        staged=$(mktemp -d)
+        _fetch_file "$LAUNCHER_SOURCE" "$staged/opencodex" 2>/dev/null && cli="$staged/opencodex"
+    fi
+    if [[ ! -f "$cli" ]] || ! python3 "$cli" __unexport >/dev/null; then
+        [[ -n "$staged" ]] && rm -rf "$staged"
         echo "opencodex: could not remove ANTHROPIC_BASE_URL; check ~/.zshenv and ~/.claude/settings.json; nothing was uninstalled" >&2
         return 1
     fi
+    [[ -n "$staged" ]] && rm -rf "$staged"
     if [[ -x "$OPENCODEX_BIN" ]]; then
         "$OPENCODEX_BIN" service uninstall >/dev/null 2>&1 || true
         "$OPENCODEX_BIN" restore >/dev/null 2>&1 || true

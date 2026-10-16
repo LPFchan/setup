@@ -398,6 +398,12 @@ sed -i.bak '/^HEATMAP_MCP_TOKEN=mine$/d' "$HOME/.codex/.env" && rm -f "$HOME/.co
 grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env token"
 grep -qx update "$FAKE/claude.log" && grep -qx 'codex update' "$FAKE/claude.log" || fail "harnesses not updated"
 grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "hermes not restarted"
+# A proxy route the nightly pass could not export is reported too.
+mkdir -p "$HOME/.local/bin"
+printf 'import sys\nsys.exit(sys.argv[1:] == ["__export"])\n' > "$HOME/.local/bin/opencodex"
+chmod +x "$HOME/.local/bin/opencodex"
+fleet schedule run >/dev/null 2>&1 && fail "a failed route export went unreported"
+rm "$HOME/.local/bin/opencodex"
 [[ ! -e "$XDG_STATE_HOME/fleet/hermes.restart" ]] || fail "hermes restart left pending"
 
 # Uninstalling takes back only the hermes skills folder fleet added.

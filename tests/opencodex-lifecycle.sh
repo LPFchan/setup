@@ -206,9 +206,14 @@ printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claud
 python3 "$BIN" __unexport >/dev/null || fail "unexport with a user gateway"
 grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "unexport removed the user's own base URL"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
-# Even from a launcher that lost its executable bit.
-chmod -x "$BIN"
-uninstall
+# A deleted launcher is fetched again for the route; while it cannot be,
+# nothing is torn down.
+rm "$BIN"
+LAUNCHER_SOURCE="$TEST_TMP/missing" uninstall 2>/dev/null && fail "opencodex uninstall passed a route it had no launcher for"
+[[ -e "$REGISTRY" ]] || fail "a missing launcher still tore down opencodex"
+# Even fetched without its executable bit.
+cp "$ROOT/files/opencodex" "$TEST_TMP/launcher"; chmod -x "$TEST_TMP/launcher"
+LAUNCHER_SOURCE="$TEST_TMP/launcher" uninstall
 ! grep -q ANTHROPIC_BASE_URL "$HOME/.zshenv" "$HOME/.claude/settings.json" \
     || fail "opencodex uninstall left the route to its stopped proxy"
 grep -q '^export KEEP=1$' "$HOME/.zshenv" || fail "opencodex uninstall dropped unrelated exports"

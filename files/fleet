@@ -803,9 +803,10 @@ def pull(account):
             if foreign:
                 _move_foreign(backup)
             if other:
-                # Even with no tree to move, the other account's links go.
-                CONFIG_STATE.unlink(missing_ok=True)
+                # Even with no tree to move, the other account's links go. Its
+                # record stays until they have, so a retry finishes the job.
                 refresh_links()
+                CONFIG_STATE.unlink(missing_ok=True)
             ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
             ONBOARDING_MARKER.touch()
             return "pending", None, []
@@ -1073,42 +1074,43 @@ def onboard(account):
                 sources.append((path, path.read_bytes()))
         except OSError:
             pass
-    # What this run copies into ~/.agents comes out again if the upload
-    # fails, so a retry gathers the harness files afresh.
+    # What this run copies into ~/.agents comes out again if staging or the
+    # upload fails, so a retry gathers the harness files afresh.
     staged = []
-    if not agents_md.exists() and sources:
-        agents_md.parent.mkdir(parents=True, exist_ok=True)
-        # The copy keeps the source's permissions: an owner-only CLAUDE.md
-        # stays owner-only.
-        source, data = sources[0]
-        fd = os.open(agents_md, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                     stat.S_IMODE(source.stat().st_mode) & 0o666)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        staged.append(agents_md)
-    if agents_md.is_file():
-        listed += [str(path) for path, data in sources if data != agents_md.read_bytes()]
-    skills = AGENTS_DIR/"skills"
-    for directory in HARNESS_SKILL_DIRS:
-        for folder in _skill_folders(directory):
-            mine = skills/folder.name
-            if mine.exists():
-                if not _same_tree(folder, mine):
-                    listed.append(str(folder))
-            else:
-                shutil.copytree(folder, mine, symlinks=True)
-                staged.append(mine)
-    if listed:
-        _report("these differ from what was uploaded and were left out: " + ", ".join(listed))
-    local, symlinks = scan_local()
-    if symlinks:
-        eprint("fleet: symlinks are not uploaded: " + ", ".join(symlinks))
-    record = {"account": account, "counter": 0, "version": 0, "files": {}}
     try:
+        if not agents_md.exists() and sources:
+            agents_md.parent.mkdir(parents=True, exist_ok=True)
+            # The copy keeps the source's permissions: an owner-only CLAUDE.md
+            # stays owner-only.
+            source, data = sources[0]
+            fd = os.open(agents_md, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         stat.S_IMODE(source.stat().st_mode) & 0o666)
+            staged.append(agents_md)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+        if agents_md.is_file():
+            listed += [str(path) for path, data in sources if data != agents_md.read_bytes()]
+        skills = AGENTS_DIR/"skills"
+        for directory in HARNESS_SKILL_DIRS:
+            for folder in _skill_folders(directory):
+                mine = skills/folder.name
+                if mine.exists():
+                    if not _same_tree(folder, mine):
+                        listed.append(str(folder))
+                else:
+                    # Listed first: a copy that fails partway comes out too.
+                    staged.append(mine)
+                    shutil.copytree(folder, mine, symlinks=True)
+        if listed:
+            _report("these differ from what was uploaded and were left out: " + ", ".join(listed))
+        local, symlinks = scan_local()
+        if symlinks:
+            eprint("fleet: symlinks are not uploaded: " + ", ".join(symlinks))
+        record = {"account": account, "counter": 0, "version": 0, "files": {}}
         record = push(record, local, list(local), [])
     except BaseException as exc:
         for path in staged:
-            if path.is_dir():
+            if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
             else:
                 path.unlink(missing_ok=True)
@@ -2867,7 +2869,8 @@ def heavy_pass():
     if opencodex:
         # Written only while the proxy runs, never removed here: a proxy
         # caught mid-restart must keep the route.
-        subprocess.run([sys.executable, str(OPENCODEX), "__export"])
+        if subprocess.run([sys.executable, str(OPENCODEX), "__export"]).returncode:
+            failed.append("opencodex export")
     rc = cmd_sync(direct=False, force=True)
     if config_sync_enabled() and harness_update():
         failed.append("harness updates")
