@@ -168,6 +168,20 @@ install_one() {
 }
 out=$(cmd_update s 2>&1) || fail "filtered update failed: $out"
 [[ "$(<"$TMP/installed")" == "p s " ]] || fail "filtered update sequence was '$(<"$TMP/installed")', expected 'p s '"
+
+# A service dependency the update installs is enabled: the loop below skips
+# it, and a filter can skip its dependent.
+rm -f "$HOME/s" "$HOME/p" "$SCRIPT_STATE_FILE" "$DEP_FILE"
+: > "$TMP/installed"
+: > "$TMP/enabled"
+functions[saved_is_service]=${functions[is_service_module]}
+is_service_module() { [[ "$1" == s ]]; }
+module_service_unit() { echo timer; }
+module_service_transition() { printf '%s %s ' "$1" "$2" >> "$TMP/enabled"; }
+out=$(cmd_update s 2>&1) || fail "filtered update of a service dependency failed: $out"
+[[ "$(<"$TMP/installed")" == "p s " ]] || fail "update sequence was '$(<"$TMP/installed")', expected 'p s '"
+[[ "$(<"$TMP/enabled")" == "enable s " ]] || fail "enabled '$(<"$TMP/enabled")', expected 'enable s '"
+functions[is_service_module]=${functions[saved_is_service]}
 rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
 cp "$saved_manifest" "$MANIFEST_FILE"
 
