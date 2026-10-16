@@ -1,4 +1,4 @@
-# module	target	mode	source	audience	platform	status	requires
+# module	target	mode	source	audience	platform	status	requires	successor
 setup	~/.local/bin/setup	0755	bin/setup				fzf-multicolumn
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh				fzf-multicolumn
@@ -20,7 +20,7 @@ starship	~/.local/bin/starship	script	files/starship.sh
 fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
 agents	~/.agents/AGENTS.md	script	files/agents.sh
-ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh	fleet
+ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh	fleet		retired		fleet
 fleet	~/.local/bin/fleet	script	files/fleet.sh				auth
 mac-boot	/usr/local/bin/mac-boot	script	files/mac-boot.sh	fleet	darwin
 tmux	~/.tmux.conf	script	files/tmux.sh				zsh-basics

@@ -40,12 +40,24 @@ _auth_bin() {
 
 # Installing fleet is one sitting: with a terminal and no session, it opens the
 # approval page before the first sync. A non-interactive install skips it; the
-# login marker offers it again after the next interactive setup run.
+# login marker offers it again after the next interactive setup run. When
+# setup swaps fleet in for ssh-aliases, it asks before opening the page.
 _login_if_needed() {
     local auth_bin
     auth_bin=$(_auth_bin) || return 0
     "$auth_bin" status >/dev/null 2>&1 && return 0
     [[ "${BATCH:-0}" == 0 && -t 1 && -r /dev/tty ]] || return 0
+    # Swapped in by `setup update` rather than asked for: ask first.
+    if [[ -n "${SETUP_SWAP_FROM:-}" ]]; then
+        local answer
+        printf 'fleet replaces %s and signs this machine in to its fleet. Log in now? [Y/n] ' \
+            "$SETUP_SWAP_FROM" >/dev/tty
+        read -r answer </dev/tty || answer=n
+        if [[ "$answer" == [nN]* ]]; then
+            echo "fleet: login skipped; setup offers it again after its next interactive run"
+            return 0
+        fi
+    fi
     echo "fleet: signing this machine in to its fleet"
     "$auth_bin" login </dev/tty >/dev/tty 2>&1 || echo "fleet: login skipped; run: auth login" >&2
 }

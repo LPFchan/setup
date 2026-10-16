@@ -33,6 +33,7 @@ HASH_FILE="$STATE_DIR/installed.tsv"
 SCRIPT_STATE_FILE="$STATE_DIR/script-state.tsv"
 RETIRED_FILE="$STATE_DIR/retired.txt"
 REQUIRES_FILE="$STATE_DIR/requires.tsv"
+SUCCESSOR_FILE="$STATE_DIR/successors.tsv"
 DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
@@ -403,11 +404,34 @@ prune_hidden_dependents() {
     return 0
 }
 
+# The Auth account this machine's session belongs to, or nothing (rc 1) when
+# there is no session or its store cannot be read. Subject 1 is the operator.
+setup_session_subject() {
+    local auth_bin context subject
+    auth_bin=$(_resolve_bin auth)
+    context=$("$auth_bin" context 2>/dev/null) || return 1
+    subject=$(printf '%s' "$context" | sed -n 's/.*"subject":"\([^"]*\)".*/\1/p')
+    [[ -n "$subject" ]] || return 1
+    printf '%s\n' "$subject"
+}
+
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    local trust_rc=0 tmp filtered retired deps platform
+    local trust_rc=0 tmp filtered retired deps successors platform subject include_fleet kept
     local module target mode source mod_status requires
     setup_machine_is_trusted || trust_rc=$?
+    subject=$(setup_session_subject) || subject=""
+    # Operator-only (`fleet` audience) modules are offered on the operator's
+    # account (subject 1) or a key match against the owner's GitHub keys.
+    # When either answer is missing and neither passed, the machine keeps
+    # what it already has rather than losing it to a missing session.
+    if (( trust_rc == 0 )) || [[ "$subject" == 1 ]]; then
+        include_fleet=all
+    elif [[ -n "$subject" ]] && (( trust_rc == 1 )); then
+        include_fleet=none
+    else
+        include_fleet=installed
+    fi
     # Manifest platform column uses lowercase uname -s values (linux, darwin).
     # Empty/missing platform means the module is available on every OS.
     platform=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -416,6 +440,22 @@ fetch_manifest() {
        && grep -q '^# module' "$tmp"; then
         filtered="${tmp}.visible"
         retired="${tmp}.retired"
+        successors="${tmp}.successors"
+        # A retired row that names its successor (column 9) leaves the catalog
+        # entirely: setup swaps it for the successor and never runs it again.
+        # Older binaries print only the first eight columns and ignore this.
+        awk -F '\t' 'BEGIN { OFS="\t" }
+            $1 !~ /^#/ && $7 == "retired" && $9 != "" { print $1, $9 }
+        ' "$tmp" > "$successors"
+        kept=""
+        if [[ "$include_fleet" == installed ]]; then
+            while IFS=$'\t' read -r module target mode; do
+                module_is_installed "$module" "$target" "$mode" && kept="$kept,$module"
+            done < <(awk -F '\t' '$1 !~ /^#/ && $5 == "fleet" && !($7 == "retired" && $9 != "") { print $1 "\t" $2 "\t" $3 }' "$tmp")
+            if [[ -n "$kept" ]]; then
+                echo "Warning: could not confirm this machine's account; keeping its operator-only modules: ${${kept#,}//,/ }" >&2
+            fi
+        fi
         # Carry status and requires through this pass. The loop below drops
         # both, so the cached manifest keeps its four-column shape: an older
         # `setup` on a machine that has not self-updated yet reads this same
@@ -423,11 +463,14 @@ fetch_manifest() {
         # `source` and corrupt its payload URLs. Dependencies are cached
         # beside it in REQUIRES_FILE instead.
         awk -F '\t' \
-            -v include_fleet="$(( trust_rc == 0 ))" \
+            -v include_fleet="$include_fleet" \
+            -v kept="${kept}," \
             -v platform="$platform" \
             'BEGIN { OFS="\t" }
             /^#/ { print $1, $2, $3, $4, "", ""; next }
-            NF && ($5 != "fleet" || include_fleet) && ($6 == "" || $6 == platform) {
+            $7 == "retired" && $9 != "" { next }
+            NF && ($5 != "fleet" || include_fleet == "all" || index(kept, "," $1 ",")) \
+               && ($6 == "" || $6 == platform) {
                 print $1, $2, $3, $4, $7, $8
             }
         ' "$tmp" > "$filtered"
@@ -435,7 +478,7 @@ fetch_manifest() {
         # never be completed, so drop it too. Repeat until nothing more falls
         # away, which also removes anything depending on a dropped dependent.
         prune_hidden_dependents "$filtered" || {
-            rm -f "$tmp" "$filtered" "$retired"
+            rm -f "$tmp" "$filtered" "$retired" "$successors"
             echo "Failed to resolve manifest dependencies" >&2
             return 1
         }
@@ -451,7 +494,7 @@ fetch_manifest() {
         awk -F '\t' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, $5 }' \
             "$filtered" > "${filtered}.narrow" \
             && mv "${filtered}.narrow" "$filtered" || {
-            rm -f "$tmp" "$filtered" "${filtered}.narrow" "$retired" "$deps"
+            rm -f "$tmp" "$filtered" "${filtered}.narrow" "$retired" "$deps" "$successors"
             echo "Failed to narrow the fetched manifest" >&2
             return 1
         }
@@ -464,14 +507,11 @@ fetch_manifest() {
             printf '%s\t%s\t%s\t%s\n' "$module" "$target" "$mode" "$source"
         done < "$filtered" > "${filtered}.trimmed"
         mv "${filtered}.trimmed" "$tmp" || {
-            rm -f "$tmp" "$filtered" "${filtered}.trimmed" "$retired"
+            rm -f "$tmp" "$filtered" "${filtered}.trimmed" "$retired" "$deps" "$successors"
             echo "Failed to filter the fetched manifest" >&2
             return 1
         }
         rm -f "$filtered"
-        if (( trust_rc == 2 )); then
-            echo "Warning: could not read the owner key list; fleet-only catalog entries are hidden." >&2
-        fi
         # The retired list only lands once the manifest it describes does, so a
         # failed replacement leaves both caches at their previous state.
         if mv "$tmp" "$MANIFEST_FILE"; then
@@ -483,15 +523,95 @@ fetch_manifest() {
                 rm -f "$deps"
                 echo "Warning: could not record module dependencies" >&2
             }
+            mv "$successors" "$SUCCESSOR_FILE" || {
+                rm -f "$successors"
+                echo "Warning: could not record retired modules' successors" >&2
+            }
             return 0
         fi
-        rm -f "$tmp" "$retired" "$deps"
+        rm -f "$tmp" "$retired" "$deps" "$successors"
         echo "Failed to install fetched manifest at $MANIFEST_FILE" >&2
         return 1
     fi
     rm -f "$tmp"
     echo "Failed to fetch manifest from $MANIFEST_URL" >&2
     return 1
+}
+
+# The module that replaced a retired one, when the manifest names it.
+module_successor() {
+    [[ -f "$SUCCESSOR_FILE" ]] || return 1
+    awk -F '\t' -v m="$1" '$1 == m { print $2; found = 1; exit } END { exit !found }' "$SUCCESSOR_FILE"
+}
+
+# The successor's dependencies, installed when missing and updated when a
+# script module reports outdated: the successor can need subcommands an older
+# install lacks, and update's own dependency pass skips script modules.
+_swap_dependencies() {
+    local successor="$1" dep target mode source state
+    for dep in ${(f)"$(resolve_install_order "$successor")"}; do
+        [[ "$dep" == "$successor" ]] && continue
+        IFS=$'\t' read -r target mode source < <(
+            awk -F '\t' -v m="$dep" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+        )
+        if ! module_is_installed "$dep" "$target" "$mode"; then
+            echo "Installing $dep, required by $successor"
+            install_one "$dep" "$target" "$mode" "$source" || return 1
+            dep_mark "$dep"
+        elif [[ "$mode" == script ]]; then
+            IFS=$'\t' read -r _ state _ < <(script_status_fields "$dep" "$target" "$source")
+            if [[ "$state" == outdated ]]; then
+                _script_update "$dep" "$target" "$source" || return 1
+            fi
+        fi
+    done
+}
+
+# A machine that still has a retired module with a successor gets the
+# successor, and loses the old module's state entry only once that install
+# succeeded, so a failed run retries. The old module's uninstall never runs:
+# the successor takes over what it managed. Only the state entry counts as
+# installed, since the successor keeps or rewrites the old target. This runs
+# before a command builds its module list.
+swap_retired_modules() {
+    [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] || return 0
+    local old successor target mode source failures=0
+    while IFS=$'\t' read -r old successor <&3; do
+        grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
+        target=""
+        IFS=$'\t' read -r target mode source < <(
+            awk -F '\t' -v m="$successor" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+        )
+        if [[ -z "$target" ]]; then
+            echo "Warning: $old is retired, but this machine's catalog does not offer its successor $successor." >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        echo "Replacing $old with $successor..."
+        if ! _swap_dependencies "$successor"; then
+            echo "Warning: could not prepare $successor's dependencies; keeping $old for now." >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        if ! module_is_installed "$successor" "$target" "$mode"; then
+            if ! SETUP_SWAP_FROM="$old" install_one "$successor" "$target" "$mode" "$source"; then
+                echo "Warning: $successor install failed; keeping $old for now." >&2
+                failures=$((failures + 1))
+                continue
+            fi
+        fi
+        remove_script_state "$old"
+        echo "$old is replaced by $successor."
+        # A timer that does not come on is reported by the successor's own
+        # status; it does not undo the swap.
+        if is_service_module "$successor" \
+            && [[ "$(module_service_unit "$successor")" != tool ]] \
+            && ! module_is_active "$successor"; then
+            module_service_transition enable "$successor" \
+                || echo "Note: $successor is installed, but its timer is off." >&2
+        fi
+    done 3< "$SUCCESSOR_FILE"
+    (( failures == 0 ))
 }
 
 module_selected() {
@@ -1234,8 +1354,18 @@ shell_status_one() {
 cmd_install() {
     fetch_manifest || return 1
     local -a requested order pulled
-    requested=("$@")
-    local module target mode source requires failures=0 found=0
+    local module target mode source requires failures=0 found=0 successor
+    swap_retired_modules || failures=$((failures + 1))
+    # A retired module's name still works and installs its successor, so
+    # onboarding scripts written before the swap keep working.
+    requested=()
+    for module in "$@"; do
+        if successor=$(module_successor "$module"); then
+            echo "$module is retired; installing $successor instead."
+            module="$successor"
+        fi
+        _list_contains "$module" ${requested[@]+"${requested[@]}"} || requested+=("$module")
+    done
 
     # No arguments means the whole catalog; naming it explicitly lets the
     # ordering and enable passes below treat both cases the same way.
@@ -1314,6 +1444,10 @@ cmd_update() {
         filters+=("$target_module")
     done
     fetch_manifest || return 1
+    if ! swap_retired_modules; then
+        failure_count=$((failure_count + 1))
+        failure_names+=(swap)
+    fi
     manifest_input="$MANIFEST_FILE"
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
@@ -2065,6 +2199,7 @@ confirm_action() {
 
 cmd_reconfigure() {
     fetch_manifest || return 1
+    swap_retired_modules || true
     fetch_checksums
     local picker env_summary delim=$'\x1f' picker_state_dir picker_callbacks
     picker=$(managed_picker) || {
