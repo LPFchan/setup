@@ -2804,6 +2804,20 @@ def _retired_env_vars():
             | set(manifest().get("retiredEnvVars") or []))
 
 
+def _applied_record():
+    """fleet's record of what it rendered. One there but unreadable fails
+    the render: read as none, everything fleet wrote would turn the user's."""
+    try:
+        value = json.loads(APPLIED.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read {APPLIED} ({exc}); fix or remove it by hand")
+    if not isinstance(value, dict):
+        raise ConfigError(f"cannot read {APPLIED}: not a JSON object; fix or remove it by hand")
+    return value
+
+
 def _t3_models(tier, opencodex):
     models = {}
     for row in (manifest().get("opencodex", {}).get("t3", {}).get("claudeCustomModels", [])
@@ -2828,7 +2842,7 @@ def harness_render(force=False, clear=False):
 
     Under the config lock: a sync running alongside would load the same
     record and read what the other adds as the user's."""
-    previous = _load_json(APPLIED, {})
+    previous = _applied_record()
     if clear:
         # While setup's old modules run, what is rendered is still theirs.
         if not previous or not config_sync_enabled():

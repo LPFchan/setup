@@ -906,10 +906,10 @@ loader = importlib.machinery.SourceFileLoader("fleet_lock", sys.argv[1])
 fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
 loader.exec_module(fleet)
 fleet.config_sync_enabled = lambda: False
-seen, load = [], fleet._load_json
-fleet._load_json = lambda path, default: (seen.append((path, fleet._lock_depth)), load(path, default))[1]
+seen, load = [], fleet._applied_record
+fleet._applied_record = lambda: (seen.append(fleet._lock_depth), load())[1]
 fleet.harness_render()
-print([depth for path, depth in seen if path == fleet.APPLIED])' "$ROOT/files/fleet" 2>&1 | tail -1)
+print(seen)' "$ROOT/files/fleet" 2>&1 | tail -1)
 rm -rf "$TMP/lockhome"
 [[ "$locked" == "[1]" ]] || fail "a render loaded its record outside the config lock: $locked"
 
@@ -966,6 +966,17 @@ cp "$HOME/.zshenv" "$TMP/stray.before"
 fleet __unrender >/dev/null 2>&1 && fail "unrender passed a stray token marker"
 cmp -s "$HOME/.zshenv" "$TMP/stray.before" || fail "unrender cut .zshenv past a stray marker"
 cp "$TMP/stray.keep" "$HOME/.zshenv"
+# An unreadable record stops a sync and an uninstall alike: read as none,
+# everything fleet wrote would turn the user's.
+applied="$XDG_STATE_HOME/fleet/applied.json"
+cp "$applied" "$TMP/applied.keep"
+printf '{"mcp": ' > "$applied"
+cp "$HOME/.claude.json" "$TMP/claude-json.before"
+fleet sync --pull > "$TMP/out" 2>&1 && fail "synced past an unreadable record"
+grep -q "cannot read .*applied.json" "$TMP/out" || fail "an unreadable record went unreported: $(cat "$TMP/out")"
+fleet __unrender >/dev/null 2>&1 && fail "unrender passed an unreadable record"
+cmp -s "$HOME/.claude.json" "$TMP/claude-json.before" || fail "rendered past an unreadable record"
+mv "$TMP/applied.keep" "$applied"
 # Hermes restarts there and then, and a failed restart fails the uninstall.
 mv "$BIN/claude" "$TMP/claude.away"
 : > "$FAKE/systemctl.log"
