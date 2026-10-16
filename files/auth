@@ -560,8 +560,11 @@ def _request_session():
     data = _load()
     if data is None or data.get("version") != 2:
         raise AuthError("no renewable setup login; run: auth login", exit_code=4)
+    # Exit 5, like a token whose expected context changed: a caller that
+    # pins LOST_AUTH_ORIGIN learns the login moved to another origin.
     if data.get("origin") != ORIGIN:
-        raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
+        raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login",
+                        exit_code=5)
     session = data.get("session")
     if not isinstance(session, dict):
         session = {}
