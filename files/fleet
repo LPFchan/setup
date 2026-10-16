@@ -2222,6 +2222,10 @@ def render_claude_mcp(claude, servers, previous, retired):
         elif scope not in ("", "user"):
             # A local or project registration is the user's and shadows ours.
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
+        elif "claude" in (((previous.get("mcp") or {}).get(server["name"]) or {}).get("users") or []):
+            # The user's own entry, which matched ours once, stays theirs
+            # when ours changes.
+            found.add(server["name"])
         elif _claude_user_entry(server["name"]) != want:
             print(f"  re-enrolling {server['name']}")
             if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
@@ -2429,7 +2433,8 @@ def _effort_descriptors():
 
 def render_t3(models, previous):
     """T3's claude custom models: ours appended or refreshed by slug, the
-    user's left alone. Returns the record: slug -> row as written."""
+    user's left alone. Returns the record: slug -> row as written, marked
+    user when the row was there before fleet."""
     current = load_json(T3_SETTINGS)
     before = json.dumps(current, sort_keys=True)
     instances = current.setdefault("providerInstances", {})
@@ -2459,6 +2464,11 @@ def render_t3(models, previous):
             merged = dict(row) if isinstance(row, dict) else {"slug": slug}
             merged.update(wanted.pop(slug))
             out.append(merged)
+            # A row fleet did not add is the user's: refreshed while fleet
+            # ships its slug, but never removed.
+            mine = recorded.get(slug) if isinstance(recorded.get(slug), dict) else None
+            if mine is None or mine.get("user"):
+                record[slug] = {**record[slug], "user": True}
         elif not (slug in recorded and isinstance(row, dict)
                   and {k: v for k, v in row.items() if k != "capabilities"} == recorded[slug]):
             out.append(row)
