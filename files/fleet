@@ -711,7 +711,9 @@ def _with_name(data, name):
     end = next((i for i in range(1, len(lines)) if lines[i].rstrip(b"\r") == b"---"), None)
     if end is None:
         return data
-    plain = re.fullmatch(r"[\w.-]+", name)
+    # Plain only when no YAML reader takes it for a number, bool or null.
+    plain = (re.fullmatch(r"[A-Za-z][\w.-]*", name)
+             and name.lower() not in {"y", "n", "yes", "no", "on", "off", "true", "false", "null"})
     line = b"name: " + (name if plain else json.dumps(name, ensure_ascii=False)).encode()
     for i in range(1, end):
         if lines[i].startswith(b"name:"):

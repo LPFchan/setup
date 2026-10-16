@@ -833,6 +833,10 @@ fleet uninstall foo >/dev/null 2>&1 || fail "uninstall"
 [[ ! -e "$installed" && ! -L "$HOME/.claude/skills/foo" ]] || fail "uninstalled skill kept"
 fleet uninstall bob-foo >/dev/null 2>&1 || fail "second uninstall"
 [[ ! -e "$HOME/.agents/installed.json" ]] || fail "installed.json kept with no installs"
+# A name YAML would read as a bool goes in quoted.
+fleet install $OTHER --as true >/dev/null 2>&1 || fail "install --as true"
+[[ "$(sed -n 2p "$HOME/.agents/skills/true/SKILL.md")" == 'name: "true"' ]] || fail "a bool-like name went in plain"
+fleet uninstall true >/dev/null 2>&1 || fail "uninstall true"
 # Publishing pushes the folder first, then names it in fleet skills.
 mkdir -p "$HOME/.agents/skills/pub"; printf -- '---\nname: pub\n---\n' > "$HOME/.agents/skills/pub/SKILL.md"
 fleet publish pub >/dev/null 2>&1 || fail "publish"
