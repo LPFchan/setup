@@ -176,6 +176,12 @@ if [[ "$(uname -s)" == Linux ]]; then
     expect_status 1 outdated
     install_surfaces
     expect_status 0 current
+    # An unwritable drop-in fails the install rather than running without it.
+    mv "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}" "$TEST_TMP/dropin.keep"
+    : > "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
+    _write_stop_timeout 2>/dev/null && fail "an unwritable stop-timeout drop-in went unreported"
+    rm "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
+    mv "$TEST_TMP/dropin.keep" "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
 fi
 
 rm -f "$OPENCODEX_BIN"

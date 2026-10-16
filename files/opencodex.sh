@@ -297,8 +297,8 @@ _stop_timeout_current() {
 
 _write_stop_timeout() {
     _stop_timeout_current && return 0
-    mkdir -p "${STOP_TIMEOUT_DROPIN:h}"
-    print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN"
+    mkdir -p "${STOP_TIMEOUT_DROPIN:h}" || return 1
+    print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN" || return 1
     systemctl --user daemon-reload >/dev/null 2>&1 || true
     echo "opencodex: proxy stop timeout raised to 330s"
 }
@@ -313,7 +313,7 @@ _apply() {
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
     _apply_all_providers || return 1
-    _write_stop_timeout
+    _write_stop_timeout || return 1
     _activate_runtime || return 1
     record_script_state "$MODULE" "$(_release_ref "$version")" "$hash" "$hash"
     echo "opencodex: $action -> $BIN"
