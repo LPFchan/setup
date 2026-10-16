@@ -291,6 +291,26 @@ rm "$FAKE/claude-remove-fail"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a failed claude remove was not retried"
 
+# A server dropped while claude is missing stays fleet's, so the run that
+# finds claude again removes it.
+with_extra='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "extra", "url": "https://extra.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding extra back"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "extra was not added back"
+mv "$BIN/claude" "$TMP/claude.away"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass without claude"
+mv "$TMP/claude.away" "$BIN/claude"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a server dropped while claude was missing stayed"
+
 # Node toolchains are tried newest version first, v20 ahead of v9.
 mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
 first=$(HOME="$TMP/nvm" python3 -c '
