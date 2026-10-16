@@ -843,9 +843,16 @@ fleet.manifest = lambda: {"localPluginMcpServers": [{"name": "ext", "plugin": "p
 (fleet.CODEX_DIR/"plugins/cache/openai-bundled/p/2.0/.mcp.json").write_text("{")
 before = {"type": "stdio", "command": "/bin/true", "args": [], "env": {}}
 fleet._save_json(fleet.APPLIED, {"mcp": {"ext": {"claude": before}}})
-print([s.get("stdio") == before for s in fleet.local_plugin_servers()])' "$ROOT/files/fleet" 2>/dev/null)
+out = [[s.get("stdio") == before for s in fleet.local_plugin_servers()]]
+# Mid-update, with no version left, it is kept; with the plugin gone, not.
+import shutil
+shutil.rmtree(fleet.CODEX_DIR/"plugins/cache/openai-bundled/p/2.0")
+out.append([s.get("stdio") == before for s in fleet.local_plugin_servers()])
+shutil.rmtree(fleet.CODEX_DIR/"plugins/cache/openai-bundled/p")
+out.append([s.get("stdio") == before for s in fleet.local_plugin_servers()])
+print(out)' "$ROOT/files/fleet" 2>/dev/null)
 rm -rf "$TMP/plugin"
-[[ "$plugin" == "[True]" ]] || fail "a bad plugin cache dropped its registration: $plugin"
+[[ "$plugin" == "[[True], [True], []]" ]] || fail "a bad, updating or removed plugin cache kept the wrong registration: $plugin"
 
 # Fleet keeps the default Claude profile even from a shell aimed at another.
 profile=$(CLAUDE_CONFIG_DIR="$TMP/other" python3 -c '

@@ -1836,10 +1836,20 @@ def local_plugin_servers():
     if sys.platform != "darwin":
         return []
     servers = []
+
+    def keep_prior(spec):
+        prior = ((_load_json(APPLIED, {}).get("mcp") or {}).get(spec["name"]) or {}).get("claude")
+        if isinstance(prior, dict) and prior.get("type") == "stdio":
+            servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"], "stdio": prior})
+
     for spec in manifest().get("localPluginMcpServers", []):
         root = CODEX_DIR/"plugins/cache/openai-bundled"/spec["plugin"]
         versions = [p for p in root.glob("*") if p.is_dir() and re.fullmatch(r"\d+(?:\.\d+)*", p.name)]
         if not versions:
+            # A plugin still there with no version is mid-update: keep its
+            # registration. One gone altogether is gone.
+            if root.is_dir():
+                keep_prior(spec)
             continue
         latest = max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".")))
         try:
@@ -1856,9 +1866,7 @@ def local_plugin_servers():
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             eprint(f"  {spec['name']}: cannot import {latest/'.mcp.json'}: {exc}")
             # A bad cache version keeps the registration the last good one gave.
-            prior = ((_load_json(APPLIED, {}).get("mcp") or {}).get(spec["name"]) or {}).get("claude")
-            if isinstance(prior, dict) and prior.get("type") == "stdio":
-                servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"], "stdio": prior})
+            keep_prior(spec)
             continue
         servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"],
                         "stdio": {"type": "stdio", "command": command, "args": args, "env": env}})
