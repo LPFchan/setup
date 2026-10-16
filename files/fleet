@@ -86,14 +86,16 @@ def _auth_bin():
     return str(installed) if os.access(installed, os.X_OK) else shutil.which("auth")
 
 
-def _auth(*args, stdin=None, timeout=60):
-    """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session."""
+def _auth(*args, stdin=None, timeout=60, origin=None):
+    """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session.
+    `origin` pins the Auth origin; a login saved for another one exits 5."""
     binary = _auth_bin()
     if not binary:
         return 4, ""
+    env = {**os.environ, "LOST_AUTH_ORIGIN": origin} if origin else None
     try:
         result = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True,
-                                timeout=timeout)
+                                timeout=timeout, env=env)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return result.returncode, result.stdout
@@ -478,6 +480,10 @@ def _digest(path):
     return [hashlib.sha256(data).hexdigest(), bool(path.stat().st_mode & 0o100)]
 
 
+def _unreadable(exc):
+    raise ConfigError(f"cannot read {exc.filename}: {exc.strerror}")
+
+
 def scan_local():
     """({path: [sha256, executable]}, symlinks skipped) under ~/.agents/."""
     files, symlinks = {}, []
@@ -495,7 +501,11 @@ def scan_local():
         if root.is_symlink():
             symlinks.append(top)
             continue
-        for folder, dirs, names in os.walk(root):
+        if not os.path.lexists(root):
+            continue
+        # An unreadable folder fails the scan: skipped, its files would read
+        # as deleted and the deletions would reach every machine.
+        for folder, dirs, names in os.walk(root, onerror=_unreadable):
             base = pathlib.Path(folder)
             for name in list(dirs):
                 if name.casefold() in SKIPPED_NAMES:
@@ -522,16 +532,19 @@ def _safe_target(rel):
     return target
 
 
-def _request(method, path, body=None):
+def _request(method, path, body=None, origin=None):
     """The parsed answer of a session-authenticated request. Raises Rejected
-    for a refused session, ConfigError for anything else."""
+    for a refused session, ConfigError for anything else. With `origin`, a
+    login that moved to another Auth origin raises ConfigError."""
     args = ["request", method, path] + (["-"] if body is not None else [])
     stdin = json.dumps(body) if body is not None else None
     for attempt in range(3):
-        rc, out = _auth(*args, stdin=stdin, timeout=300)
+        rc, out = _auth(*args, stdin=stdin, timeout=300, origin=origin)
         if rc == 4:
             _set_login_marker(True)
             raise Rejected()
+        if rc == 5 and origin:
+            raise ConfigError("the session changed during the sync")
         try:
             value = json.loads(out) if out.strip() else None
         except ValueError:
@@ -883,12 +896,12 @@ def pull(account):
     raise ConfigError("the account kept changing during the sync; try again")
 
 
-def _check_json_objects(paths):
-    for rel in paths:
+def _check_json_objects(payloads):
+    for rel, data in payloads.items():
         if rel == "mcp.json" or (rel.startswith("settings/") and rel.endswith(".json")):
             try:
-                value = json.loads((AGENTS_DIR/rel).read_text())
-            except (OSError, ValueError):
+                value = json.loads(data)
+            except ValueError:
                 value = None
             if not isinstance(value, dict):
                 raise ConfigError(f"{rel} is not a JSON object; fix it before uploading")
@@ -896,26 +909,31 @@ def _check_json_objects(paths):
 
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
-    _check_json_objects(puts)
+    # Each file is read once, so what is checked, sent, and recorded as sent
+    # is the same version even while an editor saves over it.
+    payloads = {rel: (AGENTS_DIR/rel).read_bytes() for rel in sorted(puts)}
+    _check_json_objects(payloads)
     clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts))
     if clashes:
         raise ConfigError("not pushing paths a case-insensitive disk would merge into one file; "
                           "rename one of each: " + "; ".join(clashes))
-    # Two accounts can share a counter, so Auth also checks the push is for
-    # the account this machine pulled, not one signed in to since.
-    body = {"base": record["counter"], "subject": record["account"].split(" ", 1)[1],
-            "put": [{"path": rel, "content": base64.b64encode((AGENTS_DIR/rel).read_bytes()).decode(),
-                     "executable": local[rel][1]} for rel in sorted(puts)],
+    # Two accounts can share a counter, so the push is pinned to the account
+    # this machine pulled, not one signed in to since: the auth CLI refuses a
+    # login from another origin, and Auth refuses another subject.
+    origin, subject = record["account"].split(" ", 1)
+    body = {"base": record["counter"], "subject": subject,
+            "put": [{"path": rel, "content": base64.b64encode(data).decode(),
+                     "executable": local[rel][1]} for rel, data in payloads.items()],
             "delete": sorted(deletes)}
     try:
-        value = _request("POST", "/api/fleet/config/push", body)
+        value = _request("POST", "/api/fleet/config/push", body, origin=origin)
     except HttpError as exc:
         if exc.status == 409 and str(exc) == "account changed":
             raise ConfigError("the session changed during the sync") from None
         raise
     files = dict(record.get("files") or {})
-    for rel in puts:
-        files[rel] = local[rel]
+    for rel, data in payloads.items():
+        files[rel] = [hashlib.sha256(data).hexdigest(), local[rel][1]]
     for rel in deletes:
         files.pop(rel, None)
     return {**record, "counter": value["counter"], "version": value["version"], "files": files}
@@ -999,11 +1017,15 @@ def _unlink_restoring(target, links):
         target.unlink()
     elif os.path.lexists(target):
         return
-    moved = links.pop(str(target), None)
+    # The mapping goes only once the file is back, so a failed move leaves
+    # the next run to find it.
+    moved = links.get(str(target))
     if moved and os.path.lexists(moved):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(moved, target)
+        del links[str(target)]
     else:
+        links.pop(str(target), None)
         _restore_old_backup(target)
 
 
@@ -1162,7 +1184,8 @@ def onboard(account):
         for directory in HARNESS_SKILL_DIRS:
             for folder in _skill_folders(directory):
                 mine = skills/folder.name
-                if mine.exists():
+                # lexists: a dangling link there is the user's, not staged.
+                if os.path.lexists(mine):
                     if not _same_tree(folder, mine):
                         listed.append(str(folder))
                 else:

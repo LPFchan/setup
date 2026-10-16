@@ -30,8 +30,9 @@ def answer(status, value):
 cmd = sys.argv[1]
 if cmd == "refresh":
     sys.exit(0)
+origin = open(f"{fake}/origin").read() if os.path.exists(f"{fake}/origin") else "https://auth.lost.plus"
 if cmd == "context":
-    print(json.dumps({"origin": "https://auth.lost.plus", "subject": open(f"{fake}/subject").read()}))
+    print(json.dumps({"origin": origin, "subject": open(f"{fake}/subject").read()}))
     sys.exit(0)
 method, path = sys.argv[2], sys.argv[3]
 body = json.load(sys.stdin) if sys.argv[4:] == ["-"] else None
@@ -48,6 +49,11 @@ if path == "/api/fleet/config":
                  "files": [{"path": p, "size": len(f["content"]), "sha256": f["sha256"],
                             "executable": f["executable"]} for p, f in sorted(state["files"].items())]})
 if path == "/api/fleet/config/fetch":
+    if os.path.exists(f"{fake}/edit-on-fetch"):
+        # An editor saves a file again between the scan and the upload.
+        target = open(f"{fake}/edit-on-fetch").read()
+        os.remove(f"{fake}/edit-on-fetch")
+        open(target, "w").write("saved later\n")
     if os.path.exists(f"{fake}/switch-on-fetch"):
         # Another account signed in while the files were coming down.
         os.remove(f"{fake}/switch-on-fetch")
@@ -60,6 +66,13 @@ if path == "/api/fleet/config/fetch":
                  "remaining": [p for p in paths if p in state["files"] and p not in first],
                  "missing": [p for p in paths if p not in state["files"]]})
 if path == "/api/fleet/config/push":
+    if os.path.exists(f"{fake}/switch-origin"):
+        # The machine signed in to another Auth that issued the same subject.
+        os.remove(f"{fake}/switch-origin")
+        open(f"{fake}/origin", "w").write("https://other.example")
+        origin = "https://other.example"
+    if os.environ.get("LOST_AUTH_ORIGIN", origin) != origin:
+        sys.exit(5)
     if os.path.exists(f"{fake}/switch"):
         # The machine signed in to another account after its pull.
         os.remove(f"{fake}/switch")
@@ -159,6 +172,13 @@ rm "$FAKE/limited"
 [[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" ]] \
     || fail "a refused onboarding kept what it staged in ~/.agents"
 [[ -f "$HOME/.agents/skills/mine/SKILL.md" ]] || fail "a refused onboarding removed an own skill"
+# A dangling link where a harness skill would be staged stays the user's.
+ln -s "$TMP/nowhere" "$HOME/.agents/skills/both"
+touch "$FAKE/limited"
+fleet onboard >/dev/null 2>&1 && fail "onboard read a refused upload as success"
+rm "$FAKE/limited"
+[[ -L "$HOME/.agents/skills/both" ]] || fail "a failed onboarding removed the user's dangling link"
+rm "$HOME/.agents/skills/both"
 # A copy that fails partway comes out with everything else it staged.
 printf 'locked\n' > "$HOME/.codex/skills/both/locked.md"; chmod 000 "$HOME/.codex/skills/both/locked.md"
 fleet onboard >/dev/null 2>&1 && fail "onboard read a failed copy as success"
@@ -197,6 +217,20 @@ fleet sync --pull >/dev/null 2>&1 || fail "pull with a local edit"
 fleet status | grep -q '1 local changes wait' || fail "status missed the local edit"
 fleet sync >/dev/null 2>&1 || fail "direct sync"
 [[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "direct sync did not upload"
+# An unreadable skill folder fails the sync instead of reading as deleted.
+chmod 000 "$HOME/.agents/skills/mine"
+rc=0; fleet sync >"$TMP/out" 2>&1 || rc=$?
+chmod 700 "$HOME/.agents/skills/mine"
+[[ $rc != 0 ]] || fail "synced with an unreadable skill folder"
+[[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "an unreadable folder was uploaded as deleted"
+# A file saved again during the sync is recorded as the version it sent.
+printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
+printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
+fleet sync >/dev/null 2>&1 || fail "sync with a save during it"
+[[ "$(server_has skills/mine/SKILL.md)" == "saved later" ]] || fail "sent '$(server_has skills/mine/SKILL.md)'"
+fleet status | grep -q 'local changes wait' && fail "the version sent was recorded as another"
+printf 'edited\n' > "$HOME/.agents/skills/mine/SKILL.md"
+fleet sync >/dev/null 2>&1 || fail "direct sync after the save"
 cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record"
 
 # Signing in to another account between pull and push uploads nothing.
@@ -206,6 +240,15 @@ fleet sync >"$TMP/out" 2>&1 && fail "pushed after the account changed"
 grep -q 'session changed' "$TMP/out" || fail "account change not reported: $(cat "$TMP/out")"
 [[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "a push landed for the wrong account"
 printf '7' > "$FAKE/subject"
+printf 'edited\n' > "$HOME/.agents/skills/mine/SKILL.md"
+
+# So does signing in to another Auth origin that issued the same subject.
+printf 'meant for this origin\n' > "$HOME/.agents/skills/mine/SKILL.md"
+touch "$FAKE/switch-origin"
+fleet sync >"$TMP/out" 2>&1 && fail "pushed after the origin changed"
+grep -q 'session changed' "$TMP/out" || fail "origin change not reported: $(cat "$TMP/out")"
+[[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "a push landed for the other origin"
+rm -f "$FAKE/origin"
 printf 'edited\n' > "$HOME/.agents/skills/mine/SKILL.md"
 
 # A skill link that displaced a real folder puts it back when the skill
@@ -218,6 +261,20 @@ server_del skills/shadow/SKILL.md
 fleet sync --pull >/dev/null 2>&1 || fail "pull removing a skill"
 [[ ! -L "$HOME/.claude/skills/shadow" && "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] \
     || fail "pruning did not restore the displaced skill"
+rm -rf "$HOME/.claude/skills/shadow"
+# A displaced skill that cannot be put back yet keeps its backup mapping.
+mkdir -p "$HOME/.claude/skills/shadow"; printf 'hand-made\n' > "$HOME/.claude/skills/shadow/SKILL.md"
+server_put skills/shadow/SKILL.md 'account shadow'
+fleet sync --pull >/dev/null 2>&1 || fail "pull with a displaced skill"
+server_del skills/shadow/SKILL.md
+# The link is already gone and the folder is read-only, so the move fails.
+rm "$HOME/.claude/skills/shadow"; chmod 500 "$HOME/.claude/skills"
+rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
+chmod 700 "$HOME/.claude/skills"
+[[ $rc != 0 ]] || fail "pull restored into a read-only folder"
+fleet sync --pull >/dev/null 2>&1 || fail "pull once the folder is writable"
+[[ "$(cat "$HOME/.claude/skills/shadow/SKILL.md" 2>/dev/null)" == "hand-made" ]] \
+    || fail "a failed restore lost the displaced skill"
 rm -rf "$HOME/.claude/skills/shadow"
 
 # Files fetched while another account signed in are not applied.
@@ -511,7 +568,7 @@ server_put skills/late/SKILL.md 'late'
 chmod 500 "$HOME/.claude/skills"
 fleet sync --pull >/dev/null 2>&1 && fail "a pass with an unwritable skill folder reported success"
 chmod 700 "$HOME/.claude/skills"
-fleet sync --pull >/dev/null 2>&1 || fail "pull after the skill folder came back"
+fleet sync --pull >/dev/null 2>&1 || fail "pull once the folder is writable"
 rm -rf "$HOME/.claude/skills"
 # The old agents module's links go too, with what they replaced back.
 mkdir -p "$HOME/.gemini" "$HOME/.config/muse/skills"
