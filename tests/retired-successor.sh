@@ -112,6 +112,17 @@ grep -qx next "$SWAP_PENDING_FILE" || fail "an undroppable old state entry clear
 swap_retired_modules >/dev/null 2>&1 || fail "swap once the old state entry can go"
 state_has old && fail "old state entry kept once it can go"
 [[ ! -e "$SWAP_PENDING_FILE" ]] || fail "retry marker left after the takeover finished"
+# A takeover whose retry marker cannot be rewritten is not reported done.
+printf 'next\nghost\n' > "$SWAP_PENDING_FILE"; mkdir "$SWAP_PENDING_FILE.tmp"
+swap_retired_modules >/dev/null 2>&1 && fail "swap passed with a retry marker it could not clear"
+grep -qx next "$SWAP_PENDING_FILE" || fail "an uncleared retry marker lost the takeover"
+rmdir "$SWAP_PENDING_FILE.tmp"
+chmod 000 "$SWAP_PENDING_FILE"
+swap_retired_modules >/dev/null 2>&1 && fail "swap passed with a retry marker it could not read"
+chmod 600 "$SWAP_PENDING_FILE"
+grep -qx next "$SWAP_PENDING_FILE" || fail "an unreadable retry marker lost the takeover"
+swap_retired_modules >/dev/null 2>&1 || fail "swap once the retry marker can be cleared"
+[[ ! -e "$SWAP_PENDING_FILE" ]] || fail "retry marker left once it can be cleared"
 
 # An outdated dependency is updated before the successor goes in.
 printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"

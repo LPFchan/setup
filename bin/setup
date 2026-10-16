@@ -580,7 +580,10 @@ swap_retired_modules() {
     local -a kept
     # A successor whose rerun after the swap failed is still owed one: the old
     # state entry is gone by then, so nothing else would bring it back.
-    [[ -f "$SWAP_PENDING_FILE" ]] && swapped=" $(tr '\n' ' ' < "$SWAP_PENDING_FILE")"
+    if [[ -f "$SWAP_PENDING_FILE" ]] && ! swapped=" $(tr '\n' ' ' 2>/dev/null < "$SWAP_PENDING_FILE")"; then
+        echo "Warning: could not read $SWAP_PENDING_FILE; the takeovers it owes wait for the next run." >&2
+        failures=1
+    fi
     [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] && while IFS=$'\t' read -r old successor _ <&3; do
         grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
         target=""
@@ -650,14 +653,27 @@ swap_retired_modules() {
             failures=$((failures + 1))
             continue
         fi
-        grep -vx "$successor" "$SWAP_PENDING_FILE" > "$SWAP_PENDING_FILE.tmp" 2>/dev/null || true
-        if [[ -s "$SWAP_PENDING_FILE.tmp" ]]; then
-            mv "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
-        else
-            rm -f "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
+        if ! clear_swap_pending "$successor"; then
+            echo "Warning: could not mark $successor's takeover done; the next run tries again." >&2
+            failures=$((failures + 1))
         fi
     done
     (( failures == 0 ))
+}
+
+# Drops one finished takeover from the retry marker; fails when the marker
+# could not be rewritten, so the swap is not reported done.
+clear_swap_pending() {
+    local rest
+    [[ -e "$SWAP_PENDING_FILE" ]] || return 0
+    rest="$(grep -vx -- "$1" "$SWAP_PENDING_FILE")"
+    (( $? < 2 )) || return 1
+    if [[ -z "$rest" ]]; then
+        rm -f "$SWAP_PENDING_FILE"
+    else
+        print -r -- "$rest" 2>/dev/null > "$SWAP_PENDING_FILE.tmp" \
+            && mv "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
+    fi
 }
 
 module_selected() {
