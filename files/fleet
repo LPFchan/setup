@@ -31,6 +31,10 @@ import unicodedata
 import urllib.request
 
 HOME = pathlib.Path.home()
+# Fleet keeps the default Claude profile, the one its nightly run (which has
+# no CLAUDE_CONFIG_DIR) sees; a run from a shell aimed at another profile
+# would otherwise split the settings it writes from the claude CLI's.
+os.environ.pop("CLAUDE_CONFIG_DIR", None)
 SSH_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_SSH_DIR", "~/.ssh")))
 SSH_CONFIG = SSH_DIR/"config"
 AUTHORIZED_KEYS = SSH_DIR/"authorized_keys"
@@ -1848,6 +1852,10 @@ def local_plugin_servers():
                 raise ValueError("unsupported plugin launch configuration")
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             eprint(f"  {spec['name']}: cannot import {latest/'.mcp.json'}: {exc}")
+            # A bad cache version keeps the registration the last good one gave.
+            prior = ((_load_json(APPLIED, {}).get("mcp") or {}).get(spec["name"]) or {}).get("claude")
+            if isinstance(prior, dict) and prior.get("type") == "stdio":
+                servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"], "stdio": prior})
             continue
         servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"],
                         "stdio": {"type": "stdio", "command": command, "args": args, "env": env}})
@@ -1988,8 +1996,11 @@ def resolve_tokens(servers, context, warnings):
             value = None if exc.authoritative else existing.get(var) or (
                 os.environ.get(var) if source == "passage" else None)
             eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
-            if not value and not exc.authoritative:
-                missing.add(server["name"])
+            if not value:
+                # No credential at all: a connector would only fail. Skipped,
+                # it is looked up again next run.
+                (skipped if exc.authoritative else missing).add(server["name"])
+                continue
         value = mcp_token_value(value)
         if value:
             exports[var] = value
@@ -2202,7 +2213,7 @@ def _claude_mcp_scope(claude, name):
 
 
 def _claude_json():
-    return pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
+    return HOME/".claude.json"
 
 
 def _claude_user_entry(name):
@@ -2344,13 +2355,13 @@ def render_codex_mcp(servers, previous, retired):
     # Reclaim blocks an older release appended outside the region: a body
     # identical to one of ours, or a retired name. A block carrying
     # [.tools.*] rules was never ours.
-    ours = {_codex_mcp_block(s).strip().split("\n", 1)[1] for s in servers}
+    ours = {(s["name"], _codex_mcp_block(s).strip().split("\n", 1)[1]) for s in servers}
     for name, body in _codex_sections(text):
         table = ((_toml(text)[0] or {}).get("mcp_servers") or {}).get(name)
         if isinstance(table, dict) and any(isinstance(v, dict) for v in table.values()):
             continue
         rest = body.strip().split("\n", 1)
-        if name in retired or (len(rest) == 2 and rest[1] in ours):
+        if name in retired or (len(rest) == 2 and (name, rest[1]) in ours):
             text = text.replace(body, "", 1)
     # Declared means given settings of its own, not only [.tools.*] rules
     # hanging off the name, which still need our url.
@@ -2827,7 +2838,9 @@ def harness_outdated():
 def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
     m, present, opencodex, servers, digest = _harness_inputs(account, tier, hub, clear)
     retired = set(m.get("retiredMcpServers") or []) - set(servers)
-    if not clear and not force and previous.get("hash") == digest:
+    # A credential Auth had none for may have come since: the inputs hash
+    # does not show it, so such a render is never taken as current.
+    if not clear and not force and previous.get("hash") == digest and not previous.get("absent"):
         return 0
     for warning in warnings:
         eprint(f"fleet: {warning}")
@@ -2845,6 +2858,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         if not clear and _context() != account:
             eprint("fleet: the login changed during the sync; run: fleet sync")
             return 3
+        absent = {n for n in skipped if servers[n].get("credentialSource") in ("common-auth", "passage")}
         for name in skipped:
             servers.pop(name)
         rc = 1 if missing else rc
@@ -2952,6 +2966,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 entry["users"] = sorted(mine)
         # A failed part renders again on the next run.
         record["hash"] = digest if rc == 0 else None
+        record["absent"] = sorted(absent)
         if clear and rc == 0:
             APPLIED.unlink(missing_ok=True)
         else:

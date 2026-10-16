@@ -640,6 +640,12 @@ sed -i.bak '/^HEATMAP_MCP_TOKEN=mine$/d' "$HOME/.codex/.env" && rm -f "$HOME/.co
 grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env token"
 grep -qx update "$FAKE/claude.log" && grep -qx 'codex update' "$FAKE/claude.log" || fail "harnesses not updated"
 grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "hermes not restarted"
+# A server Auth has no credential for is left out, and an ordinary sync
+# brings it back once there is one.
+grep -q '^\[mcp_servers.heatmap\]' "$codex" && fail "a server with no credential was rendered"
+rm "$FAKE/token-gone"
+fleet sync --pull >/dev/null 2>&1 || fail "sync once the credential is back"
+grep -q '^\[mcp_servers.heatmap\]' "$codex" || fail "a credential that came back was not picked up"
 # A proxy route the nightly pass could not export is reported too.
 mkdir -p "$HOME/.local/bin"
 printf 'import sys\nsys.exit(sys.argv[1:] == ["__export"])\n' > "$HOME/.local/bin/opencodex"
@@ -647,6 +653,45 @@ chmod +x "$HOME/.local/bin/opencodex"
 fleet schedule run >/dev/null 2>&1 && fail "a failed route export went unreported"
 rm "$HOME/.local/bin/opencodex"
 [[ ! -e "$XDG_STATE_HOME/fleet/hermes.restart" ]] || fail "hermes restart left pending"
+
+# A user's codex server that shares a fleet server's url under its own name
+# is theirs, not a block an older release left.
+shared=$(python3 -c '
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_shared", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.CODEX_CONFIG = pathlib.Path(sys.argv[2])
+fleet.CODEX_CONFIG.write_text("[mcp_servers.mine]\nurl = \"https://same.example/mcp\"\n")
+fleet.render_codex_mcp([{"name": "ours", "url": "https://same.example/mcp", "auth": "none"}], {}, set())
+print("mcp_servers.mine" in fleet.CODEX_CONFIG.read_text())' "$ROOT/files/fleet" "$TMP/shared.toml" 2>&1 | tail -1)
+[[ "$shared" == True ]] || fail "a user codex server sharing a fleet url was removed: $shared"
+
+# A cached plugin version that cannot be imported keeps the registration the
+# last good one gave.
+plugin=$(HOME="$TMP/plugin" XDG_STATE_HOME="$TMP/plugin/state" python3 -c '
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("fleet_plugin", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.sys.platform = "darwin"
+fleet.manifest = lambda: {"localPluginMcpServers": [{"name": "ext", "plugin": "p", "server": "s"}]}
+(fleet.CODEX_DIR/"plugins/cache/openai-bundled/p/2.0").mkdir(parents=True)
+(fleet.CODEX_DIR/"plugins/cache/openai-bundled/p/2.0/.mcp.json").write_text("{")
+before = {"type": "stdio", "command": "/bin/true", "args": [], "env": {}}
+fleet._save_json(fleet.APPLIED, {"mcp": {"ext": {"claude": before}}})
+print([s.get("stdio") == before for s in fleet.local_plugin_servers()])' "$ROOT/files/fleet" 2>/dev/null)
+rm -rf "$TMP/plugin"
+[[ "$plugin" == "[True]" ]] || fail "a bad plugin cache dropped its registration: $plugin"
+
+# Fleet keeps the default Claude profile even from a shell aimed at another.
+profile=$(CLAUDE_CONFIG_DIR="$TMP/other" python3 -c '
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("fleet_profile", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+print(os.environ.get("CLAUDE_CONFIG_DIR"), fleet._claude_json() == fleet.HOME/".claude.json")' "$ROOT/files/fleet")
+[[ "$profile" == "None True" ]] || fail "fleet followed CLAUDE_CONFIG_DIR: $profile"
 
 # Uninstalling takes back only the hermes skills folder fleet added.
 skills=$(HERMES_CONFIG="$TMP/hermes-skills.yaml" python3 -c '
