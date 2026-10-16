@@ -172,5 +172,16 @@ FLEET_SOURCE="$TMP/missing" module uninstall >/dev/null 2>&1 && fail "uninstall 
 printf 'import sys\nsys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)\n' > "$FLEET_BIN"
 module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ -e "$FLEET_BIN" ]] || fail "a failed uninstall removed the binary"
+# A failed cleanup leaves fleet installed, so its nightly sync comes back on.
+cat > "$FLEET_BIN" <<'EOF'
+import os, sys
+open(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["schedule", "status"]:
+    print("fleet: nightly sync on")
+sys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)
+EOF
+rm -f "$FAKE/ran"
+module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+[[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
 
 echo "fleet tests passed"
