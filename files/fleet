@@ -2869,7 +2869,8 @@ def heavy_pass():
     if opencodex:
         # Written only while the proxy runs, never removed here: a proxy
         # caught mid-restart must keep the route.
-        subprocess.run([sys.executable, str(OPENCODEX), "__export"])
+        if subprocess.run([sys.executable, str(OPENCODEX), "__export"]).returncode:
+            failed.append("opencodex export")
     rc = cmd_sync(direct=False, force=True)
     if config_sync_enabled() and harness_update():
         failed.append("harness updates")
