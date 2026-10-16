@@ -316,6 +316,55 @@ mv "$TMP/claude.away" "$BIN/claude"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a server dropped while claude was missing stayed"
 
+# An entry the user already had, matching ours, stays theirs: dropping the
+# server from the account does not remove it.
+python3 - "$HOME/.claude.json" "$HOME/.hermes/config.yaml" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); v["mcpServers"]["theirs"] = {"type": "http", "url": "https://t.example/mcp"}
+json.dump(v, open(sys.argv[1], "w"))
+text = open(sys.argv[2]).read().replace("mcp_servers:\n", "mcp_servers:\n  theirs:\n    type: remote\n"
+                                         "    url: https://t.example/mcp\n    oauth: false\n", 1)
+open(sys.argv[2], "w").write(text)
+EOF
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "theirs", "url": "https://t.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass with the user's own matching entry"
+fleet sync --pull >/dev/null 2>&1 || fail "second pass with the user's own matching entry"
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the user's matching server"
+[[ "$(json "$HOME/.claude.json" '"theirs" in v["mcpServers"]')" == True ]] || fail "claude lost the user's own entry"
+grep -q '^  theirs:' "$HOME/.hermes/config.yaml" || fail "hermes lost the user's own entry"
+python3 - "$HOME/.claude.json" "$HOME/.hermes/config.yaml" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); del v["mcpServers"]["theirs"]; json.dump(v, open(sys.argv[1], "w"))
+text = open(sys.argv[2]).read().replace("  theirs:\n    type: remote\n    url: https://t.example/mcp\n    oauth: false\n", "", 1)
+open(sys.argv[2], "w").write(text)
+EOF
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the user's own entry test"
+
+# A hermes key written on one line is left alone, not followed by a second
+# block that would replace it.
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+printf 'model: x\nmcp_servers: {personal: {url: https://p.example/mcp}}\n' > "$HOME/.hermes/config.yaml"
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.flow"
+server_put mcp.json "$with_extra"
+fleet sync --pull > "$TMP/out" 2>&1 && fail "rendered into a one-line hermes mcp_servers"
+cmp -s "$HOME/.hermes/config.yaml" "$TMP/hermes.flow" || fail "edited a one-line hermes mcp_servers"
+grep -q 'written on one line' "$TMP/out" || fail "a one-line hermes mcp_servers went unreported"
+mv "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the one-line hermes test"
+
 # Node toolchains are tried newest version first, v20 ahead of v9.
 mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
 first=$(HOME="$TMP/nvm" python3 -c '
@@ -488,7 +537,7 @@ loader.exec_module(fleet)
 out = []
 for text in ["skills:\n  external_dirs:\n  - ~/.agents/skills\n", "skills:\n  external_dirs:\n  - ~/mine\n"]:
     fleet.HERMES_CONFIG.write_text(text)
-    _, ours = fleet.render_hermes([], {}, set())
+    _, ours, _ = fleet.render_hermes([], {}, set())
     fleet.render_hermes([], {"hermesSkills": ours}, set(), clear=True)
     after = fleet.HERMES_CONFIG.read_text()
     out.append(after.startswith(text) and after.count("skills") == text.count("skills"))

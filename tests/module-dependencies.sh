@@ -135,4 +135,40 @@ dep_is_marked s || fail "the dependency update installed was not marked"
 rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
 cp "$saved_manifest" "$MANIFEST_FILE"
 
+# --- a failed dependency holds back the module that needs it -----------
+# u needs s; s fails to install, so u is not updated without it.
+printf '%b' 'u\t~/u\t0755\tx\ns\t~/s\tscript\tx\n' > "$MANIFEST_FILE"
+write_requires 'u\ts\n'
+rm -f "$HOME/s" "$SCRIPT_STATE_FILE" "$DEP_FILE"
+: > "$HOME/u"
+printf '%s\tH\n' "$HOME/u" > "$HASH_FILE"
+: > "$TMP/installed"
+install_one() {
+    printf '%s ' "$1" >> "$TMP/installed"
+    [[ "$1" == s ]] && return 1
+    return 0
+}
+out=$(cmd_update 2>&1) && fail "update with a failed dependency succeeded: $out"
+[[ "$(<"$TMP/installed")" == "s " ]] || fail "update sequence was '$(<"$TMP/installed")', expected 's '"
+[[ "$out" == *"u waits for it"* ]] || fail "update reported: $out"
+rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
+
+# --- a filter on a dependency brings that dependency's prerequisites ----
+# u needs s, s needs p; neither is installed. `update s` installs p before s.
+printf '%b' 'u\t~/u\t0755\tx\ns\t~/s\tscript\tx\np\t~/p\tscript\tx\n' > "$MANIFEST_FILE"
+write_requires 'u\ts\ns\tp\n'
+rm -f "$HOME/s" "$HOME/p" "$SCRIPT_STATE_FILE" "$DEP_FILE"
+: > "$HOME/u"
+printf '%s\tH\n' "$HOME/u" > "$HASH_FILE"
+: > "$TMP/installed"
+install_one() {
+    printf '%s ' "$1" >> "$TMP/installed"
+    [[ "$3" == script ]] && printf '%s\tx\n' "$1" >> "$SCRIPT_STATE_FILE"
+    return 0
+}
+out=$(cmd_update s 2>&1) || fail "filtered update failed: $out"
+[[ "$(<"$TMP/installed")" == "p s " ]] || fail "filtered update sequence was '$(<"$TMP/installed")', expected 'p s '"
+rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
+cp "$saved_manifest" "$MANIFEST_FILE"
+
 echo "module-dependencies: ok"
