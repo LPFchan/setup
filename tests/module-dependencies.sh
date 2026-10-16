@@ -85,4 +85,14 @@ grep -q '^chained' "$filtered" && fail "prune kept a module depending on a dropp
 manifest_cols=$(awk -F '\t' 'NF { print NF }' "$MANIFEST_FILE" | sort -u | tr '\n' ' ')
 [[ "$manifest_cols" == "4 " ]] || fail "cached manifest has columns '$manifest_cols', expected '4 '"
 
+# --- fleet needs schedule on Linux only ------------------------------
+# Its timer is a systemd unit on Linux and a launchd agent on macOS, which
+# the requires column cannot say, so module_requires adds it.
+write_requires 'fleet\tauth\n'
+uname() { echo Linux; }
+[[ "$(module_requires fleet)" == "auth schedule" ]] || fail "fleet on Linux requires '$(module_requires fleet)'"
+uname() { echo Darwin; }
+[[ "$(module_requires fleet)" == "auth" ]] || fail "fleet on macOS requires '$(module_requires fleet)'"
+unfunction uname
+
 echo "module-dependencies: ok"

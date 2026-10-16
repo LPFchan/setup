@@ -37,8 +37,8 @@ DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring providers harnesses backup system-updates"
-USER_SERVICE_MODULES="providers harnesses"
+SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring providers harnesses fleet backup system-updates"
+USER_SERVICE_MODULES="providers harnesses fleet"
 BATCH=0
 
 # Cache revalidation remains useful for custom HTTP sources. The default GitHub
@@ -115,6 +115,7 @@ module_enable_cmd() {
                         bin=$(_resolve_bin "$1"); echo "$bin enable" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule" ;;
         harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule" ;;
+        fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
     esac
@@ -128,6 +129,7 @@ module_disable_cmd() {
                         bin=$(_resolve_bin "$1"); echo "$bin disable" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule disable" ;;
         harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule disable" ;;
+        fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
     esac
@@ -140,6 +142,7 @@ module_service_unit() {
         monitoring)     echo "monitoring.service" ;;
         providers)     echo "providers.timer" ;;
         harnesses)      echo "harnesses-update.timer" ;;
+        fleet)          echo "fleet-sync.timer" ;;
         backup)         echo "backup.timer" ;;
         system-updates) echo "system-updates.timer" ;;
     esac
@@ -163,6 +166,7 @@ module_is_active() {
         case "$1" in
             providers) launchctl print "gui/$(id -u)/com.lost.plus.providers" &>/dev/null; return $? ;;
             harnesses) launchctl print "gui/$(id -u)/com.lost.plus.harnesses-update" &>/dev/null; return $? ;;
+            fleet) launchctl print "gui/$(id -u)/com.lost.plus.fleet-sync" &>/dev/null; return $? ;;
         esac
     fi
     [[ "$(systemctl ${user_flag} is-active "${unit}" 2>/dev/null)" == "active" ]]
@@ -246,7 +250,8 @@ module_is_retired() {
 #
 # Only unconditional dependencies belong here. `providers` and `harnesses`
 # need `schedule` on Linux but use launchd on macOS, and one column cannot say
-# that, so they keep their own runtime check instead.
+# that, so they keep their own runtime check instead. `fleet` has the same
+# need, which module_requires adds itself.
 
 # Membership test. The array subscript flag (Ie) reports a match's index, and
 # under KSH_ARRAYS the first element is index 0, which reads as "absent" --
@@ -269,15 +274,19 @@ module_in_catalog() {
     return 1
 }
 
-# Space-separated dependencies of one module.
+# Space-separated dependencies of one module. fleet's timer needs `schedule`
+# on Linux only (launchd on macOS), which the requires column cannot say.
 module_requires() {
-    local wanted="$1" module requires
-    [[ -f "$REQUIRES_FILE" ]] || return 0
+    local wanted="$1" module requires extra=""
+    [[ "$wanted" == fleet && "$(uname -s)" == Linux ]] && extra=" schedule"
+    [[ -f "$REQUIRES_FILE" ]] || { [[ -n "$extra" ]] && printf '%s\n' "${extra# }"; return 0; }
     while IFS=$'\t' read -r module requires; do
         [[ "$module" == "$wanted" ]] || continue
-        printf '%s\n' "${requires//,/ }"
+        printf '%s\n' "${requires//,/ }$extra"
         return 0
     done < "$REQUIRES_FILE"
+    [[ -n "$extra" ]] && printf '%s\n' "${extra# }"
+    return 0
 }
 
 # Installed modules that declare $1 as a dependency.

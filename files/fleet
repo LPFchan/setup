@@ -1,0 +1,541 @@
+#!/usr/bin/env python3
+# setup-module: fleet
+# setup-source: files/fleet
+"""fleet — keeps this machine's SSH config and authorized_keys in step with its
+account's fleet in Common Auth (DEC-20261015-001)."""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+HOME = pathlib.Path.home()
+SSH_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_SSH_DIR", "~/.ssh")))
+SSH_CONFIG = SSH_DIR/"config"
+AUTHORIZED_KEYS = SSH_DIR/"authorized_keys"
+STATE_HOME = pathlib.Path(os.environ.get("XDG_STATE_HOME") or HOME/".local/state")
+STATE = STATE_HOME/"fleet/sync.json"
+LOGIN_MARKER = STATE_HOME/"setup/auth.needs-login"
+OWNER_KEYS_URL = os.environ.get("SETUP_OWNER_KEYS_URL", "https://github.com/LPFchan.keys")
+OPERATOR_SUBJECT = "1"
+
+CONFIG_BLOCK = "fleet"
+KEYS_BLOCK = "fleet-keys"
+# ssh-aliases' blocks, replaced in place on fleet's first write.
+PREDECESSORS = {CONFIG_BLOCK: ["ssh-aliases"], KEYS_BLOCK: ["ssh-aliases-github-keys"]}
+WARN = ("# [setup] managed block — do NOT edit between these markers; "
+        "overwritten on 'setup update'. Source: LPFchan/setup")
+
+# The operator's hosts until the SSH cutover, when Auth's fleet replaces this
+# table. alias | address | user | optional TERM fallback
+FLEET = [
+    "spark1|spark1.tailaa113.ts.net|yeowool",
+    "spark2|spark2.tailaa113.ts.net|yeowool",
+    "mangchi|mangchi.lost.plus|yeowool",
+    "yeowoolmac|mac.lost.plus|yeowool",
+    "grimoire|grimoire.lost.plus|yeowool",
+    "oci-ubuntu|oci.lost.plus|ubuntu",
+    "bingus|bingus.lost.plus|yeowool|xterm-256color",
+    "yeowoolair|yeowool-air.tailaa113.ts.net|yeowool",
+    "dumpling|dumpling.tailaa113.ts.net|yeowool",
+]
+
+NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+ADDRESS = re.compile(r"^[A-Za-z0-9.:-]+$")
+KEY = re.compile(r"^(ssh-ed25519|ecdsa-sha2-[a-z0-9]+|ssh-rsa) [A-Za-z0-9+/]+={0,3}$")
+
+TIMER_NAME = "fleet-sync"
+PLIST_NAME = "com.lost.plus.fleet-sync"
+LAUNCHD_DIR = HOME/"Library/LaunchAgents"
+SCHEDULE_HOUR = 4
+
+
+class Unavailable(Exception):
+    """Nothing authoritative to write; the blocks already there stay."""
+
+
+def eprint(*args):
+    print(*args, file=sys.stderr)
+
+
+def _auth_bin():
+    configured = os.environ.get("FLEET_AUTH_BIN")
+    if configured:
+        return configured
+    installed = HOME/".local/bin/auth"
+    return str(installed) if os.access(installed, os.X_OK) else shutil.which("auth")
+
+
+def _auth(*args):
+    """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session."""
+    binary = _auth_bin()
+    if not binary:
+        return 4, ""
+    try:
+        result = subprocess.run([binary, *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return result.returncode, result.stdout
+
+
+def _set_login_marker(needed):
+    try:
+        if needed:
+            LOGIN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            LOGIN_MARKER.touch()
+        else:
+            LOGIN_MARKER.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def fetch_fleet():
+    """('ok', fleet, subject), ('rejected', None, None), or ('unavailable', None, None).
+
+    A refresh first keeps the session alive and reports this machine to Auth;
+    its failure is not fatal, since the request below says what counts."""
+    _auth("refresh")
+    rc, out = _auth("request", "GET", "/api/fleet")
+    if rc == 4:
+        _set_login_marker(True)
+        return "rejected", None, None
+    if rc != 0:
+        return "unavailable", None, None
+    rc, context = _auth("context")
+    try:
+        fleet = json.loads(out)
+        subject = json.loads(context)["subject"]
+    except (ValueError, TypeError, KeyError):
+        return "unavailable", None, None
+    if rc != 0 or not isinstance(fleet, dict):
+        return "unavailable", None, None
+    _set_login_marker(False)
+    return "ok", fleet, subject
+
+
+def fetch_owner_keys():
+    try:
+        with urllib.request.urlopen(OWNER_KEYS_URL, timeout=30) as response:
+            text = response.read().decode()
+    except (OSError, ValueError):
+        raise Unavailable(f"could not fetch owner keys from {OWNER_KEYS_URL}") from None
+    return [" ".join(line.split()[:2]) for line in text.splitlines()
+            if len(line.split()) >= 2 and re.match(r"^(ssh-|ecdsa-|sk-)", line)]
+
+
+def _local_keys():
+    keys = []
+    for path in sorted(SSH_DIR.glob("*.pub")):
+        try:
+            fields = path.read_text().split()
+        except (OSError, ValueError):
+            continue
+        if len(fields) >= 2:
+            keys.append(" ".join(fields[:2]))
+    return keys
+
+
+def _output(command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def short_hostname():
+    override = os.environ.get("FLEET_SELF")
+    if override:
+        return override
+    name = None
+    if sys.platform == "darwin":
+        name = _output(["scutil", "--get", "HostName"]) or _output(["scutil", "--get", "LocalHostName"])
+    return (name or socket.gethostname()).split(".")[0]
+
+
+def _stanza(alias, address, user, term):
+    lines = [
+        f"Host {alias} {address}" if alias != address else f"Host {alias}",
+        f"    HostName {address}",
+        f"    User {user}",
+        "    IdentityFile ~/.ssh/id_ed25519",
+        # Suspending a laptop strands the TCP session; without keepalives the
+        # client waits out the full TCP timeout before reporting a broken pipe,
+        # which is what makes a lid-close look like a hung terminal.
+        "    ServerAliveInterval 15",
+        "    ServerAliveCountMax 3",
+        # Bounded connect so a reconnect attempt made before Wi-Fi has
+        # reassociated fails fast and is retried, rather than stalling.
+        "    ConnectTimeout 5",
+    ]
+    if term:
+        lines.append(f"    SetEnv TERM={term}")
+    return lines
+
+
+def config_body(hosts, own_aliases):
+    own = {a.lower() for a in own_aliases if a}
+    lines = []
+    for host in hosts:
+        if host["alias"].lower() in own:
+            continue
+        lines += _stanza(host["alias"], host["address"], host["user"], host["term"])
+    # OpenSSH uses the first value found. Keep this default after the aliases
+    # and existing user configuration so explicit stricter policies survive.
+    # Use OpenSSH's normal known_hosts files: never discard or replace keys.
+    # Defer until reparsing so earlier Match final/canonical policies win too.
+    lines += ["Match final", "    StrictHostKeyChecking accept-new", "Host *"]
+    return "\n".join(lines)
+
+
+def legacy_hosts():
+    hosts = []
+    for row in FLEET:
+        alias, address, user, *rest = row.split("|")
+        hosts.append({"alias": alias, "address": address, "user": user,
+                      "term": rest[0] if rest else ""})
+    return hosts
+
+
+def auth_hosts(fleet):
+    hosts = []
+    for host in fleet.get("hosts") or []:
+        if not isinstance(host, dict):
+            continue
+        alias, address, user = (str(host.get(k) or "") for k in ("alias", "address", "user"))
+        if NAME.match(alias) and ADDRESS.match(address) and NAME.match(user):
+            hosts.append({"alias": alias, "address": address, "user": user,
+                          "term": "xterm-256color" if host.get("term_fallback") else ""})
+        else:
+            eprint(f"fleet: skipping a host Auth served with an invalid field: {alias!r}")
+    return hosts
+
+
+def auth_keys(fleet):
+    keys = []
+    for key in fleet.get("keys") or []:
+        if isinstance(key, str) and KEY.match(key):
+            keys.append(key)
+        else:
+            eprint("fleet: skipping a key Auth served in an invalid shape")
+    return keys
+
+
+def _unique(items):
+    return list(dict.fromkeys(items))
+
+
+def desired():
+    """The blocks this machine should hold, as (config body, keys body, info).
+
+    Until the SSH cutover the operator's account (and, with no session, a
+    machine holding one of the owner's GitHub keys) keeps the old sources:
+    aliases from FLEET and the GitHub keys, with Auth's keys added."""
+    outcome, fleet, subject = fetch_fleet()
+    me = short_hostname()
+    if outcome == "unavailable":
+        raise Unavailable("Auth is unreachable")
+    if outcome == "ok" and subject != OPERATOR_SUBJECT:
+        keys = auth_keys(fleet)
+        if not keys:
+            raise Unavailable("Auth served an empty key set")
+        self_alias = (fleet.get("self") or {}).get("alias") or ""
+        hosts = auth_hosts(fleet)
+        return config_body(hosts, [self_alias, me]), "\n".join(keys), {
+            "source": "auth", "fleet": fleet, "hosts": len(hosts), "keys": len(keys)}
+    owner_keys = fetch_owner_keys()
+    if outcome == "rejected" and not set(_local_keys()) & set(owner_keys):
+        raise Unavailable("no session; run: auth login")
+    keys = _unique(owner_keys + (auth_keys(fleet) if fleet else []))
+    if not keys:
+        raise Unavailable("no keys to write")
+    hosts = legacy_hosts()
+    info = {"source": "legacy", "fleet": fleet, "hosts": len(hosts) - (me in [h["alias"] for h in hosts]),
+            "keys": len(keys)}
+    if fleet:
+        info["missing"] = cutover_gaps(fleet, hosts)
+    return config_body(hosts, [me]), "\n".join(keys), info
+
+
+def cutover_gaps(fleet, legacy):
+    """FLEET rows Auth does not yet serve as the same stanza."""
+    served = {(h["alias"], h["address"], h["user"]) for h in auth_hosts(fleet)}
+    return [h["alias"] for h in legacy if (h["alias"], h["address"], h["user"]) not in served]
+
+
+# --- managed blocks ------------------------------------------------------
+
+def _markers(label):
+    return [(f"# >>> {prefix}:{label} >>>", f"# <<< {prefix}:{label} <<<")
+            for prefix in ("setup", "linux-setup")]
+
+
+def _spans(lines, label):
+    spans = []
+    for begin, end in _markers(label):
+        start = None
+        for index, line in enumerate(lines):
+            if line == begin and start is None:
+                start = index
+            elif line == end and start is not None:
+                spans.append((start, index + 1))
+                start = None
+    return sorted(spans)
+
+
+def _read_lines(path):
+    try:
+        return path.read_text().split("\n")
+    except FileNotFoundError:
+        return []
+
+
+def render(lines, label, body, at_end):
+    """`lines` with the block `label` holding `body`. An existing block, or a
+    predecessor's, is replaced where it sits; any others are dropped. With
+    at_end the block moves after anything appended below it, so the default
+    it ends with stays last."""
+    block = [f"# >>> setup:{label} >>>", WARN, *body.split("\n"), f"# <<< setup:{label} <<<"]
+    spans = sorted(_spans(lines, label) + [s for old in PREDECESSORS[label] for s in _spans(lines, old)])
+    if spans:
+        position = spans[0][0]
+        dropped = {index for start, end in spans for index in range(start, end)}
+        after = [line for index, line in enumerate(lines) if index >= position and index not in dropped]
+        if not (at_end and any(line.strip() for line in after)):
+            return lines[:position] + block + after
+        lines = lines[:position] + after
+    tail = list(lines)
+    while tail and not tail[-1].strip():
+        tail.pop()
+    return (tail + [""] if tail else []) + block + [""]
+
+
+def _write(path, lines, mode=0o600):
+    text = "\n".join(lines)
+    try:
+        if path.read_text() == text:
+            return False
+    except FileNotFoundError:
+        pass
+    SSH_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        pathlib.Path(temporary).unlink(missing_ok=True)
+        raise
+    return True
+
+
+def planned():
+    config, keys, info = desired()
+    return (render(_read_lines(SSH_CONFIG), CONFIG_BLOCK, config, at_end=True),
+            render(_read_lines(AUTHORIZED_KEYS), KEYS_BLOCK, keys, at_end=False), info)
+
+
+def is_current(config_lines, keys_lines):
+    return _read_lines(SSH_CONFIG) == config_lines and _read_lines(AUTHORIZED_KEYS) == keys_lines
+
+
+def _save_state(info):
+    fleet = info.get("fleet") or {}
+    record = {"synced_at": int(time.time()), "source": info["source"],
+              "version": fleet.get("version", ""), "self": fleet.get("self") or {},
+              "missing": info.get("missing", [])}
+    try:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def _load_state():
+    try:
+        value = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+# --- commands ------------------------------------------------------------
+
+def cmd_sync(check=False):
+    """Write the blocks. With --check, exit 1 instead when they would change.
+    Exit 3 when nothing authoritative could be worked out."""
+    try:
+        config_lines, keys_lines, info = planned()
+    except Unavailable as exc:
+        eprint(f"fleet: {exc}; keeping the current SSH blocks")
+        return 3
+    if check:
+        return 0 if is_current(config_lines, keys_lines) else 1
+    changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
+    try:
+        SSH_DIR.chmod(0o700)
+    except OSError:
+        pass
+    _save_state(info)
+    verb = "updated" if changed else "current"
+    print(f"fleet: SSH blocks {verb} ({info['hosts']} hosts, {info['keys']} keys)")
+    _warn_self(info.get("fleet"))
+    return 0
+
+
+def _warn_self(fleet):
+    me = (fleet or {}).get("self") or {}
+    if fleet and not me.get("served"):
+        eprint("fleet: this machine's key is waiting for confirmation in the Fleet tab")
+    if me.get("key_mismatch"):
+        eprint("fleet: this machine's key changed; log in again: auth login")
+
+
+def cmd_status():
+    state = _load_state()
+    try:
+        config_lines, keys_lines, info = planned()
+    except Unavailable as exc:
+        print(f"fleet: {exc}")
+        info = None
+    if info:
+        current = is_current(config_lines, keys_lines)
+        source = "Auth" if info["source"] == "auth" else "FLEET table and GitHub keys (before cutover)"
+        print(f"fleet: SSH blocks {'current' if current else 'outdated; run: fleet sync'}"
+              f" ({info['hosts']} hosts, {info['keys']} keys from {source})")
+        _warn_self(info.get("fleet"))
+        if info.get("missing"):
+            print("fleet: not yet served by Auth as in FLEET: " + ", ".join(info["missing"]))
+    if state.get("synced_at"):
+        print("fleet: last sync " + time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(state["synced_at"])))
+    print(f"fleet: nightly sync {'on' if schedule_installed() else 'off; run: fleet schedule'}")
+    return 0
+
+
+# --- schedule ------------------------------------------------------------
+
+def _schedule_bin():
+    configured = os.environ.get("SCHEDULE_BIN")
+    if configured:
+        return configured
+    candidate = pathlib.Path(__file__).resolve().parent.parent/"bin"/"schedule"
+    return str(candidate) if candidate.exists() else str(HOME/".local/bin/schedule")
+
+
+def _run_schedule(*args, quiet=False):
+    path = _schedule_bin()
+    if not os.access(path, os.X_OK):
+        raise SystemExit(f"schedule helper not found at {path}; run: setup install schedule")
+    return subprocess.run([path, *args], capture_output=quiet).returncode
+
+
+def _plist_path():
+    return LAUNCHD_DIR/f"{PLIST_NAME}.plist"
+
+
+def schedule_installed():
+    if sys.platform == "darwin":
+        return _plist_path().exists()
+    try:
+        return _run_schedule("status", "user", TIMER_NAME, quiet=True) == 0
+    except SystemExit:
+        return False
+
+
+def schedule_enable():
+    if sys.platform == "darwin":
+        LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
+        log = STATE.parent/"sync.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        _plist_path().write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{PLIST_NAME}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{os.path.abspath(sys.argv[0])}</string>
+        <string>sync</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>{SCHEDULE_HOUR}</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{log}</string>
+    <key>StandardErrorPath</key>
+    <string>{log}</string>
+</dict>
+</plist>
+""")
+        uid = os.getuid()
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{PLIST_NAME}"], capture_output=True)
+        result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(_plist_path())],
+                                capture_output=True)
+        # 125: no GUI session (over SSH). The agent loads at the next login.
+        if result.returncode not in (0, 125):
+            eprint(f"fleet: launchd enable failed (rc={result.returncode})")
+            return 1
+        print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (launchd)")
+        return 0
+    # Persistent=true replays a run missed while the machine was off.
+    with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:
+        handle.write("Persistent=true\n")
+        timer_extra = handle.name
+    try:
+        rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet SSH sync",
+                           "%h/.local/bin/fleet sync", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
+                           "", timer_extra)
+    finally:
+        os.unlink(timer_extra)
+    if rc == 0:
+        print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
+    return rc
+
+
+def schedule_disable():
+    if sys.platform == "darwin":
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{PLIST_NAME}"], capture_output=True)
+        _plist_path().unlink(missing_ok=True)
+    else:
+        rc = _run_schedule("uninstall-timer", "user", TIMER_NAME)
+        if rc:
+            return rc
+    print("fleet: nightly sync off")
+    return 0
+
+
+USAGE = "Usage: fleet sync [--check] | fleet status | fleet schedule [enable|disable|status]"
+
+
+def main():
+    args = sys.argv[1:]
+    if args in (["sync"], ["sync", "--check"]):
+        return cmd_sync(check=len(args) == 2)
+    if args == ["status"]:
+        return cmd_status()
+    if args in (["schedule"], ["schedule", "enable"]):
+        return schedule_enable()
+    if args == ["schedule", "disable"]:
+        return schedule_disable()
+    if args == ["schedule", "status"]:
+        print(f"fleet: nightly sync {'on' if schedule_installed() else 'off'}")
+        return 0
+    eprint(USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
