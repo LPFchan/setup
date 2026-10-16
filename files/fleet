@@ -428,6 +428,9 @@ def _load_state():
 
 AGENTS_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_AGENTS_DIR", "~/.agents")))
 CONFIG_STATE = STATE_HOME/"fleet/config.json"
+# The account's installed skills as pull last wrote them: {local name: {"id",
+# "server": the account's copy, "local": what pull wrote}}. Never pushed.
+INSTALLED = AGENTS_DIR/"installed.json"
 LINKS_STATE = STATE_HOME/"fleet/links.json"
 NOTICES = STATE_HOME/"fleet/notices.json"
 ONBOARDING_MARKER = STATE_HOME/"fleet/onboarding.pending"
@@ -495,8 +498,10 @@ def _digest(path):
 
 
 def scan_local():
-    """({path: [sha256, executable]}, symlinks skipped) under ~/.agents/."""
+    """({path: [sha256, executable]}, symlinks skipped) under ~/.agents/.
+    Installed skills are the account's installs, not its own files."""
     files, symlinks = {}, []
+    installed = set(_load_json(INSTALLED, {}))
 
     def add(path, rel):
         if path.is_symlink():
@@ -514,7 +519,7 @@ def scan_local():
         for folder, dirs, names in os.walk(root):
             base = pathlib.Path(folder)
             for name in list(dirs):
-                if name.casefold() in SKIPPED_NAMES:
+                if name.casefold() in SKIPPED_NAMES or (base == AGENTS_DIR/"skills" and name in installed):
                     dirs.remove(name)
                 elif (base/name).is_symlink():
                     dirs.remove(name)
@@ -579,22 +584,39 @@ class HttpError(ConfigError):
         super().__init__(str(value.get("error") or f"Auth answered {self.status}"))
 
 
-def _listing():
-    value = _request("GET", "/api/fleet/config")
+def _listed_files(entries, prefix=""):
     files = {}
-    for entry in value.get("files") or []:
+    for entry in entries or []:
         rel = entry.get("path") if isinstance(entry, dict) else None
-        if not isinstance(rel, str) or not config_path(rel):
-            raise ConfigError(f"Auth listed a path outside ~/.agents/: {rel!r}")
+        if not isinstance(rel, str) or not config_path(prefix + rel):
+            raise ConfigError(f"Auth listed a path outside ~/.agents/: {prefix}{rel!r}")
         files[rel] = [entry.get("sha256"), bool(entry.get("executable"))]
-    clashes = _collisions(files)
+    return files
+
+
+def _listing():
+    """(counter, version, the account's own files, its installs by local
+    name, its own skills)."""
+    value = _request("GET", "/api/fleet/config")
+    files = _listed_files(value.get("files"))
+    installs = {}
+    for entry in value.get("installs") or []:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or "/" in name or not config_path(f"skills/{name}/SKILL.md") \
+                or not isinstance(entry.get("id"), str):
+            raise ConfigError(f"Auth listed an install outside ~/.agents/skills/: {name!r}")
+        installs[name] = {"id": entry["id"], "server": _listed_files(entry.get("files"), f"skills/{name}/"),
+                          **{key: entry.get(key) for key in ("skill", "author", "author_name", "updating")}}
+    clashes = _collisions(set(files) | {f"skills/{name}/{rel}" for name, install in installs.items()
+                                        for rel in install["server"]})
     if clashes:
         raise ConfigError("the account has paths that a case-insensitive disk would merge into "
                           "one file: " + "; ".join(clashes))
     counter, version = value.get("counter"), value.get("version")
     if not isinstance(counter, int) or not isinstance(version, int):
         raise ConfigError("Auth answered without a counter")
-    return counter, version, files
+    own = [s for s in value.get("skills") or [] if isinstance(s, dict)]
+    return counter, version, files, installs, own
 
 
 def _collisions(paths):
@@ -617,20 +639,155 @@ def fetch_contents(paths, counter, server):
         value = _request("POST", "/api/fleet/config/fetch", {"paths": pending})
         if value.get("counter") != counter or value.get("missing"):
             raise Changed()
-        for entry in value.get("files") or []:
-            rel = entry.get("path")
-            try:
-                data = base64.b64decode(entry.get("content") or "", validate=True)
-            except (ValueError, TypeError):
-                raise ConfigError(f"Auth sent unreadable content for {rel!r}") from None
-            if rel not in server or hashlib.sha256(data).hexdigest() != server[rel][0]:
-                raise Changed()
-            contents[rel] = data
-        remaining = value.get("remaining") or []
-        if len(remaining) >= len(pending):
-            raise ConfigError("Auth returned no files for a fetch")
-        pending = remaining
+        _take_fetched(value, server, contents)
+        pending = _remaining(value, pending)
     return contents
+
+
+def _take_fetched(value, server, contents):
+    """Add a fetch's files to `contents`; Changed when one is not as listed."""
+    for entry in value.get("files") or []:
+        rel = entry.get("path")
+        try:
+            data = base64.b64decode(entry.get("content") or "", validate=True)
+        except (ValueError, TypeError):
+            raise ConfigError(f"Auth sent unreadable content for {rel!r}") from None
+        if rel not in server or hashlib.sha256(data).hexdigest() != server[rel][0]:
+            raise Changed()
+        contents[rel] = data
+
+
+def _remaining(value, pending):
+    remaining = value.get("remaining") or []
+    if len(remaining) >= len(pending):
+        raise ConfigError("Auth returned no files for a fetch")
+    return remaining
+
+
+# --- installed skills ----------------------------------------------------
+
+def _fetch_skill(install):
+    """{path: bytes} of an installed skill's copy, as listed. The skill fetch
+    carries no counter, so each file is checked against the listing."""
+    contents, pending = {}, sorted(install["server"])
+    while pending:
+        value = _request("POST", "/api/fleet/skills/fetch", {"id": install["id"], "paths": pending})
+        if value.get("missing"):
+            raise Changed()
+        _take_fetched(value, install["server"], contents)
+        pending = _remaining(value, pending)
+    return contents
+
+
+def _with_name(data, name):
+    """SKILL.md with its frontmatter `name:` set to the local name, so
+    harnesses tell two installs of same-named skills apart."""
+    lines = data.split(b"\n")
+    if lines[0].rstrip(b"\r") != b"---":
+        return data
+    end = next((i for i in range(1, len(lines)) if lines[i].rstrip(b"\r") == b"---"), None)
+    if end is None:
+        return data
+    plain = re.fullmatch(r"[\w.-]+", name)
+    line = b"name: " + (name if plain else json.dumps(name, ensure_ascii=False)).encode()
+    for i in range(1, end):
+        if lines[i].startswith(b"name:"):
+            lines[i] = line + (b"\r" if lines[i].endswith(b"\r") else b"")
+            break
+    else:
+        lines.insert(1, line)
+    return b"\n".join(lines)
+
+
+def _scan_folder(folder):
+    """{path: [sha256, executable]} of every file under `folder`, a symlink as
+    None; None for a folder that is not a real folder."""
+    if folder.is_symlink() or not folder.is_dir():
+        return None
+    found = {}
+    for base, dirs, names in os.walk(folder):
+        for name in dirs + names:
+            path = pathlib.Path(base)/name
+            if path.is_symlink():
+                found[path.relative_to(folder).as_posix()] = None
+            elif name in names:
+                found[path.relative_to(folder).as_posix()] = _digest(path)
+    return found
+
+
+def _edited_installs():
+    """Installed skills changed here since pull wrote them."""
+    return sorted(name for name, entry in _load_json(INSTALLED, {}).items()
+                  if not isinstance(entry, dict) or _scan_folder(AGENTS_DIR/"skills"/name) != entry.get("local"))
+
+
+def _install_plan(installs, fresh=False):
+    """(names to write, names to remove): an install is written when it is
+    new, renamed, changed in the account, or changed here. fresh: nothing
+    here is this account's."""
+    mine = {} if fresh else _load_json(INSTALLED, {})
+    edited = set() if fresh else set(_edited_installs())
+    write = [name for name, install in installs.items()
+             if not isinstance(mine.get(name), dict) or name in edited
+             or [mine[name].get("id"), mine[name].get("server")] != [install["id"], install["server"]]]
+    return sorted(write), sorted(set(mine) - set(installs))
+
+
+def _apply_installs(installs, write, remove, contents, backup):
+    """Write the fetched installs and remove the uninstalled ones. A folder
+    that is not what pull last wrote goes to the backup; installed.json
+    follows each folder, so a failure partway leaves it true."""
+    mine = _load_json(INSTALLED, {})
+    kept = []
+    for stale in AGENTS_DIR.glob(".installing-*"):
+        shutil.rmtree(stale, ignore_errors=True)
+
+    def clear(name):
+        target = _safe_target(f"skills/{name}/SKILL.md").parent
+        if not os.path.lexists(target):
+            return target
+        entry = mine.get(name)
+        if isinstance(entry, dict) and _scan_folder(target) == entry.get("local"):
+            shutil.rmtree(target)
+        else:
+            backup.move(target, f"installed/{name}")
+            kept.append(name)
+        return target
+
+    def save():
+        if mine:
+            _save_json(INSTALLED, mine)
+        else:
+            INSTALLED.unlink(missing_ok=True)
+
+    for name in remove:
+        clear(name)
+        mine.pop(name, None)
+        save()
+    for name in write:
+        install = installs[name]
+        AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=".installing-", dir=AGENTS_DIR))
+        try:
+            for rel, data in contents[name].items():
+                path = staging/rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # Like the account's own files: readable by the owner only.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o700 if install["server"][rel][1] else 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(_with_name(data, name) if rel == "SKILL.md" else data)
+            written = _scan_folder(staging)
+            target = clear(name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(staging, target)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        mine[name] = {"id": install["id"], "server": install["server"], "local": written}
+        save()
+    if kept:
+        _report(f"put installed skills back as the account has them (what was here is in "
+                f"{backup.root}): " + ", ".join(kept))
 
 
 class Backup:
@@ -804,7 +961,7 @@ def pull(account, settle_old=False):
     settle_old: the old agents module's payload here is not the account's, and
     goes once the account's copy is in hand."""
     for _ in range(3):
-        counter, version, server = _listing()
+        counter, version, server, installs, _ = _listing()
         if _context() != account:
             raise ConfigError("the session changed during the sync")
         state = _load_json(CONFIG_STATE, {})
@@ -817,6 +974,15 @@ def pull(account, settle_old=False):
         foreign = other and AGENTS_DIR.exists()
         old = settle_old and os.path.lexists(OLD_AGENTS_CLONE)
         local = {} if foreign or (old and record is None) else scan_local()[0]
+        # Installed skills come from their authors' copies, fetched before
+        # anything here moves.
+        writes, drops = _install_plan(installs, fresh=foreign)
+        try:
+            fetched = {name: _fetch_skill(installs[name]) for name in writes}
+        except Changed:
+            continue
+        if _context() != account:
+            raise ConfigError("the session changed during the sync")
         if record is None and counter == 0:
             if old:
                 settle_old_agents(operator=False)
@@ -827,6 +993,9 @@ def pull(account, settle_old=False):
                 # record stays until they have, so a retry finishes the job.
                 refresh_links()
                 CONFIG_STATE.unlink(missing_ok=True)
+            if writes or drops:
+                _apply_installs(installs, writes, drops, fetched, backup)
+                refresh_links()
             ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
             ONBOARDING_MARKER.touch()
             return "pending", None, []
@@ -858,6 +1027,7 @@ def pull(account, settle_old=False):
         moved = _move_foreign(backup) if foreign else None
         try:
             _apply_changes(take, remove, contents, server, backup)
+            _apply_installs(installs, writes, drops, fetched, backup)
         except BaseException:
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
@@ -1282,15 +1452,15 @@ def config_outdated():
     if account is None:
         return False
     try:
-        counter, version, _ = _listing()
+        counter, version, _, installs, _ = _listing()
     except ConfigError:
         return False
     record = _load_json(CONFIG_STATE, {})
     if record.get("account") != account:
         # Another account's config here is outdated even when this account
         # has none: the pull moves it aside.
-        return counter > 0 or bool(record)
-    return record.get("version") != version
+        return counter > 0 or bool(record) or bool(installs)
+    return record.get("version") != version or any(_install_plan(installs))
 
 
 def config_status():
@@ -1301,7 +1471,7 @@ def config_status():
     if account is None:
         return
     try:
-        counter, version, server = _listing()
+        counter, version, server, installs, _ = _listing()
     except ConfigError as exc:
         print(f"fleet: account config: {exc}")
         return
@@ -1314,8 +1484,12 @@ def config_status():
         base = record.get("files") or {}
         changed = sorted(p for p in set(local) | set(base) if local.get(p) != base.get(p)
                          and not any(p == s or p.startswith(s + "/") for s in symlinks))
-        print("fleet: account config " + ("current" if record.get("version") == version
-                                          else "changed in the account; run: fleet sync"))
+        edited = _edited_installs()
+        writes, drops = _install_plan(installs)
+        current = record.get("version") == version and not drops and set(writes) <= set(edited)
+        print("fleet: account config " + ("current" if current else "changed in the account; run: fleet sync"))
+        if edited:
+            print("fleet: installed skills changed here, which the next sync puts back: " + ", ".join(edited))
         if changed:
             print(f"fleet: {len(changed)} local changes wait for a direct fleet sync: "
                   + ", ".join(changed[:10]) + (" ..." if len(changed) > 10 else ""))
@@ -3022,7 +3196,7 @@ def heavy_pass():
     return rc
 
 
-ACTIONS = ["sync", "status", "install", "schedule run", "schedule on", "schedule off"]
+ACTIONS = ["sync", "status", "install", "skills", "skills --market", "schedule run", "schedule on", "schedule off"]
 
 
 def menu():
@@ -3033,10 +3207,7 @@ def menu():
     choice = subprocess.run(["fzf", "--prompt", "fleet > ", "--height=40%", "--reverse"],
                             input="\n".join(ACTIONS), text=True, stdout=subprocess.PIPE).stdout.strip()
     if choice == "install":
-        name = subprocess.run(["fzf", "--prompt", "install > ", "--height=40%", "--reverse"],
-                              input="\n".join(harness_specs()), text=True,
-                              stdout=subprocess.PIPE).stdout.strip()
-        return cmd_install([name]) if name else 0
+        return _pick_install()
     return dispatch(choice.split()) if choice else 0
 
 
@@ -3113,6 +3284,147 @@ def cmd_onboard():
     except (ConfigError, OSError) as exc:
         eprint(f"fleet: {exc}")
         return 1
+    return 0
+
+
+# --- marketplace ---------------------------------------------------------
+# Installs, like publishes, belong to the account and live in Auth: each
+# command acts on Auth, then pulls, which writes the installed copies.
+
+SKILL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def _is_skill(arg):
+    """A skill id or `<author>/<skill>`; any other name is a harness."""
+    parts = arg.split("/")
+    return bool(SKILL_ID.fullmatch(arg)) or (len(parts) == 2 and all(parts))
+
+
+def _marketplace():
+    if not config_sync_enabled():
+        raise ConfigError("account config waits until setup swaps out the old agents and harnesses modules")
+    if _context() is None:
+        raise ConfigError("no session; run: auth login")
+
+
+def _origin(author, folder):
+    """`<author>/<skill>`; an author without a usable name shows as `?`."""
+    return f"{author or '?'}/{folder or '(unpublished)'}"
+
+
+def _market():
+    return [s for s in _request("GET", "/api/fleet/skills").get("skills") or [] if isinstance(s, dict)]
+
+
+def cmd_install_args(args):
+    """fleet install: a skill by its shape, else harnesses, else a picker."""
+    local_name = None
+    if "--as" in args:
+        at = args.index("--as")
+        if at + 1 >= len(args):
+            eprint(USAGE)
+            return 2
+        local_name, args = args[at + 1], args[:at] + args[at + 2:]
+    if not any(_is_skill(arg) for arg in args):
+        if local_name is not None:
+            eprint("fleet: --as names an installed skill")
+            return 2
+        return cmd_install(args) if args else _pick_install()
+    if len(args) != 1:
+        eprint("fleet: install one skill at a time")
+        return 2
+    _marketplace()
+    body = {"skill": args[0], **({"as": local_name} if local_name is not None else {})}
+    value = _request("POST", "/api/fleet/skills/install", body)
+    print(f"fleet: installed {value.get('name')}" if value.get("installed")
+          else f"fleet: already installed as {value.get('name')}")
+    return config_sync(direct=False)
+
+
+def _pick_install():
+    if not (shutil.which("fzf") and sys.stdin.isatty()):
+        return cmd_install([])
+    choices = {f"harness  {name}": name for name in harness_specs()}
+    try:
+        _marketplace()
+        for skill in _market():
+            if not skill.get("own"):
+                line = f"skill    {_origin(skill.get('author'), skill.get('folder'))}  {skill.get('description') or ''}"
+                choices[line if line not in choices else f"{line} ({skill.get('id')})"] = skill.get("id")
+    except ConfigError as exc:
+        eprint(f"fleet: no marketplace skills: {exc}")
+    choice = subprocess.run(["fzf", "--prompt", "install > ", "--height=40%", "--reverse"],
+                            input="\n".join(choices), text=True, stdout=subprocess.PIPE).stdout.strip()
+    if choice not in choices:
+        return 0
+    return cmd_install_args([choices[choice]]) if choice.startswith("skill") else cmd_install([choices[choice]])
+
+
+def cmd_uninstall(args):
+    if len(args) != 1:
+        eprint("usage: fleet uninstall <skill>")
+        return 2
+    _marketplace()
+    _request("POST", "/api/fleet/skills/uninstall", {"skill": args[0]})
+    print(f"fleet: uninstalled {args[0]}")
+    return config_sync(direct=False)
+
+
+def cmd_publish(args):
+    skill_id = None
+    if len(args) == 3 and args[1] == "--id":
+        args, skill_id = args[:1], args[2]
+    if len(args) != 1:
+        eprint("usage: fleet publish <skill> [--id <id>]")
+        return 2
+    _marketplace()
+    # Auth publishes the account's copy, so this machine's edits go up first.
+    rc = config_sync(direct=True)
+    if rc:
+        eprint("fleet: not publishing until the sync goes through")
+        return rc
+    body = {"folder": args[0], **({"id": skill_id} if skill_id else {})}
+    value = _request("POST", "/api/fleet/skills/publish", body)
+    print(f"fleet: published {value.get('folder')} as {value.get('id')}")
+    return 0
+
+
+def cmd_unpublish(args):
+    if len(args) != 1:
+        eprint("usage: fleet unpublish <skill>")
+        return 2
+    _marketplace()
+    _request("POST", "/api/fleet/skills/unpublish", {"skill": args[0]})
+    print(f"fleet: unpublished {args[0]}; installers keep their last copy")
+    return 0
+
+
+def cmd_skills(args):
+    if args not in ([], ["--market"]):
+        eprint("usage: fleet skills [--market]")
+        return 2
+    _marketplace()
+    if args:
+        for skill in _market():
+            mine = "  (yours)" if skill.get("own") else ""
+            print(f"{_origin(skill.get('author'), skill.get('folder'))}  {skill.get('id')}  "
+                  f"{skill.get('installs')} installs{mine}")
+            if skill.get("description"):
+                print(f"    {skill['description']}")
+        return 0
+    _, _, _, installs, own = _listing()
+    for skill in own:
+        print(f"{skill.get('folder') or '(deleted folder)'}  {skill.get('id')}  "
+              + ("published" if skill.get("published") else "unpublished"))
+    edited = set(_edited_installs())
+    for name, install in sorted(installs.items()):
+        notes = [] if install.get("updating") else ["no longer updated"]
+        if name in edited:
+            notes.append("changed here; the next sync puts it back")
+        print(f"{name}  installed from {_origin(install.get('author'), install.get('skill'))}  "
+              f"{install['id']}" + "".join(f"  ({note})" for note in notes))
+    if not own and not installs:
+        print("fleet: no published or installed skills; see fleet skills --market")
     return 0
 
 
@@ -3274,6 +3586,8 @@ def schedule_disable():
 
 
 USAGE = ("Usage: fleet [sync [--check] | status | onboard | install <harness>..."
+         " | install <author>/<skill>|<id> [--as <name>] | uninstall <skill>"
+         " | skills [--market] | publish <skill> [--id <id>] | unpublish <skill>"
          " | schedule [on|off|status|run]]")
 
 
@@ -3293,7 +3607,15 @@ def dispatch(args):
         print(USAGE)
         return 0
     if args[0] == "install":
-        return cmd_install(args[1:])
+        return cmd_install_args(args[1:])
+    if args[0] == "uninstall":
+        return cmd_uninstall(args[1:])
+    if args[0] == "skills":
+        return cmd_skills(args[1:])
+    if args[0] == "publish":
+        return cmd_publish(args[1:])
+    if args[0] == "unpublish":
+        return cmd_unpublish(args[1:])
     # claude's headersHelper, through the stable path in each MCP entry.
     if args[0] == "mcp-headers":
         return cmd_mcp_headers(args[1:])

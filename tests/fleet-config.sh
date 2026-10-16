@@ -49,10 +49,68 @@ if path == "/api/services":
     answer(200, [])
 if path == "/api/fleet":
     answer(200, {"version": "v", "self": {"served": True}, "keys": ["ssh-ed25519 AAAASelf"], "hosts": []})
+market, installs = state.setdefault("market", {}), state.setdefault("installs", {})
+def save():
+    json.dump(state, open(f"{fake}/server.json", "w"))
+def listed(files):
+    return [{"path": p, "size": len(f["content"]), "sha256": f["sha256"], "executable": f["executable"]}
+            for p, f in sorted(files.items())]
 if path == "/api/fleet/config":
-    answer(200, {"counter": state["counter"], "version": state["version"],
-                 "files": [{"path": p, "size": len(f["content"]), "sha256": f["sha256"],
-                            "executable": f["executable"]} for p, f in sorted(state["files"].items())]})
+    answer(200, {"counter": state["counter"], "version": state["version"], "files": listed(state["files"]),
+                 "installs": [{"id": i, "name": n, "skill": market[i]["folder"], "author": market[i]["author"],
+                               "author_name": market[i]["author"], "updating": market[i]["published"],
+                               "files": listed(market[i]["files"])} for i, n in sorted(installs.items())],
+                 "skills": [{"id": i, "folder": s["folder"], "published": s["published"]}
+                            for i, s in sorted(market.items()) if s["mine"]]})
+if path == "/api/fleet/skills":
+    answer(200, {"skills": [{"id": i, "folder": s["folder"], "author": s["author"], "author_name": s["author"],
+                             "description": "", "installs": list(installs).count(i), "updated_at": 0,
+                             "own": s["mine"]} for i, s in sorted(market.items()) if s["published"]]})
+if path == "/api/fleet/skills/install":
+    ref = body["skill"]
+    found = [i for i, s in market.items() if s["published"] and (i == ref or f"{s['author']}/{s['folder']}" == ref)]
+    if not found:
+        answer(404, {"error": "no published skill " + ref})
+    name = body.get("as") or market[found[0]]["folder"]
+    if found[0] in installs:
+        answer(200, {"id": found[0], "name": installs[found[0]], "installed": False})
+    if name in installs.values():
+        answer(409, {"error": "an installed skill is already named " + name + "; pick another with --as"})
+    installs[found[0]] = name
+    state["version"] += 1; save()
+    answer(200, {"id": found[0], "name": name, "installed": True})
+if path == "/api/fleet/skills/uninstall":
+    found = [i for i, n in installs.items() if body["skill"] in (i, n)]
+    if not found:
+        answer(404, {"error": "no installed skill " + body["skill"]})
+    del installs[found[0]]
+    state["version"] += 1; save()
+    answer(200, {"ok": True})
+if path == "/api/fleet/skills/publish":
+    folder = body["folder"]
+    prefix = f"skills/{folder}/"
+    if prefix + "SKILL.md" not in state["files"]:
+        answer(400, {"error": "push skills/" + folder + "/SKILL.md first"})
+    held = [i for i, s in market.items() if s["mine"] and s["published"] and s["folder"] == folder]
+    sid = held[0] if held else "22222222-2222-4222-8222-%012d" % len(market)
+    market[sid] = {"author": "me", "folder": folder, "published": True, "mine": True,
+                   "files": {p[len(prefix):]: f for p, f in state["files"].items() if p.startswith(prefix)}}
+    save()
+    answer(200, {"id": sid, "folder": folder})
+if path == "/api/fleet/skills/unpublish":
+    found = [i for i, s in market.items() if s["mine"] and s["published"] and body["skill"] in (i, s["folder"])]
+    if not found:
+        answer(404, {"error": "no published skill of yours " + body["skill"]})
+    market[found[0]]["published"] = False
+    save()
+    answer(200, {"ok": True})
+if path == "/api/fleet/skills/fetch":
+    files = market[body["id"]]["files"] if body["id"] in installs else {}
+    paths = body["paths"]
+    first = [p for p in paths if p in files][:1]
+    answer(200, {"files": [{"path": p, **files[p]} for p in first],
+                 "remaining": [p for p in paths if p in files and p not in first],
+                 "missing": [p for p in paths if p not in files]})
 if path == "/api/fleet/config/fetch":
     if os.path.exists(f"{fake}/switch-on-fetch"):
         # Another account signed in while the files were coming down.
@@ -110,6 +168,23 @@ data = sys.argv[2].encode()
 state["files"][sys.argv[1]] = {"content": base64.b64encode(data).decode(),
                                "sha256": hashlib.sha256(data).hexdigest(), "executable": False}
 state["counter"] += 1; state["version"] += 1
+json.dump(state, open(f, "w"))
+PY
+}
+# An author's published skill, straight into the fake server.
+market_put() {
+    python3 - "$@" <<'PY'
+import base64, hashlib, json, os, sys
+f = f"{os.environ['FAKE']}/server.json"
+state = json.load(open(f))
+sid, author, folder, rel, text = sys.argv[1:6]
+skill = state.setdefault("market", {}).setdefault(sid, {"author": author, "folder": folder, "published": True,
+                                                        "mine": False, "files": {}})
+data = text.encode()
+skill["files"][rel] = {"content": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest(),
+                       "executable": rel.endswith(".sh")}
+if sid in state.get("installs", {}):
+    state["version"] += 1
 json.dump(state, open(f, "w"))
 PY
 }
@@ -534,5 +609,80 @@ fleet __unlink
 [[ "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] || fail "uninstall stranded a displaced skill"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine, late" ]] || fail "CLAUDE.md not restored"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link kept"
+
+# The marketplace, on a fresh machine and account.
+export HOME="$TMP/market" XDG_STATE_HOME="$TMP/market-state"
+mkdir -p "$HOME/.claude/skills"
+printf '5' > "$FAKE/subject"
+printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+: > "$FAKE/pushes"
+server_put AGENTS.md 'market account'
+fleet sync >/dev/null 2>&1 || fail "market account join"
+FOO=11111111-1111-4111-8111-111111111111 OTHER=33333333-3333-4333-8333-333333333333
+market_put $FOO alice foo SKILL.md $'---\nname: foo\ndescription: d\n---\nv1'
+market_put $FOO alice foo run.sh 'echo v1'
+market_put $OTHER bob foo SKILL.md $'---\ndescription: no name\n---\nbob'
+out=$(fleet install nosuchharness 2>&1) && fail "installed an unknown harness"
+grep -q 'unknown harness nosuchharness' <<<"$out" || fail "a plain name was not taken for a harness"
+fleet install alice/foo >/dev/null 2>&1 || fail "install by author/skill"
+installed="$HOME/.agents/skills/foo"
+[[ "$(cat "$installed/run.sh")" == "echo v1" && -x "$installed/run.sh" ]] || fail "installed copy not written"
+[[ "$(stat -c %a "$installed/SKILL.md")" == 600 ]] || fail "installed file readable by others"
+grep -q "\"$FOO\"" "$HOME/.agents/installed.json" || fail "install not recorded"
+[[ -L "$HOME/.claude/skills/foo" ]] || fail "installed skill not linked"
+fleet sync --check >/dev/null 2>&1 || fail "a fresh install read as outdated"
+# Installed folders are never pushed as the account's own.
+fleet sync >/dev/null 2>&1 || fail "direct sync with an install"
+grep -q 'skills/foo' "$FAKE/pushes" && fail "an installed skill was pushed"
+[[ "$(server_has skills/foo/SKILL.md)" == "<none>" ]] || fail "an installed skill reached the account's files"
+# The author's update arrives on the next pull.
+market_put $FOO alice foo run.sh 'echo v2'
+fleet sync --check >/dev/null 2>&1 && fail "an author's update read as current"
+fleet sync --pull >/dev/null 2>&1 || fail "pull of an author's update"
+[[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "author's update not written"
+# A local edit is reported, then put back, and kept in the backup.
+printf 'edited\n' >> "$installed/run.sh"
+fleet status 2>&1 | grep -q 'installed skills changed here.*foo' || fail "status missed an edited install"
+fleet sync --check >/dev/null 2>&1 && fail "an edited install read as current"
+fleet sync --pull >/dev/null 2>&1 || fail "pull over an edited install"
+[[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "edited install not put back"
+grep -rq edited "$XDG_STATE_HOME/fleet/backup" || fail "the edit was not backed up"
+# Local names are unique; --as picks another, which SKILL.md then carries.
+fleet install bob/foo >/dev/null 2>&1 && fail "installed a second skill under a taken name"
+fleet install $OTHER --as bob-foo >/dev/null 2>&1 || fail "install by id with --as"
+[[ "$(sed -n 2p "$HOME/.agents/skills/bob-foo/SKILL.md")" == "name: bob-foo" ]] || fail "local name not inserted"
+[[ "$(sed -n 2p "$installed/SKILL.md")" == "name: foo" ]] || fail "local name not kept"
+fleet install alice/foo 2>&1 | grep -q 'already installed as foo' || fail "a repeat install"
+# An unpublished skill stays, no longer updated.
+python3 - <<'PY'
+import json, os
+f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
+state["market"]["11111111-1111-4111-8111-111111111111"]["published"] = False; json.dump(state, open(f, "w"))
+PY
+fleet skills | grep -q "^foo  installed from alice/foo  $FOO  (no longer updated)" || fail "skills missed an unpublished install"
+fleet uninstall foo >/dev/null 2>&1 || fail "uninstall"
+[[ ! -e "$installed" && ! -L "$HOME/.claude/skills/foo" ]] || fail "uninstalled skill kept"
+fleet uninstall bob-foo >/dev/null 2>&1 || fail "second uninstall"
+[[ ! -e "$HOME/.agents/installed.json" ]] || fail "installed.json kept with no installs"
+# Publishing pushes the folder first, then names it in fleet skills.
+mkdir -p "$HOME/.agents/skills/pub"; printf -- '---\nname: pub\n---\n' > "$HOME/.agents/skills/pub/SKILL.md"
+fleet publish pub >/dev/null 2>&1 || fail "publish"
+[[ "$(server_has skills/pub/SKILL.md)" != "<none>" ]] || fail "publish did not push the folder"
+fleet skills | grep -q '^pub  .*  published$' || fail "skills missed a published skill"
+fleet skills --market | grep -q '^me/pub  .*(yours)' || fail "market missed one's own skill"
+fleet unpublish pub >/dev/null 2>&1 || fail "unpublish"
+fleet skills | grep -q '^pub  .*  unpublished$' || fail "skills missed an unpublished skill"
+# An account never pushed still gets its installs.
+export HOME="$TMP/market2" XDG_STATE_HOME="$TMP/market2-state"
+mkdir -p "$HOME/.claude/skills"
+python3 - <<'PY'
+import json, os
+f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
+state["market"]["11111111-1111-4111-8111-111111111111"]["published"] = True
+json.dump({"counter": 0, "version": 1, "files": {}, "market": state["market"],
+           "installs": {"11111111-1111-4111-8111-111111111111": "foo"}}, open(f, "w"))
+PY
+fleet sync >/dev/null 2>&1 || true
+[[ -f "$HOME/.agents/skills/foo/SKILL.md" && -L "$HOME/.claude/skills/foo" ]] || fail "a never-pushed account's install not written"
 
 echo "fleet config tests passed"
