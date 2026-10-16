@@ -48,4 +48,20 @@ AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1
 [[ ! -s "$TMP/auth.log" ]]
 AUTH_LOG="$TMP/auth.log" AUTH_RC=7 run_driver >/dev/null 2>&1 || true
 [[ $(cat "$TMP/auth.log") == $'status\nlogin' ]]
+# fleet's own login also stays quiet after a decline in the same run.
+cat > "$TMP/fleet-driver" <<EOF
+#!/usr/bin/env zsh
+export HOME='$HOME' XDG_STATE_HOME='$XDG_STATE_HOME' PATH='/usr/bin:/bin'
+source '$ROOT/files/fleet.sh'
+_login_if_needed
+EOF
+chmod +x "$TMP/fleet-driver"
+touch "$XDG_STATE_HOME/setup/auth.login-deferred"
+: > "$TMP/auth.log"
+if [[ "$(uname -s)" == Darwin ]]; then
+    AUTH_LOG="$TMP/auth.log" AUTH_RC=7 script -q /dev/null "$TMP/fleet-driver" >/dev/null 2>&1
+else
+    AUTH_LOG="$TMP/auth.log" AUTH_RC=7 script -qec "$TMP/fleet-driver" /dev/null >/dev/null 2>&1
+fi
+[[ $(cat "$TMP/auth.log") == status ]]
 echo "auth onboarding tests passed"

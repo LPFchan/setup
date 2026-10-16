@@ -47,6 +47,9 @@ _login_if_needed() {
     auth_bin=$(_auth_bin) || return 0
     "$auth_bin" status >/dev/null 2>&1 && return 0
     [[ "${BATCH:-0}" == 0 && -t 1 && -r /dev/tty ]] || return 0
+    local deferred="${XDG_STATE_HOME:-$HOME/.local/state}/setup/auth.login-deferred"
+    # Declined earlier in this run; setup clears the file at its login step.
+    [[ -f "$deferred" ]] && return 0
     # Swapped in by `setup update` rather than asked for: ask first.
     if [[ -n "${SETUP_SWAP_FROM:-}" ]]; then
         local answer
@@ -56,7 +59,6 @@ _login_if_needed() {
         if [[ "$answer" == [nN]* ]]; then
             # setup's own login step would ask again later in this run; this
             # file tells it to skip once.
-            local deferred="${XDG_STATE_HOME:-$HOME/.local/state}/setup/auth.login-deferred"
             mkdir -p "${deferred:h}" && touch "$deferred"
             echo "fleet: login skipped; setup offers it again after its next interactive run"
             return 0
