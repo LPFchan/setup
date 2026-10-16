@@ -747,15 +747,28 @@ def _move_harness_skills(backup):
 
 
 def _apply_changes(take, remove, contents, server, backup):
-    """Replaced and deleted local copies, symlinks included, go to the backup."""
-    for rel in sorted(remove) + sorted(take):
-        target = _safe_target(rel)
-        if target.is_symlink() or target.exists():
-            backup.move(target, f"agents/{rel}")
-    for rel in remove:
-        _remove_file(rel)
-    for rel in sorted(take):
-        _write_file(rel, contents[rel], server[rel][1])
+    """Replaced and deleted local copies, symlinks included, go to the backup.
+    If a write fails, the files already written go and the moved ones come
+    back, so ~/.agents stays as it was."""
+    moved, written = [], []
+    try:
+        for rel in sorted(remove) + sorted(take):
+            target = _safe_target(rel)
+            if target.is_symlink() or target.exists():
+                moved.append((target, backup.move(target, f"agents/{rel}")))
+        for rel in remove:
+            _remove_file(rel)
+        for rel in sorted(take):
+            _write_file(rel, contents[rel], server[rel][1])
+            written.append(rel)
+    except BaseException:
+        for rel in written:
+            _remove_file(rel)
+        for target, saved in reversed(moved):
+            if not os.path.lexists(target):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(saved), str(target))
+        raise
 
 
 def _move_foreign(backup):
@@ -999,16 +1012,21 @@ def refresh_links():
         for entry in _skill_link_targets(links):
             if entry.name not in names:
                 _unlink_restoring(entry, links)
+    # The old agents module's links go, and what they replaced comes back,
+    # also when the link was already deleted: fleet is the only one left to
+    # return it.
     for target in OLD_AGENTS_LINKS:
         if _points_into(target, AGENTS_DIR):
             target.unlink()
-            _restore_old_backup(target)
+        _restore_old_backup(target)
     for directory in OLD_SKILL_LINK_DIRS:
         if directory.is_dir():
             for entry in list(directory.iterdir()):
                 if _points_into(entry, skills):
                     entry.unlink()
                     _restore_old_backup(entry)
+                elif entry.name.endswith(".pre-agents.bak"):
+                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
     _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
@@ -1151,7 +1169,9 @@ def config_outdated():
         return False
     record = _load_json(CONFIG_STATE, {})
     if record.get("account") != account:
-        return counter > 0
+        # Another account's config here is outdated even when this account
+        # has none: the pull moves it aside.
+        return counter > 0 or bool(record)
     return record.get("version") != version
 
 
@@ -2071,11 +2091,14 @@ def _claude_user_entry(name):
 
 
 def render_claude_mcp(claude, servers, previous, retired):
+    """(ok, kept): kept holds the previous records of servers claude would not
+    remove, so the applied record keeps owning them and the next run retries."""
+    ok, kept = True, {}
     for name in sorted(retired):
         if _claude_mcp_scope(claude, name) is not None:
             print(f"  unregistering retired MCP server {name}")
             # No -s: the CLI then removes it from whichever scope holds it.
-            subprocess.run([claude, "mcp", "remove", name], capture_output=True, env=_claude_env())
+            ok = _claude_remove([claude, "mcp", "remove", name]) and ok
     for name, record in (previous.get("mcp") or {}).items():
         if name in servers or name in retired:
             continue
@@ -2083,9 +2106,8 @@ def render_claude_mcp(claude, servers, previous, retired):
         if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
                                         or (record.get("claude") and entry == record["claude"])):
             print(f"  unregistering MCP server {name}")
-            subprocess.run([claude, "mcp", "remove", name, "-s", "user"], capture_output=True,
-                           env=_claude_env())
-    ok = True
+            if not _claude_remove([claude, "mcp", "remove", name, "-s", "user"]):
+                ok, kept[name] = False, record
     for server in servers.values():
         want = _claude_mcp_entry(server)
         argv = [claude, "mcp", "add-json", "--scope", "user", server["name"], json.dumps(want)]
@@ -2097,10 +2119,20 @@ def render_claude_mcp(claude, servers, previous, retired):
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
         elif _claude_user_entry(server["name"]) != want:
             print(f"  re-enrolling {server['name']}")
-            subprocess.run([claude, "mcp", "remove", server["name"], "-s", "user"],
-                           capture_output=True, env=_claude_env())
-            ok = _claude_add(argv) and ok
-    return ok
+            if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
+                ok = _claude_add(argv) and ok
+            else:
+                ok = False
+    return ok, kept
+
+
+def _claude_remove(argv):
+    """Whether claude dropped the server; a failure is retried next run."""
+    result = subprocess.run(argv, capture_output=True, text=True, env=_claude_env())
+    if result.returncode != 0:
+        eprint(f"fleet: claude did not remove MCP server {argv[3]}: "
+               f"{(result.stderr or result.stdout).strip() or f'exit {result.returncode}'}")
+    return result.returncode == 0
 
 
 def _claude_add(argv):
@@ -2586,6 +2618,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}}
+        kept_mcp = {}
         try:
             if present["claude"]:
                 desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {},
@@ -2593,9 +2626,9 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 allow = list(tier["allow"])
                 allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
-                if not render_claude_mcp(present["claude"], {s["name"]: s for s in on("claude")},
-                                         previous, retired):
-                    rc = 1
+                claude_ok, kept_mcp = render_claude_mcp(
+                    present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
+                rc = rc if claude_ok else 1
             if present["codex"]:
                 rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
                 if CODEX_DIR.is_dir():
@@ -2622,6 +2655,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                                      "env": mcp_env_var(s) if s["auth"] != "none" else None,
                                      "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None}
                          for s in servers.values()}
+        record["mcp"].update(kept_mcp)
         # A failed part renders again on the next run.
         record["hash"] = digest if rc == 0 else None
         if clear and rc == 0:

@@ -242,17 +242,24 @@ mkdir -p "$HOME/.codex/skills/mine.pre-agents.bak"
 ln -s "$HOME/.agents/skills/mine" "$HOME/.codex/skills/mine"
 mkdir -p "$HOME/.claude/skills/gone.pre-agents.bak"
 ln -s "$HOME/.agents/skills/gone" "$HOME/.claude/skills/gone"
+# Also when the old link was already deleted.
+mkdir -p "$HOME/.config/muse" "$HOME/.codex/skills/lost.pre-agents.bak"
+printf 'muse own\n' > "$HOME/.config/muse/AGENTS.md.pre-agents.bak"
 fleet sync --pull >/dev/null 2>&1 || fail "pull over the old agents links"
 [[ "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" && ! -L "$HOME/.gemini/GEMINI.md" ]] \
     || fail "GEMINI.md not restored from the old backup"
 [[ -d "$HOME/.codex/skills/mine" && ! -L "$HOME/.codex/skills/mine" ]] || fail "old codex skill backup not restored"
 [[ -d "$HOME/.claude/skills/gone" && ! -L "$HOME/.claude/skills/gone" ]] || fail "old claude skill backup not restored"
+[[ "$(cat "$HOME/.config/muse/AGENTS.md")" == "muse own" ]] || fail "old backup of a deleted link not restored"
+[[ -d "$HOME/.codex/skills/lost" && ! -e "$HOME/.codex/skills/lost.pre-agents.bak" ]] \
+    || fail "old skill backup of a deleted link not restored"
 [[ "$(readlink "$HOME/.codex/AGENTS.md")" == "$HOME/.agents/AGENTS.md" ]] || fail "codex AGENTS.md not kept linked"
 server_del AGENTS.md
 fleet sync --pull >/dev/null 2>&1 || fail "pull removing AGENTS.md again"
 [[ "$(cat "$HOME/.codex/AGENTS.md")" == "codex own" && ! -e "$HOME/.codex/AGENTS.md.pre-agents.bak" ]] \
     || fail "codex AGENTS.md not restored from the old backup"
-rm -rf "$HOME/.codex/AGENTS.md" "$HOME/.gemini" "$HOME/.codex/skills/mine" "$HOME/.claude/skills/gone"
+rm -rf "$HOME/.codex/AGENTS.md" "$HOME/.gemini" "$HOME/.codex/skills/mine" "$HOME/.claude/skills/gone" \
+    "$HOME/.config/muse" "$HOME/.codex/skills/lost"
 server_put AGENTS.md 'my instructions'
 fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md again"
 
@@ -271,6 +278,17 @@ server_put skills/Mine/other.md 'upper folder'
 fleet sync --pull >/dev/null 2>&1 && fail "pulled folders that differ only in case"
 [[ ! -e "$HOME/.agents/skills/Mine" ]] || fail "applied a case-colliding folder"
 server_del skills/Mine/other.md
+
+# A pull that cannot finish writing leaves this account's files as they were.
+before=$(cat "$HOME/.agents/skills/mine/SKILL.md")
+mkdir -p "$HOME/.agents/skills/zz"; chmod 500 "$HOME/.agents/skills/zz"
+server_put skills/mine/SKILL.md 'half applied'; server_put skills/zz/new.md 'blocked'
+fleet sync --pull >/dev/null 2>&1 && fail "a pull that could not write reported success"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "$before" ]] || fail "a failed pull left a file half applied"
+[[ "$(cat "$HOME/.claude/skills/mine/SKILL.md")" == "$before" ]] || fail "a failed pull left a skill link dangling"
+chmod 700 "$HOME/.agents/skills/zz"; rm -rf "$HOME/.agents/skills/zz"
+server_del skills/zz/new.md
+fleet sync --pull >/dev/null 2>&1 || fail "pull after the blocked write went"
 
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'
@@ -407,6 +425,7 @@ rm -rf "$HOME/.claude/skills/old.pre-agents.bak"
 cp "$FAKE/server.json" "$TMP/server.keep"
 rm -rf "$HOME/.agents"
 printf '9' > "$FAKE/subject"; printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+fleet sync --check >/dev/null 2>&1 && fail "another account's config here read as current"
 fleet sync >/dev/null 2>&1 || fail "sync as another account without ~/.agents"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine again" ]] \
     || fail "links kept for another account when ~/.agents was gone"

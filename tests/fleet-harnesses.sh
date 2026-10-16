@@ -114,6 +114,9 @@ if args[:2] == ["mcp", "add-json"]:
         sys.exit(1)
     servers[args[4]] = json.loads(args[5])
 elif args[:2] == ["mcp", "remove"]:
+    if os.path.exists(os.environ["FAKE"] + "/claude-remove-fail"):
+        print("could not write the config", file=sys.stderr)
+        sys.exit(1)
     servers.pop(args[2], None)
 else:
     sys.exit(2)
@@ -264,6 +267,18 @@ rm "$FAKE/claude-add-fail"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "the failing claude added a server"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "a failed claude add was not retried"
+
+# A server claude failed to remove stays fleet's, so the next run removes it.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+touch "$FAKE/claude-remove-fail"
+fleet sync --pull >/dev/null 2>&1 && fail "a failed claude remove went unreported"
+rm "$FAKE/claude-remove-fail"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "the failing claude removed a server"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a failed claude remove was not retried"
 
 # Node toolchains are tried newest version first, v20 ahead of v9.
 mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
