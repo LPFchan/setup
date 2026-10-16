@@ -857,11 +857,11 @@ fleet uninstall bob-foo >/dev/null 2>&1 || fail "second uninstall"
 fleet install $OTHER --as true >/dev/null 2>&1 || fail "install --as true"
 [[ "$(sed -n 2p "$HOME/.agents/skills/true/SKILL.md")" == 'name: "true"' ]] || fail "a bool-like name went in plain"
 fleet uninstall true >/dev/null 2>&1 || fail "uninstall true"
-# A name key YAML spells another way, with its value on the next line, is
-# the one replaced.
-market_put $OTHER bob foo SKILL.md $'---\n"name" :\n  bob\ndescription: d\n---\nbob'
+# A name key YAML spells another way, with its value after a blank line, is
+# the one replaced; the blank line after the value stays.
+market_put $OTHER bob foo SKILL.md $'---\n"name" :\n\n  bob\n\ndescription: d\n---\nbob'
 fleet install $OTHER --as spelled >/dev/null 2>&1 || fail "install --as spelled"
-[[ "$(cat "$HOME/.agents/skills/spelled/SKILL.md")" == $'---\nname: spelled\ndescription: d\n---\nbob' ]] \
+[[ "$(cat "$HOME/.agents/skills/spelled/SKILL.md")" == $'---\nname: spelled\n\ndescription: d\n---\nbob' ]] \
     || fail "a differently spelled name key was not replaced: $(cat "$HOME/.agents/skills/spelled/SKILL.md")"
 fleet uninstall spelled >/dev/null 2>&1 || fail "uninstall spelled"
 market_put $OTHER bob foo SKILL.md $'---\ndescription: no name\n---\nbob'
