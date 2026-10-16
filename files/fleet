@@ -418,6 +418,7 @@ def _load_state():
 AGENTS_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_AGENTS_DIR", "~/.agents")))
 CONFIG_STATE = STATE_HOME/"fleet/config.json"
 LINKS_STATE = STATE_HOME/"fleet/links.json"
+CONFIG_LOCK = STATE_HOME/"fleet/config.lock"
 NOTICES = STATE_HOME/"fleet/notices.json"
 ONBOARDING_MARKER = STATE_HOME/"fleet/onboarding.pending"
 BACKUP_DIR = STATE_HOME/"fleet/backup"
@@ -998,6 +999,28 @@ def _points_into(path, root):
         return False
 
 
+_lock_depth = 0
+
+
+@contextlib.contextmanager
+def _config_locked():
+    """One run at a time on ~/.agents, the links and their records: the
+    nightly run and a manual sync would each save over what the other did."""
+    global _lock_depth
+    if _lock_depth == 0:
+        CONFIG_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(CONFIG_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    _lock_depth += 1
+    try:
+        yield
+    finally:
+        _lock_depth -= 1
+        if _lock_depth == 0:
+            os.close(fd)
+
+
+@_config_locked()
 def refresh_links():
     """AGENTS.md where each harness reads it, and each skill in claude's
     folder, adding new skills and pruning removed ones."""
@@ -1050,6 +1073,7 @@ def _skill_entries(skills):
         return []
 
 
+@_config_locked()
 def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
@@ -1140,6 +1164,7 @@ def _offer_onboarding(account):
     return 0
 
 
+@_config_locked()
 def config_sync(direct):
     """Pull, and on a direct run upload. 0 done, 1 conflicts or a refused
     upload, 3 no answer from Auth."""
@@ -2959,6 +2984,7 @@ def cmd_sync(check=False, direct=True, force=False):
     return 1 if 1 in rcs else max(rcs)
 
 
+@_config_locked()
 def cmd_onboard():
     if not config_sync_enabled():
         eprint("fleet: account config waits until setup swaps out the old agents and harnesses modules")
