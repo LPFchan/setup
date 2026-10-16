@@ -171,6 +171,14 @@ fleet sync >/dev/null 2>&1 && fail "a failed fetch reported success"
 rm "$FAKE/fetch-down"
 [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" ]] \
     || fail "settled the clone before the account's copy was fetched"
+# A copy that cannot be written leaves the old payload in use too.
+server_put settings/x.json '{}'
+mkdir -p "$HOME/.agents/settings"; chmod 555 "$HOME/.agents/settings"
+fleet sync >/dev/null 2>&1 && fail "a failed write reported success"
+chmod 755 "$HOME/.agents/settings"; rmdir "$HOME/.agents/settings"
+[[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" \
+    && -f "$HOME/.agents/skills/opskill/SKILL.md" && -L "$HOME/.claude/skills/opskill" ]] \
+    || fail "settled the clone before the account's copy was written"
 # With the copy in hand, it replaces the old payload.
 fleet sync >/dev/null 2>&1 || fail "sync replacing the old payload"
 [[ ! -e "$STATE_DIR/agents-src" && "$(cat "$HOME/.agents/AGENTS.md")" == "account instructions" ]] \

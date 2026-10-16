@@ -852,8 +852,9 @@ def pull(account, settle_old=False):
         # A sign-in during the fetch: these files are the old account's.
         if _context() != account:
             raise ConfigError("the session changed during the sync")
-        if old:
-            settle_old_agents(operator=False)
+        # The old payload moves aside, and its clone and links go only once
+        # the account's copy is written, so a failed write leaves it working.
+        displaced = _displace_old_payload(backup) if old else []
         moved = _move_foreign(backup) if foreign else None
         try:
             _apply_changes(take, remove, contents, server, backup)
@@ -866,7 +867,14 @@ def pull(account, settle_old=False):
                 shutil.move(str(moved), str(AGENTS_DIR))
                 _report("put the other account's ~/.agents back, since this account's copy "
                         "could not be written")
+            for path, saved in reversed(displaced):
+                if not os.path.lexists(path):
+                    shutil.move(str(saved), str(path))
             raise
+        if old:
+            if displaced:
+                _report_displaced(backup)
+            _drop_old_clone(operator=False)
         if record is None:
             _move_harness_skills(backup)
         if conflicts:
@@ -1089,6 +1097,28 @@ def settle_old_agents(operator):
     if not os.path.lexists(OLD_AGENTS_CLONE):
         return
     if not operator:
+        backup = Backup()
+        if _displace_old_payload(backup):
+            _report_displaced(backup)
+    _drop_old_clone(operator)
+
+
+def _displace_old_payload(backup):
+    """Move the operator's AGENTS.md and skills the old module left to the
+    backup; the (path, saved) pairs, so a failed sync can put them back."""
+    moved = []
+    for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
+        if os.path.lexists(path):
+            moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
+    return moved
+
+
+def _report_displaced(backup):
+    _report(f"moved the operator's AGENTS.md and skills the old agents module left to {backup.root}")
+
+
+def _drop_old_clone(operator):
+    if not operator:
         for target in AGENTS_LINKS + OLD_AGENTS_LINKS:
             if _points_into(target, AGENTS_DIR):
                 target.unlink()
@@ -1101,12 +1131,6 @@ def settle_old_agents(operator):
                 elif entry.name.endswith(".pre-agents.bak"):
                     # Its link already deleted: the sidecar still comes back.
                     _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
-        backup = Backup()
-        for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
-            if os.path.lexists(path):
-                backup.move(path, f"displaced/{path.relative_to(HOME)}")
-        if backup.root:
-            _report(f"moved the operator's AGENTS.md and skills the old agents module left to {backup.root}")
     if OLD_AGENTS_CLONE.is_dir() and not OLD_AGENTS_CLONE.is_symlink():
         shutil.rmtree(OLD_AGENTS_CLONE)
     else:
