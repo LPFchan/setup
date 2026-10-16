@@ -2648,7 +2648,11 @@ def render_hermes(servers, previous, retired, clear=False):
                 if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
                 continue
-            if urls[name] not in body:
+            # Fleet's entry still names the URL fleet last wrote, when the
+            # account has moved the server since.
+            old = recorded.get(name, {}).get("url")
+            if urls[name] not in body and not (old and _rendered_on(recorded[name], "hermes")
+                                               and f"    url: {old}" in body):
                 print(f"  hermes: {name} points somewhere else; leaving it alone")
                 continue
             lines[k:stop] = wanted[name]

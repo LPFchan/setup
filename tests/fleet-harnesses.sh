@@ -311,6 +311,21 @@ mv "$TMP/claude.away" "$BIN/claude"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a server dropped while claude was missing stayed"
 
+# A server the account moves to another URL moves on every harness.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open2.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass moving open"
+grep -q '^    url: https://open2.example/mcp$' "$HOME/.hermes/config.yaml" || fail "hermes kept open's old url"
+[[ "$(json "$HOME/.claude.json" 'v["mcpServers"]["open"]["url"]')" == https://open2.example/mcp ]] \
+    || fail "claude kept open's old url"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass moving open back"
+
 # An entry the user already had, matching ours, stays theirs: dropping the
 # server from the account does not remove it.
 python3 - "$HOME/.claude.json" "$HOME/.hermes/config.yaml" <<'EOF'
