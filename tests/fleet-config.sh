@@ -209,6 +209,13 @@ chmod 700 "$HOME/.codex/skills"
 [[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" ]] \
     || fail "a failed move left an earlier skill folder in the backup"
 [[ ! -e "$XDG_STATE_HOME/fleet/config.json" ]] || fail "a failed move saved the record"
+# So does a record that cannot be saved after the upload.
+printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+chmod 500 "$XDG_STATE_HOME/fleet"
+fleet onboard >/dev/null 2>&1 && fail "onboard read an unsaved record as success"
+chmod 700 "$XDG_STATE_HOME/fleet"
+[[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" && -d "$HOME/.codex/skills/both" ]] \
+    || fail "an unsaved onboarding record left the skill folders in the backup"
 fleet sync >/dev/null 2>&1 || fail "sync after a failed onboarding move"
 [[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$HOME/.agents/AGENTS.md")" == 0o600 ]] \
     || fail "an owner-only CLAUDE.md was copied world-readable"
@@ -594,8 +601,11 @@ printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 # A switch that cannot be written down puts the other account's files and
 # links back.
 chmod 500 "$XDG_STATE_HOME/fleet"
-fleet sync >/dev/null 2>&1 && fail "switched accounts without writing the switch down"
+out=$(fleet sync 2>&1) && fail "switched accounts without writing the switch down"
 chmod 700 "$XDG_STATE_HOME/fleet"
+# A link that displaced a file cannot be put back without its record, and
+# the failure says so.
+grep -q "links could not be put back" <<<"$out" || fail "an unwritten switch hid the links it could not put back: $out"
 [[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
     || fail "an unwritten switch left the other account's files or links out"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "an unwritten switch dropped the old record"

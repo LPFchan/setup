@@ -853,13 +853,17 @@ def _move_harness_skills(backup):
             for folder in _skill_folders(directory):
                 moved.append((folder, backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")))
     except BaseException:
-        for folder, saved in reversed(moved):
-            if not os.path.lexists(folder):
-                shutil.move(str(saved), str(folder))
+        _put_harness_back(moved)
         raise
     if moved:
         _report(f"moved skill folders to {backup.root}: " + ", ".join(str(f) for f, _ in moved))
     return moved
+
+
+def _put_harness_back(moved):
+    for folder, saved in reversed(moved):
+        if not os.path.lexists(folder):
+            shutil.move(str(saved), str(folder))
 
 
 def _apply_changes(take, remove, contents, server, backup, then=None, scanned=None):
@@ -938,11 +942,15 @@ def pull(account):
                 # Its record goes last: until then a failure puts its tree and
                 # links back, and a retry finishes the job.
                 CONFIG_STATE.unlink(missing_ok=True)
-            except BaseException:
+            except BaseException as exc:
                 if other:
                     _put_foreign_back(moved, backup)
-                    with contextlib.suppress(Exception):
+                    try:
                         refresh_links()
+                    except Exception as again:
+                        # Its links stay down until a sync gets through.
+                        raise ConfigError(f"{exc}; the other account's links could not be put back "
+                                          f"either ({again}), so run fleet sync once that is fixed") from exc
                 raise
             return "pending", None, []
         conflicts = []
@@ -978,9 +986,7 @@ def pull(account):
         try:
             conflicts += _apply_changes(take, remove, contents, server, backup, then=finish, scanned=local)
         except BaseException:
-            for folder, saved in reversed(harness):
-                if not os.path.lexists(folder):
-                    shutil.move(str(saved), str(folder))
+            _put_harness_back(harness)
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
             _put_foreign_back(moved, backup)
@@ -1318,9 +1324,14 @@ def onboard(account):
     print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
     # Only now: a refused upload leaves the harness skill folders in use. And
     # before the record: a failed move leaves the next sync to join the
-    # account, which moves them again.
-    _move_harness_skills(backup)
-    _save_json(CONFIG_STATE, record)
+    # account, which moves them again. So does a record that cannot be saved,
+    # once the folders are back where claude reads them.
+    moved = _move_harness_skills(backup)
+    try:
+        _save_json(CONFIG_STATE, record)
+    except BaseException:
+        _put_harness_back(moved)
+        raise
     ONBOARDING_MARKER.unlink(missing_ok=True)
     refresh_links()
 
