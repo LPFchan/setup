@@ -2,10 +2,14 @@
 # setup-module: fleet
 # setup-source: files/fleet
 """fleet — keeps this machine's SSH config and authorized_keys in step with its
-account's fleet in Common Auth (DEC-20261015-001)."""
+account's fleet in Common Auth, and its ~/.agents/ in step with the account's
+config (DEC-20261015-001, DEC-20261015-002, DEC-20261016-001)."""
 
 from __future__ import annotations
 
+import base64
+import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -56,7 +60,9 @@ KEY = re.compile(r"^(ssh-ed25519|ecdsa-sha2-[a-z0-9]+|ssh-rsa) [A-Za-z0-9+/]+={0
 TIMER_NAME = "fleet-sync"
 PLIST_NAME = "com.lost.plus.fleet-sync"
 LAUNCHD_DIR = HOME/"Library/LaunchAgents"
-SCHEDULE_HOUR = 4
+SYSTEMD_USER_DIR = pathlib.Path(os.environ.get("SCHEDULE_USER_DIR") or HOME/".config/systemd/user")
+# After setup's own 06:00 run, as the harnesses timer this replaces ran.
+SCHEDULE_HOUR = 11
 
 
 class Unavailable(Exception):
@@ -75,13 +81,14 @@ def _auth_bin():
     return str(installed) if os.access(installed, os.X_OK) else shutil.which("auth")
 
 
-def _auth(*args):
+def _auth(*args, stdin=None, timeout=60):
     """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session."""
     binary = _auth_bin()
     if not binary:
         return 4, ""
     try:
-        result = subprocess.run([binary, *args], capture_output=True, text=True, timeout=60)
+        result = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True,
+                                timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return result.returncode, result.stdout
@@ -98,13 +105,22 @@ def _set_login_marker(needed):
         pass
 
 
-def _subject():
+def _context():
+    """'<origin> <subject>' of the session, or None."""
     rc, context = _auth("context")
     try:
-        subject = json.loads(context)["subject"] if rc == 0 else None
+        value = json.loads(context) if rc == 0 else {}
+        origin, subject = value["origin"], value["subject"]
     except (ValueError, TypeError, KeyError):
         return None
-    return subject if isinstance(subject, str) and subject else None
+    if not all(isinstance(v, str) and v and " " not in v for v in (origin, subject)):
+        return None
+    return f"{origin} {subject}"
+
+
+def _subject():
+    context = _context()
+    return context.split(" ", 1)[1] if context else None
 
 
 def fetch_fleet():
@@ -384,27 +400,714 @@ def _load_state():
     return value if isinstance(value, dict) else {}
 
 
+# --- account config ------------------------------------------------------
+#
+# The account's ~/.agents/ (AGENTS.md, skills/, settings/, mcp.json) lives in
+# Auth one row per file. A pull syncs per file against the hashes recorded at
+# the last sync: server-only changes are taken, local-only changes wait for a
+# direct sync to upload them, and when both sides changed the server copy wins
+# and the local one goes to the backup. Only a direct `fleet sync` uploads.
+
+AGENTS_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_AGENTS_DIR", "~/.agents")))
+CONFIG_STATE = STATE_HOME/"fleet/config.json"
+LINKS_STATE = STATE_HOME/"fleet/links.json"
+NOTICES = STATE_HOME/"fleet/notices.json"
+ONBOARDING_MARKER = STATE_HOME/"fleet/onboarding.pending"
+BACKUP_DIR = STATE_HOME/"fleet/backup"
+SETUP_STATE = pathlib.Path(os.environ.get("STATE_DIR") or STATE_HOME/"setup")/"script-state.tsv"
+# The modules fleet replaces. While setup still records any of them, the old
+# clients own ~/.agents/ and the harness links, so fleet keeps to SSH.
+PREDECESSOR_MODULES = ("agents", "harnesses", "miniharness")
+SKIPPED_NAMES = {".git", "node_modules", "__pycache__", ".ds_store"}
+MAX_PATH_BYTES = 512
+MAX_SEGMENT_BYTES = 255
+# Harness order: where onboarding and a joining machine look for the user's
+# own instructions and skills.
+HARNESS_INSTRUCTIONS = [HOME/".claude/CLAUDE.md", HOME/".codex/AGENTS.md",
+                        HOME/".config/opencode/AGENTS.md"]
+HARNESS_SKILL_DIRS = [HOME/".claude/skills", HOME/".codex/skills", HOME/".config/opencode/skills"]
+# AGENTS.md is linked where each harness reads it; ~/AGENTS.md covers hermes,
+# which reads AGENTS.md from its working directory.
+AGENTS_LINKS = HARNESS_INSTRUCTIONS + [HOME/"AGENTS.md"]
+# codex and opencode read ~/.agents/skills themselves; claude needs links.
+SKILL_LINK_DIR = HOME/".claude/skills"
+# Links the old agents module made, removed once fleet owns ~/.agents/.
+OLD_AGENTS_LINKS = [HOME/".gemini/GEMINI.md", HOME/".config/muse/AGENTS.md"]
+OLD_SKILL_LINK_DIRS = [HOME/".codex/skills", HOME/".gemini/config/skills", HOME/".config/muse/skills"]
+
+
+class ConfigError(Exception):
+    """The config sync could not finish; nothing past the failure was written."""
+
+
+class Changed(Exception):
+    """The account changed while it was read; the pull starts over."""
+
+
+def config_sync_enabled():
+    try:
+        rows = SETUP_STATE.read_text().splitlines()
+    except OSError:
+        return True
+    return not any(row.split("\t", 1)[0] in PREDECESSOR_MODULES for row in rows)
+
+
+def config_path(rel):
+    """Whether `rel` is a path Auth stores, as it checks them."""
+    if len(rel.encode()) > MAX_PATH_BYTES or re.search(r"[\x00-\x1f\x7f\\]", rel):
+        return False
+    segments = rel.split("/")
+    for segment in segments:
+        if segment in ("", ".", "..") or len(segment.encode()) > MAX_SEGMENT_BYTES:
+            return False
+        if segment.casefold() in SKIPPED_NAMES:
+            return False
+    if len(segments) == 1:
+        return rel in ("AGENTS.md", "mcp.json")
+    return segments[0] in ("skills", "settings")
+
+
+def _digest(path):
+    data = path.read_bytes()
+    return [hashlib.sha256(data).hexdigest(), bool(path.stat().st_mode & 0o100)]
+
+
+def scan_local():
+    """({path: [sha256, executable]}, symlinks skipped) under ~/.agents/."""
+    files, symlinks = {}, []
+
+    def add(path, rel):
+        if path.is_symlink():
+            symlinks.append(rel)
+        elif path.is_file() and config_path(rel):
+            files[rel] = _digest(path)
+
+    for name in ("AGENTS.md", "mcp.json"):
+        add(AGENTS_DIR/name, name)
+    for top in ("skills", "settings"):
+        root = AGENTS_DIR/top
+        if root.is_symlink():
+            symlinks.append(top)
+            continue
+        for folder, dirs, names in os.walk(root):
+            base = pathlib.Path(folder)
+            for name in list(dirs):
+                if name.casefold() in SKIPPED_NAMES:
+                    dirs.remove(name)
+                elif (base/name).is_symlink():
+                    dirs.remove(name)
+                    symlinks.append((base/name).relative_to(AGENTS_DIR).as_posix())
+            for name in names:
+                if name.casefold() not in SKIPPED_NAMES:
+                    add(base/name, (base/name).relative_to(AGENTS_DIR).as_posix())
+    return files, sorted(symlinks)
+
+
+def _safe_target(rel):
+    """Where `rel` lands, refusing a path that leaves ~/.agents/ or passes
+    through a symlink."""
+    if not config_path(rel):
+        raise ConfigError(f"Auth served a path outside ~/.agents/: {rel!r}")
+    target = AGENTS_DIR/rel
+    for parent in list(target.parents)[:len(rel.split("/")) - 1]:
+        if parent.is_symlink():
+            raise ConfigError(f"refusing to write through a symlink: {parent}")
+    return target
+
+
+def _request(method, path, body=None):
+    """The parsed answer of a session-authenticated request. Raises Rejected
+    for a refused session, ConfigError for anything else."""
+    args = ["request", method, path] + (["-"] if body is not None else [])
+    stdin = json.dumps(body) if body is not None else None
+    for attempt in range(3):
+        rc, out = _auth(*args, stdin=stdin, timeout=300)
+        if rc == 4:
+            _set_login_marker(True)
+            raise Rejected()
+        try:
+            value = json.loads(out) if out.strip() else None
+        except ValueError:
+            value = None
+        if rc == 0 and isinstance(value, dict):
+            return value
+        if rc == 6 and isinstance(value, dict):
+            if value.get("status") == 503 and attempt < 2:
+                time.sleep(1 + attempt)
+                continue
+            raise HttpError(value)
+        raise Unreachable("Auth is unreachable")
+    raise Unreachable("Auth is unreachable")
+
+
+class Unreachable(ConfigError):
+    pass
+
+
+class Rejected(ConfigError):
+    def __init__(self):
+        super().__init__("no session; run: auth login")
+
+
+class HttpError(ConfigError):
+    def __init__(self, value):
+        self.status = value.get("status")
+        self.retry_after = value.get("retry_after")
+        super().__init__(str(value.get("error") or f"Auth answered {self.status}"))
+
+
+def _listing():
+    value = _request("GET", "/api/fleet/config")
+    files = {}
+    for entry in value.get("files") or []:
+        rel = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(rel, str) or not config_path(rel):
+            raise ConfigError(f"Auth listed a path outside ~/.agents/: {rel!r}")
+        files[rel] = [entry.get("sha256"), bool(entry.get("executable"))]
+    counter, version = value.get("counter"), value.get("version")
+    if not isinstance(counter, int) or not isinstance(version, int):
+        raise ConfigError("Auth answered without a counter")
+    return counter, version, files
+
+
+def fetch_contents(paths, counter, server):
+    """{path: bytes} for `paths`, all from the snapshot at `counter`."""
+    contents, pending = {}, sorted(paths)
+    while pending:
+        value = _request("POST", "/api/fleet/config/fetch", {"paths": pending})
+        if value.get("counter") != counter or value.get("missing"):
+            raise Changed()
+        for entry in value.get("files") or []:
+            rel = entry.get("path")
+            try:
+                data = base64.b64decode(entry.get("content") or "", validate=True)
+            except (ValueError, TypeError):
+                raise ConfigError(f"Auth sent unreadable content for {rel!r}") from None
+            if rel not in server or hashlib.sha256(data).hexdigest() != server[rel][0]:
+                raise Changed()
+            contents[rel] = data
+        remaining = value.get("remaining") or []
+        if len(remaining) >= len(pending):
+            raise ConfigError("Auth returned no files for a fetch")
+        pending = remaining
+    return contents
+
+
+class Backup:
+    """One run's backup folder, made on first use."""
+
+    def __init__(self):
+        self.root = None
+
+    def _dir(self):
+        if self.root is None:
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            root = BACKUP_DIR/stamp
+            n = 1
+            while root.exists():
+                n += 1
+                root = BACKUP_DIR/f"{stamp}-{n}"
+            root.mkdir(parents=True)
+            self.root = root
+        return self.root
+
+    def move(self, path, label):
+        """Move `path` (file, folder, or link) under `label` in the backup."""
+        destination = self._dir()/label
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(destination))
+        return destination
+
+    def save(self, data, label):
+        destination = self._dir()/label
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+
+
+def _write_file(rel, data, executable):
+    target = _safe_target(rel)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(temporary, 0o755 if executable else 0o644)
+        os.replace(temporary, target)
+    except BaseException:
+        pathlib.Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _remove_file(rel):
+    target = _safe_target(rel)
+    target.unlink(missing_ok=True)
+    for parent in target.parents:
+        if parent == AGENTS_DIR or AGENTS_DIR not in parent.parents:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+
+
+def _load_json(path, default):
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
+def _save_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    temporary.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def add_notice(text):
+    """Something a run without a terminal did that the user should see."""
+    if sys.stdin.isatty():
+        return
+    notices = _load_json(NOTICES, [])
+    if text not in notices:
+        _save_json(NOTICES, notices + [text])
+
+
+def _report(text):
+    eprint(f"fleet: {text}")
+    add_notice(text)
+
+
+def _skill_folders(directory):
+    """The real, non-dot folders holding a SKILL.md in a harness skill folder."""
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        return []
+    return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
+            and e.is_dir() and (e/"SKILL.md").is_file()]
+
+
+def _same_tree(a, b):
+    def tree(root):
+        return {p.relative_to(root).as_posix(): p.read_bytes()
+                for p in root.rglob("*") if p.is_file() and not p.is_symlink()}
+    try:
+        return tree(a) == tree(b)
+    except OSError:
+        return False
+
+
+def _move_harness_skills(backup):
+    """Move the user's own skill folders out of the harness folders, so
+    harnesses don't load them next to ~/.agents/skills; list them."""
+    moved = []
+    for directory in HARNESS_SKILL_DIRS:
+        for folder in _skill_folders(directory):
+            backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")
+            moved.append(str(folder))
+    if moved:
+        _report(f"moved skill folders to {backup.root}: " + ", ".join(moved))
+    return moved
+
+
+def _apply_changes(take, remove, contents, server, backup):
+    """Replaced and deleted local copies, symlinks included, go to the backup."""
+    for rel in sorted(remove) + sorted(take):
+        target = _safe_target(rel)
+        if target.is_symlink() or target.exists():
+            backup.move(target, f"agents/{rel}")
+    for rel in remove:
+        _remove_file(rel)
+    for rel in sorted(take):
+        _write_file(rel, contents[rel], server[rel][1])
+
+
+def pull(account):
+    """Bring ~/.agents/ in step with the account. Returns ('synced', record,
+    conflicts) or ('pending', None, []) when the account was never pushed."""
+    for _ in range(3):
+        counter, version, server = _listing()
+        if _context() != account:
+            raise ConfigError("the session changed during the sync")
+        state = _load_json(CONFIG_STATE, {})
+        record = state if state.get("account") == account else None
+        backup = Backup()
+        if state and record is None and AGENTS_DIR.exists():
+            # Another account's files: they are not this account's to push.
+            backup.move(AGENTS_DIR, "agents-other-account")
+            CONFIG_STATE.unlink(missing_ok=True)
+            _report(f"moved another account's ~/.agents to {backup.root}")
+        local, _ = scan_local()
+        if record is None and counter == 0:
+            ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            ONBOARDING_MARKER.touch()
+            return "pending", None, []
+        conflicts = []
+        if record is None:
+            # Joining an account that was pushed: take its copy wholesale.
+            take = [p for p in server if local.get(p) != server[p]]
+            remove = [p for p in local if p not in server]
+        else:
+            base = record.get("files") or {}
+            take, remove = [], []
+            for rel in set(server) | set(local) | set(base):
+                s, l, b = server.get(rel), local.get(rel), base.get(rel)
+                if s == b or s == l:
+                    continue
+                if l != b:
+                    conflicts.append(rel)
+                (remove if s is None else take).append(rel)
+        try:
+            contents = fetch_contents(take, counter, server)
+        except Changed:
+            continue
+        _apply_changes(take, remove, contents, server, backup)
+        if record is None:
+            _move_harness_skills(backup)
+        if conflicts:
+            _report(f"changed here and in the account, kept the account's copy (yours are in "
+                    f"{backup.root}): " + ", ".join(sorted(conflicts)))
+        record = {"account": account, "counter": counter, "version": version, "files": server}
+        _save_json(CONFIG_STATE, record)
+        ONBOARDING_MARKER.unlink(missing_ok=True)
+        return "synced", record, sorted(conflicts)
+    raise ConfigError("the account kept changing during the sync; try again")
+
+
+def _check_json_objects(paths):
+    for rel in paths:
+        if rel == "mcp.json" or (rel.startswith("settings/") and rel.endswith(".json")):
+            try:
+                value = json.loads((AGENTS_DIR/rel).read_text())
+            except (OSError, ValueError):
+                value = None
+            if not isinstance(value, dict):
+                raise ConfigError(f"{rel} is not a JSON object; fix it before uploading")
+
+
+def push(record, local, puts, deletes):
+    """Upload the given local changes against `record`; the new record."""
+    _check_json_objects(puts)
+    body = {"base": record["counter"],
+            "put": [{"path": rel, "content": base64.b64encode((AGENTS_DIR/rel).read_bytes()).decode(),
+                     "executable": local[rel][1]} for rel in sorted(puts)],
+            "delete": sorted(deletes)}
+    value = _request("POST", "/api/fleet/config/push", body)
+    files = dict(record.get("files") or {})
+    for rel in puts:
+        files[rel] = local[rel]
+    for rel in deletes:
+        files.pop(rel, None)
+    return {**record, "counter": value["counter"], "version": value["version"], "files": files}
+
+
+def upload(account, record):
+    """Push the local changes; on a stale base pull again and retry."""
+    for _ in range(3):
+        local, symlinks = scan_local()
+        base = record.get("files") or {}
+        puts = [p for p in local if local[p] != base.get(p)]
+        deletes = [p for p in base if p not in local]
+        if symlinks:
+            eprint("fleet: symlinks are not uploaded: " + ", ".join(symlinks))
+        if not puts and not deletes:
+            return record, 0
+        # Keep the server copies this upload overwrites or deletes.
+        try:
+            replaced = fetch_contents([p for p in puts + deletes if p in base], record["counter"], base)
+        except Changed:
+            replaced = None
+        if replaced is not None:
+            backup = Backup()
+            for rel, data in replaced.items():
+                backup.save(data, f"account/{rel}")
+            try:
+                new = push(record, local, puts, deletes)
+            except HttpError as exc:
+                if exc.status == 429:
+                    wait = int(exc.retry_after or 0)
+                    raise ConfigError("this account pushed too often; uploads resume in "
+                                      f"{max(1, (wait + 59) // 60)} min") from None
+                if exc.status != 409:
+                    raise ConfigError(f"upload refused: {exc}") from None
+            else:
+                _save_json(CONFIG_STATE, new)
+                print(f"fleet: uploaded {len(puts)} changed, {len(deletes)} deleted")
+                return new, len(puts) + len(deletes)
+        outcome, record, conflicts = pull(account)
+        refresh_links()
+        if conflicts:
+            raise ConfigError("not uploading over files changed in the account; see above")
+    raise ConfigError("the account kept changing during the upload; try again")
+
+
+# --- links ---------------------------------------------------------------
+
+def _link(target, source, links, backup):
+    """Point `target` at `source`; anything it displaces goes to the backup."""
+    if target.is_symlink() and os.readlink(target) == str(source):
+        return
+    if target.is_symlink() or target.exists():
+        moved = backup.move(target, f"displaced/{target.relative_to(HOME)}")
+        links[str(target)] = str(moved)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(source)
+
+
+def _points_into(path, root):
+    try:
+        return path.is_symlink() and pathlib.Path(os.readlink(path)).is_relative_to(root)
+    except OSError:
+        return False
+
+
+def refresh_links():
+    """AGENTS.md where each harness reads it, and each skill in claude's
+    folder, adding new skills and pruning removed ones."""
+    links = _load_json(LINKS_STATE, {})
+    backup = Backup()
+    agents_md = AGENTS_DIR/"AGENTS.md"
+    if agents_md.is_file():
+        for target in AGENTS_LINKS:
+            if target == HOME/"AGENTS.md" or target.parent.is_dir():
+                _link(target, agents_md, links, backup)
+    skills = AGENTS_DIR/"skills"
+    names = {e.name for e in _skill_entries(skills)}
+    if SKILL_LINK_DIR.parent.is_dir():
+        for name in sorted(names):
+            _link(SKILL_LINK_DIR/name, skills/name, links, backup)
+        if SKILL_LINK_DIR.is_dir():
+            for entry in SKILL_LINK_DIR.iterdir():
+                if _points_into(entry, skills) and entry.name not in names:
+                    entry.unlink()
+                    links.pop(str(entry), None)
+    for target in OLD_AGENTS_LINKS:
+        if _points_into(target, AGENTS_DIR):
+            target.unlink()
+    for directory in OLD_SKILL_LINK_DIRS:
+        if directory.is_dir():
+            for entry in directory.iterdir():
+                if _points_into(entry, skills):
+                    entry.unlink()
+    _save_json(LINKS_STATE, links)
+    if backup.root:
+        _report(f"moved files the links replaced to {backup.root}")
+
+
+def _skill_entries(skills):
+    try:
+        return [e for e in sorted(skills.iterdir()) if e.is_dir() and not e.name.startswith(".")]
+    except OSError:
+        return []
+
+
+def remove_links():
+    """Undo refresh_links: drop the links into ~/.agents and put back what
+    they displaced."""
+    links = _load_json(LINKS_STATE, {})
+    targets = list(AGENTS_LINKS)
+    if SKILL_LINK_DIR.is_dir():
+        targets += sorted(SKILL_LINK_DIR.iterdir())
+    for path in targets:
+        if _points_into(path, AGENTS_DIR):
+            path.unlink()
+            moved = links.get(str(path))
+            if moved and os.path.lexists(moved):
+                shutil.move(moved, path)
+    LINKS_STATE.unlink(missing_ok=True)
+
+
+# --- onboarding ----------------------------------------------------------
+
+def onboard(account):
+    """Push this machine's agent config as the account's starting copy,
+    gathering AGENTS.md and skills from the harness folders first."""
+    backup = Backup()
+    listed = []
+    agents_md = AGENTS_DIR/"AGENTS.md"
+    sources = []
+    for path in HARNESS_INSTRUCTIONS:
+        try:
+            if path.is_file() and not _points_into(path, AGENTS_DIR):
+                sources.append((path, path.read_bytes()))
+        except OSError:
+            pass
+    if not agents_md.exists() and sources:
+        agents_md.parent.mkdir(parents=True, exist_ok=True)
+        agents_md.write_bytes(sources[0][1])
+    if agents_md.is_file():
+        listed += [str(path) for path, data in sources if data != agents_md.read_bytes()]
+    skills = AGENTS_DIR/"skills"
+    for directory in HARNESS_SKILL_DIRS:
+        for folder in _skill_folders(directory):
+            mine = skills/folder.name
+            if mine.exists():
+                if not _same_tree(folder, mine):
+                    listed.append(str(folder))
+            else:
+                shutil.copytree(folder, mine, symlinks=True)
+    _move_harness_skills(backup)
+    if listed:
+        _report("these differ from what was uploaded and were left out: " + ", ".join(listed))
+    local, symlinks = scan_local()
+    if symlinks:
+        eprint("fleet: symlinks are not uploaded: " + ", ".join(symlinks))
+    record = {"account": account, "counter": 0, "version": 0, "files": {}}
+    try:
+        record = push(record, local, list(local), [])
+    except HttpError as exc:
+        if exc.status == 409:
+            raise ConfigError("another machine set up this account first; run: fleet sync") from None
+        raise ConfigError(f"upload refused: {exc}") from None
+    _save_json(CONFIG_STATE, record)
+    ONBOARDING_MARKER.unlink(missing_ok=True)
+    print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
+    refresh_links()
+
+
+def _offer_onboarding(account):
+    if os.environ.get("BATCH") == "1" or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("fleet: this account has no agent config yet; to upload this machine's, run: fleet onboard")
+        return 0
+    answer = input("fleet: this account has no agent config yet. Upload this machine's ~/.agents, "
+                   "AGENTS.md, and skills as its starting copy? [y/N] ")
+    if answer.strip().lower() not in ("y", "yes"):
+        print("fleet: not now; run fleet onboard when ready")
+        return 0
+    onboard(account)
+    return 0
+
+
+def config_sync(direct):
+    """Pull, and on a direct run upload. 0 done, 1 conflicts or a refused
+    upload, 3 no answer from Auth."""
+    if not config_sync_enabled():
+        return 0
+    account = _context()
+    if account is None:
+        return 3
+    try:
+        outcome, record, conflicts = pull(account)
+        if outcome == "pending":
+            return _offer_onboarding(account)
+        refresh_links()
+        if direct:
+            record, _ = upload(account, record)
+    except (Rejected, Unreachable) as exc:
+        eprint(f"fleet: account config: {exc}")
+        return 3
+    except (ConfigError, OSError) as exc:
+        eprint(f"fleet: account config: {exc}")
+        return 1
+    return 1 if conflicts else 0
+
+
+def config_outdated():
+    """Whether a pull would change something (for setup's status)."""
+    if not config_sync_enabled():
+        return False
+    account = _context()
+    if account is None:
+        return False
+    try:
+        counter, version, _ = _listing()
+    except ConfigError:
+        return False
+    record = _load_json(CONFIG_STATE, {})
+    if record.get("account") != account:
+        return counter > 0
+    return record.get("version") != version
+
+
+def config_status():
+    if not config_sync_enabled():
+        print("fleet: account config waits until setup swaps out the old agents and harnesses modules")
+        return
+    account = _context()
+    if account is None:
+        return
+    try:
+        counter, version, server = _listing()
+    except ConfigError as exc:
+        print(f"fleet: account config: {exc}")
+        return
+    record = _load_json(CONFIG_STATE, {})
+    local, symlinks = scan_local()
+    if record.get("account") != account:
+        print("fleet: account config not set up yet; run: fleet onboard" if counter == 0
+              else "fleet: account config not pulled yet; run: fleet sync")
+    else:
+        base = record.get("files") or {}
+        changed = sorted(p for p in set(local) | set(base) if local.get(p) != base.get(p))
+        print("fleet: account config " + ("current" if record.get("version") == version
+                                          else "changed in the account; run: fleet sync"))
+        if changed:
+            print(f"fleet: {len(changed)} local changes wait for a direct fleet sync: "
+                  + ", ".join(changed[:10]) + (" ..." if len(changed) > 10 else ""))
+    if symlinks:
+        print("fleet: symlinks are not uploaded: " + ", ".join(symlinks))
+    for notice in _load_json(NOTICES, []):
+        print(f"fleet: since the last status: {notice}")
+    NOTICES.unlink(missing_ok=True)
+
+
 # --- commands ------------------------------------------------------------
 
-def cmd_sync(check=False):
-    """Write the blocks. With --check, exit 1 instead when they would change.
-    Exit 3 when nothing authoritative could be worked out."""
+def cmd_sync(check=False, direct=True):
+    """Write the SSH blocks and pull the account config; a direct run (a user
+    or an agent, not setup or the timer) also uploads local config changes.
+    With --check, exit 1 instead when either would change. Exit 3 when Auth
+    gave no authoritative answer, 1 when a direct run left something unsent."""
     try:
         config_lines, keys_lines, info = planned()
     except Unavailable as exc:
         eprint(f"fleet: {exc}; keeping the current SSH blocks")
+        if check:
+            return 3
+        ssh_rc = 3
+    else:
+        if check:
+            return 0 if is_current(config_lines, keys_lines) and not config_outdated() else 1
+        changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
+        try:
+            SSH_DIR.chmod(0o700)
+        except OSError:
+            pass
+        _save_state(info)
+        verb = "updated" if changed else "current"
+        print(f"fleet: SSH blocks {verb} ({info['hosts']} hosts, {info['keys']} keys)")
+        _warn_self(info.get("fleet"))
+        ssh_rc = 0
+    if direct and schedule_stale():
+        # A timer written before uploads existed runs plain `fleet sync`;
+        # this run may be it, so it only pulls.
+        schedule_enable()
+        eprint("fleet: updated the nightly timer; this run only pulled, run fleet sync again to upload")
+        direct = False
+    config_rc = config_sync(direct)
+    return config_rc if config_rc == 1 else ssh_rc or config_rc
+
+
+def cmd_onboard():
+    if not config_sync_enabled():
+        eprint("fleet: account config waits until setup swaps out the old agents and harnesses modules")
+        return 1
+    account = _context()
+    if account is None:
+        eprint("fleet: no session; run: auth login")
         return 3
-    if check:
-        return 0 if is_current(config_lines, keys_lines) else 1
-    changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
     try:
-        SSH_DIR.chmod(0o700)
-    except OSError:
-        pass
-    _save_state(info)
-    verb = "updated" if changed else "current"
-    print(f"fleet: SSH blocks {verb} ({info['hosts']} hosts, {info['keys']} keys)")
-    _warn_self(info.get("fleet"))
+        outcome, _, _ = pull(account)
+        if outcome != "pending":
+            print("fleet: this account already has its agent config; fleet sync keeps it in step")
+            refresh_links()
+            return 0
+        onboard(account)
+    except (ConfigError, OSError) as exc:
+        eprint(f"fleet: {exc}")
+        return 1
     return 0
 
 
@@ -433,7 +1136,8 @@ def cmd_status():
             print("fleet: not yet served by Auth as in FLEET: " + ", ".join(info["missing"]))
     if state.get("synced_at"):
         print("fleet: last sync " + time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(state["synced_at"])))
-    print(f"fleet: nightly sync {'on' if schedule_installed() else 'off; run: fleet schedule'}")
+    print(f"fleet: nightly sync {'on' if schedule_installed() else 'off; run: fleet schedule on'}")
+    config_status()
     return 0
 
 
@@ -467,6 +1171,19 @@ def schedule_installed():
         return False
 
 
+def schedule_stale():
+    """Whether the installed timer runs something other than today's pass."""
+    try:
+        if sys.platform == "darwin":
+            text = _plist_path().read_text()
+            return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
+        service = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.service").read_text()
+        timer = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer").read_text()
+    except OSError:
+        return False
+    return "fleet schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
+
+
 def schedule_enable():
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
@@ -481,7 +1198,8 @@ def schedule_enable():
     <key>ProgramArguments</key>
     <array>
         <string>{os.path.abspath(sys.argv[0])}</string>
-        <string>sync</string>
+        <string>schedule</string>
+        <string>run</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
@@ -515,7 +1233,7 @@ def schedule_enable():
         timer_extra = handle.name
     try:
         rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet SSH sync",
-                           "%h/.local/bin/fleet sync", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
+                           "%h/.local/bin/fleet schedule run", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
                            "", timer_extra)
     finally:
         os.unlink(timer_extra)
@@ -536,19 +1254,31 @@ def schedule_disable():
     return 0
 
 
-USAGE = "Usage: fleet sync [--check] | fleet status | fleet schedule [enable|disable|status]"
+USAGE = ("Usage: fleet sync [--check] | fleet status | fleet onboard"
+         " | fleet schedule [on|off|status|run]")
 
 
 def main():
     args = sys.argv[1:]
     if args in (["sync"], ["sync", "--check"]):
         return cmd_sync(check=len(args) == 2)
+    # setup's runs: pull only.
+    if args == ["sync", "--pull"]:
+        return cmd_sync(direct=False)
     if args == ["status"]:
         return cmd_status()
-    if args in (["schedule"], ["schedule", "enable"]):
+    if args == ["onboard"]:
+        return cmd_onboard()
+    if args in (["schedule"], ["schedule", "on"], ["schedule", "enable"]):
         return schedule_enable()
-    if args == ["schedule", "disable"]:
+    if args in (["schedule", "off"], ["schedule", "disable"]):
         return schedule_disable()
+    if args == ["schedule", "run"]:
+        return cmd_sync(direct=False)
+    # setup uninstall fleet: drop the harness links, restoring what they replaced.
+    if args == ["__unlink"]:
+        remove_links()
+        return 0
     if args == ["schedule", "status"]:
         print(f"fleet: nightly sync {'on' if schedule_installed() else 'off'}")
         return 0

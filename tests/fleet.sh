@@ -8,6 +8,10 @@ export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake"
 export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
 mkdir -p "$FLEET_SSH_DIR" "$FAKE"
 printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
+# These cases cover the SSH blocks; a recorded agents module keeps fleet to
+# them (tests/fleet-config.sh covers the account config).
+export STATE_DIR="$TMP/state/setup"
+mkdir -p "$STATE_DIR"; printf 'agents\tclone\ta\tb\n' > "$STATE_DIR/script-state.tsv"
 
 # A stand-in auth CLI: `request` prints $FAKE/fleet.json and exits $FAKE/rc,
 # `context` names $FAKE/subject.
@@ -130,7 +134,7 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 # outdated, so setup does not fail every run on a machine waiting to log in.
 serve '{}' 4
 rm -f "$FLEET_SSH_DIR/id_ed25519.pub"
-export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet" STATE_DIR="$XDG_STATE_HOME/setup"
+export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet"
 module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }

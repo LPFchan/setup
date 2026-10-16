@@ -80,7 +80,8 @@ _apply() {
     [[ "$action" == installed ]] && _login_if_needed
     # Exit 3 means Auth gave no authoritative answer: the blocks already there
     # stay, and status says so rather than failing every run.
-    "$BIN" sync || (( $? == 3 ))
+    # setup only pulls; uploads are for a direct `fleet sync`.
+    "$BIN" sync --pull || (( $? == 3 ))
 }
 
 install() { _apply installed; }
@@ -113,6 +114,7 @@ status() {
 
 uninstall() {
     [[ -x "$BIN" ]] && "$BIN" schedule disable >/dev/null 2>&1
+    [[ -x "$BIN" ]] && "$BIN" __unlink
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
     rm -f "$BIN"
