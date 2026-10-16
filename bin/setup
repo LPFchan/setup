@@ -154,6 +154,17 @@ is_service_module() {
     return 1
 }
 
+# Over SSH there is no GUI domain to load an agent into; the installers leave
+# the plist for launchd to load at the next login, which counts as enabled.
+launchd_agent_active() {
+    local domain="gui/$(id -u)"
+    if launchctl print "$domain" &>/dev/null; then
+        launchctl print "$domain/$1" &>/dev/null
+    else
+        [[ -f "$HOME/Library/LaunchAgents/$1.plist" ]]
+    fi
+}
+
 module_is_active() {
     local unit user_flag=""
     unit=$(module_service_unit "$1") || return 1
@@ -164,9 +175,9 @@ module_is_active() {
     # macOS user timers live in launchd, not systemd.
     if [[ "$(uname -s)" == "Darwin" ]]; then
         case "$1" in
-            providers) launchctl print "gui/$(id -u)/com.lost.plus.providers" &>/dev/null; return $? ;;
-            harnesses) launchctl print "gui/$(id -u)/com.lost.plus.harnesses-update" &>/dev/null; return $? ;;
-            fleet) launchctl print "gui/$(id -u)/com.lost.plus.fleet-sync" &>/dev/null; return $? ;;
+            providers) launchd_agent_active com.lost.plus.providers; return $? ;;
+            harnesses) launchd_agent_active com.lost.plus.harnesses-update; return $? ;;
+            fleet) launchd_agent_active com.lost.plus.fleet-sync; return $? ;;
         esac
     fi
     [[ "$(systemctl ${user_flag} is-active "${unit}" 2>/dev/null)" == "active" ]]

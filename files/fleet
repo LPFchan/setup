@@ -500,7 +500,11 @@ def schedule_enable():
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(_plist_path())],
                                 capture_output=True)
         # 125: no GUI session (over SSH). The agent loads at the next login.
-        if result.returncode not in (0, 125):
+        if result.returncode == 125:
+            print(f"fleet: nightly sync installed at {_plist_path()}")
+            print("  no GUI session; it loads at the next login on the Mac's screen")
+            return 0
+        if result.returncode != 0:
             eprint(f"fleet: launchd enable failed (rc={result.returncode})")
             return 1
         print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (launchd)")
