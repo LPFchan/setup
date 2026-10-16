@@ -238,6 +238,13 @@ else:
     raise AssertionError("revoked device session used cached credentials")
 invalid = json.load(open(os.environ["LOST_AUTH_STORE"]))
 assert invalid["session_state"] == "invalid" and invalid["tokens"] == {}
+# An invalidated session no longer names an account.
+try:
+    m["cmd_context"]()
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+else:
+    raise AssertionError("an invalidated session still reported its account")
 
 # A later network outage cannot revive credentials after confirmed invalidation.
 def offline(path, **kwargs):

@@ -406,10 +406,13 @@ prune_hidden_dependents() {
 
 # The Auth account this machine's session belongs to, or nothing (rc 1) when
 # there is no session or its store cannot be read. Subject 1 is the operator.
+# rc 4: Auth already marked this machine's session expired or revoked.
 setup_session_subject() {
-    local auth_bin context subject
+    local auth_bin context subject rc=0
     auth_bin=$(_resolve_bin auth)
-    context=$("$auth_bin" context 2>/dev/null) || return 1
+    context=$("$auth_bin" context 2>/dev/null) || rc=$?
+    (( rc == 4 )) && return 4
+    (( rc == 0 )) || return 1
     subject=$(printf '%s' "$context" | sed -n 's/.*"subject":"\([^"]*\)".*/\1/p')
     [[ -n "$subject" ]] || return 1
     printf '%s\n' "$subject"
@@ -417,17 +420,18 @@ setup_session_subject() {
 
 fetch_manifest() {
     mkdir -p "$STATE_DIR"
-    local trust_rc=0 tmp filtered retired deps successors platform subject include_fleet kept
+    local trust_rc=0 tmp filtered retired deps successors platform subject subject_rc=0 include_fleet kept
     local module target mode source mod_status requires
     setup_machine_is_trusted || trust_rc=$?
-    subject=$(setup_session_subject) || subject=""
+    subject=$(setup_session_subject) || { subject_rc=$?; subject=""; }
     # Operator-only (`fleet` audience) modules are offered on the operator's
     # account (subject 1) or a key match against the owner's GitHub keys.
     # When either answer is missing and neither passed, the machine keeps
-    # what it already has rather than losing it to a missing session.
+    # what it already has rather than losing it to a missing session. A
+    # revoked session is an answer: it is no one's account.
     if (( trust_rc == 0 )) || [[ "$subject" == 1 ]]; then
         include_fleet=all
-    elif [[ -n "$subject" ]] && (( trust_rc == 1 )); then
+    elif [[ -n "$subject" || "$subject_rc" == 4 ]] && (( trust_rc == 1 )); then
         include_fleet=none
     else
         include_fleet=installed

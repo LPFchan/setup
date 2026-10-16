@@ -481,6 +481,14 @@ def cmd_context():
         data = _load()
     if data is None or data.get("version") != 2:
         raise AuthError("no renewable setup login; run: auth login")
+    # A session Auth already invalidated (expired or revoked) no longer
+    # speaks for its account.
+    if data.get("session_state") == "invalid":
+        raise AuthError(
+            "setup session is invalid, expired, or revoked; run: auth login",
+            401,
+            exit_code=4,
+        )
     origin = data.get("origin")
     subject = data.get("account_sub")
     if not isinstance(origin, str) or not origin or not isinstance(subject, str) or not subject:

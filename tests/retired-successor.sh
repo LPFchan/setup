@@ -17,10 +17,12 @@ printf 'ssh-ed25519 AAAAOwnerKey owner\n' > "$TEST_TMP/owner.keys"
 printf 'ssh-ed25519 AAAAOtherKey me\n' > "$HOME/.ssh/id_ed25519.pub"
 fail() { print -u2 -- "FAIL: $*"; exit 1; }
 
-# A stand-in auth whose context names $TEST_TMP/subject, or fails without it.
+# A stand-in auth whose context names $TEST_TMP/subject, fails without it,
+# and reports a revoked session (rc 4) while $TEST_TMP/revoked exists.
 cat > "$HOME/.local/bin/auth" <<SH
 #!/bin/sh
-[ "\$1" = context ] && [ -s "$TEST_TMP/subject" ] || exit 4
+[ -e "$TEST_TMP/revoked" ] && exit 4
+[ "\$1" = context ] && [ -s "$TEST_TMP/subject" ] || exit 1
 printf '{"origin":"https://auth.lost.plus","subject":"%s"}\n' "\$(cat "$TEST_TMP/subject")"
 SH
 chmod +x "$HOME/.local/bin/auth"
@@ -108,6 +110,11 @@ printf 'owner-only\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"
 fetch_manifest 2>"$TEST_TMP/err" >/dev/null
 module_in_catalog owner-only || fail "no session hid an installed operator-only module"
 grep -q 'keeping its operator-only modules: owner-only' "$TEST_TMP/err" || fail "no warning for a kept module"
+# A revoked session is an answer, not a missing one: installed modules go too.
+touch "$TEST_TMP/revoked"
+fetch_manifest >/dev/null 2>&1
+module_in_catalog owner-only && fail "a revoked session kept an operator-only module"
+rm "$TEST_TMP/revoked"
 
 # The cached manifest stays four columns for older binaries.
 [[ "$(awk -F '\t' 'NF { print NF }' "$MANIFEST_FILE" | sort -u)" == 4 ]] || fail "cached manifest is not four columns"
