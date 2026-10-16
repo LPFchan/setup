@@ -87,6 +87,9 @@ if path == "/api/fleet/skills/install":
         answer(200, {"id": found[0], "name": installs[found[0]], "installed": False})
     if name in installs.values():
         answer(409, {"error": "an installed skill is already named " + name + "; pick another with --as"})
+    folded = f"skills/{name}".casefold()
+    if any(p.casefold() == folded or p.casefold().startswith(folded + "/") for p in state["files"]):
+        answer(409, {"error": "your own skills include " + name + "; pick another name with --as"})
     installs[found[0]] = name
     state["version"] += 1; save()
     answer(200, {"id": found[0], "name": name, "installed": True})
@@ -994,6 +997,12 @@ out=$(fleet sync 2>&1) && fail "pushed a skill that case-folds to an install"
 [[ "$out" == *"case-insensitive"*"skills/Foo"* ]] || fail "the case-folding skill was not named: $out"
 grep -q 'skills/Foo' "$FAKE/pushes" && fail "a skill case-folding to an install reached Auth"
 rm -rf "$HOME/.agents/skills/Foo"
+# Auth refuses an install named after a folder the account owns.
+server_put skills/owned/SKILL.md 'mine'
+out=$(fleet install bob/foo --as Owned 2>&1) && fail "installed under a name the account owns"
+[[ "$out" == *"your own skills include Owned"* ]] || fail "the owned name was not refused: $out"
+[[ "$(python3 -c 'import json,os; print(list(json.load(open(os.environ["FAKE"]+"/server.json"))["installs"].values()))')" == "['foo']" ]] \
+    || fail "an install named after an owned folder was stored"
 # Installs that cannot be written put the account's files back too, so a
 # local edit the account's copy replaced is not lost behind a stale record.
 printf 'edited here\n' > "$HOME/.agents/AGENTS.md"
