@@ -252,12 +252,20 @@ mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
 [[ $rc != 0 && "$out" == *"move it aside"* ]] || fail "synced over a damaged record: $out"
 # So does one whose fields are the wrong shape: an empty file map would
 # read as nothing synced yet.
-cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"
-python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["files"]=[]; json.dump(r, open(sys.argv[1], "w"))' \
-    "$XDG_STATE_HOME/fleet/config.json"
+for files in '[]' '{"AGENTS.md": [null, false]}' '{"AGENTS.md": ["abc", false]}'; do
+    cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"
+    python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["files"]=json.loads(sys.argv[2]); json.dump(r, open(sys.argv[1], "w"))' \
+        "$XDG_STATE_HOME/fleet/config.json" "$files"
+    rc=0; out=$(fleet sync 2>&1) || rc=$?
+    mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
+    [[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "synced over a record with files $files: $out"
+done
+# A file where ~/.agents was stops the sync rather than reading as empty.
+mv "$HOME/.agents" "$TMP/agents.away"; printf 'x\n' > "$HOME/.agents"
 rc=0; out=$(fleet sync 2>&1) || rc=$?
-mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
-[[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "synced over a wrong-shaped record: $out"
+rm "$HOME/.agents"; mv "$TMP/agents.away" "$HOME/.agents"
+[[ $rc != 0 && "$out" == *"is not a folder"* ]] || fail "synced with a file for ~/.agents: $out"
+[[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "a file for ~/.agents was uploaded as deletions"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"

@@ -736,7 +736,9 @@ def _sync_record_ok(r):
     files = r.get("files")
     return (isinstance(r.get("account"), str) and isinstance(r.get("counter"), int)
             and isinstance(r.get("version"), int) and isinstance(files, dict)
-            and all(isinstance(v, list) and len(v) == 2 for v in files.values()))
+            and all(config_path(k) and isinstance(v, list) and len(v) == 2
+                    and isinstance(v[0], str) and re.fullmatch(r"[0-9a-f]{64}", v[0])
+                    and isinstance(v[1], bool) for k, v in files.items()))
 
 
 def _load_sync_record():
@@ -1285,6 +1287,10 @@ def config_sync(direct):
         return 0
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: account config: refusing a symlinked {AGENTS_DIR}")
+        return 1
+    # Anything else in its place would scan as empty: every file deleted.
+    if os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir():
+        eprint(f"fleet: account config: {AGENTS_DIR} is not a folder")
         return 1
     account = _context()
     if account is None:
