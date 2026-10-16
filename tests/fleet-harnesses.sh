@@ -37,6 +37,8 @@ if cmd == "context":
     sys.exit(0)
 if cmd == "token":
     open(f"{fake}/log", "a").write(f"token {sys.argv[2]}\n")
+    if os.path.exists(f"{fake}/token-down-{sys.argv[2]}"):
+        sys.exit(1)
     sys.exit(4) if os.path.exists(f"{fake}/token-gone") else print(f"tok-{sys.argv[2]}")
     sys.exit(0)
 method, path = sys.argv[2], sys.argv[3]
@@ -254,6 +256,11 @@ fleet sync --pull > "$TMP/out" 2>&1 || fail "second pass"
 grep -q 'add-json\|remove' "$FAKE/claude.log" && fail "second pass touched claude's MCP"
 grep -q 'wrote' "$TMP/out" && fail "second pass wrote: $(cat "$TMP/out")"
 fleet sync --check >/dev/null 2>&1 || fail "check after the pass"
+# A harness installed since the last render reads as outdated.
+mv "$HOME/.hermes/config.yaml" "$TMP/hermes.away"
+fleet sync --check >/dev/null 2>&1 && fail "check missed a harness gone since the render"
+mv "$TMP/hermes.away" "$HOME/.hermes/config.yaml"
+fleet sync --check >/dev/null 2>&1 || fail "check after the harness came back"
 
 # A server claude failed to add is tried again on the next run.
 server_put mcp.json '{"mcpServers": [
@@ -264,6 +271,7 @@ server_put mcp.json '{"mcpServers": [
 touch "$FAKE/claude-add-fail"
 fleet sync --pull >/dev/null 2>&1 && fail "a failed claude add went unreported"
 rm "$FAKE/claude-add-fail"
+fleet sync --check >/dev/null 2>&1 && fail "check missed a failed render"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "the failing claude added a server"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "a failed claude add was not retried"
@@ -300,9 +308,41 @@ fleet.common_auth_token = lambda scope, context: "passage-access"
 def down(token, item): raise fleet.TokenError("passage unreachable")
 fleet._vault_get = down
 server = {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}
-exports, drop, skipped = fleet.resolve_tokens([server], {"origin": "o", "subject": "1"}, [])
+exports, drop, skipped, missing = fleet.resolve_tokens([server], {"origin": "o", "subject": "1"}, [])
 print(exports.get(fleet.mcp_env_var(server)))' "$ROOT/files/fleet" 2>/dev/null)
 [[ "$kept" == from-env ]] || fail "a Passage outage dropped the environment's token: $kept"
+
+# With nothing to fall back on, the outage fails the render, so the next sync looks again.
+missing=$(HOME="$TMP/nvm" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_vault2", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.common_auth_token = lambda scope, context: "passage-access"
+def down(token, item): raise fleet.TokenError("passage unreachable")
+fleet._vault_get = down
+server = {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}
+exports, drop, skipped, missing = fleet.resolve_tokens([server], {"origin": "o", "subject": "1"}, [])
+print(sorted(missing))' "$ROOT/files/fleet" 2>/dev/null)
+[[ "$missing" == "['vault']" ]] || fail "a lookup with no fallback did not fail the render: $missing"
+
+# A new hub service whose token cannot be fetched yet fails the render, and
+# the next ordinary sync fetches it rather than taking the fast path.
+cp "$FAKE/services.json" "$TMP/services.saved"
+python3 - "$FAKE/services.json" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+rows.append({"key": "fresh.lost.plus", "label": "Fresh", "group": "tools", "url": "https://fresh.lost.plus",
+             "mcp_url": "https://fresh.lost.plus/mcp", "token_key": "fresh", "admin_only": False, "alias": ""})
+json.dump(rows, open(sys.argv[1], "w"))
+PY
+touch "$FAKE/token-down-fresh"
+fleet sync --pull >/dev/null 2>&1 && fail "a token lookup with no fallback rendered as done"
+rm "$FAKE/token-down-fresh"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the token came back"
+grep -q "tok-fresh" "$HOME/.zshenv" || fail "the missing token was not fetched again"
+cp "$TMP/services.saved" "$FAKE/services.json"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the service went"
 
 # What the account drops comes off; what the user added stays.
 server_put settings/claude.json '{"json": {"effortLevel": "high"}}'
@@ -341,6 +381,7 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass after the login came back"
 
 # The nightly pass renders in full: a credential Auth withdrew leaves the
 # block, each harness updates itself, and hermes restarts.
+printf 'HEATMAP_MCP_TOKEN=mine\n' >> "$HOME/.codex/.env"
 touch "$FAKE/token-gone" "$FAKE/systemctl-fail"
 : > "$FAKE/claude.log"
 fleet schedule run >/dev/null 2>&1 && fail "a failed hermes restart went unreported"
@@ -348,10 +389,29 @@ fleet schedule run >/dev/null 2>&1 && fail "a failed hermes restart went unrepor
 rm "$FAKE/systemctl-fail"
 fleet schedule run >/dev/null 2>&1 || fail "nightly pass"
 grep -q HEATMAP_MCP_TOKEN "$HOME/.zshenv" && fail "a withdrawn token stayed"
+[[ "$(grep -c '^HEATMAP_MCP_TOKEN=' "$HOME/.codex/.env")" == 1 ]] && grep -qx 'HEATMAP_MCP_TOKEN=mine' "$HOME/.codex/.env" \
+    || fail "a withdrawn token took the user's own line: $(cat "$HOME/.codex/.env")"
+sed -i.bak '/^HEATMAP_MCP_TOKEN=mine$/d' "$HOME/.codex/.env" && rm -f "$HOME/.codex/.env.bak"
 grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env token"
 grep -qx update "$FAKE/claude.log" && grep -qx 'codex update' "$FAKE/claude.log" || fail "harnesses not updated"
 grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "hermes not restarted"
 [[ ! -e "$XDG_STATE_HOME/fleet/hermes.restart" ]] || fail "hermes restart left pending"
+
+# Uninstalling takes back only the hermes skills folder fleet added.
+skills=$(HERMES_CONFIG="$TMP/hermes-skills.yaml" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_skills", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+out = []
+for text in ["skills:\n  external_dirs:\n  - ~/.agents/skills\n", "skills:\n  external_dirs:\n  - ~/mine\n"]:
+    fleet.HERMES_CONFIG.write_text(text)
+    _, ours = fleet.render_hermes([], {}, set())
+    fleet.render_hermes([], {"hermesSkills": ours}, set(), clear=True)
+    after = fleet.HERMES_CONFIG.read_text()
+    out.append(after.startswith(text) and after.count("skills") == text.count("skills"))
+open(sys.argv[2], "w").write(str(out))' "$ROOT/files/fleet" "$TMP/skills.out" >/dev/null 2>&1; cat "$TMP/skills.out")
+[[ "$skills" == "[True, True]" ]] || fail "uninstall took the wrong hermes skills folder: $skills"
 
 # Installing: retired and unknown harnesses are refused.
 out=$(fleet install kimi 2>&1) && fail "installed a retired harness"
@@ -359,9 +419,19 @@ out=$(fleet install kimi 2>&1) && fail "installed a retired harness"
 fleet install nope >/dev/null 2>&1 && fail "installed an unknown harness"
 
 # Uninstalling takes back what fleet rendered; the user's own entries stay.
-# A broken manifest does not stop it: claude is found on PATH.
+# Neither a broken manifest nor a claude gone from PATH stops it: claude's
+# files are edited directly.
 printf '{' > "$TMP/broken-manifest.json"
+# Hermes restarts there and then, and a failed restart fails the uninstall.
+mv "$BIN/claude" "$TMP/claude.away"
+: > "$FAKE/systemctl.log"
+touch "$FAKE/systemctl-fail"
+FLEET_MANIFEST="$TMP/broken-manifest.json" fleet __unrender >/dev/null 2>&1 && fail "unrender passed a failed hermes restart"
+rm "$FAKE/systemctl-fail"
 FLEET_MANIFEST="$TMP/broken-manifest.json" fleet __unrender > "$TMP/unrender.out" 2>&1 || fail "unrender: $(cat "$TMP/unrender.out")"
+mv "$TMP/claude.away" "$BIN/claude"
+[[ "$(grep -c 'try-restart hermes-gateway.service' "$FAKE/systemctl.log")" == 2 ]] || fail "unrender did not restart hermes"
+[[ ! -e "$XDG_STATE_HOME/fleet/hermes.restart" ]] || fail "unrender left a hermes restart pending"
 servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
 [[ "$servers" == "['personal']" ]] || fail "claude MCP after unrender: $servers"
 grep -q "fleet" "$HOME/.claude.json" && fail "a claude entry still calls fleet"
@@ -369,6 +439,9 @@ grep -q "fleet" "$HOME/.claude.json" && fail "a claude entry still calls fleet"
 grep -q MCP_TOKEN "$HOME/.zshenv" "$HOME/.codex/.env" && fail "tokens left after unrender"
 grep -q heatmap "$codex" "$hermes" && fail "codex or hermes kept a fleet server"
 grep -q 'elsewhere.example' "$codex" || fail "unrender took the user's codex server"
+grep -q 'skills' "$hermes" && fail "unrender left fleet's hermes skills folder: $(cat "$hermes")"
+[[ "$(cat "$hermes")" == "$(printf 'model: x\nmcp_servers:\n  personal:\n    url: https://p.example/mcp')" ]] \
+    || fail "hermes after unrender: $(cat -A "$hermes")"
 [[ ! -e "$XDG_STATE_HOME/fleet/applied.json" ]] || fail "applied record left"
 
 echo "fleet harness tests passed"
