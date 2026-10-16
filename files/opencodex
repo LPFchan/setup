@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -2364,14 +2365,244 @@ def render_catalogue(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# --- proxy ---------------------------------------------------------------
+# `opencodex proxy` keeps the proxy service up and points Claude at it. It
+# took over `harnesses proxy`; the export markers keep their harnesses: name
+# so both clients edit the same block while machines move over.
+
+PROXY_DEFAULT_PORT = 10100
+PROXY_UNIT = "opencodex-proxy.service"
+# `ocx service` registers a systemd user unit on Linux and this launchd agent
+# on macOS.
+PROXY_LAUNCHD_LABEL = "com.opencodex.proxy"
+ZSHENV = HOME / ".zshenv"
+CLAUDE_SETTINGS = HOME / ".claude/settings.json"
+ENVIRONMENT_D = HOME / ".config/environment.d/10-harnesses-anthropic.conf"
+# fleet and providers rewrite ~/.claude/settings.json too, under this lock.
+CONSUMER_SYNC_LOCK = HOME / ".config/auth/consumer-sync.lock"
+BASE_URL_BEGIN = "# BEGIN harnesses:anthropic-base-url"
+BASE_URL_END = "# END harnesses:anthropic-base-url"
+
+
+def _is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def proxy_service_name() -> str:
+    return PROXY_LAUNCHD_LABEL if _is_macos() else PROXY_UNIT
+
+
+def proxy_service_active() -> bool:
+    try:
+        if _is_macos():
+            result = subprocess.run(
+                ["launchctl", "list"], capture_output=True, text=True, timeout=10
+            )
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                # "<pid>\t<status>\t<label>"; a loaded but stopped agent has
+                # "-" where the pid would be.
+                if len(fields) == 3 and fields[2] == PROXY_LAUNCHD_LABEL:
+                    return fields[0].isdigit()
+            return False
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", PROXY_UNIT],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() == "active"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _port_answers(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def proxy_port() -> int:
+    """The port a token-less client should point ANTHROPIC_BASE_URL at.
+
+    Where the main port requires an API token, ocx opens a second,
+    unauthenticated loopback listener one port up. Claude Code sends no token,
+    so that listener wins when it answers.
+    """
+    override = os.environ.get("HARNESSES_PROXY_PORT")
+    if override:
+        return int(override)
+    port = PROXY_DEFAULT_PORT
+    try:
+        port = int(json.loads(RUNTIME_PORT.read_text())["port"])
+    except Exception:
+        pass
+    for candidate in (port + 1, port):
+        if _port_answers(candidate):
+            return candidate
+    return port
+
+
+class _ConsumerSyncLock:
+    def __enter__(self):
+        import fcntl
+
+        CONSUMER_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = open(CONSUMER_SYNC_LOCK, "a+")
+        os.chmod(CONSUMER_SYNC_LOCK, 0o600)
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self.handle.close()
+
+
+def _save_text_atomic(path: Path, text: str) -> None:
+    """One rename, so the headersHelper reading ~/.zshenv never sees half a file."""
+    path = Path(os.path.realpath(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o600
+    fd, tmp = tempfile.mkstemp(prefix=".opencodex.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def _claude_settings() -> dict:
+    if not CLAUDE_SETTINGS.exists():
+        return {}
+    try:
+        data = json.loads(CLAUDE_SETTINGS.read_text())
+    except json.JSONDecodeError:
+        raise UserError(f"{CLAUDE_SETTINGS} does not parse; fix it and re-run")
+    return data if isinstance(data, dict) else {}
+
+
+def _remove_legacy_service_env() -> None:
+    """Undo the launchctl / environment.d exports settings.json replaced."""
+    if _is_macos():
+        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
+        return
+    if ENVIRONMENT_D.exists():
+        ENVIRONMENT_D.unlink()
+        print(f"  removed {ENVIRONMENT_D}")
+    subprocess.run(
+        ["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
+        check=False, capture_output=True,
+    )
+
+
+def write_base_url_export() -> None:
+    url = f"http://127.0.0.1:{proxy_port()}"
+    block = f"{BASE_URL_BEGIN}\nexport ANTHROPIC_BASE_URL={url}\n{BASE_URL_END}\n"
+    with _ConsumerSyncLock():
+        text = ZSHENV.read_text() if ZSHENV.exists() else ""
+        if BASE_URL_BEGIN in text and BASE_URL_END in text:
+            text = re.sub(
+                re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
+                lambda _: block, text, flags=re.S,
+            )
+        else:
+            text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
+        _save_text_atomic(ZSHENV, text)
+        print(f"  exported ANTHROPIC_BASE_URL={url} in {ZSHENV}")
+        # .zshenv only reaches shells. A claude started by a GUI app or a
+        # service (T3 Code) reads the env block of its own settings file.
+        settings = _claude_settings()
+        settings.setdefault("env", {})["ANTHROPIC_BASE_URL"] = url
+        _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
+        print(f"  set env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
+        _remove_legacy_service_env()
+
+
+def remove_base_url_export() -> None:
+    with _ConsumerSyncLock():
+        _remove_legacy_service_env()
+        settings = _claude_settings()
+        env = settings.get("env")
+        if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+            del env["ANTHROPIC_BASE_URL"]
+            if not env:
+                del settings["env"]
+            _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
+            print(f"  removed env.ANTHROPIC_BASE_URL from {CLAUDE_SETTINGS}")
+        if not ZSHENV.exists():
+            return
+        text = ZSHENV.read_text()
+        if BASE_URL_BEGIN not in text:
+            return
+        text = re.sub(
+            re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
+            "", text, flags=re.S,
+        )
+        _save_text_atomic(ZSHENV, text)
+        print(f"  removed the ANTHROPIC_BASE_URL block from {ZSHENV}")
+
+
+def _wait_for_proxy() -> bool:
+    """True once a proxy answers /healthz, polling up to OPENCODEX_ACTIVATE_WAIT.
+
+    `ocx service` gives a fresh proxy ~20s, and a cold start syncing providers
+    and the model catalogue can take longer, so its nonzero exit alone is not
+    a failure (the install path in opencodex.sh waits the same way).
+    """
+    wait = int(os.environ.get("OPENCODEX_ACTIVATE_WAIT", "120"))
+    print(f"  ocx service did not confirm; waiting up to {wait}s for /healthz", file=sys.stderr)
+    deadline = time.monotonic() + wait
+    while True:
+        if live_proxy_port() is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
+
+
+def cmd_proxy() -> int:
+    """Install or repair the proxy service, then export the route to it.
+
+    The export is written only once the service is confirmed active, and this
+    is the one place that removes it: the nightly pass only ever writes it, so
+    a proxy caught mid-restart never strips the route.
+    """
+    ocx = str(OCX)
+    if not os.access(ocx, os.X_OK):
+        raise UserError("ocx not installed; run: setup install opencodex")
+    print(f"ensuring the opencodex proxy service ({proxy_service_name()}) ...")
+    # `ocx service` installs when absent and repairs an existing service.
+    if subprocess.run([ocx, "service"]).returncode != 0 and not _wait_for_proxy():
+        print("  ocx service install/repair failed; see ~/.opencodex/service.log", file=sys.stderr)
+        return 1
+    if not proxy_service_active():
+        print(f"  {proxy_service_name()} is not active after repair; removing ANTHROPIC_BASE_URL",
+              file=sys.stderr)
+        remove_base_url_export()
+        return 1
+    print(f"  {proxy_service_name()} is active (restarts on failure)")
+    write_base_url_export()
+    return 0
+
+
 def print_help() -> None:
     print(
-        """Usage: opencodex [list [--provider NAME] [--json] | run <provider> [options] | --help]
+        """Usage: opencodex [list [--provider NAME] [--json] | run <provider> [options] | proxy | --help]
 
 Open the interactive provider, model, effort, and harness launcher.
 
   list [--provider NAME] [--json]  List launchable models and capabilities.
   run <provider> [options]          Launch an exact provider/model selection.
+  proxy                             Ensure the proxy service is up and point Claude at it.
   -h, --help                        Show this help without loading provider configuration.
 
 Other arguments are forwarded to ocx."""
@@ -2403,9 +2634,20 @@ def main() -> int:
             return 0 if opencodex_config_status(Path(sys.argv[2])) else 1
         elif command == "__names":
             print("\n".join(load_registry(Path(sys.argv[2]))["providers"]))
+        elif command == "__export":
+            # fleet's nightly pass: write the route while the service is up,
+            # never remove it, since a proxy caught mid-restart must keep it.
+            if proxy_service_active():
+                write_base_url_export()
+        elif command == "__unexport":
+            remove_base_url_export()
+        elif command == "__proxy-url":
+            print(f"http://127.0.0.1:{proxy_port()}")
         else:
             raise UserError("unknown internal command")
         return 0
+    if len(sys.argv) >= 2 and sys.argv[1] == "proxy":
+        return cmd_proxy()
     registry = load_registry()
     if len(sys.argv) >= 2 and sys.argv[1] == "run":
         if len(sys.argv) < 3:
