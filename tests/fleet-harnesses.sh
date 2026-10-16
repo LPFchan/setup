@@ -49,6 +49,10 @@ except OSError:
 if path == "/api/services":
     if os.path.exists(f"{fake}/services-down"):
         sys.exit(1)
+    if os.path.exists(f"{fake}/switch-on-services"):
+        # Another account signed in while the hub's list was coming down.
+        os.remove(f"{fake}/switch-on-services")
+        open(f"{fake}/subject", "w").write("9")
     answer(200, json.load(open(f"{fake}/services.json")))
 if path == "/api/fleet":
     answer(200, {"version": "v", "self": {"served": True}, "keys": ["ssh-ed25519 AAAASelf"], "hosts": []})
@@ -270,6 +274,16 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass after the hub came back"
 grep -q UserPromptSubmit "$settings" && fail "keepout hook left after it was turned off"
 grep -q UserPromptSubmit "$HOME/.codex/hooks.json" && fail "codex keepout hook left"
 
+# A sign-in while the hub's list comes down renders nothing for either account.
+touch "$FAKE/switch-on-services"
+server_put settings/keepout.json '{"enabled": true}'
+rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
+[[ $rc == 3 ]] || fail "a sign-in during the hub fetch returned $rc"
+grep -q UserPromptSubmit "$settings" && fail "rendered after the login changed"
+printf '7' > "$FAKE/subject"
+server_put settings/keepout.json '{"enabled": false}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the login came back"
+
 # The nightly pass renders in full: a credential Auth withdrew leaves the
 # block, each harness updates itself, and hermes restarts.
 touch "$FAKE/token-gone"
@@ -285,5 +299,16 @@ grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "herm
 out=$(fleet install kimi 2>&1) && fail "installed a retired harness"
 [[ "$out" == *retired* ]] || fail "retired harness message: $out"
 fleet install nope >/dev/null 2>&1 && fail "installed an unknown harness"
+
+# Uninstalling takes back what fleet rendered; the user's own entries stay.
+fleet __unrender >/dev/null 2>&1 || fail "unrender"
+servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
+[[ "$servers" == "['personal']" ]] || fail "claude MCP after unrender: $servers"
+grep -q "fleet" "$HOME/.claude.json" && fail "a claude entry still calls fleet"
+[[ "$(json "$settings" 'v["myKey"]')" == 1 ]] || fail "unrender dropped the user's key"
+grep -q MCP_TOKEN "$HOME/.zshenv" "$HOME/.codex/.env" && fail "tokens left after unrender"
+grep -q heatmap "$codex" "$hermes" && fail "codex or hermes kept a fleet server"
+grep -q 'elsewhere.example' "$codex" || fail "unrender took the user's codex server"
+[[ ! -e "$XDG_STATE_HOME/fleet/applied.json" ]] || fail "applied record left"
 
 echo "fleet harness tests passed"
