@@ -25,7 +25,9 @@ _fetch() {
         fetch_source_url "$1" -o "$2"
     else
         curl -fsSL "$1" -o "$2"
-    fi
+    fi || return 1
+    # An empty file parses too.
+    [[ -s "$2" ]]
 }
 
 # Stage the CLI and its manifest into a directory, checked before either
@@ -141,9 +143,14 @@ uninstall() {
         _stage "$staged" && cli="$staged/fleet"
     fi
     [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
-    # Before the binary goes: claude's MCP entries call it for their tokens.
-    [[ -f "$cli" ]] && python3 "$cli" __unrender
-    [[ -f "$cli" ]] && python3 "$cli" __unlink
+    # Only the CLI knows what fleet rendered and which links and backups are
+    # its own, so without it nothing else goes either. __unrender first:
+    # claude's MCP entries call the binary for their tokens.
+    if [[ ! -f "$cli" ]] || ! python3 "$cli" __unrender || ! python3 "$cli" __unlink; then
+        [[ -n "$staged" ]] && rm -rf "$staged"
+        echo "fleet: could not take back the rendered settings and links; nothing was removed, try again" >&2
+        return 1
+    fi
     [[ -n "$staged" ]] && rm -rf "$staged"
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
