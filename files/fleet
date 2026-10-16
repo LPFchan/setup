@@ -509,7 +509,11 @@ def scan_local():
     """({path: [sha256, executable]}, symlinks skipped) under ~/.agents/.
     Installed skills are the account's installs, not its own files."""
     files, symlinks = {}, []
-    installed = set(_load_json(INSTALLED, {}))
+    # Normalized: HFS+ gives an installed folder's name back decomposed,
+    # and its files would then read as the account's own. Case it keeps, so
+    # a folder differing in case is the account's (and refused as a clash).
+    nfc = lambda name: unicodedata.normalize("NFC", name)
+    installed = {nfc(name) for name in _load_json(INSTALLED, {})}
 
     def add(path, rel):
         if path.is_symlink():
@@ -531,7 +535,7 @@ def scan_local():
         for folder, dirs, names in os.walk(root, onerror=_unreadable):
             base = pathlib.Path(folder)
             for name in list(dirs):
-                if name.casefold() in SKIPPED_NAMES or (base == AGENTS_DIR/"skills" and name in installed):
+                if name.casefold() in SKIPPED_NAMES or (base == AGENTS_DIR/"skills" and nfc(name) in installed):
                     dirs.remove(name)
                 elif (base/name).is_symlink():
                     dirs.remove(name)
@@ -1056,9 +1060,11 @@ def pull(account, settle_old=False):
                 raise
             if displaced:
                 _report_displaced(backup)
-            if other or writes or drops:
+            if other or installs or drops:
                 # Even with no tree to move, the other account's links go. Its
                 # record stays until they have, so a retry finishes the job.
+                # With installs, every pass links them: one whose links failed
+                # after the installs were written has nothing left to write.
                 refresh_links()
             if other:
                 CONFIG_STATE.unlink(missing_ok=True)

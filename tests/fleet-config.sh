@@ -874,6 +874,11 @@ json.dump({"counter": 0, "version": 1, "files": {}, "market": state["market"],
 PY
 fleet sync >/dev/null 2>&1 || true
 [[ -f "$HOME/.agents/skills/foo/SKILL.md" && -L "$HOME/.claude/skills/foo" ]] || fail "a never-pushed account's install not written"
+# Its links are made on every pass, also one with nothing to write, as
+# after a pass whose links failed once the installs were in place.
+rm "$HOME/.claude/skills/foo"
+fleet sync >/dev/null 2>&1 || true
+[[ -L "$HOME/.claude/skills/foo" ]] || fail "a never-pushed account's install left unlinked"
 # An install folder replaced by a link here is backed up and written again.
 mkdir -p "$TMP/elsewhere"; printf 'elsewhere\n' > "$TMP/elsewhere/SKILL.md"
 rm -rf "$HOME/.agents/skills/foo"; ln -s "$TMP/elsewhere" "$HOME/.agents/skills/foo"
@@ -978,5 +983,20 @@ json.dump(state, open(f, "w"))
 PY2
 fleet sync --pull >/dev/null 2>&1 && fail "applied installs that cannot be written"
 [[ "$(cat "$HOME/.agents/AGENTS.md")" == "edited here" ]] || fail "failed installs left the account's copy over a local edit"
+
+# An installed folder the disk spells otherwise (HFS+ decomposes accents)
+# is still the install, not the account's own files.
+mkdir -p "$TMP/nfd"
+HOME="$TMP/nfd" python3 - "$ROOT/files/fleet" <<'PY' || fail "an otherwise-spelled installed folder read as the account's own"
+import importlib.machinery, importlib.util, json, sys, unicodedata
+loader = importlib.machinery.SourceFileLoader("fleet_nfd", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+name = "caf\u00e9"
+folder = m.AGENTS_DIR/"skills"/unicodedata.normalize("NFD", name)
+folder.mkdir(parents=True); (folder/"SKILL.md").write_text("x")
+m.INSTALLED.write_text(json.dumps({name: {}}))
+assert m.scan_local()[0] == {}, m.scan_local()
+PY
+rm -rf "$TMP/nfd"
 
 echo "fleet config tests passed"
