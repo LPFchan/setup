@@ -181,6 +181,14 @@ module_service_transition() { printf '%s %s ' "$1" "$2" >> "$TMP/enabled"; }
 out=$(cmd_update s 2>&1) || fail "filtered update of a service dependency failed: $out"
 [[ "$(<"$TMP/installed")" == "p s " ]] || fail "update sequence was '$(<"$TMP/installed")', expected 'p s '"
 [[ "$(<"$TMP/enabled")" == "enable s " ]] || fail "enabled '$(<"$TMP/enabled")', expected 'enable s '"
+# One that cannot be enabled holds its dependent back, as a failed install does.
+rm -f "$HOME/s" "$HOME/p" "$SCRIPT_STATE_FILE" "$DEP_FILE"
+: > "$TMP/installed"
+is_service_module() { [[ "$1" == p ]]; }
+module_service_transition() { return 1; }
+rc=0; out=$(cmd_update s 2>&1) || rc=$?
+(( rc != 0 )) || fail "update passed a service dependency that could not be enabled"
+[[ "$(<"$TMP/installed")" == "p " ]] || fail "updated past a service that could not be enabled: '$(<"$TMP/installed")'"
 functions[is_service_module]=${functions[saved_is_service]}
 rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
 cp "$saved_manifest" "$MANIFEST_FILE"

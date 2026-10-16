@@ -521,7 +521,9 @@ fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.n
 loader.exec_module(fleet)
 print(" ".join(d.split("/")[-2] for d in fleet._node_bin_dirs() if "/.nvm/" in d))' "$ROOT/files/fleet")
 [[ "$first" == "v9.11.2 v20.0.0 v9.2.0" ]] || fail "nvm's default was not first: $first"
-# A timer's PATH puts it ahead of a system copy, as the login shell does.
+# A timer's PATH puts it ahead of a system copy and of ~/.local/bin, as the
+# login shell does once nvm's init prepends it.
+mkdir -p "$TMP/nvm/.local/bin"
 healed=$(HOME="$TMP/nvm" PATH="/usr/local/bin:/usr/bin" python3 -c '
 import importlib.machinery, importlib.util, os, sys
 loader = importlib.machinery.SourceFileLoader("fleet_nvm3", sys.argv[1])
@@ -530,7 +532,7 @@ loader.exec_module(fleet)
 fleet._heal_path()
 print(os.environ["PATH"].split(os.pathsep)[0])' "$ROOT/files/fleet")
 [[ "$healed" == */v9.11.2/bin ]] || fail "nvm's default did not lead a timer's PATH: $healed"
-rm -rf "$TMP/nvm/.nvm/alias" "$TMP/nvm/.nvm/versions/node/v9.2.0"
+rm -rf "$TMP/nvm/.nvm/alias" "$TMP/nvm/.nvm/versions/node/v9.2.0" "$TMP/nvm/.local"
 
 # A Passage outage before the first render keeps the token the environment holds.
 kept=$(HOME="$TMP/nvm" VAULT_MCP_TOKEN=from-env python3 -c '
