@@ -401,8 +401,7 @@ enable_fleet_schedule() {
         warn "${operator} has no running user session, so fleet's nightly pass is still off; run 'fleet schedule on' as ${operator}"
         return 0
     fi
-    as_operator_login "$operator" "$fleet" schedule on >/dev/null \
-        || warn "could not turn on fleet's nightly pass; run 'fleet schedule on' as ${operator}"
+    as_operator_login "$operator" "$fleet" schedule on >/dev/null
 }
 
 record_advisor_tooling() {
@@ -513,7 +512,10 @@ cmd_enable() {
     rm -rf "$stage" "$transaction"
     # Last, so a failed enable leaves the operator's own timers as they were;
     # the rollback above only knows the system ones.
-    enable_fleet_schedule "$ADVISOR_OPERATOR" "$ADVISOR_FLEET"
+    # Failing the enable has setup retry it: nothing else would turn the
+    # nightly pass on, and miniharness would go stale.
+    enable_fleet_schedule "$ADVISOR_OPERATOR" "$ADVISOR_FLEET" \
+        || die "system-updates is on, but fleet's nightly pass could not be; run 'fleet schedule on' as ${ADVISOR_OPERATOR}"
     info "system-updates enabled ($backend): updates 03:00–03:30; unattended reboot check 07:00"
 }
 

@@ -116,6 +116,7 @@ cat > "$FAKE_BIN/fleet" <<'STUB'
 #!/usr/bin/env bash
 printf 'fleet %s\n' "$*" >> "$STUB_LOG"
 [[ "${STUB_FLEET_RC:-0}" == 0 ]] || exit "$STUB_FLEET_RC"
+[[ "$*" == "schedule on" && -n "${STUB_FLEET_SCHEDULE_RC:-}" ]] && exit "$STUB_FLEET_SCHEDULE_RC"
 if [[ "$*" == "install miniharness" ]]; then mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"; fi
 exit 0
 STUB
@@ -201,6 +202,9 @@ assert_contains "$LOG" 'fleet schedule on'
 # native timer state that disable must eventually restore.
 cmd_enable >/dev/null
 assert_contains "$TIMER_STATE_FILE" $'apt-daily-upgrade.timer\tenabled\tactive'
+# A nightly pass that does not come on fails the enable, so setup retries it.
+enable_err=$(STUB_FLEET_SCHEDULE_RC=1 cmd_enable 2>&1) && fail 'enable passed with fleet schedule off'
+grep -q "nightly pass could not be" <<< "$enable_err" || fail "enable failed for the wrong reason: $enable_err"
 # A failed refresh restores the already-enabled module state, while keeping the
 # displaced native timer disabled rather than accidentally re-enabling it.
 rm -f "$STUB_STATE/enable-failed-once"
