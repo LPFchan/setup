@@ -201,5 +201,17 @@ sys.exit(1 if sys.argv[1:] == ["schedule", "disable"] else 0)
 EOF
 module uninstall >/dev/null 2>&1 && fail "uninstall went on with the nightly sync still on"
 [[ -e "$FLEET_BIN" ]] || fail "an uninstall that left the timer on removed the binary"
+# A broken binary cannot say the timer is on; the current CLI checks and
+# turns it off.
+printf 'syntax error(\n' > "$FLEET_BIN"
+cat > "$TMP/ontimer.py" <<'EOF'
+import os, sys
+open(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["schedule", "status"]:
+    print("fleet: nightly sync on")
+EOF
+rm -f "$FAKE/ran"
+FLEET_SOURCE="$TMP/ontimer.py" module uninstall >/dev/null 2>&1 || fail "uninstall with a broken binary"
+grep -qx 'schedule disable' "$FAKE/ran" || fail "a broken binary's timer was left on"
 
 echo "fleet tests passed"

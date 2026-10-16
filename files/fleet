@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
+import errno
 import fcntl
 import glob
 import hashlib
@@ -650,7 +651,14 @@ class Backup:
             n += 1
             destination = self._dir()/f"{label}.{n}"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(path), str(destination))
+        # A rename or nothing: shutil.move's copy-then-delete can fail halfway
+        # (a folder it may not empty), leaving the original gutted.
+        try:
+            os.rename(path, destination)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            shutil.move(str(path), str(destination))
         return destination
 
     def save(self, data, label):
@@ -742,15 +750,21 @@ def _same_tree(a, b):
 
 def _move_harness_skills(backup):
     """Move the user's own skill folders out of the harness folders, so
-    harnesses don't load them next to ~/.agents/skills; list them."""
+    harnesses don't load them next to ~/.agents/skills; list them. A failed
+    move puts the ones already moved back."""
     moved = []
-    for directory in HARNESS_SKILL_DIRS:
-        for folder in _skill_folders(directory):
-            backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")
-            moved.append(str(folder))
+    try:
+        for directory in HARNESS_SKILL_DIRS:
+            for folder in _skill_folders(directory):
+                moved.append((folder, backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")))
+    except BaseException:
+        for folder, saved in reversed(moved):
+            if not os.path.lexists(folder):
+                shutil.move(str(saved), str(folder))
+        raise
     if moved:
-        _report(f"moved skill folders to {backup.root}: " + ", ".join(moved))
-    return moved
+        _report(f"moved skill folders to {backup.root}: " + ", ".join(str(f) for f, _ in moved))
+    return [str(f) for f, _ in moved]
 
 
 def _apply_changes(take, remove, contents, server, backup):
@@ -1045,25 +1059,30 @@ def refresh_links():
             for entry in _skill_link_targets(links):
                 if entry.name not in names:
                     _unlink_restoring(entry, links)
-        # The old agents module's links go, and what they replaced comes back,
-        # also when the link was already deleted: fleet is the only one left to
-        # return it.
-        for target in OLD_AGENTS_LINKS:
-            if _points_into(target, AGENTS_DIR):
-                target.unlink()
-            _restore_old_backup(target)
-        for directory in OLD_SKILL_LINK_DIRS:
-            if directory.is_dir():
-                for entry in list(directory.iterdir()):
-                    if _points_into(entry, skills):
-                        entry.unlink()
-                        _restore_old_backup(entry)
-                    elif entry.name.endswith(".pre-agents.bak"):
-                        _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
+        _drop_old_links()
     finally:
         _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
+
+
+def _drop_old_links():
+    """The old agents module's links go, and what they replaced comes back,
+    also when the link was already deleted: fleet is the only one left to
+    return it."""
+    skills = AGENTS_DIR/"skills"
+    for target in OLD_AGENTS_LINKS:
+        if _points_into(target, AGENTS_DIR):
+            target.unlink()
+        _restore_old_backup(target)
+    for directory in OLD_SKILL_LINK_DIRS:
+        if directory.is_dir():
+            for entry in list(directory.iterdir()):
+                if _points_into(entry, skills):
+                    entry.unlink()
+                    _restore_old_backup(entry)
+                elif entry.name.endswith(".pre-agents.bak"):
+                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
 
 
 def _skill_entries(skills):
@@ -1080,6 +1099,8 @@ def remove_links():
     links = _load_json(LINKS_STATE, {})
     for path in list(AGENTS_LINKS) + _skill_link_targets(links):
         _unlink_restoring(path, links)
+    # Also the old agents module's, which a sync may not have taken over yet.
+    _drop_old_links()
     LINKS_STATE.unlink(missing_ok=True)
 
 
@@ -1143,11 +1164,13 @@ def onboard(account):
                 raise ConfigError("another machine set up this account first; run: fleet sync") from None
             raise ConfigError(f"upload refused: {exc}") from None
         raise
+    print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
+    # Only now: a refused upload leaves the harness skill folders in use. And
+    # before the record: a failed move leaves the next sync to join the
+    # account, which moves them again.
+    _move_harness_skills(backup)
     _save_json(CONFIG_STATE, record)
     ONBOARDING_MARKER.unlink(missing_ok=True)
-    print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
-    # Only now: a refused upload leaves the harness skill folders in use.
-    _move_harness_skills(backup)
     refresh_links()
 
 
