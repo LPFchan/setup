@@ -352,7 +352,8 @@ def _previous_session():
         return ""
     if not isinstance(data, dict) or data.get("origin") != ORIGIN:
         return ""
-    token = (data.get("session") or {}).get("refresh_token")
+    session = data.get("session")
+    token = session.get("refresh_token") if isinstance(session, dict) else None
     return token if isinstance(token, str) else ""
 
 
@@ -506,7 +507,9 @@ def cmd_request(method, path, body=None):
             raise AuthError("no renewable setup login; run: auth login", exit_code=4)
         if data.get("origin") != ORIGIN:
             raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
-        session = data.get("session") or {}
+        session = data.get("session")
+        if not isinstance(session, dict):
+            session = {}
         expires_at = session.get("expires_at")
         expired = isinstance(expires_at, int) and not isinstance(expires_at, bool) and expires_at <= time.time()
         token = session.get("refresh_token")

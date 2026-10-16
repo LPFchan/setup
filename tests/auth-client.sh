@@ -314,5 +314,17 @@ else:
     raise AssertionError("rejected session was not reported")
 assert json.load(open(os.environ["LOST_AUTH_STORE"]))["session_state"] == "invalid"
 
+# A malformed saved session never blocks the login that would replace it.
+broken = json.load(open(os.environ["LOST_AUTH_STORE"]))
+broken["session"] = "garbage"
+json.dump(broken, open(os.environ["LOST_AUTH_STORE"], "w"))
+assert m["_previous_session"]() == ""
+try:
+    m["cmd_request"]("GET", "/api/fleet")
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+else:
+    raise AssertionError("malformed session was used")
+
 print("auth client tests passed")
 PY
