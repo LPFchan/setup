@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# Only the system basics: never a real harness.
+export PATH="$(dirname "$(command -v python3)"):$(dirname "$(command -v zsh)"):/usr/bin:/bin"
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake"
 export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
@@ -135,6 +137,7 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 serve '{}' 4
 rm -f "$FLEET_SSH_DIR/id_ed25519.pub"
 export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet"
+export FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" FLEET_MANIFEST_TARGET="$HOME/.config/fleet/manifest.json"
 module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }

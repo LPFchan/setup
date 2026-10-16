@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "comment": "fleet's common tier: the harness registry, the third-party MCPs every account gets, and the opencodex wiring. An account's own settings, MCPs, and keepout live in its ~/.agents (settings/claude.json, settings/t3.json, settings/keepout.json, mcp.json) and win over this file; lost.plus MCPs come from the Common Auth hub (GET /api/services). A harness runs its own updater: 'update' is a shell command, else '<binary> <updateArgs>'.",
+  "harnesses": [
+    {
+      "name": "claude",
+      "install": "curl -fsSL https://claude.ai/install.sh | bash",
+      "updateArgs": "update",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/claude",
+        "~/.claude/local/claude"
+      ],
+      "npm": true
+    },
+    {
+      "name": "codex",
+      "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+      "updateArgs": "update",
+      "needsNode": true,
+      "candidates": [],
+      "npm": true
+    },
+    {
+      "name": "opencode",
+      "install": "curl -fsSL https://opencode.ai/install | bash",
+      "updateArgs": "upgrade",
+      "needsNode": false,
+      "candidates": [
+        "~/.opencode/bin/opencode"
+      ]
+    },
+    {
+      "name": "hermes",
+      "install": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive",
+      "updateArgs": "update --yes",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/hermes"
+      ]
+    },
+    {
+      "name": "t3",
+      "install": "set -e; t3=\"$HOME/.local/bin/t3\"; [ -x \"$t3\" ] || curl -fsSL https://t3.codes/install.sh | sh; case \"$(\"$t3\" service status)\" in *\"Status: installed\"*) ;; *) \"$t3\" service install ;; esac",
+      "rerunWhenInstalled": true,
+      "updateArgs": "update --yes",
+      "needsNode": false,
+      "candidates": [
+        "~/.local/bin/t3",
+        "~/.t3/runtime/versions/*/t3"
+      ]
+    },
+    {
+      "name": "miniharness",
+      "install": "npm install -g miniharness@latest",
+      "update": "npm install -g miniharness@latest",
+      "needsNode": true,
+      "npm": true,
+      "candidates": []
+    }
+  ],
+  "retiredHarnesses": [
+    "agy",
+    "grok",
+    "kimi",
+    "muse"
+  ],
+  "mcpServers": [
+    {
+      "name": "daiso",
+      "url": "https://mcp.aka.page",
+      "auth": "none"
+    },
+    {
+      "name": "notion",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": "none",
+      "surfaces": [
+        "claude"
+      ]
+    }
+  ],
+  "localPluginMcpServers": [
+    {
+      "name": "cua_repl",
+      "plugin": "unified-computer-use",
+      "server": "cua_repl",
+      "env": {
+        "CUA_REPL_ENABLED_SURFACES": "computer"
+      }
+    }
+  ],
+  "retiredMcpServers": [
+    "obsidian-direct",
+    "vaultwarden-secrets"
+  ],
+  "retiredMcpGrants": [
+    "claude_ai_Obsidian_Vault",
+    "claude_ai_Vaultwarden_Secrets",
+    "claude_ai_tweet-fetch-mcp"
+  ],
+  "retiredEnvVars": [
+    "VAULTWARDEN_MCP_TOKEN",
+    "VAULTWARDEN_SECRETS_TOKEN"
+  ],
+  "opencodex": {
+    "comment": "Written only where the opencodex module is installed (~/.local/bin/opencodex): models routed through its proxy. autoCompactWindow holds every model to 400K; claude caps it at the window it believes a model has, 200K for an ID it does not recognize, so CLAUDE_CODE_MAX_CONTEXT_TOKENS raises that belief. A t3 slug must match the proxy's /v1/models spelling; effortsFrom borrows a listed sibling's reasoning ladder until the model is listed itself.",
+    "claude": {
+      "autoCompactWindow": 400000,
+      "env": {
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000"
+      }
+    },
+    "t3": {
+      "claudeCustomModels": [
+        {
+          "slug": "gpt-6.1-sol",
+          "name": "GPT-6.1 Sol",
+          "effortsFrom": "gpt-6-sol"
+        },
+        {
+          "slug": "gpt-6-luna",
+          "name": "GPT-6 Luna"
+        },
+        {
+          "slug": "grimoire/qwen3.8-flash-next",
+          "name": "qwen3.8-flash-next"
+        },
+        {
+          "slug": "zai/glm-5.3",
+          "name": "GLM-5.3"
+        },
+        {
+          "slug": "zai/glm-5.3-flash",
+          "name": "GLM-5.3 Flash"
+        }
+      ]
+    }
+  },
+  "retiredClaudeCustomModels": [
+    "codex/gpt-6-astra",
+    "codex/gpt-5.6-sol",
+    "codex/gpt-5.6-luna",
+    "grimoire/qwen3.8-flash-next-uncensored-nvfp4",
+    "kimicode/k3-256k",
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna"
+  ],
+  "keepout": {
+    "command": "s=$(awk '!f&&match($0,/\"session_id\"[ \\t]*:[ \\t]*\"[A-Za-z0-9_-]+\"/){v=substr($0,RSTART,RLENGTH);sub(/^.*:[ \\t]*\"/,\"\",v);sub(/\"$/,\"\",v);print v;f=1}' 2>/dev/null); if [ -z \"${TODAY_KEEPOUT_EXEMPT:-}\" ] && { [ -z \"$s\" ] || [ ! -e \"$HOME/.local/state/today/keepout-exempt/$s\" ]; } && t=$(\"$HOME/.local/bin/auth\" token --cached today 2>/dev/null) && b=$(printf 'Authorization: Bearer %s\\n' \"$t\" | curl -fsS -m 2 -w '|%{http_code}' -H @- -H 'Accept: text/plain' https://today.lost.plus/api/keepout 2>/dev/null) && [ \"${b##*|}\" = 200 ] && b=${b%|*} && printf '%s\\n' \"$b\" | awk 'NF{print > \"/dev/stderr\"; b=1} END{exit !b}'; then exit 2; fi; exit 0"
+  },
+  "seededRemovals": {
+    "comment": "What the harnesses module wrote on the operator's machines, recorded as fleet's own on its first pass there, so the parts the account does not carry are removed. Each is removed only while it still holds this value.",
+    "claude": {
+      "permissions": {
+        "defaultMode": "auto"
+      },
+      "attribution": {
+        "commit": "",
+        "pr": ""
+      },
+      "effortLevel": "high",
+      "disableClaudeAiConnectors": true
+    },
+    "allow": [
+      "mcp__jina__*",
+      "mcp__exa__*",
+      "mcp__korean-law__*",
+      "mcp__heatmap__*"
+    ],
+    "mcpServers": [
+      {
+        "name": "jina",
+        "url": "https://mcp.jina.ai/v1"
+      },
+      {
+        "name": "exa",
+        "url": "https://mcp.exa.ai/mcp"
+      },
+      {
+        "name": "korean-law",
+        "url": "https://korean-law-mcp.fly.dev/mcp"
+      },
+      {
+        "name": "heatmap",
+        "url": "https://heatmap.lost.plus/mcp"
+      }
+    ]
+  }
+}

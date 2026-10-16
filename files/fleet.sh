@@ -4,7 +4,9 @@
 #
 # Installs the fleet CLI (files/fleet), which keeps the managed ~/.ssh/config
 # and authorized_keys blocks in step with the account's fleet in Common Auth,
-# and takes over ssh-aliases' blocks in place on its first write.
+# and takes over ssh-aliases' blocks in place on its first write. Its harness
+# manifest (files/fleet-manifest.json) lists the harnesses fleet installs and
+# keeps updated, and the settings it renders into them.
 
 (( ${+functions[fetch_source_url]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
@@ -12,25 +14,37 @@ MODULE="fleet"
 BIN="${FLEET_BIN:-$HOME/.local/bin/fleet}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${FLEET_SOURCE:-$SOURCE_BASE/files/fleet}"
+MANIFEST="${FLEET_MANIFEST_TARGET:-$HOME/.config/fleet/manifest.json}"
+MANIFEST_SOURCE="${FLEET_MANIFEST_SOURCE:-$SOURCE_BASE/files/fleet-manifest.json}"
+HARNESSES_BIN="$HOME/.local/bin/harnesses"
 
-_stage() {
-    local destination="$1"
-    if [[ -f "$BIN_SOURCE" ]]; then
-        cp "$BIN_SOURCE" "$destination"
+_fetch() {
+    if [[ -f "$1" ]]; then
+        cp "$1" "$2"
     elif (( ${+functions[fetch_source_url]} )); then
-        fetch_source_url "$BIN_SOURCE" -o "$destination"
+        fetch_source_url "$1" -o "$2"
     else
-        curl -fsSL "$BIN_SOURCE" -o "$destination"
+        curl -fsSL "$1" -o "$2"
     fi
-    chmod +x "$destination"
-    python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$destination"
 }
 
+# Stage the CLI and its manifest into a directory, checked before either
+# replaces the installed copy.
+_stage() {
+    local directory="$1"
+    _fetch "$BIN_SOURCE" "$directory/fleet" && _fetch "$MANIFEST_SOURCE" "$directory/manifest.json" || return 1
+    chmod +x "$directory/fleet"
+    python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$directory/fleet" || return 1
+    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$directory/manifest.json"
+}
+
+_hash() { { cat "$1"; cat "$2"; } | setup_sha256_string; }
+
 _desired_hash() {
-    local staged; staged=$(mktemp)
-    _stage "$staged" || { rm -f "$staged"; return 1; }
-    setup_sha256_string < "$staged"
-    rm -f "$staged"
+    local staged; staged=$(mktemp -d)
+    _stage "$staged" || { rm -rf "$staged"; return 1; }
+    _hash "$staged/fleet" "$staged/manifest.json"
+    rm -rf "$staged"
 }
 
 _auth_bin() {
@@ -69,12 +83,17 @@ _login_if_needed() {
 }
 
 _apply() {
-    local action="$1" temporary hash
-    mkdir -p "${BIN:h}"
-    temporary="${BIN}.tmp.$$"
-    _stage "$temporary" || { rm -f "$temporary"; return 1; }
-    hash=$(setup_sha256_string < "$temporary")
-    mv "$temporary" "$BIN"
+    local action="$1" staged hash
+    mkdir -p "${BIN:h}" "${MANIFEST:h}"
+    staged=$(mktemp -d)
+    _stage "$staged" || { rm -rf "$staged"; return 1; }
+    hash=$(_hash "$staged/fleet" "$staged/manifest.json")
+    # Same-filesystem temporaries, so each swap is a rename.
+    cp "$staged/fleet" "$BIN.tmp.$$" && cp "$staged/manifest.json" "$MANIFEST.tmp.$$" \
+        || { rm -rf "$staged" "$BIN.tmp.$$" "$MANIFEST.tmp.$$"; return 1; }
+    rm -rf "$staged"
+    mv "$MANIFEST.tmp.$$" "$MANIFEST"
+    mv "$BIN.tmp.$$" "$BIN"
     record_script_state "$MODULE" "fleet" "$hash" "$hash"
     echo "fleet: $action -> $BIN"
     [[ "$action" == installed ]] && _login_if_needed
@@ -94,7 +113,7 @@ status() {
     fi
     local desired actual rc
     desired=$(_desired_hash) || return 1
-    actual=$([[ -f "$BIN" ]] && setup_sha256_string < "$BIN")
+    actual=$([[ -f "$BIN" && -f "$MANIFEST" ]] && _hash "$BIN" "$MANIFEST")
     if [[ ! -x "$BIN" || "$actual" != "$desired" ]]; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' \
             "$MODULE" "outdated" "${actual:0:7}" "${desired:0:7}" "$BIN"
@@ -117,7 +136,10 @@ uninstall() {
     [[ -x "$BIN" ]] && "$BIN" __unlink
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
-    rm -f "$BIN"
+    # The harnesses alias fleet left in place of the old client.
+    [[ -f "$HARNESSES_BIN" ]] && grep -q '^# fleet: harnesses alias' "$HARNESSES_BIN" && rm -f "$HARNESSES_BIN"
+    rm -f "$BIN" "$MANIFEST"
+    rmdir "${MANIFEST:h}" 2>/dev/null
     remove_script_state "$MODULE"
     echo "fleet: uninstalled. This machine stays in its fleet until it is revoked in the Fleet tab."
 }

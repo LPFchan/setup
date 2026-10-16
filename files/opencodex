@@ -396,7 +396,7 @@ def desired_opencodex_config(
     config["hostname"] = "127.0.0.1"
     # The proxy drains in-flight turns on SIGTERM for this long before aborting
     # them. Its 5s default is shorter than a single coding turn, so a restart
-    # lands as a cancelled request. harnesses raises the unit's TimeoutStopSec
+    # lands as a cancelled request. The module raises the unit's TimeoutStopSec
     # to match; systemd SIGKILLs at 90s otherwise and the drain never finishes.
     config["shutdownTimeoutMs"] = 300000
     config["syncResumeHistory"] = sys.platform == "darwin"

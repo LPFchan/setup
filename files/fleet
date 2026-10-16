@@ -8,17 +8,22 @@ config (DEC-20261015-001, DEC-20261015-002, DEC-20261016-001)."""
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime
+import fcntl
+import glob
 import hashlib
 import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -516,7 +521,7 @@ def _safe_target(rel):
     return target
 
 
-def _request(method, path, body=None):
+def _request(method, path, body=None, expect=dict):
     """The parsed answer of a session-authenticated request. Raises Rejected
     for a refused session, ConfigError for anything else."""
     args = ["request", method, path] + (["-"] if body is not None else [])
@@ -530,7 +535,7 @@ def _request(method, path, body=None):
             value = json.loads(out) if out.strip() else None
         except ValueError:
             value = None
-        if rc == 0 and isinstance(value, dict):
+        if rc == 0 and isinstance(value, expect):
             return value
         if rc == 6 and isinstance(value, dict):
             if value.get("status") == 503 and attempt < 2:
@@ -805,6 +810,9 @@ def _check_json_objects(paths):
                 value = None
             if not isinstance(value, dict):
                 raise ConfigError(f"{rel} is not a JSON object; fix it before uploading")
+            problem = check_tier_shape(rel, value)
+            if problem:
+                raise ConfigError(f"{rel}: {problem}; fix it before uploading")
 
 
 def push(record, local, puts, deletes):
@@ -1049,6 +1057,7 @@ def config_sync(direct):
         return 3
     try:
         outcome, record, conflicts = pull(account)
+        PULL["outcome"] = outcome
         if outcome == "pending":
             return _offer_onboarding(account)
         refresh_links()
@@ -1113,13 +1122,1520 @@ def config_status():
     NOTICES.unlink(missing_ok=True)
 
 
+# --- harnesses -----------------------------------------------------------
+# The harness engine took over from the harnesses module (DEC-20261016-001).
+# It installs and updates the harnesses in the manifest, and renders their
+# settings and MCP servers from three tiers: the manifest every machine
+# shares, the lost.plus MCPs the Common Auth hub lists, and the account's own
+# ~/.agents files (settings/*.json, mcp.json). The account wins a clash. What
+# fleet wrote is recorded, so what leaves the tiers is removed again, but
+# only while it still holds the value fleet wrote.
+
+HERE = pathlib.Path(__file__).resolve().parent
+APPLIED = STATE_HOME/"fleet/applied.json"
+HERMES_RESTART = STATE_HOME/"fleet/hermes.restart"
+CLAUDE_SETTINGS = HOME/".claude/settings.json"
+CODEX_DIR = HOME/".codex"
+CODEX_CONFIG = CODEX_DIR/"config.toml"
+CODEX_HOOKS = CODEX_DIR/"hooks.json"
+KIMI_CONFIG = HOME/".kimi-code/config.toml"
+T3_SETTINGS = HOME/".t3/userdata/settings.json"
+ZSHENV = HOME/".zshenv"
+CONSUMER_SYNC_LOCK = HOME/".config/auth/consumer-sync.lock"
+OPENCODEX = HOME/".local/bin/opencodex"
+HERMES_CONFIG = pathlib.Path(os.environ.get("HERMES_CONFIG") or HOME/".hermes/config.yaml")
+HERMES_ENV = pathlib.Path(os.environ.get("HERMES_ENV") or HOME/".hermes/.env")
+HARNESSES_BIN = HOME/".local/bin/harnesses"
+HARNESSES_CONFIG = HOME/".config/harnesses"
+HARNESSES_TIMER = "harnesses-update"
+HARNESSES_PLIST = HOME/"Library/LaunchAgents/com.lost.plus.harnesses-update.plist"
+HARNESSES_ALIAS_MARK = "# fleet: harnesses alias"
+VAULT_URL = os.environ.get("PASSAGE_MCP_URL", "https://passage.lost.plus/mcp")
+VAULT_FOLDER = "mcp"
+HUB_SUFFIX = ".lost.plus"
+# The marker names harnesses used, so fleet edits the same blocks in place.
+TOKENS_BEGIN, TOKENS_END = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
+CODEX_MCP_BEGIN, CODEX_MCP_END = "# BEGIN harnesses:mcp-servers", "# END harnesses:mcp-servers"
+KIMI_KEEPOUT = re.compile(r"\n*^# BEGIN harnesses:keepout\n.*?^# END harnesses:keepout\n?", re.S | re.M)
+KEEPOUT_MARKER = "today.lost.plus/api/keepout"
+MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SURFACES = ("claude", "codex", "hermes")
+CODEX_TRUST_TIMEOUT = 30
+T3_CATALOG_TIMEOUT = 15
+# Earlier versions pointed T3 at a launcher that set a context window per
+# model; the claude settings now set one window for every model.
+RETIRED_CLAUDE_LAUNCHERS = (HOME/".local/bin/claude-context", HOME/".local/bin/claude-gpt-context")
+# This run's pull: "synced", "pending", or None when it did not finish.
+PULL = {"outcome": None}
+_MANIFEST = {}
+
+
+def _manifest_path():
+    for candidate in (os.environ.get("FLEET_MANIFEST"), HOME/".config/fleet/manifest.json",
+                      HERE/"fleet-manifest.json", HERE.parent/"files/fleet-manifest.json"):
+        if candidate and os.path.isfile(candidate):
+            return pathlib.Path(candidate)
+    return None
+
+
+def manifest():
+    if not _MANIFEST:
+        path = _manifest_path()
+        if path is None:
+            raise ConfigError("the harness manifest is missing; run: setup install fleet")
+        try:
+            data = path.read_bytes()
+            _MANIFEST.update(json.loads(data), _digest=hashlib.sha256(data).hexdigest())
+        except (OSError, ValueError) as exc:
+            raise ConfigError(f"cannot read {path}: {exc}") from None
+    return _MANIFEST
+
+
+def _heal_path():
+    """Put the user's own bin directories back on PATH.
+
+    systemd and launchd start fleet with a login-less PATH, where claude,
+    codex, npm and ocx are all invisible. The user's own bin directories lead,
+    even ahead of a system copy of a harness; the node toolchains go on the
+    end, there to be found rather than to win.
+    """
+    mine = [HOME/".local/bin", HOME/".opencode/bin"]
+    toolchains = sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)
+    toolchains += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    owned = [str(d) for d in mine if d.is_dir()]
+    front = owned + [entry for entry in current if entry not in owned]
+    os.environ["PATH"] = os.pathsep.join(
+        front + [str(d) for d in toolchains if d.is_dir() and str(d) not in front])
+
+
+@contextlib.contextmanager
+def _consumer_sync_lock():
+    """opencodex edits the claude settings and ~/.zshenv under the same lock."""
+    CONSUMER_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONSUMER_SYNC_LOCK, "a+") as handle:
+        os.chmod(CONSUMER_SYNC_LOCK, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _claude_env(base=None):
+    """Claude's minimal mode: MCP and update commands without an OAuth refresh,
+    which can erase the login running T3 sessions share."""
+    env = dict(os.environ if base is None else base)
+    env["CLAUDE_CODE_SIMPLE"] = "1"
+    return env
+
+
+def load_json(path):
+    """A JSON object file; a corrupt one is moved aside and read as empty."""
+    try:
+        text = pathlib.Path(path).read_text()
+    except FileNotFoundError:
+        return {}
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        os.replace(path, f"{path}.corrupt")
+        eprint(f"  {path} was corrupt ({exc}); moved aside and rebuilding")
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def save_text_atomic(path, text):
+    """Replace the file in one rename, through a symlink to its target."""
+    path = os.path.realpath(path)
+    directory = os.path.dirname(path)
+    pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o600
+    fd, temporary = tempfile.mkstemp(prefix=".fleet.", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        pathlib.Path(temporary).unlink(missing_ok=True)
+
+
+def save_json_atomic(path, data):
+    save_text_atomic(path, json.dumps(data, indent=2) + "\n")
+
+
+def deep_merge(base, overlay):
+    out = dict(base)
+    for key, value in overlay.items():
+        if isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _leaves(value, path=()):
+    """{json [key, ...]: value} for every non-object value under `value`."""
+    out = {}
+    for key, item in value.items():
+        if isinstance(item, dict) and item:
+            out.update(_leaves(item, path + (key,)))
+        else:
+            out[json.dumps(list(path + (key,)))] = item
+    return out
+
+
+# --- harnesses: registry ---
+
+def harness_specs():
+    return {spec["name"]: spec for spec in manifest().get("harnesses", [])}
+
+
+def _expand_candidates(patterns):
+    """~ and globs expanded; a glob yields its matches newest version first."""
+    def version_key(path):
+        return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", path)]
+    out = []
+    for pattern in patterns:
+        pattern = os.path.expanduser(pattern)
+        if any(ch in pattern for ch in "*?["):
+            out.extend(sorted(glob.glob(pattern), key=version_key, reverse=True))
+        else:
+            out.append(pattern)
+    return out
+
+
+def _node_bin_dirs():
+    dirs = []
+    nvm = os.environ.get("NVM_BIN")
+    if nvm and os.path.isdir(nvm):
+        dirs.append(nvm)
+    if os.path.isdir("/opt/node/bin"):
+        dirs.append("/opt/node/bin")
+    for base in (HOME/".nvm/versions/node", pathlib.Path("/opt")):
+        if base.exists():
+            dirs += [str(d) for d in sorted(base.glob("*/bin"), reverse=True)]
+    return dirs
+
+
+def _owning_node_bin(binpath):
+    """The bin/ of the node install npm put `binpath` under, or None. An npm
+    self-update must run that install's npm, or the new version lands in
+    another node while the copy in use never moves."""
+    for parent in pathlib.Path(os.path.realpath(binpath)).parents:
+        if parent.name == "node_modules" and parent.parent.name == "lib":
+            candidate = parent.parent.parent/"bin"
+            if (candidate/"npm").exists():
+                return str(candidate)
+    return None
+
+
+def harness_resolve(name, spec):
+    found = shutil.which(name)
+    if found:
+        return found
+    candidates = _expand_candidates(spec.get("candidates", []))
+    if spec.get("npm"):
+        try:
+            prefix = subprocess.run(["npm", "config", "get", "prefix"], capture_output=True,
+                                    text=True, timeout=5).stdout.strip()
+            if prefix and prefix != "undefined":
+                candidates.append(os.path.join(prefix, "bin", name))
+        except (OSError, subprocess.SubprocessError):
+            pass
+        candidates += [os.path.join(d, name) for d in _node_bin_dirs()]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _npm_linked(binpath):
+    """Whether `binpath` runs a package `npm link`ed from a working copy. The
+    chain of links is walked without resolving it, so the node_modules entry
+    each step passes through can be checked for being a link itself."""
+    path = pathlib.Path(binpath)
+    for _ in range(40):
+        parts = path.parts
+        if "node_modules" in parts:
+            i = len(parts) - 1 - parts[::-1].index("node_modules")
+            rest = parts[i + 1:]
+            width = 2 if rest and rest[0].startswith("@") and len(rest) > 1 else 1
+            if rest and pathlib.Path(*parts[:i + 1 + width]).is_symlink():
+                return True
+        if not path.is_symlink():
+            return False
+        path = path.parent/os.readlink(path)
+    return False
+
+
+def harness_version(binpath):
+    """The harness's own `--version`, first line, or None. An updater that
+    exits 0 may still have done nothing; reading the version on both sides
+    makes that visible."""
+    try:
+        result = subprocess.run([binpath, "--version"], capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = (result.stdout or result.stderr or "").strip().splitlines()
+    return lines[0].strip() if result.returncode == 0 and lines else None
+
+
+def _harness_env(name, binpath):
+    env = dict(os.environ)
+    lead = [os.path.dirname(binpath)]
+    owner = _owning_node_bin(binpath)
+    if owner and owner not in lead:
+        lead.insert(0, owner)
+    env["PATH"] = os.pathsep.join(lead + [env.get("PATH", "")])
+    return _claude_env(env) if name == "claude" else env
+
+
+def cmd_install(names):
+    specs, retired = harness_specs(), set(manifest().get("retiredHarnesses") or [])
+    if not names:
+        eprint("usage: fleet install <harness>...  (" + ", ".join(specs) + ")")
+        return 2
+    needs_node = [n for n in names if specs.get(n, {}).get("needsNode")]
+    if needs_node and not shutil.which("node"):
+        eprint(f"fleet: node is required for {'/'.join(needs_node)}; install it through nvm, then re-run")
+        return 1
+    rc, installed = 0, False
+    for name in names:
+        spec = specs.get(name)
+        if name in retired:
+            eprint(f"fleet: {name} is retired; fleet no longer installs it")
+            rc = 1
+            continue
+        if not spec:
+            eprint(f"fleet: unknown harness {name}")
+            rc = 1
+            continue
+        command = spec.get("install", "").strip()
+        if not command:
+            print(f"fleet: {name} has no installer")
+            continue
+        # A rerunnable installer repairs a partial install itself (t3: the CLI
+        # is there but its background service is not).
+        if harness_resolve(name, spec) and not spec.get("rerunWhenInstalled"):
+            print(f"fleet: {name} is already installed")
+            continue
+        print(f"fleet: installing {name}")
+        # Installers are `curl ... | sh` pipelines: without pipefail a failed
+        # download feeds sh nothing and reads as success.
+        if subprocess.run(["bash", "-o", "pipefail", "-c", command]).returncode != 0:
+            eprint(f"fleet: {name}: install failed")
+            rc = 1
+        else:
+            installed = True
+    if installed and config_sync_enabled():
+        config_sync(direct=False)
+        rc = harness_render(force=True) or rc
+    return rc
+
+
+def harness_update():
+    """Run each installed harness's own updater; 1 when one failed."""
+    present, failed, unchanged = 0, [], []
+    for name, spec in harness_specs().items():
+        binpath = harness_resolve(name, spec)
+        if not binpath:
+            continue
+        present += 1
+        if spec.get("npm") and _npm_linked(binpath):
+            print(f"fleet: {name} is npm-linked to a working copy; not updating it")
+            continue
+        if spec.get("update"):
+            argv = ["bash", "-o", "pipefail", "-c", spec["update"]]
+        else:
+            argv = [binpath] + spec.get("updateArgs", "update").split()
+        print(f"fleet: updating {name} ({binpath})")
+        before = harness_version(binpath)
+        try:
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, env=_harness_env(name, binpath),
+                                    timeout=int(os.environ.get("SETUP_HARNESS_TIMEOUT", "900")))
+        except (OSError, subprocess.SubprocessError):
+            failed.append(name)
+            continue
+        if result.returncode != 0:
+            failed.append(name)
+            continue
+        after = harness_version(binpath)
+        if before and after and before != after:
+            print(f"  {before} -> {after}")
+        elif before and after:
+            unchanged.append(name)
+    if present and unchanged:
+        print("fleet: already current, or the updater did nothing: " + " ".join(unchanged))
+    if failed:
+        _report("could not update " + ", ".join(failed))
+    return 1 if failed else 0
+
+
+# --- harnesses: tiers ---
+
+def mcp_env_var(server):
+    """The env var holding a server's token: {NAME}_MCP_TOKEN unless named."""
+    return server.get("envVar") or re.sub(r"[^A-Za-z0-9]+", "_", server["name"]).upper() + "_MCP_TOKEN"
+
+
+def mcp_surfaces(server):
+    return server.get("surfaces") or list(SURFACES)
+
+
+def _account_server(entry, subject):
+    """An mcp.json entry checked and normalized; ValueError says why not."""
+    if not isinstance(entry, dict):
+        raise ValueError("not an object")
+    name, url, auth = entry.get("name"), entry.get("url"), entry.get("auth", "none")
+    if not isinstance(name, str) or not MCP_NAME.match(name):
+        raise ValueError(f"bad name {name!r}")
+    if not isinstance(url, str) or not re.match(r"^https?://[^\s]+$", url):
+        raise ValueError(f"{name}: url must be http(s)")
+    if auth not in ("none", "bearer", "x-api-key"):
+        raise ValueError(f"{name}: auth must be none, bearer or x-api-key")
+    server = {"name": name, "url": url, "auth": auth}
+    surfaces = entry.get("surfaces")
+    if surfaces is not None:
+        if not isinstance(surfaces, list) or not surfaces or any(s not in SURFACES for s in surfaces):
+            raise ValueError(f"{name}: surfaces must name claude, codex or hermes")
+        server["surfaces"] = surfaces
+    if auth == "none":
+        return server
+    source = entry.get("credentialSource")
+    if source == "env":
+        if not isinstance(entry.get("env"), str) or not ENV_NAME.match(entry["env"]):
+            raise ValueError(f"{name}: credentialSource env needs an env variable name")
+        server.update(credentialSource="env", envVar=entry["env"])
+    elif source == "passage":
+        # The passage vault is the operator's own.
+        if subject != OPERATOR_SUBJECT:
+            raise ValueError(f"{name}: credentialSource passage is for the operator's account")
+        for key in ("envVar", "vaultItem"):
+            if key in entry:
+                if not isinstance(entry[key], str) or not ENV_NAME.match(entry[key]):
+                    raise ValueError(f"{name}: bad {key}")
+                server[key] = entry[key]
+        server["credentialSource"] = "passage"
+    else:
+        raise ValueError(f"{name}: credentialSource must be env or passage")
+    return server
+
+
+def _tier_file(rel, warnings):
+    path = AGENTS_DIR/rel
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        warnings.append(f"{rel}: {exc}")
+        return {}
+    if not isinstance(value, dict):
+        warnings.append(f"{rel}: not a JSON object")
+        return {}
+    return value
+
+
+def empty_tier():
+    return {"claude": {}, "allow": [], "t3": [], "keepout": False, "mcp": []}
+
+
+def read_tier(subject, warnings):
+    """The account's tier from ~/.agents; malformed parts are skipped."""
+    tier = empty_tier()
+    claude = _tier_file("settings/claude.json", warnings)
+    if isinstance(claude.get("json"), dict):
+        tier["claude"] = claude["json"]
+    elif "json" in claude:
+        warnings.append("settings/claude.json: json is not an object")
+    allow = claude.get("permissionsAllowAdd", [])
+    if isinstance(allow, list) and all(isinstance(a, str) for a in allow):
+        tier["allow"] = allow
+    else:
+        warnings.append("settings/claude.json: permissionsAllowAdd is not a list of strings")
+    models = _tier_file("settings/t3.json", warnings).get("claudeCustomModels", [])
+    if isinstance(models, list):
+        for row in models:
+            if isinstance(row, dict) and isinstance(row.get("slug"), str) and row["slug"]:
+                tier["t3"].append(row)
+            else:
+                warnings.append(f"settings/t3.json: skipped model {row!r}")
+    keepout = _tier_file("settings/keepout.json", warnings).get("enabled", False)
+    tier["keepout"] = keepout is True
+    entries = _tier_file("mcp.json", warnings).get("mcpServers", [])
+    if not isinstance(entries, list):
+        warnings.append("mcp.json: mcpServers is not a list")
+        entries = []
+    for entry in entries:
+        try:
+            tier["mcp"].append(_account_server(entry, subject))
+        except ValueError as exc:
+            warnings.append(f"mcp.json: skipped {exc}")
+    return tier
+
+
+def check_tier_shape(rel, value):
+    """Why `rel` cannot be uploaded as `value`, or None."""
+    if rel == "mcp.json" and not isinstance(value.get("mcpServers", []), list):
+        return "mcpServers must be a list"
+    if rel == "settings/claude.json":
+        if not isinstance(value.get("json", {}), dict):
+            return "json must be an object"
+        if not isinstance(value.get("permissionsAllowAdd", []), list):
+            return "permissionsAllowAdd must be a list"
+    if rel == "settings/t3.json" and not isinstance(value.get("claudeCustomModels", []), list):
+        return "claudeCustomModels must be a list"
+    if rel == "settings/keepout.json" and not isinstance(value.get("enabled", False), bool):
+        return "enabled must be true or false"
+    return None
+
+
+def hub_servers():
+    """The lost.plus MCPs the account is admitted to, from the hub."""
+    rows = _request("GET", "/api/services", expect=list)
+    if not all(isinstance(row, dict) and all(isinstance(row.get(k), str)
+                                             for k in ("key", "mcp_url", "token_key"))
+               for row in rows):
+        raise ConfigError("Auth returned an invalid service list")
+    servers = []
+    for row in rows:
+        if not row["mcp_url"]:
+            continue
+        key = row["key"]
+        name = key[:-len(HUB_SUFFIX)] if key.endswith(HUB_SUFFIX) else key
+        server = {"name": name, "url": row["mcp_url"], "auth": "none"}
+        if row["token_key"]:
+            server.update(auth="bearer", credentialSource="common-auth", scope=row["token_key"])
+        servers.append(server)
+    return servers
+
+
+def local_plugin_servers():
+    """Codex's bundled plugin MCPs on a Mac, offered to claude as stdio."""
+    if sys.platform != "darwin":
+        return []
+    servers = []
+    for spec in manifest().get("localPluginMcpServers", []):
+        root = CODEX_DIR/"plugins/cache/openai-bundled"/spec["plugin"]
+        versions = [p for p in root.glob("*") if p.is_dir() and re.fullmatch(r"\d+(?:\.\d+)*", p.name)]
+        if not versions:
+            continue
+        latest = max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".")))
+        try:
+            entry = json.loads((latest/".mcp.json").read_text())["mcpServers"][spec["server"]]
+            command, args, env = entry["command"], entry.get("args", []), entry.get("env", {})
+            env = {**env, **spec.get("env", {})}
+            if (not isinstance(command, str) or not os.path.isabs(command)
+                    or not os.access(command, os.X_OK)
+                    or not isinstance(args, list) or not all(isinstance(a, str) for a in args)
+                    or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+                    or entry.get("enabled") is False or entry.get("env_vars")
+                    or any("${" in v for v in [command, *args, *env.values()])):
+                raise ValueError("unsupported plugin launch configuration")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            eprint(f"  {spec['name']}: cannot import {latest/'.mcp.json'}: {exc}")
+            continue
+        servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"],
+                        "stdio": {"type": "stdio", "command": command, "args": args, "env": env}})
+    return servers
+
+
+# --- harnesses: credentials ---
+
+def common_auth_token(scope, context):
+    rc, out = _auth("token", scope, "--expect-context",
+                    json.dumps(context, sort_keys=True, separators=(",", ":")), timeout=60)
+    if rc == 5:
+        raise Changed()
+    token = out.strip()
+    if rc or not token:
+        raise TokenError(f"no {scope} credential from Common Auth", authoritative=rc in (3, 4))
+    return token
+
+
+class TokenError(Exception):
+    def __init__(self, message, authoritative=False):
+        super().__init__(message)
+        self.authoritative = authoritative
+
+
+def _vault_get(token, item):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "get_secret", "arguments": {"folder": VAULT_FOLDER, "item_name": item}}}
+    request = urllib.request.Request(VAULT_URL, data=json.dumps(body).encode(), method="POST", headers={
+        "Authorization": "Bearer " + token, "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream", "User-Agent": "fleet/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read()).get("result", {})
+    except (OSError, ValueError, AttributeError) as exc:
+        raise TokenError(f"passage unreachable: {exc}") from None
+    content = result.get("content") or [{}]
+    text = (content[0].get("text") or "").strip()
+    if result.get("isError") or not text:
+        raise TokenError(f"no passage item mcp/{item}")
+    return text
+
+
+def mcp_token_value(raw):
+    """The bare token from a vault item that may record how to send it,
+    such as '<url> | Authorization: Bearer <token>'."""
+    value = (raw or "").strip().split("|")[-1].strip()
+    if not value.lower().startswith(("http://", "https://")):
+        match = re.match(r"^([A-Za-z][A-Za-z0-9-]*)\s*:\s*(.+)$", value, re.S)
+        if match:
+            value = match.group(2).strip()
+    if value.lower().startswith("bearer "):
+        value = value[len("bearer "):].strip()
+    return value
+
+
+def _existing_block(text):
+    match = re.search(re.escape(TOKENS_BEGIN) + r"(.*?)" + re.escape(TOKENS_END), text, re.S)
+    return match.group(1) if match else ""
+
+
+def managed_exports():
+    """The managed token block of ~/.zshenv, read the way zsh would: a quoted
+    value may run over lines, and '#' starts a comment only at a line's head."""
+    try:
+        text = ZSHENV.read_text()
+    except OSError:
+        return {}
+    found, pending = {}, ""
+    for line in _existing_block(text).splitlines(keepends=True):
+        if not pending and line.lstrip().startswith("#"):
+            continue
+        pending += line
+        try:
+            words = shlex.split(pending)
+        except ValueError:
+            continue
+        pending = ""
+        for word in words:
+            name, eq, value = word.partition("=")
+            if eq and ENV_NAME.match(name):
+                found[name] = value
+    return found
+
+
+def _block_context():
+    try:
+        text = ZSHENV.read_text()
+    except OSError:
+        return None
+    match = re.search(r"^# common-auth-context (\{.*\})$", _existing_block(text), re.M)
+    try:
+        value = json.loads(match.group(1)) if match else None
+    except ValueError:
+        return None
+    return {"origin": value.get("origin"), "subject": value.get("subject")} if isinstance(value, dict) else None
+
+
+def resolve_tokens(servers, context, warnings):
+    """(exports {VAR: value}, names to drop, servers left out for want of a
+    token). A failed lookup keeps the value already in the block unless Auth
+    said the credential is gone."""
+    existing = managed_exports()
+    drop = set()
+    if _block_context() != context:
+        # Another account: nothing Common Auth gave the old one carries over.
+        drop.update(mcp_env_var(s) for s in servers if s.get("credentialSource") == "common-auth")
+        drop.add("PASSAGE_MCP_TOKEN")
+        for name in drop:
+            existing.pop(name, None)
+    tokens, exports, skipped = {}, {}, set()
+
+    def common(scope):
+        if scope not in tokens:
+            tokens[scope] = common_auth_token(scope, context)
+        return tokens[scope]
+
+    for server in servers:
+        if server["auth"] == "none":
+            continue
+        var, source, value = mcp_env_var(server), server.get("credentialSource"), None
+        try:
+            if source == "common-auth":
+                value = common(server["scope"])
+            elif source == "passage":
+                value = _vault_get(common("passage"), server.get("vaultItem") or var)
+            else:
+                value = os.environ.get(var) or existing.get(var)
+                if not value:
+                    warnings.append(f"{server['name']}: {var} is not set; server skipped")
+                    skipped.add(server["name"])
+                    continue
+        except TokenError as exc:
+            if exc.authoritative:
+                drop.add(var)
+            value = None if exc.authoritative else existing.get(var)
+            eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
+        value = mcp_token_value(value)
+        if value:
+            exports[var] = value
+            drop.discard(var)
+    return exports, drop, skipped
+
+
+def _mirror_zshenv(exports, drop, context, retired):
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    kept = {}
+    for line in _existing_block(text).splitlines():
+        match = re.match(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=", line)
+        if match:
+            kept[match.group(1)] = line
+    lines = [f"export {k}={shlex.quote(v)}" for k, v in exports.items()]
+    lines += [line for name, line in kept.items()
+              if name not in exports and name not in drop and name not in retired]
+    context_line = "# common-auth-context " + json.dumps(context, sort_keys=True, separators=(",", ":"))
+    block = "\n".join([TOKENS_BEGIN, context_line, *lines, TOKENS_END]) + "\n"
+    if TOKENS_BEGIN in text and TOKENS_END in text:
+        new = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
+                     lambda _: block, text, flags=re.S)
+    else:
+        new = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
+    for name in retired:
+        new = re.sub(r"^export\s+%s=.*\n?" % re.escape(name), "", new, flags=re.M)
+    if new != text:
+        # Atomic: claude's headersHelper reads this file at any moment.
+        save_text_atomic(ZSHENV, new)
+        print(f"  wrote {len(lines)} token(s) to {ZSHENV}")
+
+
+def _dotenv_value(value):
+    return value if re.fullmatch(r"[A-Za-z0-9_./:=+@,-]+", value) else "'" + value.replace("'", "'\\''") + "'"
+
+
+def _mirror_dotenv(path, exports, drop, retired):
+    """The same tokens as a NAME=value block, for a harness that reads a .env
+    rather than the shell: codex and the hermes gateway, started by services
+    that never read ~/.zshenv."""
+    original = path.read_text() if path.exists() else ""
+    body = [f"{k}={_dotenv_value(v)}" for k, v in exports.items()]
+    block = "\n".join([TOKENS_BEGIN, *body, TOKENS_END]) + "\n"
+    if TOKENS_BEGIN in original and TOKENS_END in original:
+        text = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
+                      lambda _: block, original, flags=re.S)
+    else:
+        text = original.rstrip("\n") + ("\n\n" if original.strip() else "") + block
+    for name in (set(retired) | set(drop)) - set(exports):
+        text = re.sub(r"^%s=.*\n?" % re.escape(name), "", text, flags=re.M)
+    if text == original:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_text_atomic(path, text)
+    os.chmod(path, 0o600)
+    return True
+
+
+def cmd_mcp_headers(args):
+    """claude's headersHelper: one server's auth header as JSON."""
+    if len(args) != 2 or args[0] not in ("bearer", "x-api-key"):
+        eprint("usage: fleet mcp-headers bearer|x-api-key ENV_VAR")
+        return 2
+    auth, var = args
+    token = managed_exports().get(var)
+    if not token:
+        eprint(f"fleet: no {var} in the managed token block of {ZSHENV}; run: fleet sync")
+        return 1
+    print(json.dumps({"Authorization": "Bearer " + token} if auth == "bearer" else {"X-API-Key": token}))
+    return 0
+
+
+# --- harnesses: renderers ---
+
+_MISSING = object()
+
+
+def _keepout_command():
+    command = manifest().get("keepout", {}).get("command")
+    if not isinstance(command, str) or KEEPOUT_MARKER not in command:
+        raise ConfigError(f"the manifest's keepout.command must contain {KEEPOUT_MARKER}")
+    return command
+
+
+def _is_keepout_hook(handler):
+    return isinstance(handler, dict) and KEEPOUT_MARKER in str(handler.get("command", ""))
+
+
+def _merge_keepout_hooks(settings, command):
+    """Reconcile only our command, even in a group shared with the user's
+    hooks; None removes it."""
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    out = []
+    for group in hooks.get("UserPromptSubmit") or []:
+        handlers = group.get("hooks", []) if isinstance(group, dict) else []
+        kept = [h for h in handlers if not _is_keepout_hook(h)]
+        if kept == handlers:
+            out.append(group)
+        elif kept:
+            out.append({**group, "hooks": kept})
+    if command:
+        # Synchronous: a background hook cannot reject a prompt.
+        out.append({"hooks": [{"type": "command", "command": command}]})
+    if out:
+        settings.setdefault("hooks", {})["UserPromptSubmit"] = out
+    elif "UserPromptSubmit" in hooks:
+        del hooks["UserPromptSubmit"]
+        if not hooks:
+            settings.pop("hooks", None)
+
+
+def _get_path(value, path):
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def _drop_path(value, path):
+    """Delete the leaf at `path`, then any parent it leaves empty."""
+    parents = []
+    for key in path[:-1]:
+        parents.append((value, key))
+        value = value[key]
+    del value[path[-1]]
+    for parent, key in reversed(parents):
+        if parent[key] != {}:
+            break
+        del parent[key]
+
+
+def render_claude(desired, allow, previous, command):
+    """~/.claude/settings.json: the tiers deep-merged in, the allow list
+    union-merged, the keepout hook reconciled. What the record says fleet
+    wrote and the tiers no longer set comes off while it holds that value."""
+    current = load_json(CLAUDE_SETTINGS)
+    before = json.dumps(current, sort_keys=True)
+    wanted = _leaves(desired)
+    for key, value in (previous.get("claude") or {}).items():
+        path = json.loads(key)
+        if key not in wanted and _get_path(current, path) == value:
+            _drop_path(current, path)
+    merged = deep_merge(current, desired)
+    if not isinstance(merged.get("permissions", {}), dict):
+        merged["permissions"] = {}
+    permissions = merged.get("permissions", {})
+    existing = permissions.get("allow", [])
+    existing = existing if isinstance(existing, list) else []
+    # A grant leaves with its server: the whole mcp__<name>__ namespace, since
+    # a connector granted per tool leaves a row per tool.
+    retired = tuple(f"mcp__{n}__" for n in (manifest().get("retiredMcpServers") or [])
+                    + (manifest().get("retiredMcpGrants") or []))
+    gone = set(previous.get("allow") or []) - set(allow)
+    kept = [e for e in existing
+            if e not in gone and not (retired and isinstance(e, str) and e.startswith(retired))]
+    kept += [e for e in allow if e not in kept]
+    if kept or "allow" in permissions:
+        merged.setdefault("permissions", {})["allow"] = kept
+    if merged.get("permissions") == {}:
+        merged.pop("permissions")
+    _merge_keepout_hooks(merged, command)
+    if json.dumps(merged, sort_keys=True) != before:
+        save_json_atomic(CLAUDE_SETTINGS, merged)
+        print(f"  wrote {CLAUDE_SETTINGS}")
+    return wanted
+
+
+def _claude_mcp_entry(server):
+    """The user-scope ~/.claude.json entry. A token server gets a
+    headersHelper, not a ${VAR} header: claude expands ${VAR} from its own
+    environment, and a claude a service or GUI app started never read
+    .zshenv. The helper reads the token block at each connect."""
+    if "stdio" in server:
+        return dict(server["stdio"])
+    entry = {"type": "http", "url": server["url"]}
+    if server["auth"] != "none":
+        entry["headersHelper"] = (f"{shlex.quote(_self_path())} mcp-headers "
+                                  f"{server['auth']} {mcp_env_var(server)}")
+    return entry
+
+
+def _self_path():
+    return os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else str(HOME/".local/bin/fleet")
+
+
+def _claude_mcp_scope(claude, name):
+    """The scope claude holds the server at ("" when it does not say), or
+    None when it is not registered. `get` names one server, where a search of
+    `list` matched prefixes of unrelated connectors."""
+    result = subprocess.run([claude, "mcp", "get", name], capture_output=True, text=True,
+                            env=_claude_env())
+    if result.returncode != 0 or "No MCP server named" in (result.stdout + result.stderr):
+        return None
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Scope:"):
+            return (line.strip()[6:].strip().split() or [""])[0].lower()
+    return ""
+
+
+def _claude_user_entry(name):
+    """The stored user-scope entry, from the file: `claude mcp get` does not
+    print a headersHelper."""
+    path = pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
+    try:
+        return (json.loads(path.read_text()).get("mcpServers") or {}).get(name)
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def render_claude_mcp(claude, servers, previous, retired):
+    for name in sorted(retired):
+        if _claude_mcp_scope(claude, name) is not None:
+            print(f"  unregistering retired MCP server {name}")
+            # No -s: the CLI then removes it from whichever scope holds it.
+            subprocess.run([claude, "mcp", "remove", name], capture_output=True, env=_claude_env())
+    for name, record in (previous.get("mcp") or {}).items():
+        if name in servers or name in retired:
+            continue
+        entry = _claude_user_entry(name)
+        if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
+                                        or (record.get("claude") and entry == record["claude"])):
+            print(f"  unregistering MCP server {name}")
+            subprocess.run([claude, "mcp", "remove", name, "-s", "user"], capture_output=True,
+                           env=_claude_env())
+    for server in servers.values():
+        want = _claude_mcp_entry(server)
+        argv = [claude, "mcp", "add-json", "--scope", "user", server["name"], json.dumps(want)]
+        scope = _claude_mcp_scope(claude, server["name"])
+        if scope is None:
+            subprocess.run(argv, capture_output=True, env=_claude_env())
+        elif scope not in ("", "user"):
+            # A local or project registration is the user's and shadows ours.
+            print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
+        elif _claude_user_entry(server["name"]) != want:
+            print(f"  re-enrolling {server['name']}")
+            subprocess.run([claude, "mcp", "remove", server["name"], "-s", "user"],
+                           capture_output=True, env=_claude_env())
+            subprocess.run(argv, capture_output=True, env=_claude_env())
+
+
+def _codex_mcp_block(server):
+    lines = [f"[mcp_servers.{server['name']}]", f"url = {json.dumps(server['url'])}"]
+    if server["auth"] == "bearer":
+        lines.append(f"bearer_token_env_var = \"{mcp_env_var(server)}\"")
+    elif server["auth"] == "x-api-key":
+        lines.append(f"env_http_headers = {{ \"X-API-Key\" = \"{mcp_env_var(server)}\" }}")
+    return "\n".join(lines) + "\n"
+
+
+def _toml(text):
+    """(parsed, error); (None, None) where Python has no TOML parser."""
+    try:
+        import tomllib
+    except ImportError:
+        return None, None
+    try:
+        return tomllib.loads(text), None
+    except Exception as exc:  # tomllib raises its own TOMLDecodeError
+        return None, str(exc)
+
+
+def _codex_sections(text):
+    """[(name, text)] of each top-level [mcp_servers.<name>] table."""
+    out = []
+    for match in re.finditer(r"^\[mcp_servers\.([^.\]]+)\]\s*$", text, re.M):
+        following = re.search(r"^\[", text[match.end():], re.M)
+        end = match.end() + (following.start() if following else len(text) - match.end())
+        out.append((match.group(1).strip("\"'"), text[match.start():end]))
+    return out
+
+
+def render_codex_mcp(servers, previous, retired):
+    """Our servers in one marked region of config.toml, replaced whole. A
+    server the user declares outside it is theirs and is never emitted (a
+    second table would stop codex from starting); the result must parse
+    before it is written. Returns False when the file was left alone."""
+    original = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
+    if original.strip() and _toml(original)[1]:
+        eprint(f"  {CODEX_CONFIG} does not parse; refusing to edit it: {_toml(original)[1]}")
+        return False
+    region = re.search(re.escape(CODEX_MCP_BEGIN) + r".*?" + re.escape(CODEX_MCP_END) + r"\n?",
+                       original, re.S)
+    text = original[:region.start()] + original[region.end():] if region else original
+    # Reclaim blocks an older release appended outside the region: a body
+    # identical to one of ours, or a retired name. A block carrying
+    # [.tools.*] rules was never ours.
+    ours = {_codex_mcp_block(s).strip().split("\n", 1)[1] for s in servers}
+    for name, body in _codex_sections(text):
+        table = ((_toml(text)[0] or {}).get("mcp_servers") or {}).get(name)
+        if isinstance(table, dict) and any(isinstance(v, dict) for v in table.values()):
+            continue
+        rest = body.strip().split("\n", 1)
+        if name in retired or (len(rest) == 2 and rest[1] in ours):
+            text = text.replace(body, "", 1)
+    # Declared means given settings of its own, not only [.tools.*] rules
+    # hanging off the name, which still need our url.
+    declared = {name for name, table in ((_toml(text)[0] or {}).get("mcp_servers") or {}).items()
+                if not isinstance(table, dict) or any(not isinstance(v, dict) for v in table.values())}
+    emit = [s for s in servers if s["name"] not in declared]
+    for server in servers:
+        if server["name"] in declared:
+            print(f"  {server['name']} is configured in {CODEX_CONFIG.name} already; leaving it alone")
+    body = "\n".join(_codex_mcp_block(s) for s in emit)
+    region = f"{CODEX_MCP_BEGIN}\n{body}{CODEX_MCP_END}\n" if emit else ""
+    candidate = text.rstrip("\n")
+    candidate = candidate + "\n\n" + region if region else candidate + "\n"
+    if candidate.strip() == "":
+        candidate = ""
+    if _toml(candidate)[1]:
+        eprint(f"  refusing to write {CODEX_CONFIG}: the result would not parse: {_toml(candidate)[1]}")
+        return False
+    if candidate != original:
+        save_text_atomic(CODEX_CONFIG, candidate)
+        print(f"  wrote {CODEX_CONFIG} ({len(emit)} codex MCP server(s))")
+    return True
+
+
+def render_codex_keepout(command):
+    current = load_json(CODEX_HOOKS)
+    before = json.dumps(current, sort_keys=True)
+    _merge_keepout_hooks(current, command)
+    if json.dumps(current, sort_keys=True) != before:
+        save_json_atomic(CODEX_HOOKS, current)
+        print(f"  wrote {CODEX_HOOKS}")
+    return _trust_codex_keepout(command) if command else True
+
+
+def _trust_codex_keepout(command):
+    """Trust our keepout hook the way /hooks does, through codex app-server.
+    Codex skips a hook whose hash it has not trusted, so a changed command
+    would silently turn the gate off. Only this exact command, in its own
+    hooks.json, is trusted; other hooks stay for the user to review."""
+    codex = harness_resolve("codex", harness_specs().get("codex", {}))
+    if not codex:
+        return True
+    ids = iter(range(1, 100))
+
+    def call(rid, method, params):
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}) + "\n")
+        proc.stdin.flush()
+        for line in proc.stdout:
+            message = json.loads(line)
+            if message.get("id") == rid:
+                if "error" in message:
+                    raise RuntimeError(f"{method}: {message['error'].get('message', message['error'])}")
+                return message["result"]
+        raise RuntimeError("codex app-server exited during " + method)
+
+    def ours():
+        listed = call(next(ids), "hooks/list", {"cwds": [str(HOME)]})
+        return [h for entry in listed.get("data", []) for h in entry.get("hooks", [])
+                if h.get("command") == command and h.get("sourcePath") == str(CODEX_HOOKS)]
+
+    try:
+        proc = subprocess.Popen([codex, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+    except OSError as exc:
+        eprint(f"  cannot trust the codex keepout hook: {exc}; trust it via /hooks")
+        return False
+    timer = threading.Timer(CODEX_TRUST_TIMEOUT, proc.kill)
+    timer.start()
+    try:
+        call(next(ids), "initialize", {"clientInfo": {"name": "fleet", "version": "1"}})
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+        hooks = ours()
+        pending = {h["key"]: {"trusted_hash": h["currentHash"]} for h in hooks
+                   if h.get("trustStatus") in ("untrusted", "modified")}
+        if pending:
+            call(next(ids), "config/batchWrite", {
+                "edits": [{"keyPath": "hooks.state", "value": pending, "mergeStrategy": "upsert"}],
+                "reloadUserConfig": True})
+            hooks = ours()
+        if not hooks or any(h.get("trustStatus") != "trusted" for h in hooks):
+            raise RuntimeError(f"keepout hook is {[h.get('trustStatus') for h in hooks] or 'not listed'}")
+        if pending:
+            print("  trusted the keepout hook in codex")
+        return True
+    except (OSError, ValueError, RuntimeError) as exc:
+        eprint(f"  cannot trust the codex keepout hook: {exc}; trust it via /hooks")
+        return False
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+
+
+def _effort_descriptors():
+    """Model slug -> a t3 'effort' option descriptor, from the opencodex
+    proxy's catalog: t3 shows a reasoning selector only for a custom model
+    that declares one, and the levels are the provider's to publish."""
+    try:
+        url = subprocess.run([sys.executable, str(OPENCODEX), "__proxy-url"], capture_output=True,
+                             text=True, timeout=30).stdout.strip()
+        with urllib.request.urlopen(url + "/v1/models", timeout=T3_CATALOG_TIMEOUT) as response:
+            payload = json.load(response)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    out = {}
+    for row in (payload.get("data") or []) if isinstance(payload, dict) else []:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        options = []
+        for level in row.get("reasoning_efforts") or []:
+            if not isinstance(level, dict) or not isinstance(level.get("value"), str):
+                continue
+            label = level.get("label") if isinstance(level.get("label"), str) and level["label"] else level["value"]
+            # The column is already called Reasoning.
+            option = {"id": level["value"], "label": label.removesuffix(" Effort")}
+            if level.get("default") is True:
+                option["isDefault"] = True
+            options.append(option)
+        if options:
+            out[row["id"]] = {"id": "effort", "label": "Reasoning", "type": "select", "options": options}
+    return out
+
+
+def render_t3(models, previous):
+    """T3's claude custom models: ours appended or refreshed by slug, the
+    user's left alone. Returns the record: slug -> row as written."""
+    current = load_json(T3_SETTINGS)
+    before = json.dumps(current, sort_keys=True)
+    instances = current.setdefault("providerInstances", {})
+    claude = instances.setdefault("claudeAgent", {"driver": "claudeAgent", "enabled": True, "config": {}})
+    config = claude.setdefault("config", {})
+    if config.get("binaryPath") in {str(p) for p in RETIRED_CLAUDE_LAUNCHERS}:
+        config["binaryPath"] = "claude"
+    descriptors = _effort_descriptors() if models and os.access(OPENCODEX, os.X_OK) else {}
+    wanted = {}
+    for model in models:
+        entry = dict(model)
+        # A model the proxy routes before it lists borrows a sibling's ladder.
+        sibling = entry.pop("effortsFrom", None)
+        descriptor = descriptors.get(entry["slug"]) or descriptors.get(sibling)
+        if descriptor:
+            entry["capabilities"] = {"optionDescriptors": [descriptor]}
+        wanted[entry["slug"]] = entry
+    record = {slug: {k: v for k, v in e.items() if k != "capabilities"} for slug, e in wanted.items()}
+    recorded = previous.get("t3") or {}
+    retired = set(manifest().get("retiredClaudeCustomModels") or [])
+    out = []
+    for row in config.get("customModels") or []:
+        slug = row.get("slug") if isinstance(row, dict) else row
+        if slug in retired:
+            continue
+        if slug in wanted:
+            merged = dict(row) if isinstance(row, dict) else {"slug": slug}
+            merged.update(wanted.pop(slug))
+            out.append(merged)
+        elif not (slug in recorded and isinstance(row, dict)
+                  and {k: v for k, v in row.items() if k != "capabilities"} == recorded[slug]):
+            out.append(row)
+    out += wanted.values()
+    config["customModels"] = out
+    if json.dumps(current, sort_keys=True) != before:
+        save_json_atomic(T3_SETTINGS, current)
+        print(f"  wrote {T3_SETTINGS} ({len(out)} claude custom models)")
+    # Only once settings stop naming a retired launcher can it go.
+    if config.get("binaryPath", "claude") == "claude":
+        for path in RETIRED_CLAUDE_LAUNCHERS:
+            path.unlink(missing_ok=True)
+    return record
+
+
+def _hermes_entry(server):
+    var = mcp_env_var(server)
+    lines = [f"  {server['name']}:", "    type: remote", f"    url: {server['url']}", "    oauth: false"]
+    if server["auth"] == "bearer":
+        lines += ["    headers:", f"      Authorization: Bearer ${{{var}}}"]
+    elif server["auth"] == "x-api-key":
+        lines += ["    headers:", f"      X-API-Key: ${{{var}}}"]
+    return lines
+
+
+def _yaml_block(lines, key):
+    """(start, end) of a top-level `key:` block, end exclusive, or (None, None)."""
+    for i, line in enumerate(lines):
+        if re.match(rf"^{key}:\s*(#.*)?$", line):
+            j = i + 1
+            while j < len(lines) and (lines[j].strip() == "" or lines[j][0] in " \t" or lines[j].startswith("#")):
+                j += 1
+            return i, j
+    return None, None
+
+
+def _hermes_entries(lines, start, end):
+    """[(name, first, stop)] of each entry in the mcp_servers block."""
+    heads = [k for k in range(start + 1, end) if re.match(r"^  [^\s#][^:]*:\s*$", lines[k])]
+    out = []
+    for n, k in enumerate(heads):
+        stop = heads[n + 1] if n + 1 < len(heads) else end
+        while stop > k + 1 and lines[stop - 1].strip() == "":
+            stop -= 1
+        out.append((lines[k].strip()[:-1], k, stop))
+    return out
+
+
+def _hermes_skills(lines):
+    """Add ~/.agents/skills to skills.external_dirs, where hermes looks for
+    skills beyond its bundled ones."""
+    start, end = _yaml_block(lines, "skills")
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += ["skills:", "  external_dirs:", "  - ~/.agents/skills"]
+        return
+    for k in range(start + 1, end):
+        match = re.match(r"^  external_dirs:\s*(\[\s*\])?\s*$", lines[k])
+        if not match:
+            continue
+        if match.group(1):
+            lines[k] = "  external_dirs:"
+        j = k + 1
+        items = []
+        while j < end and re.match(r"^\s*- ", lines[j]):
+            items.append(lines[j].split("- ", 1)[1].strip().strip("\"'"))
+            j += 1
+        if not {"~/.agents/skills", str(AGENTS_DIR/"skills")} & set(items):
+            indent = re.match(r"^(\s*)- ", lines[k + 1]).group(1) if items else "  "
+            lines.insert(j, f"{indent}- ~/.agents/skills")
+        return
+    if any(re.match(r"^  external_dirs:", lines[k]) for k in range(start + 1, end)):
+        eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
+               "add ~/.agents/skills to it by hand")
+        return
+    lines[start + 1:start + 1] = ["  external_dirs:", "  - ~/.agents/skills"]
+
+
+def render_hermes(servers, previous, retired):
+    """hermes's config.yaml: our MCP entries and the skills folder. Returns
+    whether the file changed."""
+    original = HERMES_CONFIG.read_text()
+    lines = original.split("\n")
+    start, end = _yaml_block(lines, "mcp_servers")
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append("mcp_servers:")
+        start, end = len(lines) - 1, len(lines)
+    wanted = {s["name"]: _hermes_entry(s) for s in servers}
+    urls = {s["name"]: f"    url: {s['url']}" for s in servers}
+    recorded = previous.get("mcp") or {}
+    seen = set()
+    # Bottom-up, so earlier spans keep their indexes through edits.
+    for name, k, stop in reversed(_hermes_entries(lines, start, end)):
+        body = lines[k:stop]
+        if name in retired:
+            print(f"  hermes: removing retired MCP server {name}")
+            del lines[k:stop]
+        elif name in wanted:
+            seen.add(name)
+            if body == wanted[name]:
+                continue
+            if urls[name] not in body:
+                print(f"  hermes: {name} points somewhere else; leaving it alone")
+                continue
+            lines[k:stop] = wanted[name]
+        elif recorded.get(name, {}).get("url") and f"    url: {recorded[name]['url']}" in body:
+            print(f"  hermes: removing MCP server {name}")
+            del lines[k:stop]
+    start, end = _yaml_block(lines, "mcp_servers")
+    at = end
+    while at > start + 1 and not lines[at - 1].strip():
+        at -= 1
+    lines[at:at] = [line for s in servers if s["name"] not in seen for line in wanted[s["name"]]]
+    _hermes_skills(lines)
+    text = "\n".join(lines)
+    if text == original:
+        return False
+    save_text_atomic(HERMES_CONFIG, text)
+    print(f"  wrote {HERMES_CONFIG} ({len(servers)} hermes MCP server(s))")
+    return True
+
+
+def render_kimi():
+    """kimi is retired; only its keepout block comes off."""
+    original = KIMI_CONFIG.read_text()
+    text = KIMI_KEEPOUT.sub("", original)
+    if text != original:
+        save_text_atomic(KIMI_CONFIG, text.rstrip("\n") + "\n" if text.strip() else "")
+        print(f"  removed the keepout hook from {KIMI_CONFIG}")
+
+
+# --- harnesses: passes ---
+
+def harnesses_present():
+    """Which harnesses get settings: {name: present}. claude's value is its
+    binary, for the MCP commands."""
+    specs = harness_specs()
+
+    def found(name):
+        return harness_resolve(name, specs[name]) if name in specs else None
+    return {"claude": found("claude"), "codex": bool(found("codex") or CODEX_DIR.is_dir()),
+            "t3": bool(found("t3") or T3_SETTINGS.parent.is_dir()),
+            "hermes": HERMES_CONFIG.is_file(), "kimi": KIMI_CONFIG.is_file()}
+
+
+def _retired_env_vars():
+    return ({re.sub(r"[^A-Za-z0-9]+", "_", n).upper() + "_MCP_TOKEN"
+             for n in manifest().get("retiredMcpServers") or []}
+            | set(manifest().get("retiredEnvVars") or []))
+
+
+def _t3_models(tier, opencodex):
+    models = {}
+    for row in (manifest().get("opencodex", {}).get("t3", {}).get("claudeCustomModels", [])
+                if opencodex else []):
+        models[row["slug"]] = row
+    for row in tier["t3"]:
+        models[row["slug"]] = row
+    return list(models.values())
+
+
+def harness_render(force=False):
+    """Render the harnesses' settings, keepout hooks and MCP servers from the
+    three tiers. 0 done or unchanged, 1 a part failed, 3 no answer from Auth.
+
+    Without a completed pull this run, the tier fleet last applied is used
+    again, so nothing is removed on a guess. Without the hub's service list
+    nothing renders: the lost.plus servers would read as removed."""
+    if not config_sync_enabled():
+        return 0
+    account = _context()
+    if account is None:
+        return 3
+    origin, subject = account.split(" ", 1)
+    context = {"origin": origin, "subject": subject}
+    previous = _load_json(APPLIED, {})
+    warnings = []
+    if PULL["outcome"] == "synced":
+        tier = read_tier(subject, warnings)
+    elif PULL["outcome"] == "pending":
+        tier = empty_tier()
+    elif previous.get("account") == account and isinstance(previous.get("tier"), dict):
+        tier, warnings = previous["tier"], list(previous.get("warnings") or [])
+    else:
+        return 0
+    try:
+        hub = hub_servers()
+    except ConfigError as exc:
+        eprint(f"fleet: harness settings not rendered: cannot read the lost.plus services: {exc}")
+        return 3
+    m = manifest()
+    present = harnesses_present()
+    opencodex = os.access(OPENCODEX, os.X_OK)
+    servers = {}
+    # A later tier wins a name: manifest, local plugins, hub, the account.
+    for server in [*m.get("mcpServers", []), *local_plugin_servers(), *hub, *tier["mcp"]]:
+        servers[server["name"]] = server
+    retired = set(m.get("retiredMcpServers") or []) - set(servers)
+    block = managed_exports()
+    env_values = {mcp_env_var(s): os.environ.get(mcp_env_var(s)) or block.get(mcp_env_var(s), "")
+                  for s in servers.values() if s.get("credentialSource") == "env"}
+    digest = hashlib.sha256(json.dumps({
+        "account": account, "tier": tier, "manifest": m["_digest"], "servers": servers,
+        "env": env_values, "present": present, "opencodex": opencodex, "fleet": _self_path(),
+        "self": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+    }, sort_keys=True).encode()).hexdigest()
+    if not force and previous.get("hash") == digest:
+        return 0
+    for warning in warnings:
+        eprint(f"fleet: {warning}")
+    command = _keepout_command() if tier["keepout"] else None
+    rc = 0
+    with _consumer_sync_lock():
+        try:
+            exports, drop, skipped = resolve_tokens(list(servers.values()), context, warnings)
+        except Changed:
+            eprint("fleet: the login changed during the sync; run: fleet sync")
+            return 3
+        for name in skipped:
+            servers.pop(name)
+        live = {mcp_env_var(s) for s in servers.values() if s["auth"] != "none"}
+        drop |= {r["env"] for r in (previous.get("mcp") or {}).values() if r.get("env")} - live
+        retired_env = _retired_env_vars() - live
+        _mirror_zshenv(exports, drop, context, retired_env)
+
+        def on(surface):
+            return [s for s in servers.values() if surface in mcp_surfaces(s)]
+        record = {"account": account, "tier": tier, "warnings": warnings,
+                  "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
+                  "t3": previous.get("t3") or {}}
+        try:
+            if present["claude"]:
+                desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {},
+                                     tier["claude"])
+                allow = list(tier["allow"])
+                allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
+                record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
+                render_claude_mcp(present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
+            if present["codex"]:
+                rc = 0 if render_codex_mcp(on("codex"), previous, retired) else 1
+                if CODEX_DIR.is_dir():
+                    # codex loads ~/.codex/.env however it was started.
+                    _mirror_dotenv(CODEX_DIR/".env", exports, drop, retired_env)
+                rc = rc if render_codex_keepout(command) else 1
+            if present["t3"]:
+                record["t3"] = render_t3(_t3_models(tier, opencodex), previous)
+            if present["hermes"]:
+                changed = render_hermes(on("hermes"), previous, retired)
+                if _mirror_dotenv(HERMES_ENV, exports, drop, retired_env) or changed:
+                    # A live hermes gateway restarts only on the nightly pass,
+                    # never under an agent mid-turn.
+                    HERMES_RESTART.parent.mkdir(parents=True, exist_ok=True)
+                    HERMES_RESTART.touch()
+                    _report("hermes config changed; the nightly pass restarts its gateway "
+                            "(or now: fleet schedule run)")
+            if present["kimi"]:
+                render_kimi()
+        except OSError as exc:
+            eprint(f"fleet: harness settings: {exc}")
+            return 1
+        record["mcp"] = {s["name"]: {"url": s.get("url"),
+                                     "env": mcp_env_var(s) if s["auth"] != "none" else None,
+                                     "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None}
+                         for s in servers.values()}
+        # A failed part renders again on the next run.
+        record["hash"] = digest if rc == 0 else None
+        _save_json(APPLIED, record)
+    return rc
+
+
+def restart_hermes():
+    if not HERMES_RESTART.exists():
+        return
+    if shutil.which("systemctl"):
+        result = subprocess.run(["systemctl", "--user", "try-restart", "hermes-gateway.service"],
+                                capture_output=True)
+        if result.returncode == 0:
+            print("fleet: restarted the hermes gateway")
+            HERMES_RESTART.unlink(missing_ok=True)
+            return
+    eprint("fleet: hermes config changed; restart hermes to pick it up")
+    HERMES_RESTART.unlink(missing_ok=True)
+
+
+def _harnesses_is_alias():
+    try:
+        return HARNESSES_ALIAS_MARK in HARNESSES_BIN.read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _harnesses_timer():
+    if sys.platform == "darwin":
+        return HARNESSES_PLIST.exists()
+    return (SYSTEMD_USER_DIR/f"{HARNESSES_TIMER}.timer").exists()
+
+
+def harnesses_left():
+    """What of the old harnesses client is still installed."""
+    left = []
+    if (HARNESSES_BIN.exists() or HARNESSES_BIN.is_symlink()) and not _harnesses_is_alias():
+        left.append(str(HARNESSES_BIN))
+    if _harnesses_timer():
+        left.append("its nightly timer")
+    return left
+
+
+def harness_takeover():
+    """Take over from the harnesses client: its timer becomes fleet's, its
+    command becomes an alias that forwards claude's headersHelper calls, and
+    on its machines fleet records what it wrote as fleet's own, so what the
+    account does not carry comes off."""
+    seed = (not APPLIED.exists()
+            and (HARNESSES_CONFIG.exists() or ((HARNESSES_BIN.exists() or HARNESSES_BIN.is_symlink())
+                                               and not _harnesses_is_alias())))
+    if seed:
+        seeded = manifest().get("seededRemovals", {})
+        _save_json(APPLIED, {
+            "claude": _leaves(seeded.get("claude", {})), "allow": seeded.get("allow", []),
+            "mcp": {s["name"]: {"url": s["url"], "env": mcp_env_var(s)} for s in seeded.get("mcpServers", [])}})
+    if _harnesses_timer():
+        if (not schedule_installed() or schedule_stale()) and schedule_enable() != 0:
+            eprint("fleet: could not take over the harnesses timer; run: fleet schedule")
+            return 1
+        if sys.platform == "darwin":
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.lost.plus.{HARNESSES_TIMER}"],
+                           capture_output=True)
+            HARNESSES_PLIST.unlink(missing_ok=True)
+        elif _run_schedule("uninstall-timer", "user", HARNESSES_TIMER) != 0:
+            eprint("fleet: could not remove the harnesses timer")
+            return 1
+        print("fleet: the nightly harness pass is fleet's now")
+    if harnesses_left():
+        alias = ("#!/bin/sh\n" + HARNESSES_ALIAS_MARK + "\n"
+                 f'[ "$1" = mcp-headers ] && exec {shlex.quote(_self_path())} "$@"\n'
+                 'echo "harnesses moved into fleet; run: fleet" >&2\nexit 2\n')
+        temporary = HARNESSES_BIN.with_name(f".harnesses.{os.getpid()}")
+        temporary.write_text(alias)
+        temporary.chmod(0o755)
+        # Replaces a symlink itself, never the file it points at.
+        os.replace(temporary, HARNESSES_BIN)
+    (HARNESSES_CONFIG/"manifest.json").unlink(missing_ok=True)
+    try:
+        HARNESSES_CONFIG.rmdir()
+    except OSError:
+        pass
+    return 0
+
+
+def harness_pass(force=False):
+    if not config_sync_enabled():
+        return 0
+    return harness_takeover() or harness_render(force)
+
+
+def heavy_pass():
+    """The nightly pass, in the order the harnesses timer ran it: the
+    opencodex proxy first (T3's models come from it), then sync and a full
+    render, then each harness's own updater, then a pending hermes restart."""
+    failed = []
+    opencodex = os.access(OPENCODEX, os.X_OK)
+    if opencodex and subprocess.run([sys.executable, str(OPENCODEX), "__apply"]).returncode:
+        failed.append("opencodex apply")
+    if opencodex:
+        # Written only while the proxy runs, never removed here: a proxy
+        # caught mid-restart must keep the route.
+        subprocess.run([sys.executable, str(OPENCODEX), "__export"])
+    rc = cmd_sync(direct=False, force=True)
+    if config_sync_enabled() and harness_update():
+        failed.append("harness updates")
+    restart_hermes()
+    if failed:
+        eprint("fleet: " + ", ".join(failed) + " failed")
+        return 1
+    return rc
+
+
+ACTIONS = ["sync", "status", "install", "schedule run", "schedule on", "schedule off"]
+
+
+def menu():
+    if not (shutil.which("fzf") and sys.stdin.isatty()):
+        print(USAGE)
+        return 2
+    # Only stdout is captured: fzf draws on stderr in --height mode.
+    choice = subprocess.run(["fzf", "--prompt", "fleet > ", "--height=40%", "--reverse"],
+                            input="\n".join(ACTIONS), text=True, stdout=subprocess.PIPE).stdout.strip()
+    if choice == "install":
+        name = subprocess.run(["fzf", "--prompt", "install > ", "--height=40%", "--reverse"],
+                              input="\n".join(harness_specs()), text=True,
+                              stdout=subprocess.PIPE).stdout.strip()
+        return cmd_install([name]) if name else 0
+    return dispatch(choice.split()) if choice else 0
+
+
 # --- commands ------------------------------------------------------------
 
-def cmd_sync(check=False, direct=True):
-    """Write the SSH blocks and pull the account config; a direct run (a user
-    or an agent, not setup or the timer) also uploads local config changes.
-    With --check, exit 1 instead when either would change. Exit 3 when Auth
-    gave no authoritative answer, 1 when a direct run left something unsent."""
+def cmd_sync(check=False, direct=True, force=False):
+    """Write the SSH blocks, pull the account config, and render the
+    harnesses' settings and MCP when their inputs changed (always, with
+    force); a direct run (a user or an agent, not setup or the timer) also
+    uploads local config changes. With --check, exit 1 instead when any of it
+    would change. Exit 3 when Auth gave no authoritative answer, 1 when a run
+    left something unsent or unwritten."""
     try:
         config_lines, keys_lines, info = planned()
     except Unavailable as exc:
@@ -1129,7 +2645,8 @@ def cmd_sync(check=False, direct=True):
         ssh_rc = 3
     else:
         if check:
-            return 0 if is_current(config_lines, keys_lines) and not config_outdated() else 1
+            return 0 if (is_current(config_lines, keys_lines) and not config_outdated()
+                         and not (config_sync_enabled() and harnesses_left())) else 1
         changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
         try:
             SSH_DIR.chmod(0o700)
@@ -1152,7 +2669,13 @@ def cmd_sync(check=False, direct=True):
         else:
             eprint("fleet: updated the nightly timer; this run only pulled, run fleet sync again to upload")
     config_rc = config_sync(direct)
-    return config_rc if config_rc == 1 else ssh_rc or config_rc
+    try:
+        harness_rc = harness_pass(force)
+    except ConfigError as exc:
+        eprint(f"fleet: {exc}")
+        harness_rc = 1
+    rcs = (ssh_rc, config_rc, harness_rc)
+    return 1 if 1 in rcs else max(rcs)
 
 
 def cmd_onboard():
@@ -1206,7 +2729,21 @@ def cmd_status():
         print("fleet: last sync " + time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(state["synced_at"])))
     print(f"fleet: nightly sync {'on' if schedule_installed() else 'off; run: fleet schedule on'}")
     config_status()
+    harness_status()
     return 0
+
+
+def harness_status():
+    if not config_sync_enabled():
+        return
+    left = harnesses_left()
+    if left:
+        print("fleet: the old harnesses client is still here (" + ", ".join(left) + "); run: fleet sync")
+    applied = _load_json(APPLIED, {})
+    for warning in applied.get("warnings") or []:
+        print(f"fleet: skipped: {warning}")
+    if HERMES_RESTART.exists():
+        print("fleet: hermes config changed; its gateway restarts on the nightly pass (or: fleet schedule run)")
 
 
 # --- schedule ------------------------------------------------------------
@@ -1322,12 +2859,30 @@ def schedule_disable():
     return 0
 
 
-USAGE = ("Usage: fleet sync [--check] | fleet status | fleet onboard"
-         " | fleet schedule [on|off|status|run]")
+USAGE = ("Usage: fleet [sync [--check] | status | onboard | install <harness>..."
+         " | schedule [on|off|status|run]]")
 
 
 def main():
-    args = sys.argv[1:]
+    _heal_path()
+    try:
+        return dispatch(sys.argv[1:])
+    except ConfigError as exc:
+        eprint(f"fleet: {exc}")
+        return 1
+
+
+def dispatch(args):
+    if not args:
+        return menu()
+    if args in (["-h"], ["--help"], ["help"]):
+        print(USAGE)
+        return 0
+    if args[0] == "install":
+        return cmd_install(args[1:])
+    # claude's headersHelper, through the stable path in each MCP entry.
+    if args[0] == "mcp-headers":
+        return cmd_mcp_headers(args[1:])
     if args in (["sync"], ["sync", "--check"]):
         return cmd_sync(check=len(args) == 2)
     # setup's runs: pull only.
@@ -1342,7 +2897,7 @@ def main():
     if args in (["schedule", "off"], ["schedule", "disable"]):
         return schedule_disable()
     if args == ["schedule", "run"]:
-        return cmd_sync(direct=False)
+        return heavy_pass()
     # setup uninstall fleet: drop the harness links, restoring what they replaced.
     if args == ["__unlink"]:
         remove_links()

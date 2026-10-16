@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# Only the system basics: never a real harness.
+export PATH="$(dirname "$(command -v python3)"):$(dirname "$(command -v zsh)"):/usr/bin:/bin"
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake" STATE_DIR="$TMP/state/setup"
 export SCHEDULE_USER_DIR="$TMP/units" SCHEDULE_BIN="$TMP/schedule"
@@ -41,6 +43,8 @@ if os.path.exists(f"{fake}/down"):
 if path == "/api/fleet/config/fetch" and os.path.exists(f"{fake}/fetch-down"):
     sys.exit(1)
 state = load()
+if path == "/api/services":
+    answer(200, [])
 if path == "/api/fleet":
     answer(200, {"version": "v", "self": {"served": True}, "keys": ["ssh-ed25519 AAAASelf"], "hosts": []})
 if path == "/api/fleet/config":
