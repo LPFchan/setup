@@ -159,6 +159,12 @@ rm "$FAKE/limited"
 [[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" ]] \
     || fail "a refused onboarding kept what it staged in ~/.agents"
 [[ -f "$HOME/.agents/skills/mine/SKILL.md" ]] || fail "a refused onboarding removed an own skill"
+# A copy that fails partway comes out with everything else it staged.
+printf 'locked\n' > "$HOME/.codex/skills/both/locked.md"; chmod 000 "$HOME/.codex/skills/both/locked.md"
+fleet onboard >/dev/null 2>&1 && fail "onboard read a failed copy as success"
+rm -f "$HOME/.codex/skills/both/locked.md"
+[[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" && ! -e "$HOME/.agents/skills/both" ]] \
+    || fail "a failed staging kept what it copied into ~/.agents"
 fleet onboard >/dev/null 2>&1 || fail "onboard"
 [[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$HOME/.agents/AGENTS.md")" == 0o600 ]] \
     || fail "an owner-only CLAUDE.md was copied world-readable"
@@ -405,6 +411,10 @@ fleet sync >/dev/null 2>&1 && fail "applied a copy that cannot be written"
     || fail "a failed apply left the old account's links dangling"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "a failed apply dropped the old record"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+# Links that cannot be cleared yet are cleared by the next sync.
+chmod 500 "$HOME/.claude/skills"
+fleet sync >/dev/null 2>&1 && fail "sync read uncleared links as done"
+chmod 700 "$HOME/.claude/skills"
 fleet sync >/dev/null 2>&1 || fail "sync as another account"
 [[ ! -e "$HOME/.agents/skills/mine" ]] || fail "another account's files kept"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
