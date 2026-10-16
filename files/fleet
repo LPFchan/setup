@@ -1004,8 +1004,11 @@ def _unlink_restoring(target, links):
 
 
 def _skill_link_targets(links):
-    """Entries in claude's skill folder plus recorded ones since removed."""
+    """Entries in claude's skill folder plus recorded ones since removed. A
+    sidecar the old agents module left stands for its link, deleted or not."""
     found = set(SKILL_LINK_DIR.iterdir()) if SKILL_LINK_DIR.is_dir() else set()
+    found = {e.with_name(e.name[:-len(".pre-agents.bak")]) if e.name.endswith(".pre-agents.bak") else e
+             for e in found}
     found |= {pathlib.Path(k) for k in links if pathlib.Path(k).parent == SKILL_LINK_DIR}
     return sorted(found)
 
@@ -1043,6 +1046,7 @@ def refresh_links():
     """AGENTS.md where each harness reads it, and each skill in claude's
     folder, adding new skills and pruning removed ones."""
     links = _load_json(LINKS_STATE, {})
+    before = dict(links)
     backup = Backup()
     # Saved however far this gets: a retry finds what it already displaced
     # linked and would not record it again.
@@ -1065,7 +1069,18 @@ def refresh_links():
                     _unlink_restoring(entry, links)
         _drop_old_links()
     finally:
-        _save_json(LINKS_STATE, links)
+        try:
+            _save_json(LINKS_STATE, links)
+        except OSError:
+            # Unrecorded, what this run displaced could never come back: put
+            # it back now.
+            for target, moved in links.items():
+                target = pathlib.Path(target)
+                if before.get(str(target)) != moved and backup.root and pathlib.Path(moved).is_relative_to(backup.root) \
+                        and _points_into(target, AGENTS_DIR) and os.path.lexists(moved):
+                    target.unlink()
+                    shutil.move(moved, target)
+            raise
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
 
