@@ -838,6 +838,11 @@ for locked in "$installed/run.sh" "$installed/sub"; do
     [[ "$(cat "$installed/run.sh")" == "echo v2" && ! -e "$installed/sub" ]] || fail "an unreadable ${locked##*/} was not put back"
 done
 chmod -R u+rwx "$XDG_STATE_HOME/fleet/backup"
+# And a FIFO, which is not read.
+mkfifo "$installed/pipe"
+timeout 60 python3 "$ROOT/files/fleet" status </dev/null 2>&1 | grep -q 'installed skills changed here.*foo' || fail "status missed a FIFO"
+timeout 60 python3 "$ROOT/files/fleet" sync --pull </dev/null >/dev/null 2>&1 || fail "pull over a FIFO"
+[[ ! -e "$installed/pipe" ]] || fail "a FIFO was not put back"
 # Local names are unique; --as picks another, which SKILL.md then carries.
 fleet install bob/foo >/dev/null 2>&1 && fail "installed a second skill under a taken name"
 fleet install $OTHER --as bob-foo >/dev/null 2>&1 || fail "install by id with --as"
