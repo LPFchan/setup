@@ -48,6 +48,10 @@ if path == "/api/fleet/config":
                  "files": [{"path": p, "size": len(f["content"]), "sha256": f["sha256"],
                             "executable": f["executable"]} for p, f in sorted(state["files"].items())]})
 if path == "/api/fleet/config/fetch":
+    if os.path.exists(f"{fake}/switch-on-fetch"):
+        # Another account signed in while the files were coming down.
+        os.remove(f"{fake}/switch-on-fetch")
+        open(f"{fake}/subject", "w").write("9")
     paths = body["paths"]
     # One file per answer, so callers must follow `remaining`.
     first = [p for p in paths if p in state["files"]][:1]
@@ -151,6 +155,9 @@ rm "$FAKE/limited"
 [[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" ]] \
     || fail "a refused onboarding moved the harness skills"
 [[ -d "$HOME/.codex/skills/both" ]] || fail "a refused onboarding moved codex's skills"
+[[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" ]] \
+    || fail "a refused onboarding kept what it staged in ~/.agents"
+[[ -f "$HOME/.agents/skills/mine/SKILL.md" ]] || fail "a refused onboarding removed an own skill"
 fleet onboard >/dev/null 2>&1 || fail "onboard"
 [[ "$(server_has AGENTS.md)" == "my instructions" ]] || fail "AGENTS.md not taken from CLAUDE.md"
 [[ "$(server_has skills/claude-only/SKILL.md)" == "claude skill" ]] || fail "claude skill not uploaded"
@@ -195,6 +202,25 @@ fleet sync --pull >/dev/null 2>&1 || fail "pull removing a skill"
 [[ ! -L "$HOME/.claude/skills/shadow" && "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] \
     || fail "pruning did not restore the displaced skill"
 rm -rf "$HOME/.claude/skills/shadow"
+
+# Files fetched while another account signed in are not applied.
+server_put skills/mine/SKILL.md 'fetched for 7'
+touch "$FAKE/switch-on-fetch"
+fleet sync --pull >"$TMP/out" 2>&1 && fail "applied files fetched across an account change"
+grep -q 'session changed' "$TMP/out" || fail "fetch-time account change not reported: $(cat "$TMP/out")"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "edited" ]] || fail "applied another account's fetch"
+printf '7' > "$FAKE/subject"
+fleet sync --pull >/dev/null 2>&1 || fail "pull after the account came back"
+
+# AGENTS.md leaving the account puts back the harness files it replaced.
+server_del AGENTS.md
+fleet sync --pull >/dev/null 2>&1 || fail "pull removing AGENTS.md"
+[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
+    || fail "CLAUDE.md not restored when AGENTS.md left"
+[[ ! -L "$HOME/AGENTS.md" ]] || fail "~/AGENTS.md left dangling"
+server_put AGENTS.md 'my instructions'
+fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md"
+[[ "$(readlink "$HOME/.claude/CLAUDE.md")" == "$HOME/.agents/AGENTS.md" ]] || fail "CLAUDE.md not relinked"
 
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'

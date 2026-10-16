@@ -770,6 +770,9 @@ def pull(account):
             contents = fetch_contents(take, counter, server)
         except Changed:
             continue
+        # A sign-in during the fetch: these files are the old account's.
+        if _context() != account:
+            raise ConfigError("the session changed during the sync")
         if foreign:
             _move_foreign(backup)
         _apply_changes(take, remove, contents, server, backup)
@@ -872,6 +875,16 @@ def _link(target, source, links, backup):
     target.symlink_to(source)
 
 
+def _unlink_restoring(target, links):
+    """Drop a link into ~/.agents and put back the file it displaced."""
+    if not _points_into(target, AGENTS_DIR):
+        return
+    target.unlink()
+    moved = links.pop(str(target), None)
+    if moved and os.path.lexists(moved):
+        shutil.move(moved, target)
+
+
 def _points_into(path, root):
     try:
         return path.is_symlink() and pathlib.Path(os.readlink(path)).is_relative_to(root)
@@ -889,6 +902,9 @@ def refresh_links():
         for target in AGENTS_LINKS:
             if target == HOME/"AGENTS.md" or target.parent.is_dir():
                 _link(target, agents_md, links, backup)
+    else:
+        for target in AGENTS_LINKS:
+            _unlink_restoring(target, links)
     skills = AGENTS_DIR/"skills"
     names = {e.name for e in _skill_entries(skills)}
     if SKILL_LINK_DIR.parent.is_dir():
@@ -896,11 +912,8 @@ def refresh_links():
             _link(SKILL_LINK_DIR/name, skills/name, links, backup)
         if SKILL_LINK_DIR.is_dir():
             for entry in SKILL_LINK_DIR.iterdir():
-                if _points_into(entry, skills) and entry.name not in names:
-                    entry.unlink()
-                    moved = links.pop(str(entry), None)
-                    if moved and os.path.lexists(moved):
-                        shutil.move(moved, entry)
+                if entry.name not in names:
+                    _unlink_restoring(entry, links)
     for target in OLD_AGENTS_LINKS:
         if _points_into(target, AGENTS_DIR):
             target.unlink()
@@ -929,11 +942,7 @@ def remove_links():
     if SKILL_LINK_DIR.is_dir():
         targets += sorted(SKILL_LINK_DIR.iterdir())
     for path in targets:
-        if _points_into(path, AGENTS_DIR):
-            path.unlink()
-            moved = links.get(str(path))
-            if moved and os.path.lexists(moved):
-                shutil.move(moved, path)
+        _unlink_restoring(path, links)
     LINKS_STATE.unlink(missing_ok=True)
 
 
@@ -952,9 +961,13 @@ def onboard(account):
                 sources.append((path, path.read_bytes()))
         except OSError:
             pass
+    # What this run copies into ~/.agents comes out again if the upload
+    # fails, so a retry gathers the harness files afresh.
+    staged = []
     if not agents_md.exists() and sources:
         agents_md.parent.mkdir(parents=True, exist_ok=True)
         agents_md.write_bytes(sources[0][1])
+        staged.append(agents_md)
     if agents_md.is_file():
         listed += [str(path) for path, data in sources if data != agents_md.read_bytes()]
     skills = AGENTS_DIR/"skills"
@@ -966,6 +979,7 @@ def onboard(account):
                     listed.append(str(folder))
             else:
                 shutil.copytree(folder, mine, symlinks=True)
+                staged.append(mine)
     if listed:
         _report("these differ from what was uploaded and were left out: " + ", ".join(listed))
     local, symlinks = scan_local()
@@ -974,10 +988,17 @@ def onboard(account):
     record = {"account": account, "counter": 0, "version": 0, "files": {}}
     try:
         record = push(record, local, list(local), [])
-    except HttpError as exc:
-        if exc.status == 409:
-            raise ConfigError("another machine set up this account first; run: fleet sync") from None
-        raise ConfigError(f"upload refused: {exc}") from None
+    except BaseException as exc:
+        for path in staged:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        if isinstance(exc, HttpError):
+            if exc.status == 409:
+                raise ConfigError("another machine set up this account first; run: fleet sync") from None
+            raise ConfigError(f"upload refused: {exc}") from None
+        raise
     _save_json(CONFIG_STATE, record)
     ONBOARDING_MARKER.unlink(missing_ok=True)
     print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
