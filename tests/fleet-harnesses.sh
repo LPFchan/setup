@@ -241,6 +241,8 @@ grep -q '^\[mcp_servers.heatmap\]' "$codex" && grep -q 'bearer_token_env_var = "
     || fail "codex MCP: $(cat "$codex")"
 [[ "$(grep -c '^\[mcp_servers.open\]' "$codex")" == 1 ]] || fail "codex emitted a server the user declared"
 grep -q 'notion' "$codex" && fail "codex got a claude-only server"
+[[ "$(json "$XDG_STATE_HOME/fleet/applied.json" 'v.get("codexReclaimed")')" == True ]] \
+    || fail "a codex render did not record that older releases' blocks were reclaimed"
 grep -q 'odd' "$codex" "$HOME/.claude.json" && fail "a hub service with a dotted name was rendered"
 python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$codex" || fail "codex config does not parse"
 grep -q '^HEATMAP_MCP_TOKEN=tok-heatmap$' "$HOME/.codex/.env" || fail "codex .env"
@@ -285,6 +287,53 @@ rc=0; PYTHONPATH="$TMP/nosave" fleet sync --pull > "$TMP/out" 2>&1 || rc=$?
 [[ $rc != 0 ]] || fail "a pass that cannot save its record succeeded"
 grep -q extra "$HOME/.claude.json" "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml" \
     && fail "rendered a server without a saved record"
+
+# A record that saves before the render but not after still owns what the
+# render added, so dropping the server later takes it off.
+cat > "$TMP/nosave/sitecustomize.py" <<'PY'
+import os
+real, saves = os.replace, []
+def replace(src, dst, *a, **k):
+    if str(dst).endswith("applied.json"):
+        saves.append(dst)
+        if len(saves) == 2:
+            raise OSError(28, "No space left on device", str(dst))
+    return real(src, dst, *a, **k)
+os.replace = replace
+PY
+# The user's own matching entries, there before that render, stay theirs.
+python3 - "$HOME/.claude.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); s = v["mcpServers"]
+s["own"] = dict(s["open"], url="https://own.example/mcp")
+json.dump(v, open(sys.argv[1], "w"))
+PY
+sed -i 's|^mcp_servers:$|mcp_servers:\n  own:\n    type: remote\n    url: https://own.example/mcp\n    oauth: false|' "$HOME/.hermes/config.yaml"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "extra", "url": "https://extra.example/mcp"},
+  {"name": "own", "url": "https://own.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+PYTHONPATH="$TMP/nosave" fleet sync --pull > "$TMP/out" 2>&1 && fail "a pass whose record was lost succeeded"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] && grep -q extra "$HOME/.hermes/config.yaml" \
+    || fail "the render before a lost record did not add the server: $(cat "$TMP/out")"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after a lost record"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server added before a lost record"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] && ! grep -q extra "$HOME/.hermes/config.yaml" \
+    || fail "a server added before a lost record was read as the user's"
+[[ "$(json "$HOME/.claude.json" '"own" in v["mcpServers"]')" == True ]] && grep -q own.example "$HOME/.hermes/config.yaml" \
+    || fail "the user's own entries were taken off with a server added before a lost record"
+python3 - "$HOME/.claude.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); del v["mcpServers"]["own"]
+json.dump(v, open(sys.argv[1], "w"))
+PY
+sed -i '/^  own:$/,/^    oauth: false$/d' "$HOME/.hermes/config.yaml"
 
 # A server claude failed to add is tried again on the next run.
 server_put mcp.json '{"mcpServers": [
@@ -694,6 +743,22 @@ fleet.CODEX_CONFIG.write_text("[mcp_servers.mine]\nurl = \"https://same.example/
 fleet.render_codex_mcp([{"name": "ours", "url": "https://same.example/mcp", "auth": "none"}], {}, set())
 print("mcp_servers.mine" in fleet.CODEX_CONFIG.read_text())' "$ROOT/files/fleet" "$TMP/shared.toml" 2>&1 | tail -1)
 [[ "$shared" == True ]] || fail "a user codex server sharing a fleet url was removed: $shared"
+# A block identical to ours outside the region is an older release's the
+# first time fleet renders, and the user's after that.
+same=$(python3 -c '
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_same", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.CODEX_CONFIG = pathlib.Path(sys.argv[2])
+server = {"name": "ours", "url": "https://same.example/mcp", "auth": "none"}
+out = []
+for previous in ({}, {"codexReclaimed": True}):
+    fleet.CODEX_CONFIG.write_text("model = \"gpt\"\n\n" + fleet._codex_mcp_block(server))
+    fleet.render_codex_mcp([server], previous, set())
+    out.append(fleet.CODEX_MCP_BEGIN in fleet.CODEX_CONFIG.read_text())
+print(out)' "$ROOT/files/fleet" "$TMP/same.toml" 2>&1 | tail -1)
+[[ "$same" == "[True, False]" ]] || fail "an identical codex block was not told apart by whether fleet rendered before: $same"
 
 # A cached plugin version that cannot be imported keeps the registration the
 # last good one gave.

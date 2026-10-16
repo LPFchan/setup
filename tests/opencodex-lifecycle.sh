@@ -205,6 +205,13 @@ uninstall 2>/dev/null && fail "opencodex uninstall passed a route it could not r
 printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
 python3 "$BIN" __unexport >/dev/null || fail "unexport with a user gateway"
 grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "unexport removed the user's own base URL"
+# A block missing its end line cannot come off, so unexport fails rather
+# than leave new shells routed to a stopped proxy.
+cp "$HOME/.zshenv" "$TEST_TMP/zshenv.keep"
+printf '# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n' >> "$HOME/.zshenv"
+python3 "$BIN" __unexport >/dev/null 2>&1 && fail "unexport passed a route block without its end"
+grep -q 'ANTHROPIC_BASE_URL=http://127.0.0.1:1' "$HOME/.zshenv" || fail "unexport cut into a block without its end"
+mv "$TEST_TMP/zshenv.keep" "$HOME/.zshenv"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
 # A deleted launcher is fetched again for the route; while it cannot be,
 # nothing is torn down.

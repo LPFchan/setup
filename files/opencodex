@@ -2545,6 +2545,10 @@ def remove_base_url_export() -> None:
         text = ZSHENV.read_text()
         if BASE_URL_BEGIN not in text:
             return
+        # Without its end the block cannot come off, and new shells would
+        # keep the route to a proxy that is about to stop.
+        if BASE_URL_END not in text.split(BASE_URL_BEGIN, 1)[1]:
+            raise UserError(f"{ZSHENV} has {BASE_URL_BEGIN!r} without its end line; remove the block by hand")
         text = re.sub(
             re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
             "", text, flags=re.S,

@@ -2354,14 +2354,16 @@ def render_codex_mcp(servers, previous, retired):
     text = original[:region.start()] + original[region.end():] if region else original
     # Reclaim blocks an older release appended outside the region: a body
     # identical to one of ours, or a retired name. A block carrying
-    # [.tools.*] rules was never ours.
+    # [.tools.*] rules was never ours. Once fleet has rendered here, an
+    # identical block outside it is one the user wrote.
+    legacy = not previous.get("codexReclaimed")
     ours = {(s["name"], _codex_mcp_block(s).strip().split("\n", 1)[1]) for s in servers}
     for name, body in _codex_sections(text):
         table = ((_toml(text)[0] or {}).get("mcp_servers") or {}).get(name)
         if isinstance(table, dict) and any(isinstance(v, dict) for v in table.values()):
             continue
         rest = body.strip().split("\n", 1)
-        if name in retired or (len(rest) == 2 and (name, rest[1]) in ours):
+        if name in retired or (legacy and len(rest) == 2 and (name, rest[1]) in ours):
             text = text.replace(body, "", 1)
     # Declared means given settings of its own, not only [.tools.*] rules
     # hanging off the name, which still need our url.
@@ -2843,6 +2845,39 @@ def harness_outdated():
     return previous.get("hash") != digest
 
 
+def _prospective_mcp(previous, servers, present):
+    """The previous mcp records, plus fleet's ownership of each entry this run
+    adds where claude or hermes has none of that name."""
+    mcp = {name: dict(r) for name, r in (previous.get("mcp") or {}).items()}
+    hermes = None
+    if present["hermes"]:
+        try:
+            lines = HERMES_CONFIG.read_text().split("\n")
+            start, end = _yaml_block(lines, "mcp_servers")
+            hermes = set() if start is None else {n for n, _, _ in _hermes_entries(lines, start, end)}
+        except (OSError, ConfigError):
+            pass
+    for s in servers.values():
+        surfaces = mcp_surfaces(s)
+        new = set()
+        if present["claude"] and "claude" in surfaces and _claude_user_entry(s["name"]) is None:
+            new.add("claude")
+        if hermes is not None and "hermes" in surfaces and s["name"] not in hermes:
+            new.add("hermes")
+        if not new:
+            continue
+        r = mcp.setdefault(s["name"], {"url": s.get("url"), "rendered": [],
+                                       "claude": _claude_mcp_entry(s) if "claude" in surfaces else None})
+        # A record without "rendered" already counts on every surface.
+        if "rendered" in r:
+            r["rendered"] = sorted(set(r["rendered"]) | new)
+        users = [u for u in r.get("users") or [] if u not in new]
+        r.pop("users", None)
+        if users:
+            r["users"] = users
+    return mcp
+
+
 def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
     m, present, opencodex, servers, digest = _harness_inputs(account, tier, hub, clear)
     retired = set(m.get("retiredMcpServers") or []) - set(servers)
@@ -2867,17 +2902,19 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             eprint("fleet: the login changed during the sync; run: fleet sync")
             return 3
         absent = {n for n in skipped if servers[n].get("credentialSource") in ("common-auth", "passage")}
-        # What this run adds is fleet's only once its record saves, or the
+        for name in skipped:
+            servers.pop(name)
+        # What this run adds is fleet's only once a record says so, or the
         # next run reads it as the user's and never takes it off. So the
-        # record must save before any harness file changes; marked unrendered,
-        # a run stopped partway renders again.
+        # record must save before any harness file changes, already owning
+        # what this run will add; marked unrendered, a run stopped partway
+        # renders again.
         try:
-            _save_json(APPLIED, dict(previous, hash=None))
+            _save_json(APPLIED, dict(previous, hash=None,
+                                     mcp=_prospective_mcp(previous, servers, present)))
         except OSError as exc:
             eprint(f"fleet: harness settings: {exc}")
             return 1
-        for name in skipped:
-            servers.pop(name)
         rc = 1 if missing else rc
         live = {mcp_env_var(s) for s in servers.values() if s["auth"] != "none"}
         drop |= {r["env"] for r in (previous.get("mcp") or {}).values() if r.get("env")} - live
@@ -2891,7 +2928,8 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             return [s for s in servers.values() if surface in mcp_surfaces(s)]
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
-                  "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False)}
+                  "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False),
+                  "codexReclaimed": previous.get("codexReclaimed", False)}
         kept_mcp, users, rendered, hermes_urls = {}, {}, set(), {}
         prev_mcp = previous.get("mcp") or {}
         try:
@@ -2918,7 +2956,10 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                             if (r.get("claude") or r.get("url")) and _rendered_on(r, "claude")
                             and name not in wanted}
             if present["codex"]:
-                rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
+                if render_codex_mcp(on("codex"), previous, retired):
+                    record["codexReclaimed"] = True
+                else:
+                    rc = 1
                 rendered.add("codex")
                 if CODEX_DIR.is_dir():
                     # codex loads ~/.codex/.env however it was started.
