@@ -53,7 +53,10 @@ if path == "/api/fleet/config/fetch":
         # An editor saves a file again between the scan and the upload.
         target = open(f"{fake}/edit-on-fetch").read()
         os.remove(f"{fake}/edit-on-fetch")
-        open(target, "w").write("saved later\n")
+        if os.path.exists(f"{fake}/edit-as-link"):
+            os.remove(f"{fake}/edit-as-link"); os.remove(target); os.symlink("/dev/null", target)
+        else:
+            open(target, "w").write("saved later\n")
     if os.path.exists(f"{fake}/switch-on-fetch"):
         # Another account signed in while the files were coming down.
         os.remove(f"{fake}/switch-on-fetch")
@@ -250,6 +253,14 @@ fleet sync >/dev/null 2>&1 || fail "sync with a harness folder aliasing ~/.agent
 rm "$HOME/.config/opencode"
 [[ -f "$HOME/.agents/AGENTS.md" && ! -L "$HOME/.agents/AGENTS.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "my instructions" ]] \
     || fail "a harness folder aliasing ~/.agents replaced AGENTS.md"
+# So does one that is a folder inside it.
+mkdir -p "$HOME/.agents/settings"; printf 'synced\n' > "$HOME/.agents/settings/AGENTS.md"
+ln -s "$HOME/.agents/settings" "$HOME/.config/opencode"
+fleet sync >/dev/null 2>&1 || fail "sync with a harness folder inside ~/.agents"
+rm "$HOME/.config/opencode"
+[[ ! -L "$HOME/.agents/settings/AGENTS.md" && "$(cat "$HOME/.agents/settings/AGENTS.md")" == "synced" ]] \
+    || fail "a harness folder inside ~/.agents had a file replaced by a link"
+rm -rf "$HOME/.agents/settings"; fleet sync >/dev/null 2>&1 || fail "sync after removing settings"
 find "$XDG_STATE_HOME/fleet/backup" -path '*codex/skills/both/SKILL.md' | grep -q . || fail "codex original not in backup"
 
 # A local edit waits for a direct sync; setup's pull leaves it alone.
@@ -316,6 +327,13 @@ out=$(fleet sync --pull 2>&1) || true
 [[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from account" ]] || fail "the account's copy not taken over a late save"
 [[ "$out" == *"changed here and in the account"*"skills/mine/SKILL.md"* ]] || fail "a late save replaced silently: $out"
 grep -rlx 'saved later' "$XDG_STATE_HOME/fleet/backup" | grep -q 'skills/mine/SKILL.md' || fail "a late save not in the backup"
+# So is a link put in its place.
+server_put skills/mine/SKILL.md 'from account again'
+printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"; touch "$FAKE/edit-as-link"
+out=$(fleet sync --pull 2>&1) || true
+[[ ! -L "$HOME/.agents/skills/mine/SKILL.md" && "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from account again" ]] \
+    || fail "the account's copy not taken over a late link"
+[[ "$out" == *"changed here and in the account"*"skills/mine/SKILL.md"* ]] || fail "a late link replaced silently: $out"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"

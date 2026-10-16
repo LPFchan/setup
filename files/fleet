@@ -901,8 +901,10 @@ def _apply_changes(take, remove, contents, server, backup, then=None, scanned=No
             if target.is_symlink() or target.exists():
                 saved = backup.move(target, f"agents/{rel}")
                 moved.append((target, saved))
-                if (scanned is not None and saved.is_file() and not saved.is_symlink()
-                        and _digest(saved) != scanned.get(rel)):
+                # A symlink or folder put in its place since the scan is a
+                # change too; the scan holds regular files only.
+                now = _digest(saved) if saved.is_file() and not saved.is_symlink() else None
+                if scanned is not None and now != scanned.get(rel):
                     changed.append(rel)
         for rel in remove:
             _remove_file(rel)
@@ -1209,10 +1211,10 @@ def refresh_links():
             for target in AGENTS_LINKS:
                 if target != HOME/"AGENTS.md" and not target.parent.is_dir():
                     continue
-                # A harness folder that is ~/.agents by another name would
-                # have AGENTS.md replaced by a link to itself.
-                if os.path.realpath(target.parent) == os.path.realpath(agents_md.parent):
-                    eprint(f"fleet: {target.parent} is {AGENTS_DIR}; not linking AGENTS.md into it")
+                # A harness folder that is ~/.agents, or a folder in it, by
+                # another name would have a synced file replaced by a link.
+                if _inside_agents(target.parent):
+                    eprint(f"fleet: {target.parent} is inside {AGENTS_DIR}; not linking AGENTS.md into it")
                     continue
                 _link(target, agents_md, links, backup)
         else:
