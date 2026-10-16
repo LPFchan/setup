@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
+import errno
 import fcntl
 import glob
 import hashlib
@@ -603,11 +604,19 @@ def _listing():
     installs = {}
     for entry in value.get("installs") or []:
         name = entry.get("name") if isinstance(entry, dict) else None
-        if not isinstance(name, str) or "/" in name or not config_path(f"skills/{name}/SKILL.md") \
-                or not isinstance(entry.get("id"), str):
+        # A dot folder would never be linked, like the account's own dot folders.
+        if not isinstance(name, str) or "/" in name or name.startswith(".") \
+                or not config_path(f"skills/{name}/SKILL.md") or not isinstance(entry.get("id"), str):
             raise ConfigError(f"Auth listed an install outside ~/.agents/skills/: {name!r}")
         installs[name] = {"id": entry["id"], "server": _listed_files(entry.get("files"), f"skills/{name}/"),
                           **{key: entry.get(key) for key in ("skill", "author", "author_name", "updating")}}
+    # An install in a folder the account also owns would replace the owned
+    # files, and a later sync would then delete them from Auth.
+    fold = lambda path: unicodedata.normalize("NFC", path).casefold()
+    owned = {fold("/".join(rel.split("/")[:2])) for rel in files if rel.startswith("skills/")}
+    overlap = sorted(name for name in installs if fold(f"skills/{name}") in owned)
+    if overlap:
+        raise ConfigError("the account owns files in the folder of an installed skill: " + ", ".join(overlap))
     clashes = _collisions(set(files) | {f"skills/{name}/{rel}" for name, install in installs.items()
                                         for rel in install["server"]})
     if clashes:
@@ -823,7 +832,14 @@ class Backup:
             n += 1
             destination = self._dir()/f"{label}.{n}"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(path), str(destination))
+        # A rename or nothing: shutil.move's copy-then-delete can fail halfway
+        # (a folder it may not empty), leaving the original gutted.
+        try:
+            os.rename(path, destination)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            shutil.move(str(path), str(destination))
         return destination
 
     def save(self, data, label):
@@ -882,7 +898,11 @@ def add_notice(text):
         return
     notices = _load_json(NOTICES, [])
     if text not in notices:
-        _save_json(NOTICES, notices + [text])
+        # A notice that cannot be kept is still on stderr; the run goes on.
+        try:
+            _save_json(NOTICES, notices + [text])
+        except OSError:
+            pass
 
 
 def _report(text):
@@ -915,14 +935,21 @@ def _same_tree(a, b):
 
 def _move_harness_skills(backup):
     """Move the user's own skill folders out of the harness folders, so
-    harnesses don't load them next to ~/.agents/skills; list them."""
+    harnesses don't load them next to ~/.agents/skills; list them. A failed
+    move puts the ones already moved back. Returns (folder, saved) pairs, for
+    a caller that has to undo the move later."""
     moved = []
-    for directory in HARNESS_SKILL_DIRS:
-        for folder in _skill_folders(directory):
-            backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")
-            moved.append(str(folder))
+    try:
+        for directory in HARNESS_SKILL_DIRS:
+            for folder in _skill_folders(directory):
+                moved.append((folder, backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")))
+    except BaseException:
+        for folder, saved in reversed(moved):
+            if not os.path.lexists(folder):
+                shutil.move(str(saved), str(folder))
+        raise
     if moved:
-        _report(f"moved skill folders to {backup.root}: " + ", ".join(moved))
+        _report(f"moved skill folders to {backup.root}: " + ", ".join(str(f) for f, _ in moved))
     return moved
 
 
@@ -975,10 +1002,12 @@ def pull(account, settle_old=False):
         other = bool(state) and record is None
         foreign = other and AGENTS_DIR.exists()
         old = settle_old and os.path.lexists(OLD_AGENTS_CLONE)
-        local = {} if foreign or (old and record is None) else scan_local()[0]
+        # The old payload is not this account's either, and goes; with it in
+        # the way the merge would read the account's files as already here.
+        local = {} if foreign or old else scan_local()[0]
         # Installed skills come from their authors' copies, fetched before
-        # anything here moves.
-        writes, drops = _install_plan(installs, fresh=foreign)
+        # anything here moves. The old payload's skills folder goes with it.
+        writes, drops = _install_plan(installs, fresh=foreign or old)
         try:
             fetched = {name: _fetch_skill(installs[name]) for name in writes}
         except Changed:
@@ -986,8 +1015,9 @@ def pull(account, settle_old=False):
         if _context() != account:
             raise ConfigError("the session changed during the sync")
         if record is None and counter == 0:
-            if old:
-                settle_old_agents(operator=False)
+            # As below: the old payload goes for good only once the installs
+            # are in place.
+            displaced = _displace_old_payload(backup) if old else []
             moved = _move_foreign(backup) if foreign else None
             try:
                 _apply_installs(installs, writes, drops, fetched, backup)
@@ -1000,7 +1030,12 @@ def pull(account, settle_old=False):
                     shutil.move(str(moved), str(AGENTS_DIR))
                     _report("put the other account's ~/.agents back, since this account's "
                             "installed skills could not be put in place")
+                _restore_displaced(displaced, backup)
                 raise
+            if old:
+                if displaced:
+                    _report_displaced(backup)
+                _drop_old_clone(operator=False)
             if other or writes or drops:
                 # Even with no tree to move, the other account's links go. Its
                 # record stays until they have, so a retry finishes the job.
@@ -1011,8 +1046,9 @@ def pull(account, settle_old=False):
             ONBOARDING_MARKER.touch()
             return "pending", None, []
         conflicts = []
-        if record is None:
-            # Joining an account that was pushed: take its copy wholesale.
+        if record is None or old:
+            # Joining an account that was pushed, or taking it back over the
+            # old payload: take its copy wholesale.
             take = [p for p in server if local.get(p) != server[p]]
             remove = [p for p in local if p not in server]
         else:
@@ -1036,12 +1072,19 @@ def pull(account, settle_old=False):
         # the account's copy is written, so a failed write leaves it working.
         displaced = _displace_old_payload(backup) if old else []
         moved = _move_foreign(backup) if foreign else None
+        harness = []
+        new_record = {"account": account, "counter": counter, "version": version, "files": server}
         try:
             _apply_changes(take, remove, contents, server, backup)
             _apply_installs(installs, writes, drops, fetched, backup)
             if record is None:
-                _move_harness_skills(backup)
+                harness = _move_harness_skills(backup)
+            # The switch is done only once its record is saved.
+            _save_json(CONFIG_STATE, new_record)
         except BaseException:
+            for folder, saved in reversed(harness):
+                if not os.path.lexists(folder):
+                    shutil.move(str(saved), str(folder))
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
             if moved:
@@ -1050,9 +1093,7 @@ def pull(account, settle_old=False):
                 shutil.move(str(moved), str(AGENTS_DIR))
                 _report("put the other account's ~/.agents back, since this account's copy "
                         "could not be put in place")
-            for path, saved in reversed(displaced):
-                if not os.path.lexists(path):
-                    shutil.move(str(saved), str(path))
+            _restore_displaced(displaced, backup)
             raise
         if old:
             if displaced:
@@ -1061,10 +1102,8 @@ def pull(account, settle_old=False):
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(conflicts)))
-        record = {"account": account, "counter": counter, "version": version, "files": server}
-        _save_json(CONFIG_STATE, record)
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", record, sorted(conflicts)
+        return "synced", new_record, sorted(conflicts)
     raise ConfigError("the account kept changing during the sync; try again")
 
 
@@ -1255,25 +1294,30 @@ def refresh_links():
             for entry in _skill_link_targets(links):
                 if entry.name not in names:
                     _unlink_restoring(entry, links)
-        # The old agents module's links go, and what they replaced comes back,
-        # also when the link was already deleted: fleet is the only one left to
-        # return it.
-        for target in OLD_AGENTS_LINKS:
-            if _points_into(target, AGENTS_DIR):
-                target.unlink()
-            _restore_old_backup(target)
-        for directory in OLD_SKILL_LINK_DIRS:
-            if directory.is_dir():
-                for entry in list(directory.iterdir()):
-                    if _points_into(entry, skills):
-                        entry.unlink()
-                        _restore_old_backup(entry)
-                    elif entry.name.endswith(".pre-agents.bak"):
-                        _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
+        _drop_old_links()
     finally:
         _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
+
+
+def _drop_old_links():
+    """The old agents module's links go, and what they replaced comes back,
+    also when the link was already deleted: fleet is the only one left to
+    return it."""
+    skills = AGENTS_DIR/"skills"
+    for target in OLD_AGENTS_LINKS:
+        if _points_into(target, AGENTS_DIR):
+            target.unlink()
+        _restore_old_backup(target)
+    for directory in OLD_SKILL_LINK_DIRS:
+        if directory.is_dir():
+            for entry in list(directory.iterdir()):
+                if _points_into(entry, skills):
+                    entry.unlink()
+                    _restore_old_backup(entry)
+                elif entry.name.endswith(".pre-agents.bak"):
+                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
 
 
 def _skill_entries(skills):
@@ -1290,6 +1334,8 @@ def remove_links():
     links = _load_json(LINKS_STATE, {})
     for path in list(AGENTS_LINKS) + _skill_link_targets(links):
         _unlink_restoring(path, links)
+    # Also the old agents module's, which a sync may not have taken over yet.
+    _drop_old_links()
     LINKS_STATE.unlink(missing_ok=True)
 
 
@@ -1315,6 +1361,15 @@ def _displace_old_payload(backup):
         if os.path.lexists(path):
             moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
     return moved
+
+
+def _restore_displaced(displaced, backup):
+    """Put the old payload back after a failed sync, moving aside what the
+    sync left in its place (installed skills are not taken back)."""
+    for path, saved in reversed(displaced):
+        if os.path.lexists(path):
+            backup.move(path, f"incomplete/{path.relative_to(HOME)}")
+        shutil.move(str(saved), str(path))
 
 
 def _report_displaced(backup):
@@ -1412,11 +1467,13 @@ def onboard(account):
                 raise ConfigError("another machine set up this account first; run: fleet sync") from None
             raise ConfigError(f"upload refused: {exc}") from None
         raise
+    print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
+    # Only now: a refused upload leaves the harness skill folders in use. And
+    # before the record: a failed move leaves the next sync to join the
+    # account, which moves them again.
+    _move_harness_skills(backup)
     _save_json(CONFIG_STATE, record)
     ONBOARDING_MARKER.unlink(missing_ok=True)
-    print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
-    # Only now: a refused upload leaves the harness skill folders in use.
-    _move_harness_skills(backup)
     refresh_links()
 
 
@@ -1597,10 +1654,8 @@ def _version_key(path):
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", str(path))]
 
 
-def _nvm_toolchains():
-    """nvm's node bin/ folders: its default first, as a login shell picks
-    it, so a timer finds the same harness copy the user and system-updates
-    run; then the rest, newest first."""
+def _nvm_default():
+    """nvm's default node bin/, as a login shell picks it, or None."""
     root = HOME/".nvm"
     dirs = sorted((root/"versions/node").glob("*/bin"), key=_version_key, reverse=True)
     spec = "default"
@@ -1614,8 +1669,17 @@ def _nvm_toolchains():
     for d in dirs:
         version = d.parent.name.removeprefix("v")
         if spec in ("node", "stable") or version == want or version.startswith(want + "."):
-            return [d] + [x for x in dirs if x != d]
-    return dirs
+            return d
+    return None
+
+
+def _nvm_toolchains():
+    """nvm's node bin/ folders: its default first, so a timer finds the same
+    harness copy the user and system-updates run; then the rest, newest
+    first."""
+    dirs = sorted((HOME/".nvm/versions/node").glob("*/bin"), key=_version_key, reverse=True)
+    default = _nvm_default()
+    return [default] + [x for x in dirs if x != default] if default else dirs
 
 
 def manifest():
@@ -1636,10 +1700,11 @@ def _heal_path():
 
     systemd and launchd start fleet with a login-less PATH, where claude,
     codex, npm and ocx are all invisible. The user's own bin directories lead,
-    even ahead of a system copy of a harness; the node toolchains go on the
-    end, there to be found rather than to win.
+    even ahead of a system copy of a harness, and so does nvm's default node,
+    as a login shell puts it first; the other node toolchains go on the end,
+    there to be found rather than to win.
     """
-    mine = [HOME/".local/bin", HOME/".opencode/bin"]
+    mine = [HOME/".local/bin", HOME/".opencode/bin"] + [d for d in [_nvm_default()] if d]
     toolchains = _nvm_toolchains() + [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
@@ -2461,6 +2526,12 @@ def _claude_json_remove(name):
     return True
 
 
+def _rendered_on(record, surface):
+    """Whether fleet put this recorded server on `surface`. Records from
+    before fleet kept track count as on every surface."""
+    return isinstance(record, dict) and surface in record.get("rendered", [surface])
+
+
 def render_claude_mcp(claude, servers, previous, retired):
     """(ok, kept, found): kept holds the previous records of servers claude
     would not remove, so the applied record keeps owning them and the next run
@@ -2498,7 +2569,7 @@ def render_claude_mcp(claude, servers, previous, retired):
                 ok = _claude_add(argv) and ok
             else:
                 ok = False
-        elif server["name"] not in (previous.get("mcp") or {}):
+        elif not _rendered_on((previous.get("mcp") or {}).get(server["name"]), "claude"):
             found.add(server["name"])
     return ok, kept, found
 
@@ -2859,7 +2930,7 @@ def render_hermes(servers, previous, retired, clear=False):
         elif name in wanted:
             seen.add(name)
             if body == wanted[name]:
-                if name not in recorded:
+                if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
                 continue
             if urls[name] not in body:
@@ -3066,7 +3137,8 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False)}
-        kept_mcp, users = {}, {}
+        kept_mcp, users, rendered = {}, {}, set()
+        prev_mcp = previous.get("mcp") or {}
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
@@ -3077,6 +3149,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
                 claude_ok, kept_mcp, found = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
+                rendered.add("claude")
                 for name in found:
                     users.setdefault(name, set()).add("claude")
                 rc = rc if claude_ok else 1
@@ -3089,6 +3162,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                             if r.get("claude") and name not in wanted}
             if present["codex"]:
                 rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
+                rendered.add("codex")
                 if CODEX_DIR.is_dir():
                     # codex loads ~/.codex/.env however it was started.
                     _mirror_dotenv(CODEX_DIR/".env", exports, retired_env)
@@ -3102,7 +3176,14 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 except ConfigError as exc:
                     eprint(f"fleet: {exc}")
                     rc = 1
+                    # Its file untouched, fleet keeps owning what it put
+                    # there, so the run after the fix still removes it.
+                    wanted = {s["name"] for s in on("hermes")}
+                    for name, r in prev_mcp.items():
+                        if name not in wanted and r.get("url") and _rendered_on(r, "hermes"):
+                            kept_mcp.setdefault(name, r)
             if hermes:
+                rendered.add("hermes")
                 changed, record["hermesSkills"], found = hermes
                 for name in found:
                     users.setdefault(name, set()).add("hermes")
@@ -3127,7 +3208,12 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             return 1
         record["mcp"] = {s["name"]: {"url": s.get("url"),
                                      "env": mcp_env_var(s) if s["auth"] != "none" else None,
-                                     "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None}
+                                     "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None,
+                                     # Where fleet put it: this run's surfaces, and
+                                     # those a harness absent now got before.
+                                     "rendered": sorted(set(mcp_surfaces(s)) & rendered | {
+                                         x for x in SURFACES if x not in rendered
+                                         and _rendered_on(prev_mcp.get(s["name"]), x)})}
                          for s in servers.values()}
         record["mcp"].update(kept_mcp)
         # An entry the user already had stays theirs while fleet wants it.
@@ -3390,6 +3476,9 @@ def cmd_install_args(args):
             eprint(USAGE)
             return 2
         local_name, args = args[at + 1], args[:at] + args[at + 2:]
+        if local_name.startswith("."):
+            eprint("fleet: --as cannot start with a dot; such a skill would stay hidden")
+            return 2
     if not any(_is_skill(arg) for arg in args):
         if local_name is not None:
             eprint("fleet: --as names an installed skill")
@@ -3642,7 +3731,9 @@ def schedule_disable():
     if sys.platform == "darwin":
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{PLIST_NAME}"], capture_output=True)
         _plist_path().unlink(missing_ok=True)
-    else:
+    # A timer that is not installed is already off; the helper refuses one it
+    # cannot find. An installed one goes whether or not it is running.
+    elif any((SYSTEMD_USER_DIR/f"{TIMER_NAME}.{kind}").exists() for kind in ("timer", "service")):
         rc = _run_schedule("uninstall-timer", "user", TIMER_NAME)
         if rc:
             return rc

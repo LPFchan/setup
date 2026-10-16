@@ -276,6 +276,21 @@ rm -rf "$HOME/.claude/skills/lost"
 find "$XDG_STATE_HOME/fleet/backup" -path '*.agents/skills/opskill/SKILL.md' | grep -q . \
     || fail "the operator's skills not in the backup"
 rm -rf "$HOME/.gemini" "$HOME/.agents" "$XDG_STATE_HOME/fleet/onboarding.pending"
+# An account this machine already pulled takes its whole copy back over the
+# old payload, so its record never names files the payload took away.
+server_put AGENTS.md 'account instructions'; server_put skills/acct/SKILL.md 'account skill'
+fleet sync --pull >/dev/null 2>&1 || fail "pull before the old module's payload"
+old_agents
+fleet sync --pull >/dev/null 2>&1 || fail "pull settling the clone with a record"
+[[ ! -e "$STATE_DIR/agents-src" ]] || fail "clone left with a record"
+[[ "$(cat "$HOME/.agents/AGENTS.md")" == "account instructions" && -f "$HOME/.agents/skills/acct/SKILL.md" ]] \
+    || fail "the old payload took the account's files away"
+fleet sync >/dev/null 2>&1 || fail "direct sync after settling with a record"
+python3 -c 'import json, sys; f = json.load(open(sys.argv[1]))["files"]; sys.exit(not {"AGENTS.md", "skills/acct/SKILL.md"} <= set(f))' \
+    "$FAKE/server.json" || fail "settling with a record uploaded deletions"
+fleet __unlink >/dev/null
+rm -rf "$HOME/.gemini" "$HOME/.agents" "$FAKE/server.json" "$XDG_STATE_HOME/fleet/config.json" \
+    "$XDG_STATE_HOME/fleet/onboarding.pending"
 
 # A friend's machine, account never pushed: local files stay, nothing is
 # uploaded, and onboarding is left pending.
@@ -309,7 +324,15 @@ fleet onboard >/dev/null 2>&1 && fail "onboard read a failed copy as success"
 rm -f "$HOME/.codex/skills/both/locked.md"
 [[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" && ! -e "$HOME/.agents/skills/both" ]] \
     || fail "a failed staging kept what it copied into ~/.agents"
-fleet onboard >/dev/null 2>&1 || fail "onboard"
+# A harness skill folder that cannot move puts back the ones already moved,
+# and no record is saved, so the next sync joins the account and moves them.
+chmod 500 "$HOME/.codex/skills"
+fleet onboard >/dev/null 2>&1 && fail "onboard read a failed skill move as success"
+chmod 700 "$HOME/.codex/skills"
+[[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" ]] \
+    || fail "a failed move left an earlier skill folder in the backup"
+[[ ! -e "$XDG_STATE_HOME/fleet/config.json" ]] || fail "a failed move saved the record"
+fleet sync >/dev/null 2>&1 || fail "sync after a failed onboarding move"
 [[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$HOME/.agents/AGENTS.md")" == 0o600 ]] \
     || fail "an owner-only CLAUDE.md was copied world-readable"
 [[ "$(server_has AGENTS.md)" == "my instructions" ]] || fail "AGENTS.md not taken from CLAUDE.md"
@@ -565,6 +588,19 @@ chmod 700 "$HOME/.claude/skills"
     || fail "a failed skill-folder move left the other account's files"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "a failed skill-folder move dropped the old record"
 rm -rf "$HOME/.claude/skills/handmade"
+# So does a record that cannot be saved, and a skill folder moved out of
+# claude's way comes back.
+printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+server_put skills/theirs/SKILL.md 'theirs'
+mkdir -p "$HOME/.claude/skills/handmade"; printf 'mine\n' > "$HOME/.claude/skills/handmade/SKILL.md"
+chmod 500 "$XDG_STATE_HOME/fleet"
+fleet sync >/dev/null 2>&1 && fail "switched accounts without saving the record"
+chmod 700 "$XDG_STATE_HOME/fleet"
+[[ -e "$HOME/.agents/skills/mine" && ! -e "$HOME/.agents/skills/theirs" ]] \
+    || fail "an unsaved record left the other account's files"
+[[ -f "$HOME/.claude/skills/handmade/SKILL.md" ]] || fail "an unsaved record kept the skill folder moved"
+grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "an unsaved record dropped the old record"
+rm -rf "$HOME/.claude/skills/handmade"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 # Links that cannot be cleared yet are cleared by the next sync.
 chmod 500 "$HOME/.claude/skills"
@@ -616,7 +652,17 @@ fleet sync --pull >/dev/null 2>&1 && fail "a pass with an unwritable skill folde
 chmod 700 "$HOME/.claude/skills"
 fleet sync --pull >/dev/null 2>&1 || fail "pull after the skill folder came back"
 rm -rf "$HOME/.claude/skills"
+# The old agents module's links go too, with what they replaced back.
+mkdir -p "$HOME/.gemini" "$HOME/.config/muse/skills"
+printf 'gemini own\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
+ln -s "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
+mkdir -p "$HOME/.config/muse/skills/mine.pre-agents.bak"
+ln -s "$HOME/.agents/skills/mine" "$HOME/.config/muse/skills/mine"
 fleet __unlink
+[[ ! -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" ]] \
+    || fail "uninstall left the old module's instructions link"
+[[ -d "$HOME/.config/muse/skills/mine" && ! -L "$HOME/.config/muse/skills/mine" ]] \
+    || fail "uninstall left the old module's skill link"
 [[ "$(cat "$HOME/.claude/skills/shadow/SKILL.md")" == "hand-made" ]] || fail "uninstall stranded a displaced skill"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine, late" ]] || fail "CLAUDE.md not restored"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link kept"
@@ -739,6 +785,43 @@ fleet sync >/dev/null 2>&1 && fail "applied installs that cannot be written"
 [[ "$(cat "$HOME/.agents/AGENTS.md")" == "market account" && -e "$HOME/.claude/skills/pub/SKILL.md" ]] \
     || fail "failed installs left the old account's files or links out"
 grep -q '"account": "https://auth.lost.plus 5"' "$XDG_STATE_HOME/fleet/config.json" || fail "failed installs dropped the old record"
+# So do they on a machine the old agents module set up: its payload, clone
+# and links stay in use.
+export HOME="$TMP/market3" XDG_STATE_HOME="$TMP/market3-state"
+mkdir -p "$HOME/.claude/skills"
+old_agents
+fleet sync >/dev/null 2>&1 && fail "applied installs that cannot be written over the old payload"
+[[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" \
+    && -f "$HOME/.agents/skills/opskill/SKILL.md" && -e "$HOME/.claude/skills/opskill/SKILL.md" ]] \
+    || fail "failed installs settled the old payload"
+rm -rf "$STATE_DIR/agents-src"
+export HOME="$TMP/market" XDG_STATE_HOME="$TMP/market-state"
+# An install in a folder the account also owns, or under a hidden name, is
+# refused before anything is written.
+for case in owned hidden; do
+    CASE="$case" python3 - <<'PY2'
+import base64, hashlib, json, os
+f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
+def entry(text):
+    data = text.encode()
+    return {"content": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest(), "executable": False}
+sid = "44444444-4444-4444-8444-444444444444"
+state["market"][sid]["files"] = {"SKILL.md": entry("installed")}
+owned = os.environ["CASE"] == "owned"
+state["files"] = {"skills/mine/SKILL.md": entry("owned")} if owned else {}
+state["installs"] = {sid: "mine" if owned else ".mine"}
+json.dump(state, open(f, "w"))
+PY2
+    out=$(fleet sync 2>&1) && fail "accepted a $case install"
+    [[ "$out" == *"owns files in the folder of an installed skill: mine"* || "$case" == hidden ]] \
+        || fail "an owned-folder install was not named: $out"
+    [[ "$out" == *"install outside"* || "$case" == owned ]] || fail "a hidden install was not refused: $out"
+    [[ ! -e "$HOME/.agents/skills/mine" && ! -e "$HOME/.agents/skills/Mine" && ! -e "$HOME/.agents/skills/.mine" ]] \
+        || fail "a refused $case install was written"
+done
+: > "$FAKE/log"
+rc=0; fleet install carol/clash --as .hid >/dev/null 2>&1 || rc=$?; [[ $rc == 2 ]] || fail "--as took a hidden name"
+grep -q 'skills/install' "$FAKE/log" && fail "a hidden --as name reached Auth"
 printf '5' > "$FAKE/subject"; mv "$TMP/market.keep" "$FAKE/server.json"
 
 echo "fleet config tests passed"

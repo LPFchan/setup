@@ -365,6 +365,47 @@ server_put mcp.json '{"mcpServers": [
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass after the one-line hermes test"
 
+# A server fleet added while claude was missing is not fleet's on claude: an
+# entry the user then adds there by hand stays when the server is dropped.
+base='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+mv "$BIN/claude" "$TMP/claude.away"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "late", "url": "https://late.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding late without claude"
+mv "$TMP/claude.away" "$BIN/claude"
+python3 - "$HOME/.claude.json" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); v["mcpServers"]["late"] = {"type": "http", "url": "https://late.example/mcp"}
+json.dump(v, open(sys.argv[1], "w"))
+EOF
+fleet sync --pull >/dev/null 2>&1 || fail "pass after claude came back with the user's late entry"
+server_put mcp.json "$base"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping late"
+[[ "$(json "$HOME/.claude.json" '"late" in v["mcpServers"]')" == True ]] || fail "claude lost the user's own late entry"
+python3 - "$HOME/.claude.json" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); del v["mcpServers"]["late"]; json.dump(v, open(sys.argv[1], "w"))
+EOF
+
+# A server dropped while hermes refuses its config stays fleet's on hermes,
+# so the run after the config is fixed removes it.
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding extra for the hermes refusal test"
+grep -q '^  extra:' "$HOME/.hermes/config.yaml" || fail "hermes did not get extra"
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+printf 'model: x\nmcp_servers: {personal: {url: https://p.example/mcp}}\n' > "$HOME/.hermes/config.yaml"
+server_put mcp.json "$base"
+fleet sync --pull >/dev/null 2>&1 && fail "rendered into a one-line hermes mcp_servers"
+mv "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the hermes config was fixed"
+grep -q '^  extra:' "$HOME/.hermes/config.yaml" && fail "a server dropped while hermes refused stayed"
+
 # Node toolchains are tried newest version first, v20 ahead of v9.
 mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
 first=$(HOME="$TMP/nvm" python3 -c '
@@ -387,6 +428,15 @@ fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.n
 loader.exec_module(fleet)
 print(" ".join(d.split("/")[-2] for d in fleet._node_bin_dirs() if "/.nvm/" in d))' "$ROOT/files/fleet")
 [[ "$first" == "v9.11.2 v20.0.0 v9.2.0" ]] || fail "nvm's default was not first: $first"
+# A timer's PATH puts it ahead of a system copy, as the login shell does.
+healed=$(HOME="$TMP/nvm" PATH="/usr/local/bin:/usr/bin" python3 -c '
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("fleet_nvm3", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet._heal_path()
+print(os.environ["PATH"].split(os.pathsep)[0])' "$ROOT/files/fleet")
+[[ "$healed" == */v9.11.2/bin ]] || fail "nvm's default did not lead a timer's PATH: $healed"
 rm -rf "$TMP/nvm/.nvm/alias" "$TMP/nvm/.nvm/versions/node/v9.2.0"
 
 # A Passage outage before the first render keeps the token the environment holds.

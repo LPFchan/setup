@@ -199,7 +199,33 @@ if sys.argv[1:] == ["schedule", "status"]:
     print("fleet: nightly sync on")
 sys.exit(1 if sys.argv[1:] == ["schedule", "disable"] else 0)
 EOF
-module uninstall >/dev/null 2>&1 && fail "uninstall went on with the nightly sync still on"
+cp "$FLEET_BIN" "$TMP/stuck.py"
+FLEET_SOURCE="$TMP/stuck.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on with the nightly sync still on"
 [[ -e "$FLEET_BIN" ]] || fail "an uninstall that left the timer on removed the binary"
+# A broken binary cannot say the timer is on; the current CLI checks and
+# turns it off.
+printf 'syntax error(\n' > "$FLEET_BIN"
+cat > "$TMP/ontimer.py" <<'EOF'
+import os, sys
+open(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["schedule", "status"]:
+    print("fleet: nightly sync on")
+EOF
+rm -f "$FAKE/ran"
+FLEET_SOURCE="$TMP/ontimer.py" module uninstall >/dev/null 2>&1 || fail "uninstall with a broken binary"
+grep -qx 'schedule disable' "$FAKE/ran" || fail "a broken binary's timer was left on"
+# The CLI removes an installed timer whether or not it runs, and calls a
+# missing one off without asking the helper, which would refuse it.
+printf '#!/bin/sh\necho "$@" >> "$FAKE/helper"\n' > "$TMP/helper"
+chmod +x "$TMP/helper"
+units="$TMP/units"
+mkdir -p "$units"
+SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet" schedule disable >/dev/null 2>&1 \
+    || fail "turning off a missing timer failed"
+[[ ! -e "$FAKE/helper" ]] || fail "asked the helper to remove a missing timer"
+touch "$units/fleet-sync.timer"
+SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet" schedule disable >/dev/null 2>&1 \
+    || fail "turning off an installed timer failed"
+grep -qx 'uninstall-timer user fleet-sync' "$FAKE/helper" || fail "an installed timer was left behind"
 
 echo "fleet tests passed"
