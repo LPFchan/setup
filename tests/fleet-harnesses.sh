@@ -161,7 +161,7 @@ for line in sys.stdin:
         json.dump(trusted, open(trusted_path, "w"))
     print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
 PY
-printf '#!/bin/sh\necho "$*" >> "$FAKE/systemctl.log"\n' > "$TMP/bin/systemctl"
+printf '#!/bin/sh\necho "$*" >> "$FAKE/systemctl.log"\n[ -e "$FAKE/systemctl-fail" ] && exit 1\nexit 0\n' > "$TMP/bin/systemctl"
 cat > "$SCHEDULE_BIN" <<'SH'
 #!/bin/sh
 echo "$*" >> "$FAKE/schedule.log"
@@ -280,6 +280,20 @@ loader.exec_module(fleet)
 print(fleet._node_bin_dirs()[0])' "$ROOT/files/fleet")
 [[ "$first" == */v20.0.0/bin ]] || fail "node toolchains in the wrong order: $first"
 
+# A Passage outage before the first render keeps the token the environment holds.
+kept=$(HOME="$TMP/nvm" VAULT_MCP_TOKEN=from-env python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_vault", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.common_auth_token = lambda scope, context: "passage-access"
+def down(token, item): raise fleet.TokenError("passage unreachable")
+fleet._vault_get = down
+server = {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}
+exports, drop, skipped = fleet.resolve_tokens([server], {"origin": "o", "subject": "1"}, [])
+print(exports.get(fleet.mcp_env_var(server)))' "$ROOT/files/fleet" 2>/dev/null)
+[[ "$kept" == from-env ]] || fail "a Passage outage dropped the environment's token: $kept"
+
 # What the account drops comes off; what the user added stays.
 server_put settings/claude.json '{"json": {"effortLevel": "high"}}'
 server_put mcp.json '{"mcpServers": [{"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"}]}'
@@ -317,8 +331,11 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass after the login came back"
 
 # The nightly pass renders in full: a credential Auth withdrew leaves the
 # block, each harness updates itself, and hermes restarts.
-touch "$FAKE/token-gone"
+touch "$FAKE/token-gone" "$FAKE/systemctl-fail"
 : > "$FAKE/claude.log"
+fleet schedule run >/dev/null 2>&1 && fail "a failed hermes restart went unreported"
+[[ -e "$XDG_STATE_HOME/fleet/hermes.restart" ]] || fail "a failed hermes restart dropped its marker"
+rm "$FAKE/systemctl-fail"
 fleet schedule run >/dev/null 2>&1 || fail "nightly pass"
 grep -q HEATMAP_MCP_TOKEN "$HOME/.zshenv" && fail "a withdrawn token stayed"
 grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env token"
