@@ -471,8 +471,22 @@ printf 'mine again\n' > "$TMP/claude.md"; rm -f "$HOME/.claude/CLAUDE.md"; cp "$
 mkdir -p "$HOME/.claude/skills/old.pre-agents.bak"; printf 'old\n' > "$HOME/.claude/skills/old.pre-agents.bak/SKILL.md"
 fleet sync >/dev/null 2>&1 || fail "rejoin"
 [[ -L "$HOME/.claude/CLAUDE.md" ]] || fail "CLAUDE.md not linked on rejoin"
-[[ -d "$HOME/.claude/skills/old.pre-agents.bak" ]] || fail "an old agents sidecar was taken for a skill"
-rm -rf "$HOME/.claude/skills/old.pre-agents.bak"
+# A sidecar whose link is gone is neither taken for a skill nor stranded.
+[[ -f "$HOME/.claude/skills/old/SKILL.md" && ! -L "$HOME/.claude/skills/old" && ! -e "$HOME/.claude/skills/old.pre-agents.bak" ]] \
+    || fail "an old agents sidecar was taken for a skill or left under its sidecar name"
+rm -rf "$HOME/.claude/skills/old"
+
+# A link whose record cannot be saved puts back what it displaced, since
+# nothing would know to later.
+mv "$XDG_STATE_HOME/fleet/links.json" "$TMP/links.keep"; mkdir "$XDG_STATE_HOME/fleet/links.json"
+mkdir -p "$HOME/.config/opencode"; rm -f "$HOME/.config/opencode/AGENTS.md"
+printf 'opencode mine\n' > "$HOME/.config/opencode/AGENTS.md"
+fleet sync >/dev/null 2>&1 && fail "a sync whose links record could not be saved reported success"
+rmdir "$XDG_STATE_HOME/fleet/links.json"; mv "$TMP/links.keep" "$XDG_STATE_HOME/fleet/links.json"
+rm -f "$XDG_STATE_HOME"/fleet/.links.json.*
+[[ ! -L "$HOME/.config/opencode/AGENTS.md" && "$(cat "$HOME/.config/opencode/AGENTS.md")" == "opencode mine" ]] \
+    || fail "an unrecorded link kept what it displaced"
+rm -f "$HOME/.config/opencode/AGENTS.md"
 
 # Another account while ~/.agents is gone still drops this account's links.
 cp "$FAKE/server.json" "$TMP/server.keep"
