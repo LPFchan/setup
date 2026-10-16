@@ -20,6 +20,7 @@ mkdir -p "$FIXTURE/etc" "$FIXTURE/etc/systemd/system" "$FIXTURE/etc/apt/apt.conf
     "$TEST_TMP/sysstate" "$FAKE_BIN"
 LOG="$TEST_TMP/commands.log"
 : > "$LOG"
+export TEST_TMP FAKE_BIN
 export STUB_LOG="$LOG" STUB_STATE="$TEST_TMP/sysstate" STUB_SYSTEMD_DIR="$FIXTURE/etc/systemd/system"
 export SCHEDULE_BIN="$REPO_ROOT/bin/schedule"
 
@@ -108,6 +109,15 @@ cat > "$FAKE_BIN/hermes" <<'STUB'
 #!/usr/bin/env bash
 printf 'hermes %s\n' "$*" >> "$STUB_LOG"
 exit "${STUB_HERMES_RC:-0}"
+STUB
+# fleet installs miniharness by bringing the hidden stub back, unless
+# STUB_FLEET_RC says the install failed.
+cat > "$FAKE_BIN/fleet" <<'STUB'
+#!/usr/bin/env bash
+printf 'fleet %s\n' "$*" >> "$STUB_LOG"
+[[ "${STUB_FLEET_RC:-0}" == 0 ]] || exit "$STUB_FLEET_RC"
+if [[ "$*" == "install miniharness" ]]; then mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"; fi
+exit 0
 STUB
 cat > "$FAKE_BIN/timeout" <<'STUB'
 #!/usr/bin/env bash
@@ -248,13 +258,26 @@ if (cmd_run >/dev/null 2>&1); then fail 'lock-file symlink was accepted'; fi
 rm -f "$LOCK_FILE"
 
 # enable refuses when the advisor's tooling is absent, rather than installing a
-# timer that can only ever fail at 07:00. Only miniharness is hidden, so the
+# timer that can only ever fail at 07:00. Only fleet is hidden, so the
 # failure cannot be attributed to any other missing command.
-mv "$FAKE_BIN/miniharness" "$TEST_TMP/miniharness.hidden"
-enable_err=$(cmd_enable 2>&1) && fail 'enable succeeded without miniharness'
-grep -q 'miniharness is not on' <<< "$enable_err" \
+mv "$FAKE_BIN/fleet" "$TEST_TMP/fleet.hidden"
+enable_err=$(cmd_enable 2>&1) && fail 'enable succeeded without fleet'
+grep -q 'fleet is not on' <<< "$enable_err" \
     || fail "enable failed for the wrong reason: $enable_err"
-mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"
+mv "$TEST_TMP/fleet.hidden" "$FAKE_BIN/fleet"
+
+# A missing miniharness is installed through fleet, and fleet's nightly pass,
+# which keeps it updated, is turned on.
+mv "$FAKE_BIN/miniharness" "$TEST_TMP/miniharness.hidden"
+enable_err=$(STUB_FLEET_RC=1 cmd_enable 2>&1) && fail 'enable succeeded when fleet could not install miniharness'
+grep -q 'fleet could not install miniharness' <<< "$enable_err" \
+    || fail "enable failed for the wrong reason: $enable_err"
+: > "$LOG"
+(record_advisor_tooling) >/dev/null || fail 'tooling not recorded after fleet installed miniharness'
+assert_contains "$LOG" 'fleet install miniharness'
+assert_contains "$LOG" 'fleet schedule on'
+assert_contains "$TOOLING_FILE" $'miniharness\t'"$FAKE_BIN/miniharness"
+[[ -x "$FAKE_BIN/miniharness" ]] || mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"
 
 # The 07:00 check asks the advisor; only an explicit "reboot" verdict reboots.
 mkdir -p "$STATE_DIR"

@@ -368,7 +368,7 @@ restore_artifacts() {
 # nvm-installed binaries or ~/.local/bin, and at timer-fire time there is no
 # SUDO_USER left to consult, so both are pinned here at enable time.
 resolve_operator_tool() {
-    local operator="$1" tool="$2" path shell
+    local operator="$1" tool="$2" path
     if [[ "$TEST_MODE" == 1 ]]; then
         path=$(command -v "$tool" 2>/dev/null) || return 1
     else
@@ -377,22 +377,51 @@ resolve_operator_tool() {
         # about a zsh user's node install finds nothing: on grimoire
         # `bash -lc 'command -v miniharness'` is empty while `zsh -lc` returns
         # the nvm path.
-        shell=$(getent passwd "$operator" 2>/dev/null | cut -d: -f7)
-        [[ -n "$shell" && -x "$shell" ]] || shell=/bin/sh
-        path=$(runuser -u "$operator" -- "$shell" -lc "command -v $tool" 2>/dev/null) || return 1
+        path=$(as_operator_login "$operator" command -v "$tool" 2>/dev/null) || return 1
     fi
     [[ -n "$path" ]] || return 1
     printf '%s\n' "$path"
 }
+
+# Run a command in the operator's login shell, with the user's systemd
+# reachable: plain runuser leaves XDG_RUNTIME_DIR unset.
+as_operator_login() {
+    local operator="$1" shell cmd; shift
+    if [[ "$TEST_MODE" == 1 ]]; then "$@"; return; fi
+    shell=$(getent passwd "$operator" 2>/dev/null | cut -d: -f7)
+    [[ -n "$shell" && -x "$shell" ]] || shell=/bin/sh
+    printf -v cmd '%q ' "$@"
+    runuser -u "$operator" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$operator")" "$shell" -lc "$cmd"
+}
+
+# fleet's nightly pass is what keeps miniharness up to date.
+enable_fleet_schedule() {
+    local operator="$1" fleet="$2"
+    if [[ "$TEST_MODE" != 1 && ! -S "/run/user/$(id -u "$operator")/bus" ]]; then
+        warn "${operator} has no running user session, so fleet's nightly pass is still off; run 'fleet schedule on' as ${operator}"
+        return 0
+    fi
+    as_operator_login "$operator" "$fleet" schedule on >/dev/null \
+        || warn "could not turn on fleet's nightly pass; run 'fleet schedule on' as ${operator}"
+}
+
 record_advisor_tooling() {
-    local operator miniharness hermes tmp
+    local operator fleet miniharness hermes tmp
     operator="${SUDO_USER:-${USER:-}}"
     [[ -n "$operator" && "$operator" != root ]] \
         || die "cannot determine the operator account; run this through sudo rather than as root directly"
-    miniharness=$(resolve_operator_tool "$operator" miniharness) \
-        || die "miniharness is not on ${operator}'s PATH; the reboot advisor needs it (npm install -g miniharness)"
+    fleet=$(resolve_operator_tool "$operator" fleet) \
+        || die "fleet is not on ${operator}'s PATH; the reboot advisor needs it (setup install fleet)"
+    if ! miniharness=$(resolve_operator_tool "$operator" miniharness); then
+        info "installing miniharness for ${operator} through fleet"
+        as_operator_login "$operator" "$fleet" install miniharness \
+            || die "fleet could not install miniharness, which the reboot advisor needs"
+        miniharness=$(resolve_operator_tool "$operator" miniharness) \
+            || die "miniharness is not on ${operator}'s PATH after fleet installed it"
+    fi
     hermes=$(resolve_operator_tool "$operator" hermes) \
-        || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts (install it with 'harnesses install hermes')"
+        || die "hermes is not on ${operator}'s PATH; the reboot advisor needs it to send alerts (fleet install hermes)"
+    enable_fleet_schedule "$operator" "$fleet"
     atomic_write_text "$OPERATOR_FILE" 0644 "$operator"
     tmp=$(mktemp "$STATE_DIR/.tooling.XXXXXXXX")
     printf 'miniharness\t%s\nhermes\t%s\n' "$miniharness" "$hermes" > "$tmp"
