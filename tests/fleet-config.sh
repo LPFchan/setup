@@ -288,6 +288,17 @@ rm -rf "$HOME/.codex/AGENTS.md" "$HOME/.gemini" "$HOME/.codex/skills/mine" "$HOM
 server_put AGENTS.md 'my instructions'
 fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md again"
 
+# Paths a case-insensitive disk would merge are neither taken nor pushed.
+server_put skills/Mine/SKILL.md 'upper case'
+fleet sync --pull >/dev/null 2>&1 && fail "pulled paths that differ only in case"
+[[ ! -e "$HOME/.agents/skills/Mine" ]] || fail "applied a case-colliding path"
+server_del skills/Mine/SKILL.md
+fleet sync --pull >/dev/null 2>&1 || fail "pull after the collision went"
+mkdir -p "$HOME/.agents/skills/Mine"; printf 'upper\n' > "$HOME/.agents/skills/Mine/SKILL.md"
+fleet sync >/dev/null 2>&1 && fail "pushed paths that differ only in case"
+[[ "$(server_has skills/Mine/SKILL.md)" == "<none>" ]] || fail "a case-colliding path reached the account"
+rm -rf "$HOME/.agents/skills/Mine"
+
 # A server-only change is taken by any pull, and status/--check see it first.
 server_put skills/mine/SKILL.md 'from another machine'
 fleet sync --check >/dev/null 2>&1 && fail "check missed a server change"
@@ -405,8 +416,22 @@ find "$XDG_STATE_HOME/fleet/backup" -path '*/account/*' -type f -perm /077 | gre
 mv "$TMP/server.keep" "$FAKE/server.json"
 rm -f "$XDG_STATE_HOME/fleet/config.json"
 printf 'mine again\n' > "$TMP/claude.md"; rm -f "$HOME/.claude/CLAUDE.md"; cp "$TMP/claude.md" "$HOME/.claude/CLAUDE.md"
+mkdir -p "$HOME/.claude/skills/old.pre-agents.bak"; printf 'old\n' > "$HOME/.claude/skills/old.pre-agents.bak/SKILL.md"
 fleet sync >/dev/null 2>&1 || fail "rejoin"
 [[ -L "$HOME/.claude/CLAUDE.md" ]] || fail "CLAUDE.md not linked on rejoin"
+[[ -d "$HOME/.claude/skills/old.pre-agents.bak" ]] || fail "an old agents sidecar was taken for a skill"
+rm -rf "$HOME/.claude/skills/old.pre-agents.bak"
+
+# Another account while ~/.agents is gone still drops this account's links.
+cp "$FAKE/server.json" "$TMP/server.keep"
+rm -rf "$HOME/.agents"
+printf '9' > "$FAKE/subject"; printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+fleet sync >/dev/null 2>&1 || fail "sync as another account without ~/.agents"
+[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "mine again" ]] \
+    || fail "links kept for another account when ~/.agents was gone"
+printf '7' > "$FAKE/subject"; mv "$TMP/server.keep" "$FAKE/server.json"
+fleet sync >/dev/null 2>&1 || fail "rejoin again"
+[[ -L "$HOME/.claude/CLAUDE.md" ]] || fail "CLAUDE.md not linked on the second rejoin"
 mkdir -p "$HOME/.claude/skills/shadow"; printf 'hand-made\n' > "$HOME/.claude/skills/shadow/SKILL.md"
 server_put skills/shadow/SKILL.md 'account shadow'
 fleet sync --pull >/dev/null 2>&1 || fail "pull before uninstall"
