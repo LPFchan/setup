@@ -921,7 +921,13 @@ def pull(account, settle_old=False):
         if old:
             if displaced:
                 _report_displaced(backup)
-            _drop_old_clone(operator=False)
+            # The account's copy is in place: a clone that cannot all go
+            # still leaves its links made, and the next sync drops the rest.
+            try:
+                _drop_old_clone(operator=False)
+            except BaseException:
+                refresh_links()
+                raise
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(conflicts)))

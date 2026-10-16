@@ -199,6 +199,13 @@ chmod 700 "$XDG_STATE_HOME/fleet"
 [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" \
     && -f "$HOME/.agents/skills/opskill/SKILL.md" && -L "$HOME/.claude/skills/opskill" ]] \
     || fail "a failed record save left the account's copy over the old payload"
+# A clone that cannot all go once the copy is in place leaves its links made.
+mkdir -p "$STATE_DIR/agents-src/.git/locked"; : > "$STATE_DIR/agents-src/.git/locked/f"
+chmod 500 "$STATE_DIR/agents-src/.git/locked"
+fleet sync >/dev/null 2>&1 && fail "a clone that could not all go reported success"
+chmod 700 "$STATE_DIR/agents-src/.git/locked"
+[[ -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "account instructions" ]] \
+    || fail "a clone that could not all go left the account's links missing"
 # With the copy in hand, it replaces the old payload.
 fleet sync >/dev/null 2>&1 || fail "sync replacing the old payload"
 [[ ! -e "$STATE_DIR/agents-src" && "$(cat "$HOME/.agents/AGENTS.md")" == "account instructions" ]] \
