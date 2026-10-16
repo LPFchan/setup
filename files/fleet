@@ -1912,6 +1912,18 @@ def mcp_token_value(raw):
     return value
 
 
+def _whole_block(text, begin, end, path):
+    """Whether `text` holds fleet's marked block whole. A lone or repeated
+    marker refuses the edit: a block appended after an orphaned begin would
+    have the next removal take every line between them."""
+    begins, ends = text.count(begin), text.count(end)
+    if begins == ends == 0:
+        return False
+    if begins == ends == 1 and text.index(begin) < text.index(end):
+        return True
+    raise ConfigError(f"{path} has a broken {begin!r} block; fix or remove it by hand")
+
+
 def _existing_block(text):
     match = re.search(re.escape(TOKENS_BEGIN) + r"(.*?)" + re.escape(TOKENS_END), text, re.S)
     return match.group(1) if match else ""
@@ -2020,7 +2032,7 @@ def _mirror_zshenv(exports, drop, context, retired):
               if name not in exports and name not in drop and name not in retired]
     context_line = "# common-auth-context " + json.dumps(context, sort_keys=True, separators=(",", ":"))
     block = "\n".join([TOKENS_BEGIN, context_line, *lines, TOKENS_END]) + "\n"
-    if TOKENS_BEGIN in text and TOKENS_END in text:
+    if _whole_block(text, TOKENS_BEGIN, TOKENS_END, ZSHENV):
         new = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                      lambda _: block, text, flags=re.S)
     else:
@@ -2035,6 +2047,8 @@ def _mirror_zshenv(exports, drop, context, retired):
 
 def _remove_zshenv_block():
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    if not _whole_block(text, TOKENS_BEGIN, TOKENS_END, ZSHENV):
+        return
     new = re.sub(r"\n*" + re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                  "\n", text, flags=re.S)
     if new != text:
@@ -2053,7 +2067,7 @@ def _mirror_dotenv(path, exports, retired):
     original = path.read_text() if path.exists() else ""
     body = [f"{k}={_dotenv_value(v)}" for k, v in exports.items()]
     block = "\n".join([TOKENS_BEGIN, *body, TOKENS_END]) + "\n"
-    if TOKENS_BEGIN in original and TOKENS_END in original:
+    if _whole_block(original, TOKENS_BEGIN, TOKENS_END, path):
         text = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                       lambda _: block, original, flags=re.S)
     else:
@@ -2349,8 +2363,13 @@ def render_codex_mcp(servers, previous, retired):
     if original.strip() and _toml(original)[1]:
         eprint(f"  {CODEX_CONFIG} does not parse; refusing to edit it: {_toml(original)[1]}")
         return False
-    region = re.search(re.escape(CODEX_MCP_BEGIN) + r".*?" + re.escape(CODEX_MCP_END) + r"\n?",
-                       original, re.S)
+    try:
+        whole = _whole_block(original, CODEX_MCP_BEGIN, CODEX_MCP_END, CODEX_CONFIG)
+    except ConfigError as exc:
+        eprint(f"  {exc}")
+        return False
+    region = whole and re.search(re.escape(CODEX_MCP_BEGIN) + r".*?" + re.escape(CODEX_MCP_END) + r"\n?",
+                                 original, re.S)
     text = original[:region.start()] + original[region.end():] if region else original
     # Reclaim blocks an older release appended outside the region: a body
     # identical to one of ours, or a retired name. A block carrying
@@ -2919,10 +2938,14 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         live = {mcp_env_var(s) for s in servers.values() if s["auth"] != "none"}
         drop |= {r["env"] for r in (previous.get("mcp") or {}).values() if r.get("env")} - live
         retired_env = set() if clear else _retired_env_vars() - live
-        if clear:
-            _remove_zshenv_block()
-        else:
-            _mirror_zshenv(exports, drop, context, retired_env)
+        try:
+            if clear:
+                _remove_zshenv_block()
+            else:
+                _mirror_zshenv(exports, drop, context, retired_env)
+        except ConfigError as exc:
+            eprint(f"fleet: {exc}")
+            return 1
 
         def on(surface):
             return [s for s in servers.values() if surface in mcp_surfaces(s)]
@@ -3005,7 +3028,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 _mirror_dotenv(HERMES_ENV, exports, retired_env)
             if present["kimi"]:
                 render_kimi()
-        except OSError as exc:
+        except (OSError, ConfigError) as exc:
             eprint(f"fleet: harness settings: {exc}")
             return 1
         record["mcp"] = {s["name"]: {"url": s.get("url"),

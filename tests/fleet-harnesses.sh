@@ -717,6 +717,22 @@ sed -i.bak '/^HEATMAP_MCP_TOKEN=mine$/d' "$HOME/.codex/.env" && rm -f "$HOME/.co
 grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env token"
 grep -qx update "$FAKE/claude.log" && grep -qx 'codex update' "$FAKE/claude.log" || fail "harnesses not updated"
 grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "hermes not restarted"
+# A fleet block with a stray begin marker is left alone: a block written
+# after it would have the next removal take every line between them.
+for f in .zshenv .codex/.env .codex/config.toml; do
+    [[ -f "$HOME/$f" ]] || fail "no $f to test a stray marker in"
+    cp "$HOME/$f" "$TMP/stray.keep"
+    case $f in
+        *.toml) printf '# BEGIN harnesses:mcp-servers\nmine = 1\n' ;;
+        .zshenv) printf '# BEGIN harnesses:mcp-tokens\nexport MINE=1\n' ;;
+        *) printf '# BEGIN harnesses:mcp-tokens\nMINE=1\n' ;;
+    esac | cat - "$TMP/stray.keep" > "$HOME/$f"
+    cp "$HOME/$f" "$TMP/stray.before"
+    fleet schedule run >/dev/null 2>&1 && fail "a render passed a stray marker in $f"
+    cmp -s "$HOME/$f" "$TMP/stray.before" || fail "a render wrote $f past a stray marker"
+    cp "$TMP/stray.keep" "$HOME/$f"
+done
+fleet schedule run >/dev/null 2>&1 || fail "nightly pass after the stray markers"
 # A server Auth has no credential for is left out, and an ordinary sync
 # brings it back once there is one.
 grep -q '^\[mcp_servers.heatmap\]' "$codex" && fail "a server with no credential was rendered"
@@ -822,6 +838,14 @@ fleet install nope >/dev/null 2>&1 && fail "installed an unknown harness"
 # Neither a broken manifest nor a claude gone from PATH stops it: claude's
 # files are edited directly.
 printf '{' > "$TMP/broken-manifest.json"
+# A stray marker in the token block stops it before it cuts into the
+# user's lines.
+cp "$HOME/.zshenv" "$TMP/stray.keep"
+{ printf '# BEGIN harnesses:mcp-tokens\nexport MINE=1\n'; cat "$TMP/stray.keep"; } > "$HOME/.zshenv"
+cp "$HOME/.zshenv" "$TMP/stray.before"
+fleet __unrender >/dev/null 2>&1 && fail "unrender passed a stray token marker"
+cmp -s "$HOME/.zshenv" "$TMP/stray.before" || fail "unrender cut .zshenv past a stray marker"
+cp "$TMP/stray.keep" "$HOME/.zshenv"
 # Hermes restarts there and then, and a failed restart fails the uninstall.
 mv "$BIN/claude" "$TMP/claude.away"
 : > "$FAKE/systemctl.log"

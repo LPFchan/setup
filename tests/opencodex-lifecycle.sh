@@ -209,8 +209,23 @@ grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "unexport removed the
 # than leave new shells routed to a stopped proxy.
 cp "$HOME/.zshenv" "$TEST_TMP/zshenv.keep"
 printf '# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n' >> "$HOME/.zshenv"
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
 python3 "$BIN" __unexport >/dev/null 2>&1 && fail "unexport passed a route block without its end"
 grep -q 'ANTHROPIC_BASE_URL=http://127.0.0.1:1' "$HOME/.zshenv" || fail "unexport cut into a block without its end"
+grep -q '127.0.0.1:1' "$HOME/.claude/settings.json" || fail "a refused unexport still took claude's route"
+# Nor is a block appended after it, which the next removal would take
+# together with every line between.
+cp "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan"
+HARNESSES_PROXY_PORT=1 python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("opencodex", sys.argv[1]).load_module()
+try:
+    m.write_base_url_export()
+except m.UserError:
+    sys.exit(0)
+sys.exit(1)' "$BIN" >/dev/null || fail "export appended a block after an orphaned begin"
+cmp -s "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan" || fail "a refused export changed .zshenv"
 mv "$TEST_TMP/zshenv.keep" "$HOME/.zshenv"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
 # A deleted launcher is fetched again for the route; while it cannot be,
