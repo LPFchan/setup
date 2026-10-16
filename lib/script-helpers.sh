@@ -197,12 +197,13 @@ remove_script_state() {
     local state_file="${STATE_DIR:-$HOME/.local/state/setup}/script-state.tsv"
     local tmp m rt lr rr
     [[ -f "$state_file" ]] || return 0
-    tmp=$(mktemp)
+    tmp=$(mktemp) || return 1
     while IFS=$'\t' read -r m rt lr rr; do
         [[ "$m" == "$module" ]] && continue
         printf '%s\t%s\t%s\t%s\n' "$m" "$rt" "$lr" "$rr"
-    done < "$state_file" > "$tmp"
-    mv "$tmp" "$state_file"
+    done < "$state_file" > "$tmp" && mv "$tmp" "$state_file" && return 0
+    rm -f "$tmp"
+    return 1
 }
 
 is_script_installed() {

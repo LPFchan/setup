@@ -99,6 +99,19 @@ swap_retired_modules >/dev/null 2>&1 && fail "swap passed with an unwritable ret
 chmod 600 "$SWAP_PENDING_FILE"; rm -f "$SWAP_PENDING_FILE"
 state_has old || fail "an unwritable retry marker dropped the old state entry"
 swap_retired_modules >/dev/null 2>&1 || fail "swap once the marker is writable"
+# So does one whose old state entry cannot be dropped, and its retry marker
+# stays for the next run.
+printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"
+functions -c remove_script_state real_remove_script_state
+remove_script_state() { [[ "$1" == old ]] && return 1; real_remove_script_state "$@"; }
+rc=0; swap_retired_modules >/dev/null 2>&1 || rc=$?
+functions -c real_remove_script_state remove_script_state
+(( rc != 0 )) || fail "swap passed with an undroppable old state entry"
+state_has old || fail "an undroppable old state entry vanished"
+grep -qx next "$SWAP_PENDING_FILE" || fail "an undroppable old state entry cleared the retry marker"
+swap_retired_modules >/dev/null 2>&1 || fail "swap once the old state entry can go"
+state_has old && fail "old state entry kept once it can go"
+[[ ! -e "$SWAP_PENDING_FILE" ]] || fail "retry marker left after the takeover finished"
 
 # An outdated dependency is updated before the successor goes in.
 printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"

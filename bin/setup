@@ -577,6 +577,7 @@ _swap_dependencies() {
 # before a command builds its module list.
 swap_retired_modules() {
     local old successor target mode source failures=0 swapped=""
+    local -a kept
     # A successor whose rerun after the swap failed is still owed one: the old
     # state entry is gone by then, so nothing else would bring it back.
     [[ -f "$SWAP_PENDING_FILE" ]] && swapped=" $(tr '\n' ' ' < "$SWAP_PENDING_FILE")"
@@ -615,7 +616,15 @@ swap_retired_modules() {
             fi
             swapped="$swapped $successor"
         fi
-        remove_script_state "$old"
+        # Its entry still gates the successor's takeover, so the rerun below
+        # must not clear the marker that retries it.
+        if ! remove_script_state "$old"; then
+            echo "Warning: could not drop $old's state entry; keeping $old for now." >&2
+            kept=(${${=swapped}:#$successor})
+            swapped=" ${kept[*]} "
+            failures=$((failures + 1))
+            continue
+        fi
         echo "$old is replaced by $successor."
         # A timer that does not come on is reported by the successor's own
         # status; it does not undo the swap.
