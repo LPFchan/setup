@@ -250,6 +250,14 @@ cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"; printf '{' > "$XDG_ST
 rc=0; out=$(fleet sync 2>&1) || rc=$?
 mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
 [[ $rc != 0 && "$out" == *"move it aside"* ]] || fail "synced over a damaged record: $out"
+# So does one whose fields are the wrong shape: an empty file map would
+# read as nothing synced yet.
+cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["files"]=[]; json.dump(r, open(sys.argv[1], "w"))' \
+    "$XDG_STATE_HOME/fleet/config.json"
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
+[[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "synced over a wrong-shaped record: $out"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
@@ -564,15 +572,31 @@ rm -rf "$HOME/.claude/skills/old"
 
 # A link whose record cannot be saved puts back what it displaced, since
 # nothing would know to later.
-mv "$XDG_STATE_HOME/fleet/links.json" "$TMP/links.keep"; mkdir "$XDG_STATE_HOME/fleet/links.json"
 mkdir -p "$HOME/.config/opencode"; rm -f "$HOME/.config/opencode/AGENTS.md"
 printf 'opencode mine\n' > "$HOME/.config/opencode/AGENTS.md"
-fleet sync >/dev/null 2>&1 && fail "a sync whose links record could not be saved reported success"
-rmdir "$XDG_STATE_HOME/fleet/links.json"; mv "$TMP/links.keep" "$XDG_STATE_HOME/fleet/links.json"
+mkdir "$TMP/nosave"; cat > "$TMP/nosave/sitecustomize.py" <<'PY'
+import os
+real = os.replace
+def replace(src, dst, *a, **k):
+    if str(dst).endswith("links.json"):
+        raise OSError(28, "No space left on device")
+    return real(src, dst, *a, **k)
+os.replace = replace
+PY
+rc=0; PYTHONPATH="$TMP/nosave" fleet sync >/dev/null 2>&1 || rc=$?
+rm -rf "$TMP/nosave"
+[[ $rc != 0 ]] || fail "a sync whose links record could not be saved reported success"
 rm -f "$XDG_STATE_HOME"/fleet/.links.json.*
 [[ ! -L "$HOME/.config/opencode/AGENTS.md" && "$(cat "$HOME/.config/opencode/AGENTS.md")" == "opencode mine" ]] \
     || fail "an unrecorded link kept what it displaced"
 rm -f "$HOME/.config/opencode/AGENTS.md"
+# A damaged links record stops the sync instead of forgetting what the
+# links displaced.
+cp "$XDG_STATE_HOME/fleet/links.json" "$TMP/links.keep"; printf '{"x": 1}' > "$XDG_STATE_HOME/fleet/links.json"
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+[[ $rc != 0 && "$out" == *"is damaged"* && "$(cat "$XDG_STATE_HOME/fleet/links.json")" == '{"x": 1}' ]] \
+    || fail "synced over a damaged links record: $out"
+mv "$TMP/links.keep" "$XDG_STATE_HOME/fleet/links.json"
 
 # Another account while ~/.agents is gone still drops this account's links.
 cp "$FAKE/server.json" "$TMP/server.keep"

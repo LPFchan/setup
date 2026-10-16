@@ -717,18 +717,39 @@ def _load_json(path, default):
     return value if isinstance(value, type(default)) else default
 
 
-def _load_sync_record():
-    """The sync record; {} only when there is none. A damaged one would read
-    as a first join, which takes the account's copy over local edits."""
+def _load_record(path, valid):
+    """A state record; {} only when there is none. A damaged one stops the
+    command: read as empty, it would lose what the record keeps."""
     try:
-        value = json.loads(CONFIG_STATE.read_text())
+        value = json.loads(path.read_text())
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        raise ConfigError(f"cannot read {CONFIG_STATE} ({exc}); move it aside to join afresh") from None
-    if not isinstance(value, dict):
-        raise ConfigError(f"{CONFIG_STATE} is not a sync record; move it aside to join afresh")
+        raise ConfigError(f"cannot read {path} ({exc}); move it aside to start afresh") from None
+    if not isinstance(value, dict) or not valid(value):
+        raise ConfigError(f"{path} is damaged; move it aside to start afresh")
     return value
+
+
+def _sync_record_ok(r):
+    # An empty or wrong-shaped file map would read as "nothing synced yet".
+    files = r.get("files")
+    return (isinstance(r.get("account"), str) and isinstance(r.get("counter"), int)
+            and isinstance(r.get("version"), int) and isinstance(files, dict)
+            and all(isinstance(v, list) and len(v) == 2 for v in files.values()))
+
+
+def _load_sync_record():
+    """The sync record. Read as a first join, a damaged one would take the
+    account's copy over local edits."""
+    return _load_record(CONFIG_STATE, _sync_record_ok)
+
+
+def _load_links():
+    """{link: what it displaced}. Read as empty, a damaged one would forget
+    the user files the links displaced."""
+    return _load_record(LINKS_STATE, lambda r: all(
+        isinstance(v, str) for v in r.values()))
 
 
 def _save_json(path, value):
@@ -1092,7 +1113,7 @@ def _config_locked():
 def refresh_links():
     """AGENTS.md where each harness reads it, and each skill in claude's
     folder, adding new skills and pruning removed ones."""
-    links = _load_json(LINKS_STATE, {})
+    links = _load_links()
     before = dict(links)
     backup = Backup()
     # Saved however far this gets: a retry finds what it already displaced
@@ -1162,7 +1183,7 @@ def _skill_entries(skills):
 def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
-    links = _load_json(LINKS_STATE, {})
+    links = _load_links()
     for path in list(AGENTS_LINKS) + _skill_link_targets(links):
         _unlink_restoring(path, links)
     # Also the old agents module's, which a sync may not have taken over yet.
@@ -1571,7 +1592,11 @@ def main():
         return cmd_sync(direct=False)
     # setup uninstall fleet: drop the harness links, restoring what they replaced.
     if args == ["__unlink"]:
-        remove_links()
+        try:
+            remove_links()
+        except ConfigError as exc:
+            eprint(f"fleet: {exc}")
+            return 1
         return 0
     if args == ["schedule", "status"]:
         print(f"fleet: nightly sync {'on' if schedule_installed() else 'off'}")
