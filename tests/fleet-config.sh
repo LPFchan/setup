@@ -37,6 +37,10 @@ if cmd == "refresh":
 origin = open(f"{fake}/origin").read() if os.path.exists(f"{fake}/origin") else "https://auth.lost.plus"
 if cmd == "context":
     print(json.dumps({"origin": origin, "subject": open(f"{fake}/subject").read()}))
+    if os.path.exists(f"{fake}/switch-skill"):
+        # The machine signs in to another account right after fleet checks.
+        os.remove(f"{fake}/switch-skill")
+        open(f"{fake}/subject", "w").write("9")
     sys.exit(0)
 method, path = sys.argv[2], sys.argv[3]
 body = json.load(sys.stdin) if sys.argv[4:] == ["-"] else None
@@ -67,6 +71,12 @@ if path == "/api/fleet/skills":
     answer(200, {"skills": [{"id": i, "folder": s["folder"], "author": s["author"], "author_name": s["author"],
                              "description": "", "installs": list(installs).count(i), "updated_at": 0,
                              "own": s["mine"]} for i, s in sorted(market.items()) if s["published"]]})
+if path in ("/api/fleet/skills/install", "/api/fleet/skills/uninstall",
+            "/api/fleet/skills/publish", "/api/fleet/skills/unpublish"):
+    if os.environ.get("LOST_AUTH_ORIGIN", origin) != origin:
+        sys.exit(5)
+    if body.get("subject") != open(f"{fake}/subject").read():
+        answer(409, {"error": "account changed"})
 if path == "/api/fleet/skills/install":
     ref = body["skill"]
     found = [i for i, s in market.items() if s["published"] and (i == ref or f"{s['author']}/{s['folder']}" == ref)]
@@ -829,6 +839,13 @@ f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
 state["market"]["11111111-1111-4111-8111-111111111111"]["published"] = False; json.dump(state, open(f, "w"))
 PY
 fleet skills | grep -q "^foo  installed from alice/foo  $FOO  (no longer updated)" || fail "skills missed an unpublished install"
+# A change is made only on the account fleet checked, not one signed in
+# to since.
+was=$(cat "$FAKE/subject"); touch "$FAKE/switch-skill"
+out=$(fleet uninstall foo 2>&1) && fail "uninstalled from an account signed in to since"
+printf '%s' "$was" > "$FAKE/subject"
+grep -q 'session changed' <<<"$out" || fail "a changed session went unreported: $out"
+fleet skills | grep -q '^foo  installed' || fail "a changed session lost the install"
 fleet uninstall foo >/dev/null 2>&1 || fail "uninstall"
 [[ ! -e "$installed" && ! -L "$HOME/.claude/skills/foo" ]] || fail "uninstalled skill kept"
 fleet uninstall bob-foo >/dev/null 2>&1 || fail "second uninstall"
@@ -860,6 +877,10 @@ fleet publish pub >/dev/null 2>&1 || fail "publish"
 [[ "$(server_has skills/pub/SKILL.md)" != "<none>" ]] || fail "publish did not push the folder"
 fleet skills | grep -q '^pub  .*  published$' || fail "skills missed a published skill"
 fleet skills --market | grep -q '^me/pub  .*(yours)' || fail "market missed one's own skill"
+touch "$FAKE/switch-skill"
+fleet unpublish pub >/dev/null 2>&1 && fail "unpublished on an account signed in to since"
+printf '%s' "$was" > "$FAKE/subject"
+fleet skills | grep -q '^pub  .*  published$' || fail "a changed session unpublished"
 fleet unpublish pub >/dev/null 2>&1 || fail "unpublish"
 fleet skills | grep -q '^pub  .*  unpublished$' || fail "skills missed an unpublished skill"
 # An account never pushed still gets its installs.

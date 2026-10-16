@@ -3546,10 +3546,26 @@ def _is_skill(arg):
 
 
 def _marketplace():
+    """The '<origin> <subject>' a skill change is pinned to."""
     if not config_sync_enabled():
         raise ConfigError("account config waits until setup swaps out the old agents and harnesses modules")
-    if _context() is None:
+    account = _context()
+    if account is None:
         raise ConfigError("no session; run: auth login")
+    return account
+
+
+def _skill_change(account, action, body):
+    """A marketplace change for `account` only: the auth CLI refuses a login
+    from another origin, and Auth refuses another subject, so one signed in
+    to since, say during publish's sync, is not changed instead."""
+    origin, subject = account.split(" ", 1)
+    try:
+        return _request("POST", f"/api/fleet/skills/{action}", {**body, "subject": subject}, origin=origin)
+    except HttpError as exc:
+        if exc.status == 409 and str(exc) == "account changed":
+            raise ConfigError("the session changed; nothing was changed") from None
+        raise
 
 
 def _origin(author, folder):
@@ -3581,9 +3597,9 @@ def cmd_install_args(args):
     if len(args) != 1:
         eprint("fleet: install one skill at a time")
         return 2
-    _marketplace()
+    account = _marketplace()
     body = {"skill": args[0], **({"as": local_name} if local_name is not None else {})}
-    value = _request("POST", "/api/fleet/skills/install", body)
+    value = _skill_change(account, "install", body)
     print(f"fleet: installed {value.get('name')}" if value.get("installed")
           else f"fleet: already installed as {value.get('name')}")
     return config_sync(direct=False)
@@ -3612,8 +3628,8 @@ def cmd_uninstall(args):
     if len(args) != 1:
         eprint("usage: fleet uninstall <skill>")
         return 2
-    _marketplace()
-    _request("POST", "/api/fleet/skills/uninstall", {"skill": args[0]})
+    account = _marketplace()
+    _skill_change(account, "uninstall", {"skill": args[0]})
     print(f"fleet: uninstalled {args[0]}")
     return config_sync(direct=False)
 
@@ -3625,14 +3641,14 @@ def cmd_publish(args):
     if len(args) != 1:
         eprint("usage: fleet publish <skill> [--id <id>]")
         return 2
-    _marketplace()
+    account = _marketplace()
     # Auth publishes the account's copy, so this machine's edits go up first.
     rc = config_sync(direct=True)
     if rc:
         eprint("fleet: not publishing until the sync goes through")
         return rc
     body = {"folder": args[0], **({"id": skill_id} if skill_id else {})}
-    value = _request("POST", "/api/fleet/skills/publish", body)
+    value = _skill_change(account, "publish", body)
     print(f"fleet: published {value.get('folder')} as {value.get('id')}")
     return 0
 
@@ -3641,8 +3657,8 @@ def cmd_unpublish(args):
     if len(args) != 1:
         eprint("usage: fleet unpublish <skill>")
         return 2
-    _marketplace()
-    _request("POST", "/api/fleet/skills/unpublish", {"skill": args[0]})
+    account = _marketplace()
+    _skill_change(account, "unpublish", {"skill": args[0]})
     print(f"fleet: unpublished {args[0]}; installers keep their last copy")
     return 0
 
