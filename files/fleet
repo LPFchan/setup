@@ -26,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 
 HOME = pathlib.Path.home()
@@ -571,10 +572,23 @@ def _listing():
         if not isinstance(rel, str) or not config_path(rel):
             raise ConfigError(f"Auth listed a path outside ~/.agents/: {rel!r}")
         files[rel] = [entry.get("sha256"), bool(entry.get("executable"))]
+    clashes = _collisions(files)
+    if clashes:
+        raise ConfigError("the account has paths that a case-insensitive disk would merge into "
+                          "one file: " + "; ".join(clashes))
     counter, version = value.get("counter"), value.get("version")
     if not isinstance(counter, int) or not isinstance(version, int):
         raise ConfigError("Auth answered without a counter")
     return counter, version, files
+
+
+def _collisions(paths):
+    """Groups of paths one file on macOS's default disk: they differ only
+    in letter case or Unicode normalization."""
+    groups = {}
+    for rel in paths:
+        groups.setdefault(unicodedata.normalize("NFC", rel).casefold(), []).append(rel)
+    return sorted(", ".join(sorted(g)) for g in groups.values() if len(g) > 1)
 
 
 def fetch_contents(paths, counter, server):
@@ -698,7 +712,10 @@ def _skill_folders(directory):
         entries = sorted(directory.iterdir())
     except OSError:
         return []
+    # The old agents module's .pre-agents.bak sidecars go back by name when
+    # the links are refreshed; they are not skills of their own.
     return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
+            and not e.name.endswith(".pre-agents.bak")
             and e.is_dir() and (e/"SKILL.md").is_file()]
 
 
@@ -756,11 +773,15 @@ def pull(account):
         # Another account's files: they are not this account's to push. They
         # move aside only once this account's copy is in hand, so a failed
         # fetch leaves the old copy, and its links, working.
-        foreign = bool(state) and record is None and AGENTS_DIR.exists()
+        other = bool(state) and record is None
+        foreign = other and AGENTS_DIR.exists()
         local = {} if foreign else scan_local()[0]
         if record is None and counter == 0:
             if foreign:
                 _move_foreign(backup)
+            if other:
+                # Even with no tree to move, the other account's links go.
+                CONFIG_STATE.unlink(missing_ok=True)
                 refresh_links()
             ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
             ONBOARDING_MARKER.touch()
@@ -819,6 +840,10 @@ def _check_json_objects(paths):
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
     _check_json_objects(puts)
+    clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts))
+    if clashes:
+        raise ConfigError("not pushing paths a case-insensitive disk would merge into one file; "
+                          "rename one of each: " + "; ".join(clashes))
     # Two accounts can share a counter, so Auth also checks the push is for
     # the account this machine pulled, not one signed in to since.
     body = {"base": record["counter"], "subject": record["account"].split(" ", 1)[1],
