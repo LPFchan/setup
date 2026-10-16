@@ -2806,6 +2806,7 @@ def _t3_models(tier, opencodex):
     return list(models.values())
 
 
+@_config_locked()
 def harness_render(force=False, clear=False):
     """Render the harnesses' settings, keepout hooks and MCP servers from the
     three tiers. 0 done or unchanged, 1 a part failed, 3 no answer from Auth.
@@ -2815,7 +2816,10 @@ def harness_render(force=False, clear=False):
     nothing renders: the lost.plus servers would read as removed.
 
     With clear, everything fleet rendered is taken back, for uninstalling
-    it: claude's MCP entries call fleet itself for their tokens."""
+    it: claude's MCP entries call fleet itself for their tokens.
+
+    Under the config lock: a sync running alongside would load the same
+    record and read what the other adds as the user's."""
     previous = _load_json(APPLIED, {})
     if clear:
         # While setup's old modules run, what is rendered is still theirs.

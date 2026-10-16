@@ -854,6 +854,21 @@ print(out)' "$ROOT/files/fleet" 2>/dev/null)
 rm -rf "$TMP/plugin"
 [[ "$plugin" == "[[True], [True], []]" ]] || fail "a bad, updating or removed plugin cache kept the wrong registration: $plugin"
 
+# A render loads fleet's record under the config lock, so a sync alongside
+# waits rather than loading the same record.
+locked=$(HOME="$TMP/lockhome" XDG_STATE_HOME="$TMP/lockhome/state" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_lock", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.config_sync_enabled = lambda: False
+seen, load = [], fleet._load_json
+fleet._load_json = lambda path, default: (seen.append((path, fleet._lock_depth)), load(path, default))[1]
+fleet.harness_render()
+print([depth for path, depth in seen if path == fleet.APPLIED])' "$ROOT/files/fleet" 2>&1 | tail -1)
+rm -rf "$TMP/lockhome"
+[[ "$locked" == "[1]" ]] || fail "a render loaded its record outside the config lock: $locked"
+
 # Fleet keeps the default Claude profile even from a shell aimed at another.
 profile=$(CLAUDE_CONFIG_DIR="$TMP/other" python3 -c '
 import importlib.machinery, importlib.util, os, sys
