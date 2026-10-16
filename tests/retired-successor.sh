@@ -74,6 +74,9 @@ state_has old && fail "old state entry kept after the swap"
 state_has next || fail "successor not installed"
 grep -q "next install SWAP=old" "$LOG" || fail "successor not told it replaces old"
 grep -q "^old " "$LOG" && fail "the old module's script ran"
+# Once the old state entry is gone the successor runs again, so whatever it
+# held back while its predecessor was recorded happens in the same run.
+[[ "$(tail -1 "$LOG")" == "next update" ]] || fail "successor not rerun after the swap: $(cat "$LOG")"
 : > "$LOG"
 swap_retired_modules >/dev/null 2>&1 || fail "second swap"
 [[ ! -s "$LOG" ]] || fail "swap ran again with nothing to do: $(cat "$LOG")"
@@ -115,6 +118,12 @@ touch "$TEST_TMP/revoked"
 fetch_manifest >/dev/null 2>&1
 module_in_catalog owner-only && fail "a revoked session kept an operator-only module"
 rm "$TEST_TMP/revoked"
+
+# Every successor in the real catalog is offered to every account: a retired
+# module can be installed anywhere, and its replacement must be too.
+hidden=$(awk -F '\t' '$1 !~ /^#/ { audience[$1] = $5; if ($7 == "retired" && $9 != "") want[$9] = 1 }
+    END { for (m in want) if (audience[m] != "") print m }' "$ROOT/manifest.tsv")
+[[ -z "$hidden" ]] || fail "a successor is operator-only: $hidden"
 
 # The cached manifest stays four columns for older binaries.
 [[ "$(awk -F '\t' 'NF { print NF }' "$MANIFEST_FILE" | sort -u)" == 4 ]] || fail "cached manifest is not four columns"

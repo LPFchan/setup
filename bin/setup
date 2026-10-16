@@ -574,7 +574,7 @@ _swap_dependencies() {
 # before a command builds its module list.
 swap_retired_modules() {
     [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] || return 0
-    local old successor target mode source failures=0
+    local old successor target mode source failures=0 swapped=""
     while IFS=$'\t' read -r old successor <&3; do
         grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
         target=""
@@ -602,6 +602,8 @@ swap_retired_modules() {
         fi
         remove_script_state "$old"
         echo "$old is replaced by $successor."
+        [[ "$mode" == script && " $swapped " != *" $successor "* ]] \
+            && swapped="$swapped $successor"
         # A timer that does not come on is reported by the successor's own
         # status; it does not undo the swap.
         if is_service_module "$successor" \
@@ -611,6 +613,16 @@ swap_retired_modules() {
                 || echo "Note: $successor is installed, but its timer is off." >&2
         fi
     done 3< "$SUCCESSOR_FILE"
+    # Each successor's install ran while its predecessors were still recorded,
+    # and a successor may hold back what they managed until they are gone
+    # (fleet skips account config). Run it once more now that they are.
+    for successor in ${=swapped}; do
+        IFS=$'\t' read -r target mode source < <(
+            awk -F '\t' -v m="$successor" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+        )
+        _script_update "$successor" "$target" "$source" \
+            || { echo "Warning: $successor could not finish taking over after the swap." >&2; failures=$((failures + 1)); }
+    done
     (( failures == 0 ))
 }
 
