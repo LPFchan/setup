@@ -267,13 +267,19 @@ grep -q 'fleet is not on' <<< "$enable_err" \
     || fail "enable failed for the wrong reason: $enable_err"
 mv "$TEST_TMP/fleet.hidden" "$FAKE_BIN/fleet"
 
-# A missing miniharness is installed through fleet.
+# A missing miniharness is installed through fleet, and only once nothing
+# else can stop the enable.
 mv "$FAKE_BIN/miniharness" "$TEST_TMP/miniharness.hidden"
+mv "$FAKE_BIN/hermes" "$TEST_TMP/hermes.hidden"
+: > "$LOG"
+(cmd_enable) >/dev/null 2>&1 && fail 'enable succeeded without hermes'
+grep -q 'fleet install miniharness' "$LOG" && fail 'a failed enable installed miniharness'
+mv "$TEST_TMP/hermes.hidden" "$FAKE_BIN/hermes"
 enable_err=$(STUB_FLEET_RC=1 cmd_enable 2>&1) && fail 'enable succeeded when fleet could not install miniharness'
 grep -q 'fleet could not install miniharness' <<< "$enable_err" \
     || fail "enable failed for the wrong reason: $enable_err"
 : > "$LOG"
-(record_advisor_tooling) >/dev/null || fail 'tooling not recorded after fleet installed miniharness'
+(record_advisor_tooling && install_advisor_tooling) >/dev/null || fail 'tooling not recorded after fleet installed miniharness'
 assert_contains "$LOG" 'fleet install miniharness'
 assert_contains "$TOOLING_FILE" $'miniharness\t'"$FAKE_BIN/miniharness"
 [[ -x "$FAKE_BIN/miniharness" ]] || mv "$TEST_TMP/miniharness.hidden" "$FAKE_BIN/miniharness"
