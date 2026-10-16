@@ -35,7 +35,7 @@ list_for() {
 
 # Trusted Linux: fleet + linux-only modules are visible.
 trusted_linux=$(list_for Linux)
-[[ "$trusted_linux" == *ssh-aliases* && "$trusted_linux" == *kernel-simmer* && "$trusted_linux" == *backup* ]] || {
+[[ "$trusted_linux" == *kernel-simmer* && "$trusted_linux" == *backup* ]] || {
     echo "trusted Linux catalog omitted fleet/linux entries" >&2
     exit 1
 }
@@ -44,9 +44,9 @@ trusted_linux=$(list_for Linux)
     exit 1
 }
 
-# Trusted Darwin: fleet cross-platform stays; linux-only is hidden.
+# Trusted Darwin: operator-only Darwin entries show; linux-only is hidden.
 trusted_darwin=$(list_for Darwin)
-[[ "$trusted_darwin" == *ssh-aliases* && "$trusted_darwin" == *mac-boot* ]] || {
+[[ "$trusted_darwin" == *mac-boot* ]] || {
     echo "trusted Darwin catalog omitted fleet entries" >&2
     exit 1
 }

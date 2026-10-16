@@ -99,6 +99,23 @@ assert json.loads(context_output.getvalue()) == {
 }
 expected_context = {"origin": "https://auth.lost.plus", "subject": "42"}
 
+# An expired session, or a login from another origin, names no account here.
+store_path = os.environ["LOST_AUTH_STORE"]
+current = json.load(open(store_path))
+for changed, wanted_exit in (
+    ({**current, "session": {**current["session"], "expires_at": 1}}, 4),
+    ({**current, "origin": "https://auth.example.test"}, 1),
+):
+    json.dump(changed, open(store_path, "w"))
+    try:
+        m["cmd_context"]()
+    except m["AuthError"] as exc:
+        assert exc.exit_code == wanted_exit, exc.exit_code
+    else:
+        raise AssertionError("context reported an account it no longer speaks for")
+json.dump(current, open(store_path, "w"))
+os.chmod(store_path, 0o600)
+
 token_output = io.StringIO()
 with contextlib.redirect_stdout(token_output):
     m["cmd_token"]("chat-v1", expected_context)
@@ -238,6 +255,13 @@ else:
     raise AssertionError("revoked device session used cached credentials")
 invalid = json.load(open(os.environ["LOST_AUTH_STORE"]))
 assert invalid["session_state"] == "invalid" and invalid["tokens"] == {}
+# An invalidated session no longer names an account.
+try:
+    m["cmd_context"]()
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+else:
+    raise AssertionError("an invalidated session still reported its account")
 
 # A later network outage cannot revive credentials after confirmed invalidation.
 def offline(path, **kwargs):
