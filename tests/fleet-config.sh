@@ -199,6 +199,14 @@ chmod 700 "$XDG_STATE_HOME/fleet"
 [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" \
     && -f "$HOME/.agents/skills/opskill/SKILL.md" && -L "$HOME/.claude/skills/opskill" ]] \
     || fail "a failed record save left the account's copy over the old payload"
+# So does another account's ~/.agents that cannot move aside.
+printf '{"account": "someone-else", "counter": 1, "files": {}}' > "$XDG_STATE_HOME/fleet/config.json"
+chmod 555 "$HOME"
+fleet sync >/dev/null 2>&1 && fail "a foreign tree that could not move reported success"
+chmod 755 "$HOME"
+rm "$XDG_STATE_HOME/fleet/config.json"
+[[ "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
+    || fail "a foreign tree that could not move left the old payload displaced"
 # A clone that cannot all go once the copy is in place leaves its links made.
 mkdir -p "$STATE_DIR/agents-src/.git/locked"; : > "$STATE_DIR/agents-src/.git/locked/f"
 chmod 500 "$STATE_DIR/agents-src/.git/locked"

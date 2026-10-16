@@ -894,7 +894,11 @@ def pull(account, settle_old=False):
         # The old payload moves aside, and its clone and links go only once
         # the account's copy is written, so a failed write leaves it working.
         displaced = _displace_old_payload(backup) if old else []
-        moved = _move_foreign(backup) if foreign else None
+        try:
+            moved = _move_foreign(backup) if foreign else None
+        except BaseException:
+            _restore_displaced(displaced, backup)
+            raise
         harness = []
         new_record = {"account": account, "counter": counter, "version": version, "files": server}
         def finish():
