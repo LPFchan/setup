@@ -1097,12 +1097,15 @@ def pull(account, settle_old=False):
         def finish():
             # Inside the account files' transaction: a failed install puts
             # them back too. installed.json follows each install on its own.
-            _apply_installs(installs, writes, drops, fetched, backup)
+            _apply_installs(installs, writes, [], fetched, backup)
             if record is None:
                 harness.extend(_move_harness_skills(backup))
             # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
         try:
+            # Uninstalled skills go first: the account's files may hold one
+            # of the same name, which the drop would otherwise clear.
+            _apply_installs(installs, [], drops, fetched, backup)
             _apply_changes(take, remove, contents, server, backup, then=finish)
         except BaseException:
             for folder, saved in reversed(harness):

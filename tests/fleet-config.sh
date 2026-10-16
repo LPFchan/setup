@@ -837,6 +837,23 @@ fleet uninstall bob-foo >/dev/null 2>&1 || fail "second uninstall"
 fleet install $OTHER --as true >/dev/null 2>&1 || fail "install --as true"
 [[ "$(sed -n 2p "$HOME/.agents/skills/true/SKILL.md")" == 'name: "true"' ]] || fail "a bool-like name went in plain"
 fleet uninstall true >/dev/null 2>&1 || fail "uninstall true"
+# Another machine uninstalls a skill and pushes its own under that name:
+# the install's folder goes and the account's copy takes its place.
+market_put $OTHER bob foo extra.txt 'from bob'
+fleet install $OTHER --as foo >/dev/null 2>&1 || fail "install bob's foo as foo"
+python3 - <<'PY'
+import json, os
+f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
+state["installs"] = {}; json.dump(state, open(f, "w"))
+PY
+server_put skills/foo/SKILL.md 'owned foo'
+fleet sync --pull >/dev/null 2>&1 || fail "pull of an owned skill replacing an install"
+[[ "$(cat "$installed/SKILL.md" 2>/dev/null)" == "owned foo" && ! -e "$installed/extra.txt" ]] \
+    || fail "an owned skill replacing an install was not written"
+[[ ! -e "$HOME/.agents/installed.json" ]] || fail "the replaced install is still recorded"
+fleet sync --check >/dev/null 2>&1 || fail "an owned skill replacing an install read as outdated"
+rm -rf "$installed"; fleet sync >/dev/null 2>&1 || fail "sync deleting the owned foo"
+[[ "$(server_has skills/foo/SKILL.md)" == "<none>" ]] || fail "owned foo not deleted"
 # Publishing pushes the folder first, then names it in fleet skills.
 mkdir -p "$HOME/.agents/skills/pub"; printf -- '---\nname: pub\n---\n' > "$HOME/.agents/skills/pub/SKILL.md"
 fleet publish pub >/dev/null 2>&1 || fail "publish"
