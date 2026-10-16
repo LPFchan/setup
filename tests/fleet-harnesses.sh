@@ -333,6 +333,15 @@ server_put mcp.json '{"mcpServers": [
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass with the user's own matching entry"
 fleet sync --pull >/dev/null 2>&1 || fail "second pass with the user's own matching entry"
+# Nor does a change to the account's definition replace it.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "theirs", "url": "https://t2.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass changing the user's matching server"
+[[ "$(json "$HOME/.claude.json" 'v["mcpServers"]["theirs"]["url"]')" == https://t.example/mcp ]] \
+    || fail "claude re-enrolled the user's own entry"
 server_put mcp.json "$with_extra"
 fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the user's matching server"
 [[ "$(json "$HOME/.claude.json" '"theirs" in v["mcpServers"]')" == True ]] || fail "claude lost the user's own entry"
@@ -348,6 +357,31 @@ server_put mcp.json '{"mcpServers": [
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass after the user's own entry test"
+
+# A t3 model the user already had stays when the account stops naming it;
+# one fleet added goes.
+t3="$HOME/.t3/userdata/settings.json"
+python3 - "$t3" <<'EOF2'
+import json, sys
+v = json.load(open(sys.argv[1]))
+v["providerInstances"]["claudeAgent"]["config"]["customModels"].append({"slug": "own-model", "name": "Own"})
+json.dump(v, open(sys.argv[1], "w"))
+EOF2
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}, {"slug": "own-model", "name": "Fleet"}, {"slug": "new-model", "name": "New"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass naming the user's t3 model"
+[[ "$(json "$t3" '[m["name"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" == "['Mine', 'Fleet', 'New']" ]] \
+    || fail "t3 models not refreshed: $(cat "$t3")"
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the user's t3 model"
+[[ "$(json "$t3" '[m["slug"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" == "['my-model', 'own-model']" ]] \
+    || fail "t3 dropped the user's own model or kept fleet's: $(cat "$t3")"
+python3 - "$t3" <<'EOF2'
+import json, sys
+v = json.load(open(sys.argv[1]))
+m = v["providerInstances"]["claudeAgent"]["config"]["customModels"]
+m[:] = [r for r in m if r["slug"] != "own-model"]
+json.dump(v, open(sys.argv[1], "w"))
+EOF2
 
 # A hermes key written on one line is left alone, not followed by a second
 # block that would replace it.
