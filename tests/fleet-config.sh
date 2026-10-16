@@ -8,8 +8,10 @@ export PATH="$(dirname "$(command -v python3)"):$(dirname "$(command -v zsh)"):/
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake" STATE_DIR="$TMP/state/setup"
 export SCHEDULE_USER_DIR="$TMP/units" SCHEDULE_BIN="$TMP/schedule"
+export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
 mkdir -p "$FLEET_SSH_DIR" "$FAKE" "$STATE_DIR" "$HOME/.claude/skills" "$HOME/.codex/skills"
 printf '7' > "$FAKE/subject"
+printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
 printf '#!/bin/sh\nexit 1\n' > "$SCHEDULE_BIN"; chmod +x "$SCHEDULE_BIN"
 
 # A stand-in auth CLI holding one account's config in $FAKE/server.json, with
@@ -136,6 +138,36 @@ fleet sync >/dev/null 2>&1 || fail "sync while gated"
 grep -q '/api/fleet/config' "$FAKE/log" && fail "config touched while agents is installed"
 fleet status | grep -q 'waits until setup swaps out' || fail "status while gated"
 : > "$STATE_DIR/script-state.tsv"
+
+# The old agents module's clone is settled once, before the first pull. On
+# the operator's machine only the clone goes.
+old_agents() {
+    mkdir -p "$STATE_DIR/agents-src/.git" "$HOME/.agents/skills/opskill" "$HOME/.gemini"
+    printf 'operator instructions\n' > "$HOME/.agents/AGENTS.md"
+    printf 'op\n' > "$HOME/.agents/skills/opskill/SKILL.md"
+    printf 'gemini own\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
+    ln -sfn "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
+    ln -sfn "$HOME/.agents/skills/opskill" "$HOME/.claude/skills/opskill"
+}
+old_agents
+printf '1' > "$FAKE/subject"
+fleet sync >/dev/null 2>&1 || fail "sync settling the clone on the operator's machine"
+[[ ! -e "$STATE_DIR/agents-src" ]] || fail "clone left on the operator's machine"
+[[ -f "$HOME/.agents/AGENTS.md" && -L "$HOME/.claude/skills/opskill" ]] \
+    || fail "the operator's machine lost what the old module installed"
+# On another account's machine its links go, what they displaced comes back,
+# and the operator's files move to the backup.
+old_agents
+printf '7' > "$FAKE/subject"
+fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
+[[ ! -e "$STATE_DIR/agents-src" ]] || fail "clone left on a friend's machine"
+[[ "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" && ! -L "$HOME/.gemini/GEMINI.md" ]] \
+    || fail "GEMINI.md not restored when the clone was settled"
+[[ ! -e "$HOME/.claude/skills/opskill" && ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills" ]] \
+    || fail "the operator's payload stayed on a friend's machine"
+find "$XDG_STATE_HOME/fleet/backup" -path '*.agents/skills/opskill/SKILL.md' | grep -q . \
+    || fail "the operator's skills not in the backup"
+rm -rf "$HOME/.gemini" "$HOME/.agents" "$XDG_STATE_HOME/fleet/onboarding.pending"
 
 # A friend's machine, account never pushed: local files stay, nothing is
 # uploaded, and onboarding is left pending.

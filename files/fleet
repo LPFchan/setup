@@ -421,6 +421,10 @@ NOTICES = STATE_HOME/"fleet/notices.json"
 ONBOARDING_MARKER = STATE_HOME/"fleet/onboarding.pending"
 BACKUP_DIR = STATE_HOME/"fleet/backup"
 SETUP_STATE = pathlib.Path(os.environ.get("STATE_DIR") or STATE_HOME/"setup")/"script-state.tsv"
+# The old agents module's copy of the setup repo, settled once by fleet.
+OLD_AGENTS_CLONE = SETUP_STATE.parent/"agents-src"
+# Whether GitHub lists none of this machine's keys, asked once a run.
+OWNER_CHECK = {}
 # The modules fleet replaces. While setup still records any of them, the old
 # clients own ~/.agents/ and the harness links, so fleet keeps to SSH.
 PREDECESSOR_MODULES = ("agents", "harnesses", "miniharness")
@@ -991,6 +995,46 @@ def remove_links():
     LINKS_STATE.unlink(missing_ok=True)
 
 
+def settle_old_agents(operator):
+    """Remove the old agents module's clone, once. On a machine of another
+    account its links go too and what they displaced comes back; the
+    operator's AGENTS.md and skills it copied move to the backup, since other
+    tools may have added skills there."""
+    if not os.path.lexists(OLD_AGENTS_CLONE):
+        return
+    if not operator:
+        for target in AGENTS_LINKS + OLD_AGENTS_LINKS:
+            if _points_into(target, AGENTS_DIR):
+                target.unlink()
+            _restore_old_backup(target)
+        for directory in [SKILL_LINK_DIR, *OLD_SKILL_LINK_DIRS]:
+            for entry in (list(directory.iterdir()) if directory.is_dir() else []):
+                if _points_into(entry, AGENTS_DIR):
+                    entry.unlink()
+                    _restore_old_backup(entry)
+        backup = Backup()
+        for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
+            if os.path.lexists(path):
+                backup.move(path, f"displaced/{path.relative_to(HOME)}")
+        if backup.root:
+            _report(f"moved the operator's AGENTS.md and skills the old agents module left to {backup.root}")
+    if OLD_AGENTS_CLONE.is_dir() and not OLD_AGENTS_CLONE.is_symlink():
+        shutil.rmtree(OLD_AGENTS_CLONE)
+    else:
+        OLD_AGENTS_CLONE.unlink()
+
+
+def not_the_operators():
+    """Whether this machine, with no session, is known not to be the
+    operator's: GitHub answered and lists none of its keys. Asked once."""
+    if "value" not in OWNER_CHECK:
+        try:
+            OWNER_CHECK["value"] = not set(_local_keys()) & set(fetch_owner_keys())
+        except Unavailable:
+            OWNER_CHECK["value"] = False
+    return OWNER_CHECK["value"]
+
+
 # --- onboarding ----------------------------------------------------------
 
 def onboard(account):
@@ -1080,8 +1124,15 @@ def config_sync(direct):
         eprint(f"fleet: account config: refusing a symlinked {AGENTS_DIR}")
         return 1
     account = _context()
-    if account is None:
-        return 3
+    try:
+        if account is None:
+            if os.path.lexists(OLD_AGENTS_CLONE) and not_the_operators():
+                settle_old_agents(operator=False)
+            return 3
+        settle_old_agents(operator=account.split(" ", 1)[1] == OPERATOR_SUBJECT)
+    except OSError as exc:
+        eprint(f"fleet: account config: settling the old agents module: {exc}")
+        return 1
     try:
         outcome, record, conflicts = pull(account)
         PULL["outcome"] = outcome
@@ -2430,13 +2481,20 @@ def harness_render(force=False):
     if not config_sync_enabled():
         return 0
     account = _context()
-    if account is None:
+    # With no session, a machine known not to be the operator's is rendered
+    # as if it had pulled an empty account, so the operator's settings and
+    # MCP entries the old client wrote come off. Without a session it gets
+    # no lost.plus servers either.
+    friend = account is None and not_the_operators()
+    if account is None and not friend:
         return 3
-    origin, subject = account.split(" ", 1)
-    context = {"origin": origin, "subject": subject}
+    origin, subject = account.split(" ", 1) if account else (None, None)
+    context = {"origin": origin, "subject": subject} if account else None
     previous = _load_json(APPLIED, {})
     warnings = []
-    if PULL["outcome"] == "synced":
+    if friend:
+        tier = empty_tier()
+    elif PULL["outcome"] == "synced":
         tier = read_tier(subject, warnings)
     elif PULL["outcome"] == "pending":
         tier = empty_tier()
@@ -2445,7 +2503,7 @@ def harness_render(force=False):
     else:
         return 0
     try:
-        hub = hub_servers()
+        hub = [] if friend else hub_servers()
     except ConfigError as exc:
         eprint(f"fleet: harness settings not rendered: cannot read the lost.plus services: {exc}")
         return 3

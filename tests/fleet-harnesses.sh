@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake" STATE_DIR="$TMP/state/setup"
 export SCHEDULE_USER_DIR="$TMP/units" SCHEDULE_BIN="$TMP/schedule"
+export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
 # Only the stubs below and the system basics: never a real harness.
 export PATH="$TMP/bin:$(dirname "$(command -v python3)"):/usr/bin:/bin"
 unset CLAUDE_CONFIG_DIR HERMES_CONFIG HERMES_ENV TODAY_KEEPOUT_EXEMPT
@@ -33,6 +34,8 @@ cmd = sys.argv[1]
 if cmd == "refresh":
     sys.exit(0)
 if cmd == "context":
+    if os.path.exists(f"{fake}/no-session"):
+        sys.exit(1)
     print(json.dumps({"origin": "https://auth.lost.plus", "subject": open(f"{fake}/subject").read()}))
     sys.exit(0)
 if cmd == "token":
@@ -280,6 +283,32 @@ grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the nightly pass dropped an env toke
 grep -qx update "$FAKE/claude.log" && grep -qx 'codex update' "$FAKE/claude.log" || fail "harnesses not updated"
 grep -q 'try-restart hermes-gateway.service' "$FAKE/systemctl.log" || fail "hermes not restarted"
 [[ ! -e "$XDG_STATE_HOME/fleet/hermes.restart" ]] || fail "hermes restart left pending"
+
+# Logged out on a machine GitHub lists among the owner's: nothing renders,
+# and the old agents clone waits for a login.
+touch "$FAKE/no-session"
+mkdir -p "$FLEET_SSH_DIR" "$STATE_DIR/agents-src/.git" "$HOME/.agents/skills/opskill" "$HOME/.gemini"
+printf 'ssh-ed25519 AAAAMine me\n' > "$FLEET_SSH_DIR/id_ed25519.pub"
+printf 'ssh-ed25519 AAAAMine me\n' > "$TMP/github.keys"
+printf 'gemini own\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
+ln -s "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
+cp "$settings" "$TMP/settings.before"
+rc=0; fleet sync --pull >/dev/null 2>&1 || rc=$?
+[[ $rc == 3 ]] || fail "logged-out owner machine returned $rc"
+cmp -s "$settings" "$TMP/settings.before" || fail "rendered on a logged-out owner machine"
+[[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" ]] || fail "settled the clone without a login"
+# Logged out on a machine GitHub definitely does not list: as if it pulled an
+# empty account, so what fleet wrote comes off, and the clone is settled.
+printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
+fleet sync --pull >/dev/null 2>&1 && fail "a sync without a session reported success"
+[[ "$(json "$settings" '"effortLevel" in v, v["myKey"]')" == "(False, 1)" ]] \
+    || fail "the account's settings stayed on a logged-out friend machine: $(cat "$settings")"
+servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
+[[ "$servers" == "['daiso', 'notion', 'personal']" ]] || fail "claude MCP on a logged-out friend machine: $servers"
+grep -q MINE_TOKEN "$HOME/.zshenv" && fail "a token stayed on a logged-out friend machine"
+[[ ! -e "$STATE_DIR/agents-src" && "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" ]] \
+    || fail "the clone was not settled on a logged-out friend machine"
+rm -f "$FAKE/no-session"
 
 # Installing: retired and unknown harnesses are refused.
 out=$(fleet install kimi 2>&1) && fail "installed a retired harness"
