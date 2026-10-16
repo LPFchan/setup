@@ -76,7 +76,7 @@ def _request(path, *, form=None, json_body=None, token=None, session=None, metho
 def _output(command):
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
 
@@ -86,7 +86,7 @@ def _machine_key():
     failure reports no key rather than failing the login or refresh."""
     try:
         return _read_machine_key()
-    except OSError:
+    except (OSError, ValueError):
         return ""
 
 

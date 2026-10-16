@@ -19,6 +19,11 @@ assert m["_machine_report"]()["key"] == report["key"]
 os.unlink(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
 assert m["_machine_report"]()["key"] == report["key"]
 assert os.path.exists(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
+# An undecodable public key reports no key instead of failing.
+good = open(os.environ["LOST_AUTH_SSH_KEY"] + ".pub", "rb").read()
+open(os.environ["LOST_AUTH_SSH_KEY"] + ".pub", "wb").write(b"\xff\xfe")
+assert m["_machine_report"]()["key"] == ""
+open(os.environ["LOST_AUTH_SSH_KEY"] + ".pub", "wb").write(good)
 # A key directory that cannot be created reports no key instead of failing.
 blocker = os.path.join(os.path.dirname(os.environ["LOST_AUTH_SSH_KEY"]), "file")
 open(blocker, "w").close()
