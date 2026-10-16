@@ -82,7 +82,15 @@ def _output(command):
 
 
 def _machine_key():
-    """The machine's public key, generated the first time it is needed."""
+    """The machine's public key, generated the first time it is needed. Any
+    failure reports no key rather than failing the login or refresh."""
+    try:
+        return _read_machine_key()
+    except OSError:
+        return ""
+
+
+def _read_machine_key():
     public = SSH_KEY.with_name(SSH_KEY.name + ".pub")
     if not SSH_KEY.exists():
         SSH_KEY.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -19,6 +19,11 @@ assert m["_machine_report"]()["key"] == report["key"]
 os.unlink(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
 assert m["_machine_report"]()["key"] == report["key"]
 assert os.path.exists(os.environ["LOST_AUTH_SSH_KEY"] + ".pub")
+# A key directory that cannot be created reports no key instead of failing.
+blocker = os.path.join(os.path.dirname(os.environ["LOST_AUTH_SSH_KEY"]), "file")
+open(blocker, "w").close()
+m["_machine_key"].__globals__["SSH_KEY"] = m["pathlib"].Path(blocker) / "ssh" / "id_ed25519"
+assert m["_machine_report"]()["key"] == ""
 assert report["hostname"] and "." not in report["hostname"]
 assert isinstance(report["needs_term"], bool)
 PY
