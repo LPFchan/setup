@@ -268,6 +268,33 @@ rm "$FAKE/limited"
 fleet sync >/dev/null 2>&1 || fail "sync after the limit"
 [[ "$(server_has skills/mine/linked)" == "<none>" ]] || fail "symlink uploaded"
 
+# A synced file replaced by a symlink is skipped, not deleted from the account.
+mv "$HOME/.agents/skills/mine/extra" "$TMP/extra"
+ln -s "$TMP/extra" "$HOME/.agents/skills/mine/extra"
+fleet sync >/dev/null 2>&1 || fail "sync with a symlinked synced file"
+[[ "$(server_has skills/mine/extra)" == "x" ]] || fail "symlinked file deleted from the account"
+fleet status | grep -q 'local changes' && fail "symlinked file listed as a local change"
+rm "$HOME/.agents/skills/mine/extra"; mv "$TMP/extra" "$HOME/.agents/skills/mine/extra"
+
+# A symlinked ~/.agents is refused before anything is read or written.
+THIRD="$TMP/third"; mkdir -p "$THIRD/real"; ln -s "$THIRD/real" "$THIRD/.agents"
+rc=0; HOME="$THIRD" XDG_STATE_HOME="$TMP/state3" fleet sync >"$TMP/out" 2>&1 || rc=$?
+[[ $rc == 1 ]] || fail "symlinked ~/.agents exited $rc"
+grep -q 'refusing a symlinked' "$TMP/out" || fail "symlinked ~/.agents not reported"
+[[ -z "$(ls -A "$THIRD/real")" ]] || fail "wrote through a symlinked ~/.agents"
+
+# A timer from before uploads that cannot be replaced: the run only pulls and
+# says so.
+mkdir -p "$SCHEDULE_USER_DIR"
+printf 'ExecStart=%%h/.local/bin/fleet sync\n' > "$SCHEDULE_USER_DIR/fleet-sync.service"
+printf 'OnCalendar=*-*-* 04:00:00\n' > "$SCHEDULE_USER_DIR/fleet-sync.timer"
+printf 'unsent\n' > "$HOME/.agents/skills/mine/unsent"
+rc=0; fleet sync >"$TMP/out" 2>&1 || rc=$?
+[[ $rc == 1 ]] || fail "failed timer swap exited $rc"
+grep -q 'could not replace the nightly timer' "$TMP/out" || fail "failed timer swap not reported"
+[[ "$(server_has skills/mine/unsent)" == "<none>" ]] || fail "uploaded while the old timer may remain"
+rm -f "$HOME/.agents/skills/mine/unsent" "$SCHEDULE_USER_DIR"/fleet-sync.*
+
 # Auth down: exit 3, nothing touched.
 touch "$FAKE/down"
 rc=0; fleet sync >/dev/null 2>&1 || rc=$?
@@ -302,6 +329,11 @@ fleet sync >/dev/null 2>&1 || fail "sync as another account"
 [[ ! -L "$HOME/.claude/skills/mine" ]] || fail "skill link left dangling for the other account"
 find "$XDG_STATE_HOME/fleet/backup" -maxdepth 2 -name agents-other-account | grep -q . || fail "other account's files not backed up"
 printf '7' > "$FAKE/subject"
+
+# Backed-up server copies are owner-only.
+find "$XDG_STATE_HOME/fleet/backup" -maxdepth 0 -perm 0700 | grep -q . || fail "backup folder not 0700"
+find "$XDG_STATE_HOME/fleet/backup" -path '*/account/*' -type f | grep -q . || fail "no server copy backed up"
+find "$XDG_STATE_HOME/fleet/backup" -path '*/account/*' -type f -perm /077 | grep -q . && fail "server copy readable by others"
 
 # Uninstalling drops the links and puts back what they displaced.
 mv "$TMP/server.keep" "$FAKE/server.json"

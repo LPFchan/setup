@@ -509,7 +509,8 @@ def _safe_target(rel):
     if not config_path(rel):
         raise ConfigError(f"Auth served a path outside ~/.agents/: {rel!r}")
     target = AGENTS_DIR/rel
-    for parent in list(target.parents)[:len(rel.split("/")) - 1]:
+    # The parents up to and including ~/.agents itself.
+    for parent in list(target.parents)[:len(rel.split("/"))]:
         if parent.is_symlink():
             raise ConfigError(f"refusing to write through a symlink: {parent}")
     return target
@@ -607,7 +608,10 @@ class Backup:
             while root.exists():
                 n += 1
                 root = BACKUP_DIR/f"{stamp}-{n}"
-            root.mkdir(parents=True)
+            # Server copies can hold credentials: owner-only.
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            BACKUP_DIR.chmod(0o700)
+            root.mkdir(mode=0o700)
             self.root = root
         return self.root
 
@@ -620,8 +624,10 @@ class Backup:
 
     def save(self, data, label):
         destination = self._dir()/label
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
 
 
 def _write_file(rel, data, executable):
@@ -830,7 +836,9 @@ def upload(account, record):
         local, symlinks = scan_local()
         base = record.get("files") or {}
         puts = [p for p in local if local[p] != base.get(p)]
-        deletes = [p for p in base if p not in local]
+        # A path replaced by a symlink (or under one) is skipped, not deleted.
+        deletes = [p for p in base if p not in local
+                   and not any(p == s or p.startswith(s + "/") for s in symlinks)]
         if symlinks:
             eprint("fleet: symlinks are not uploaded: " + ", ".join(symlinks))
         if not puts and not deletes:
@@ -1033,6 +1041,9 @@ def config_sync(direct):
     upload, 3 no answer from Auth."""
     if not config_sync_enabled():
         return 0
+    if AGENTS_DIR.is_symlink():
+        eprint(f"fleet: account config: refusing a symlinked {AGENTS_DIR}")
+        return 1
     account = _context()
     if account is None:
         return 3
@@ -1088,7 +1099,8 @@ def config_status():
               else "fleet: account config not pulled yet; run: fleet sync")
     else:
         base = record.get("files") or {}
-        changed = sorted(p for p in set(local) | set(base) if local.get(p) != base.get(p))
+        changed = sorted(p for p in set(local) | set(base) if local.get(p) != base.get(p)
+                         and not any(p == s or p.startswith(s + "/") for s in symlinks))
         print("fleet: account config " + ("current" if record.get("version") == version
                                           else "changed in the account; run: fleet sync"))
         if changed:
@@ -1131,9 +1143,14 @@ def cmd_sync(check=False, direct=True):
     if direct and schedule_stale():
         # A timer written before uploads existed runs plain `fleet sync`;
         # this run may be it, so it only pulls.
-        schedule_enable()
-        eprint("fleet: updated the nightly timer; this run only pulled, run fleet sync again to upload")
+        # Either way this run only pulls: a failed replacement may leave the
+        # old timer running plain `fleet sync`.
         direct = False
+        if schedule_enable() != 0:
+            eprint("fleet: could not replace the nightly timer; run fleet schedule, then fleet sync")
+            ssh_rc = 1
+        else:
+            eprint("fleet: updated the nightly timer; this run only pulled, run fleet sync again to upload")
     config_rc = config_sync(direct)
     return config_rc if config_rc == 1 else ssh_rc or config_rc
 
@@ -1141,6 +1158,9 @@ def cmd_sync(check=False, direct=True):
 def cmd_onboard():
     if not config_sync_enabled():
         eprint("fleet: account config waits until setup swaps out the old agents and harnesses modules")
+        return 1
+    if AGENTS_DIR.is_symlink():
+        eprint(f"fleet: refusing a symlinked {AGENTS_DIR}")
         return 1
     account = _context()
     if account is None:
