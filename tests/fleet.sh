@@ -154,6 +154,7 @@ printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write(" ".join(sy
 chmod -x "$FLEET_BIN"
 module uninstall >/dev/null 2>&1 || fail "uninstall"
 grep -qx __unlink "$FAKE/ran" || fail "uninstall skipped __unlink for a non-executable binary"
+grep -qx __unrender "$FAKE/ran" || fail "uninstall skipped __unrender for a non-executable binary"
 [[ ! -e "$FLEET_BIN" ]] || fail "uninstall left the binary"
 
 echo "fleet tests passed"

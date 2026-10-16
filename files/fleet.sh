@@ -134,6 +134,8 @@ status() {
 uninstall() {
     # Through python3, so a binary that lost its executable bit still cleans up.
     [[ -f "$BIN" ]] && python3 "$BIN" schedule disable >/dev/null 2>&1
+    # Before the binary goes: claude's MCP entries call it for their tokens.
+    [[ -f "$BIN" ]] && python3 "$BIN" __unrender
     [[ -f "$BIN" ]] && python3 "$BIN" __unlink
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"

@@ -197,6 +197,8 @@ cp "$ROOT/files/provider-registry.json" "$providers_registry"
 mkdir -p "$HOME/.claude"
 printf 'export KEEP=1\n# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n# END harnesses:anthropic-base-url\n' >> "$HOME/.zshenv"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
+# Even from a launcher that lost its executable bit.
+chmod -x "$BIN"
 uninstall
 ! grep -q ANTHROPIC_BASE_URL "$HOME/.zshenv" "$HOME/.claude/settings.json" \
     || fail "opencodex uninstall left the route to its stopped proxy"
