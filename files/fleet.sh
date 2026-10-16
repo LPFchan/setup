@@ -137,21 +137,29 @@ uninstall() {
     # Through python3, so a binary that lost its executable bit still cleans up;
     # a deleted one is fetched again, since only it can take the rendered
     # settings and links back down.
-    local cli="$BIN" staged="" ok="" was_on="" timer=""
+    local cli="$BIN" staged="" ok="" was_on="" off="" timer=""
     if [[ ! -f "$cli" ]]; then
         staged=$(mktemp -d)
         _stage "$staged" && cli="$staged/fleet"
     fi
-    # The timer stops first, so a nightly run cannot render again mid-way; one
-    # that will not turn off would run a binary about to go. A binary that
-    # cannot say (broken, or older than `schedule status`) hands over to the
-    # current CLI.
-    if [[ -f "$cli" ]] && ! timer=$(python3 "$cli" schedule status 2>/dev/null) && [[ -z "$staged" ]]; then
+    # The timer stops first, so a nightly run cannot render again mid-way, and
+    # whether it ran says whether to turn it back on if the rest fails. It goes
+    # running or not: one left behind would run a binary about to go. A CLI
+    # that cannot do either (broken, or older than one that knows a missing
+    # timer is already off) hands over to the current one.
+    if [[ -f "$cli" ]] && timer=$(python3 "$cli" schedule status 2>/dev/null) \
+        && python3 "$cli" schedule disable >/dev/null 2>&1; then
+        off=1
+    elif [[ -f "$cli" && -z "$staged" ]]; then
         staged=$(mktemp -d)
-        _stage "$staged" && cli="$staged/fleet" && timer=$(python3 "$cli" schedule status 2>/dev/null)
+        if _stage "$staged"; then
+            cli="$staged/fleet"
+            [[ -n "$timer" ]] || timer=$(python3 "$cli" schedule status 2>/dev/null)
+            python3 "$cli" schedule disable >/dev/null 2>&1 && off=1
+        fi
     fi
     [[ "$timer" == *' on' ]] && was_on=1
-    if [[ -n "$was_on" ]] && ! python3 "$cli" schedule disable >/dev/null 2>&1; then
+    if [[ -f "$cli" && -z "$off" ]]; then
         [[ -n "$staged" ]] && rm -rf "$staged"
         echo "fleet: could not turn off the nightly sync; nothing was removed, try again" >&2
         return 1
