@@ -583,11 +583,15 @@ def _listing():
 
 
 def _collisions(paths):
-    """Groups of paths one file on macOS's default disk: they differ only
-    in letter case or Unicode normalization."""
+    """Groups of spellings that are one file or folder on macOS's default
+    disk: they differ only in letter case or Unicode normalization. Folders
+    count too, since skills/Foo/a and skills/foo/b would share one."""
     groups = {}
     for rel in paths:
-        groups.setdefault(unicodedata.normalize("NFC", rel).casefold(), []).append(rel)
+        parts = rel.split("/")
+        for end in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:end])
+            groups.setdefault(unicodedata.normalize("NFC", prefix).casefold(), set()).add(prefix)
     return sorted(", ".join(sorted(g)) for g in groups.values() if len(g) > 1)
 
 
@@ -755,9 +759,9 @@ def _apply_changes(take, remove, contents, server, backup):
 
 
 def _move_foreign(backup):
-    backup.move(AGENTS_DIR, "agents-other-account")
-    CONFIG_STATE.unlink(missing_ok=True)
+    moved = backup.move(AGENTS_DIR, "agents-other-account")
     _report(f"moved another account's ~/.agents to {backup.root}")
+    return moved
 
 
 def pull(account):
@@ -808,9 +812,19 @@ def pull(account):
         # A sign-in during the fetch: these files are the old account's.
         if _context() != account:
             raise ConfigError("the session changed during the sync")
-        if foreign:
-            _move_foreign(backup)
-        _apply_changes(take, remove, contents, server, backup)
+        moved = _move_foreign(backup) if foreign else None
+        try:
+            _apply_changes(take, remove, contents, server, backup)
+        except BaseException:
+            # The other account's copy, which its record and links still
+            # name, comes back until this account's is fully in place.
+            if moved:
+                if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
+                    backup.move(AGENTS_DIR, "agents-incomplete")
+                shutil.move(str(moved), str(AGENTS_DIR))
+                _report("put the other account's ~/.agents back, since this account's copy "
+                        "could not be written")
+            raise
         if record is None:
             _move_harness_skills(backup)
         if conflicts:
