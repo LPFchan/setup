@@ -113,9 +113,16 @@ status() {
 }
 
 uninstall() {
-    # Through python3, so a binary that lost its executable bit still cleans up.
-    [[ -f "$BIN" ]] && python3 "$BIN" schedule disable >/dev/null 2>&1
-    [[ -f "$BIN" ]] && python3 "$BIN" __unlink
+    # Through python3, so a binary that lost its executable bit still cleans up;
+    # a deleted one is fetched again, since only it can put the links back.
+    local cli="$BIN" staged=""
+    if [[ ! -f "$cli" ]]; then
+        staged=$(mktemp)
+        _stage "$staged" && cli="$staged"
+    fi
+    [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
+    [[ -f "$cli" ]] && python3 "$cli" __unlink
+    [[ -n "$staged" ]] && rm -f "$staged"
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
     rm -f "$BIN"

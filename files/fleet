@@ -742,15 +742,28 @@ def _move_harness_skills(backup):
 
 
 def _apply_changes(take, remove, contents, server, backup):
-    """Replaced and deleted local copies, symlinks included, go to the backup."""
-    for rel in sorted(remove) + sorted(take):
-        target = _safe_target(rel)
-        if target.is_symlink() or target.exists():
-            backup.move(target, f"agents/{rel}")
-    for rel in remove:
-        _remove_file(rel)
-    for rel in sorted(take):
-        _write_file(rel, contents[rel], server[rel][1])
+    """Replaced and deleted local copies, symlinks included, go to the backup.
+    If a write fails, the files already written go and the moved ones come
+    back, so ~/.agents stays as it was."""
+    moved, written = [], []
+    try:
+        for rel in sorted(remove) + sorted(take):
+            target = _safe_target(rel)
+            if target.is_symlink() or target.exists():
+                moved.append((target, backup.move(target, f"agents/{rel}")))
+        for rel in remove:
+            _remove_file(rel)
+        for rel in sorted(take):
+            _write_file(rel, contents[rel], server[rel][1])
+            written.append(rel)
+    except BaseException:
+        for rel in written:
+            _remove_file(rel)
+        for target, saved in reversed(moved):
+            if not os.path.lexists(target):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(saved), str(target))
+        raise
 
 
 def _move_foreign(backup):
@@ -991,16 +1004,21 @@ def refresh_links():
         for entry in _skill_link_targets(links):
             if entry.name not in names:
                 _unlink_restoring(entry, links)
+    # The old agents module's links go, and what they replaced comes back,
+    # also when the link was already deleted: fleet is the only one left to
+    # return it.
     for target in OLD_AGENTS_LINKS:
         if _points_into(target, AGENTS_DIR):
             target.unlink()
-            _restore_old_backup(target)
+        _restore_old_backup(target)
     for directory in OLD_SKILL_LINK_DIRS:
         if directory.is_dir():
             for entry in list(directory.iterdir()):
                 if _points_into(entry, skills):
                     entry.unlink()
                     _restore_old_backup(entry)
+                elif entry.name.endswith(".pre-agents.bak"):
+                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
     _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
@@ -1142,7 +1160,9 @@ def config_outdated():
         return False
     record = _load_json(CONFIG_STATE, {})
     if record.get("account") != account:
-        return counter > 0
+        # Another account's config here is outdated even when this account
+        # has none: the pull moves it aside.
+        return counter > 0 or bool(record)
     return record.get("version") != version
 
 

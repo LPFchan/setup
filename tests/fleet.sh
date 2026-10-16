@@ -147,10 +147,18 @@ module update >/dev/null 2>&1 || fail "update"
 [[ "$(module status)" == *current* ]] || fail "status after update"
 
 # A binary that lost its executable bit still restores the harness links.
-printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\\n")\n' > "$FLEET_BIN"
+printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\\n")\n' > "$TMP/recorder"
+cp "$TMP/recorder" "$FLEET_BIN"
 chmod -x "$FLEET_BIN"
 module uninstall >/dev/null 2>&1 || fail "uninstall"
 grep -qx __unlink "$FAKE/ran" || fail "uninstall skipped __unlink for a non-executable binary"
 [[ ! -e "$FLEET_BIN" ]] || fail "uninstall left the binary"
+# A deleted binary is fetched again for the cleanup, since only it can put
+# the links back.
+module install >/dev/null 2>&1 || fail "reinstall"
+rm -f "$FLEET_BIN" "$FAKE/ran"
+cp "$TMP/recorder" "$TMP/recorder.py"
+FLEET_SOURCE="$TMP/recorder.py" module uninstall >/dev/null 2>&1 || fail "uninstall without the binary"
+grep -qx __unlink "$FAKE/ran" || fail "uninstall skipped __unlink when the binary was gone"
 
 echo "fleet tests passed"
