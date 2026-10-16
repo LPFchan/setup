@@ -455,8 +455,11 @@ class Changed(Exception):
 def config_sync_enabled():
     try:
         rows = SETUP_STATE.read_text().splitlines()
-    except OSError:
+    except FileNotFoundError:
         return True
+    except OSError:
+        # Unread, the old modules may still own ~/.agents: wait.
+        return False
     return not any(row.split("\t", 1)[0] in PREDECESSOR_MODULES for row in rows)
 
 
@@ -714,6 +717,20 @@ def _load_json(path, default):
     return value if isinstance(value, type(default)) else default
 
 
+def _load_sync_record():
+    """The sync record; {} only when there is none. A damaged one would read
+    as a first join, which takes the account's copy over local edits."""
+    try:
+        value = json.loads(CONFIG_STATE.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read {CONFIG_STATE} ({exc}); move it aside to join afresh") from None
+    if not isinstance(value, dict):
+        raise ConfigError(f"{CONFIG_STATE} is not a sync record; move it aside to join afresh")
+    return value
+
+
 def _save_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}")
@@ -827,7 +844,7 @@ def pull(account):
         counter, version, server = _listing()
         if _context() != account:
             raise ConfigError("the session changed during the sync")
-        state = _load_json(CONFIG_STATE, {})
+        state = _load_sync_record()
         record = state if state.get("account") == account else None
         backup = Backup()
         # Another account's files: they are not this account's to push. They

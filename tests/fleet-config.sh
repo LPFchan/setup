@@ -145,6 +145,11 @@ fleet sync >/dev/null 2>&1 || fail "sync while gated"
 grep -q '/api/fleet/config' "$FAKE/log" && fail "config touched while agents is installed"
 fleet status | grep -q 'waits until setup swaps out' || fail "status while gated"
 : > "$STATE_DIR/script-state.tsv"
+# So does it when that record cannot be read.
+chmod 000 "$STATE_DIR/script-state.tsv"; : > "$FAKE/log"
+fleet sync >/dev/null 2>&1 || fail "sync with an unreadable setup state"
+chmod 600 "$STATE_DIR/script-state.tsv"
+grep -q '/api/fleet/config' "$FAKE/log" && fail "config touched with an unreadable setup state"
 
 # A friend's machine, account never pushed: local files stay, nothing is
 # uploaded, and onboarding is left pending.
@@ -234,6 +239,17 @@ rc=0; fleet sync >"$TMP/out" 2>&1 || rc=$?
 chmod 700 "$HOME/.agents/skills/mine"
 [[ $rc != 0 ]] || fail "synced with an unreadable skill folder"
 [[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "an unreadable folder was uploaded as deleted"
+# So does a file where the skills folder was.
+mv "$HOME/.agents/skills" "$TMP/skills.away"; printf 'x\n' > "$HOME/.agents/skills"
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+rm "$HOME/.agents/skills"; mv "$TMP/skills.away" "$HOME/.agents/skills"
+[[ $rc != 0 && "$out" == *"Not a directory"* ]] || fail "synced with a file for the skills folder: $out"
+[[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "a file for the skills folder was uploaded as deletions"
+# A damaged sync record fails the sync instead of reading as a first join.
+cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"; printf '{' > "$XDG_STATE_HOME/fleet/config.json"
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
+[[ $rc != 0 && "$out" == *"move it aside"* ]] || fail "synced over a damaged record: $out"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
