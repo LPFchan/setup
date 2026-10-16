@@ -1034,11 +1034,26 @@ def _check_json_objects(payloads):
                 raise ConfigError(f"{rel} is not a JSON object; fix it before uploading")
 
 
+def _read_regular(rel):
+    """A file's bytes, refusing one turned into a link (or a FIFO, which
+    would block) since it was scanned: its target is not fleet's to send."""
+    try:
+        fd = os.open(AGENTS_DIR/rel, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ConfigError(f"{rel} became a link while syncing; nothing pushed, run fleet sync again")
+        raise
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ConfigError(f"{rel} is no longer a regular file; nothing pushed, run fleet sync again")
+        return f.read()
+
+
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
     # Each file is read once, so what is checked, sent, and recorded as sent
     # is the same version even while an editor saves over it.
-    payloads = {rel: (AGENTS_DIR/rel).read_bytes() for rel in sorted(puts)}
+    payloads = {rel: _read_regular(rel) for rel in sorted(puts)}
     _check_json_objects(payloads)
     clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts))
     if clashes:
@@ -1607,8 +1622,11 @@ def schedule_stale():
             return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
         service = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.service").read_text()
         timer = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer").read_text()
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        # One that cannot be read may be the old timer all the same.
+        return True
     return "fleet schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
 
 

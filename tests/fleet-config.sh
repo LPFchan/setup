@@ -574,6 +574,32 @@ rc=0; fleet sync >"$TMP/out" 2>&1 || rc=$?
 grep -q 'could not replace the nightly timer' "$TMP/out" || fail "failed timer swap not reported"
 [[ "$(server_has skills/mine/unsent)" == "<none>" ]] || fail "uploaded while the old timer may remain"
 rm -f "$HOME/.agents/skills/mine/unsent" "$SCHEDULE_USER_DIR"/fleet-sync.*
+# One that cannot be read is taken as that old timer too.
+mkdir -p "$SCHEDULE_USER_DIR"
+printf 'ExecStart=%%h/.local/bin/fleet schedule run\n' > "$SCHEDULE_USER_DIR/fleet-sync.service"
+printf 'OnCalendar=*-*-* 04:00:00\n' > "$SCHEDULE_USER_DIR/fleet-sync.timer"
+chmod 000 "$SCHEDULE_USER_DIR/fleet-sync.service"
+printf 'unsent\n' > "$HOME/.agents/skills/mine/unsent"
+fleet sync >/dev/null 2>&1 || true
+[[ "$(server_has skills/mine/unsent)" == "<none>" ]] || fail "uploaded past a timer it could not read"
+chmod 644 "$SCHEDULE_USER_DIR/fleet-sync.service"
+rm -f "$HOME/.agents/skills/mine/unsent" "$SCHEDULE_USER_DIR"/fleet-sync.*
+# A file turned into a link after the scan is not read through it.
+python3 - "$ROOT/files/fleet" "$TMP" <<'PY' || fail "pushed through a link swapped in after the scan"
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_swap", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+secret = pathlib.Path(sys.argv[2])/"secret"; secret.write_text("not fleet's\n")
+swapped = m.AGENTS_DIR/"skills/mine/swapped"; swapped.symlink_to(secret)
+try:
+    m.push({"account": "o s"}, {}, {"skills/mine/swapped"}, [])
+except m.ConfigError as exc:
+    assert "became a link" in str(exc), exc
+else:
+    raise SystemExit("pushed")
+finally:
+    swapped.unlink(); secret.unlink()
+PY
 
 # Auth down: exit 3, nothing touched.
 touch "$FAKE/down"
