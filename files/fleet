@@ -2281,12 +2281,13 @@ def _rendered_on(record, surface):
 
 
 def render_claude_mcp(claude, servers, previous, retired):
-    """(ok, kept, found): kept holds the previous records of servers claude
-    would not remove, so the applied record keeps owning them and the next run
-    retries; found names the user's own entries that already matched ours,
-    which stay theirs. Without claude (only when taking settings back) the
-    file is edited."""
-    ok, kept, found = True, {}, set()
+    """(ok, kept, found, failed): kept holds the previous records of servers
+    claude would not remove, so the applied record keeps owning them and the
+    next run retries; found names the user's own entries that already matched
+    ours, which stay theirs; failed names the servers claude would not add,
+    which fleet does not claim. Without claude (only when taking settings
+    back) the file is edited."""
+    ok, kept, found, failed = True, {}, set(), set()
     for name in sorted(retired):
         if _claude_mcp_scope(claude, name) is not None:
             print(f"  unregistering retired MCP server {name}")
@@ -2307,7 +2308,9 @@ def render_claude_mcp(claude, servers, previous, retired):
         argv = [claude, "mcp", "add-json", "--scope", "user", server["name"], json.dumps(want)]
         scope = _claude_mcp_scope(claude, server["name"])
         if scope is None:
-            ok = _claude_add(argv) and ok
+            if not _claude_add(argv):
+                ok = False
+                failed.add(server["name"])
         elif scope not in ("", "user"):
             # A local or project registration is the user's and shadows ours.
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
@@ -2319,12 +2322,14 @@ def render_claude_mcp(claude, servers, previous, retired):
         elif _claude_user_entry(server["name"]) != want:
             print(f"  re-enrolling {server['name']}")
             if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
-                ok = _claude_add(argv) and ok
+                if not _claude_add(argv):
+                    ok = False
+                    failed.add(server["name"])
             else:
                 ok = False
         elif not _rendered_on((previous.get("mcp") or {}).get(server["name"]), "claude"):
             found.add(server["name"])
-    return ok, kept, found
+    return ok, kept, found, failed
 
 
 def _claude_remove(argv):
@@ -2639,7 +2644,8 @@ def _hermes_entries(lines, start, end):
     out = []
     for n, (k, name) in enumerate(heads):
         stop = heads[n + 1][0] if n + 1 < len(heads) else end
-        while stop > k + 1 and lines[stop - 1].strip() == "":
+        # A comment at the margin after an entry is the user's, not the entry's.
+        while stop > k + 1 and (lines[stop - 1].strip() == "" or lines[stop - 1].startswith("#")):
             stop -= 1
         out.append((name, k, stop))
     return out
@@ -2756,7 +2762,7 @@ def render_hermes(servers, previous, retired, clear=False):
             del lines[k:stop]
     start, end = _yaml_block(lines, "mcp_servers")
     at = end
-    while at > start + 1 and not lines[at - 1].strip():
+    while at > start + 1 and (not lines[at - 1].strip() or lines[at - 1].startswith("#")):
         at -= 1
     lines[at:at] = [line for s in servers if s["name"] not in seen for line in wanted[s["name"]]]
     skills = bool(previous.get("hermesSkills"))
@@ -3044,13 +3050,13 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False),
                   "codexReclaimed": previous.get("codexReclaimed", False)}
-        kept_mcp, users, rendered, hermes_urls = {}, {}, set(), {}
+        kept_mcp, users, rendered, hermes_urls, missed = {}, {}, set(), {}, set()
         prev_mcp = previous.get("mcp") or {}
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command)
-                claude_ok, kept_mcp, found = render_claude_mcp(
+                claude_ok, kept_mcp, found, missed = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
                 rendered.add("claude")
                 for name in found:
@@ -3123,7 +3129,8 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                                      "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None,
                                      # Where fleet put it: this run's surfaces, and
                                      # those a harness absent now got before.
-                                     "rendered": sorted(set(mcp_surfaces(s)) & rendered | {
+                                     "rendered": sorted((set(mcp_surfaces(s)) & rendered
+                                                         - ({"claude"} if s["name"] in missed else set())) | {
                                          x for x in SURFACES if x not in rendered
                                          and _rendered_on(prev_mcp.get(s["name"]), x)})}
                          for s in servers.values()}

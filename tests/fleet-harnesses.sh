@@ -361,6 +361,33 @@ rm "$FAKE/claude-remove-fail"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after claude recovered"
 [[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "a failed claude remove was not retried"
 
+# A server claude failed to add is not fleet's on claude: the matching entry
+# the user then adds by hand stays when the server is dropped.
+touch "$FAKE/claude-add-fail"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "extra", "url": "https://extra.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 && fail "a failed claude add went unreported"
+rm "$FAKE/claude-add-fail"
+python3 - "$HOME/.claude.json" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); v["mcpServers"]["extra"] = {"type": "http", "url": "https://extra.example/mcp"}
+json.dump(v, open(sys.argv[1], "w"))
+EOF
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the user added the server claude failed on"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the server claude failed on"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "claude lost the user's entry for a server it failed to add"
+python3 - "$HOME/.claude.json" <<'EOF'
+import json, sys
+v = json.load(open(sys.argv[1])); del v["mcpServers"]["extra"]; json.dump(v, open(sys.argv[1], "w"))
+EOF
+
 # A server dropped while claude is missing stays fleet's, so the run that
 # finds claude again removes it.
 with_extra='{"mcpServers": [
@@ -644,6 +671,26 @@ server_put mcp.json '{"mcpServers": [
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra after the unreadable hermes entry"
+# A comment at the margin after fleet's last entry stays when it goes.
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding extra before a margin comment"
+python3 - "$HOME/.hermes/config.yaml" <<'PY'
+import sys
+lines = open(sys.argv[1]).read().split("\n")
+k = lines.index("  extra:")
+while k + 1 < len(lines) and lines[k + 1].startswith("    "):
+    k += 1
+lines.insert(k + 1, "# keep me")
+open(sys.argv[1], "w").write("\n".join(lines))
+PY
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra before a margin comment"
+grep -q '^  extra:$' "$HOME/.hermes/config.yaml" && fail "hermes kept extra"
+grep -q '^# keep me$' "$HOME/.hermes/config.yaml" || fail "hermes removed the user's margin comment with extra"
+sed -i '/^# keep me$/d' "$HOME/.hermes/config.yaml"
 # A quoted mcp_servers key is the same key, edited in place, not a second
 # one beside it.
 sed -i 's/^mcp_servers:$/"mcp_servers":/' "$HOME/.hermes/config.yaml"
