@@ -1207,7 +1207,17 @@ def config_sync(direct):
             if state == "out" and os.path.lexists(OLD_AGENTS_CLONE) and not_the_operators():
                 settle_old_agents(operator=False)
             return 3
-        settle_old_agents(operator=account.split(" ", 1)[1] == OPERATOR_SUBJECT)
+        operator = account.split(" ", 1)[1] == OPERATOR_SUBJECT
+        if not operator and os.path.lexists(OLD_AGENTS_CLONE):
+            # The old payload stays in use until Auth answers for the account's.
+            _listing()
+        settle_old_agents(operator=operator)
+    except (Rejected, Unreachable) as exc:
+        eprint(f"fleet: account config: {exc}")
+        return 3
+    except ConfigError as exc:
+        eprint(f"fleet: account config: {exc}")
+        return 1
     except OSError as exc:
         eprint(f"fleet: account config: settling the old agents module: {exc}")
         return 1

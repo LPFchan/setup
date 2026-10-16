@@ -159,6 +159,12 @@ fleet sync >/dev/null 2>&1 || fail "sync settling the clone on the operator's ma
 # and the operator's files move to the backup.
 old_agents
 printf '7' > "$FAKE/subject"
+# Until Auth answers for the account's copy, the old one stays in use.
+touch "$FAKE/down"
+fleet sync >/dev/null 2>&1 && fail "a sync with Auth down reported success"
+rm "$FAKE/down"
+[[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && -f "$HOME/.agents/AGENTS.md" ]] \
+    || fail "settled the clone before Auth answered"
 fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
 [[ ! -e "$STATE_DIR/agents-src" ]] || fail "clone left on a friend's machine"
 [[ "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" && ! -L "$HOME/.gemini/GEMINI.md" ]] \
