@@ -78,6 +78,21 @@ data = json.load(open(sys.argv[1]))
 assert data["env"] == {"OTHER": "1"}, data
 PY
 
+# fleet's nightly __export writes the route only while the service is up and
+# never removes it.
+touch "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export failed with the service down"
+! grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export wrote a route to a stopped proxy"
+rm "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export failed"
+grep -q '^export ANTHROPIC_BASE_URL=http://127.0.0.1:10100$' "$HOME/.zshenv" \
+    || fail "__export did not write the route"
+touch "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" __export >/dev/null
+grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export removed the route"
+[[ $(python3 "$ROOT/files/opencodex" __proxy-url) == http://127.0.0.1:10100 ]] \
+    || fail "__proxy-url did not print the proxy address"
+
 # A failed repair leaves the export alone: the service may still be running.
 rm "$HOME/proxy-down"
 python3 "$ROOT/files/opencodex" proxy >/dev/null || fail "proxy failed to restore the export"

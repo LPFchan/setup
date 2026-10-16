@@ -2634,6 +2634,13 @@ def main() -> int:
             return 0 if opencodex_config_status(Path(sys.argv[2])) else 1
         elif command == "__names":
             print("\n".join(load_registry(Path(sys.argv[2]))["providers"]))
+        elif command == "__export":
+            # fleet's nightly pass: write the route while the service is up,
+            # never remove it, since a proxy caught mid-restart must keep it.
+            if proxy_service_active():
+                write_base_url_export()
+        elif command == "__proxy-url":
+            print(f"http://127.0.0.1:{proxy_port()}")
         else:
             raise UserError("unknown internal command")
         return 0
