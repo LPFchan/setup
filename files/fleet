@@ -862,17 +862,22 @@ def _move_harness_skills(backup):
     return moved
 
 
-def _apply_changes(take, remove, contents, server, backup, then=None):
+def _apply_changes(take, remove, contents, server, backup, then=None, scanned=None):
     """Replaced and deleted local copies, symlinks included, go to the backup.
     If a write fails, or `then` (run once all are written) does, the files
     already written go and the moved ones come back, so ~/.agents stays as it
-    was."""
-    moved, written = [], []
+    was. Returns the paths whose local copy changed since `scanned` was read:
+    an edit saved during the sync, which the merge never saw."""
+    moved, written, changed = [], [], []
     try:
         for rel in sorted(remove) + sorted(take):
             target = _safe_target(rel)
             if target.is_symlink() or target.exists():
-                moved.append((target, backup.move(target, f"agents/{rel}")))
+                saved = backup.move(target, f"agents/{rel}")
+                moved.append((target, saved))
+                if (scanned is not None and saved.is_file() and not saved.is_symlink()
+                        and _digest(saved) != scanned.get(rel)):
+                    changed.append(rel)
         for rel in remove:
             _remove_file(rel)
         for rel in sorted(take):
@@ -888,6 +893,7 @@ def _apply_changes(take, remove, contents, server, backup, then=None):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(saved), str(target))
         raise
+    return changed
 
 
 def _move_foreign(backup):
@@ -923,18 +929,21 @@ def pull(account):
         local = {} if foreign else scan_local()[0]
         if record is None and counter == 0:
             moved = _move_foreign(backup) if foreign else None
-            if other:
-                # Even with no tree to move, the other account's links go. Its
-                # record stays until they have, so a retry finishes the job,
-                # and so does its tree, which the record and links still name.
-                try:
+            try:
+                # Even with no tree to move, the other account's links go.
+                if other:
                     refresh_links()
-                except BaseException:
-                    _put_foreign_back(moved, backup)
-                    raise
+                ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                ONBOARDING_MARKER.touch()
+                # Its record goes last: until then a failure puts its tree and
+                # links back, and a retry finishes the job.
                 CONFIG_STATE.unlink(missing_ok=True)
-            ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
-            ONBOARDING_MARKER.touch()
+            except BaseException:
+                if other:
+                    _put_foreign_back(moved, backup)
+                    with contextlib.suppress(Exception):
+                        refresh_links()
+                raise
             return "pending", None, []
         conflicts = []
         if record is None:
@@ -967,7 +976,7 @@ def pull(account):
             # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
         try:
-            _apply_changes(take, remove, contents, server, backup, then=finish)
+            conflicts += _apply_changes(take, remove, contents, server, backup, then=finish, scanned=local)
         except BaseException:
             for folder, saved in reversed(harness):
                 if not os.path.lexists(folder):
@@ -978,9 +987,9 @@ def pull(account):
             raise
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
-                    f"{backup.root}): " + ", ".join(sorted(conflicts)))
+                    f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", new_record, sorted(conflicts)
+        return "synced", new_record, sorted(set(conflicts))
     raise ConfigError("the account kept changing during the sync; try again")
 
 

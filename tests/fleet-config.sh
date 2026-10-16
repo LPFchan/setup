@@ -282,6 +282,14 @@ rc=0; out=$(fleet sync 2>&1) || rc=$?
 rm "$HOME/.agents"; mv "$TMP/agents.away" "$HOME/.agents"
 [[ $rc != 0 && "$out" == *"is not a folder"* ]] || fail "synced with a file for ~/.agents: $out"
 [[ "$(server_has skills/mine/SKILL.md)" == "edited" ]] || fail "a file for ~/.agents was uploaded as deletions"
+# A file saved again after the scan, which the account then replaces, is a
+# conflict too, its edit in the backup.
+server_put skills/mine/SKILL.md 'from account'
+printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
+out=$(fleet sync --pull 2>&1) || true
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from account" ]] || fail "the account's copy not taken over a late save"
+[[ "$out" == *"changed here and in the account"*"skills/mine/SKILL.md"* ]] || fail "a late save replaced silently: $out"
+grep -rlx 'saved later' "$XDG_STATE_HOME/fleet/backup" | grep -q 'skills/mine/SKILL.md' || fail "a late save not in the backup"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
@@ -583,6 +591,15 @@ chmod 700 "$XDG_STATE_HOME/fleet"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "an unsaved record dropped the old record"
 rm -rf "$HOME/.claude/skills/handmade"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+# A switch that cannot be written down puts the other account's files and
+# links back.
+chmod 500 "$XDG_STATE_HOME/fleet"
+fleet sync >/dev/null 2>&1 && fail "switched accounts without writing the switch down"
+chmod 700 "$XDG_STATE_HOME/fleet"
+[[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
+    || fail "an unwritten switch left the other account's files or links out"
+grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "an unwritten switch dropped the old record"
+[[ ! -e "$XDG_STATE_HOME/fleet/onboarding.pending" ]] || fail "an unwritten switch left onboarding pending"
 # Links that cannot be cleared yet are cleared by the next sync.
 chmod 500 "$HOME/.claude/skills"
 fleet sync >/dev/null 2>&1 && fail "sync read uncleared links as done"
