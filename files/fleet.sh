@@ -132,11 +132,19 @@ status() {
 }
 
 uninstall() {
-    # Through python3, so a binary that lost its executable bit still cleans up.
-    [[ -f "$BIN" ]] && python3 "$BIN" schedule disable >/dev/null 2>&1
+    # Through python3, so a binary that lost its executable bit still cleans up;
+    # a deleted one is fetched again, since only it can take the rendered
+    # settings and links back down.
+    local cli="$BIN" staged=""
+    if [[ ! -f "$cli" ]]; then
+        staged=$(mktemp -d)
+        _stage "$staged" && cli="$staged/fleet"
+    fi
+    [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
     # Before the binary goes: claude's MCP entries call it for their tokens.
-    [[ -f "$BIN" ]] && python3 "$BIN" __unrender
-    [[ -f "$BIN" ]] && python3 "$BIN" __unlink
+    [[ -f "$cli" ]] && python3 "$cli" __unrender
+    [[ -f "$cli" ]] && python3 "$cli" __unlink
+    [[ -n "$staged" ]] && rm -rf "$staged"
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
     # The harnesses alias fleet left in place of the old client.
