@@ -201,6 +201,21 @@ rm -rf "$HOME/.claude/skills/lost"
 find "$XDG_STATE_HOME/fleet/backup" -path '*.agents/skills/opskill/SKILL.md' | grep -q . \
     || fail "the operator's skills not in the backup"
 rm -rf "$HOME/.gemini" "$HOME/.agents" "$XDG_STATE_HOME/fleet/onboarding.pending"
+# An account this machine already pulled takes its whole copy back over the
+# old payload, so its record never names files the payload took away.
+server_put AGENTS.md 'account instructions'; server_put skills/acct/SKILL.md 'account skill'
+fleet sync --pull >/dev/null 2>&1 || fail "pull before the old module's payload"
+old_agents
+fleet sync --pull >/dev/null 2>&1 || fail "pull settling the clone with a record"
+[[ ! -e "$STATE_DIR/agents-src" ]] || fail "clone left with a record"
+[[ "$(cat "$HOME/.agents/AGENTS.md")" == "account instructions" && -f "$HOME/.agents/skills/acct/SKILL.md" ]] \
+    || fail "the old payload took the account's files away"
+fleet sync >/dev/null 2>&1 || fail "direct sync after settling with a record"
+python3 -c 'import json, sys; f = json.load(open(sys.argv[1]))["files"]; sys.exit(not {"AGENTS.md", "skills/acct/SKILL.md"} <= set(f))' \
+    "$FAKE/server.json" || fail "settling with a record uploaded deletions"
+fleet __unlink >/dev/null
+rm -rf "$HOME/.gemini" "$HOME/.agents" "$FAKE/server.json" "$XDG_STATE_HOME/fleet/config.json" \
+    "$XDG_STATE_HOME/fleet/onboarding.pending"
 
 # A friend's machine, account never pushed: local files stay, nothing is
 # uploaded, and onboarding is left pending.

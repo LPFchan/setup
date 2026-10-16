@@ -836,7 +836,9 @@ def pull(account, settle_old=False):
         other = bool(state) and record is None
         foreign = other and AGENTS_DIR.exists()
         old = settle_old and os.path.lexists(OLD_AGENTS_CLONE)
-        local = {} if foreign or (old and record is None) else scan_local()[0]
+        # The old payload is not this account's either, and goes; with it in
+        # the way the merge would read the account's files as already here.
+        local = {} if foreign or old else scan_local()[0]
         if record is None and counter == 0:
             if old:
                 settle_old_agents(operator=False)
@@ -851,8 +853,9 @@ def pull(account, settle_old=False):
             ONBOARDING_MARKER.touch()
             return "pending", None, []
         conflicts = []
-        if record is None:
-            # Joining an account that was pushed: take its copy wholesale.
+        if record is None or old:
+            # Joining an account that was pushed, or taking it back over the
+            # old payload: take its copy wholesale.
             take = [p for p in server if local.get(p) != server[p]]
             remove = [p for p in local if p not in server]
         else:
