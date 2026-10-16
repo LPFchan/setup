@@ -323,7 +323,45 @@ request_output = io.StringIO()
 with contextlib.redirect_stdout(request_output):
     m["cmd_request"]("GET", "/api/fleet")
 assert json.loads(request_output.getvalue()) == {"version":"v1", "keys":[]}
-assert sent == [("/api/fleet", {"json_body":None, "session":"refresh-secret", "method":"GET"})]
+assert sent == [("/api/fleet", {"json_body":None, "session":"refresh-secret", "method":"GET",
+                                "timeout":m["REQUEST_TIMEOUT"]})]
+# A body of "-" is read from stdin, since a config push outgrows an argument.
+sent.clear()
+real_stdin = sys.stdin
+sys.stdin = io.StringIO('{"base":3,"put":[]}')
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        m["cmd_request"]("POST", "/api/fleet/config/push", "-")
+finally:
+    sys.stdin = real_stdin
+assert sent[0][1]["json_body"] == {"base":3, "put":[]}
+# An error answer reaches the caller as JSON with its status and Retry-After,
+# so a stale push or a rate limit is not mistaken for an outage.
+def limited(path, **kwargs):
+    raise m["AuthError"]("too many pushes", 429, retry_after=120)
+m["cmd_request"].__globals__["_request"] = limited
+error_output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(error_output):
+        m["cmd_request"]("POST", "/api/fleet/config/push", '{"base":1}')
+except m["AuthError"] as exc:
+    assert exc.exit_code == 6
+else:
+    raise AssertionError("error answer was not reported")
+assert json.loads(error_output.getvalue()) == {"status":429, "error":"too many pushes", "retry_after":120}
+assert json.load(open(os.environ["LOST_AUTH_STORE"]))["session_state"] == "active"
+# An unreachable Auth keeps its plain failure and prints nothing.
+def down(path, **kwargs):
+    raise m["AuthError"]("cannot reach Auth", transient=True)
+m["cmd_request"].__globals__["_request"] = down
+down_output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(down_output):
+        m["cmd_request"]("GET", "/api/fleet")
+except m["AuthError"] as exc:
+    assert exc.exit_code == 1
+assert down_output.getvalue() == ""
+m["cmd_request"].__globals__["_request"] = fleet
 for method, path in (("GET", "https://elsewhere.example/api/fleet"), ("TRACE", "/api/fleet")):
     try:
         m["cmd_request"](method, path)
@@ -342,6 +380,37 @@ except m["AuthError"] as exc:
 else:
     raise AssertionError("rejected session was not reported")
 assert json.load(open(os.environ["LOST_AUTH_STORE"]))["session_state"] == "invalid"
+# A 401 for a session another login already replaced leaves the new one alone.
+json.dump({**saved, "session_state":"active"}, open(os.environ["LOST_AUTH_STORE"], "w"))
+def replaced(path, **kwargs):
+    json.dump({**saved, "session_state":"active",
+               "session":{**saved["session"], "refresh_token":"newer-secret"}},
+              open(os.environ["LOST_AUTH_STORE"], "w"))
+    raise m["AuthError"]("setup session is invalid, expired, or revoked", 401)
+m["cmd_request"].__globals__["_request"] = replaced
+try:
+    m["cmd_request"]("GET", "/api/fleet")
+except m["AuthError"] as exc:
+    assert exc.exit_code == 4
+assert json.load(open(os.environ["LOST_AUTH_STORE"]))["session_state"] == "active"
+
+# _request reads Retry-After off an error answer.
+import email.message, urllib.error
+def answer_429(request, timeout):
+    headers = email.message.Message()
+    headers["Retry-After"] = "90"
+    raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", headers,
+                                 io.BytesIO(b'{"error":"slow down"}'))
+real_urlopen = m["_request"].__globals__["urllib"].request.urlopen
+m["_request"].__globals__["urllib"].request.urlopen = answer_429
+try:
+    m["_request"]("/api/fleet")
+except m["AuthError"] as exc:
+    assert (exc.status, exc.retry_after, str(exc)) == (429, 90, "slow down")
+else:
+    raise AssertionError("429 was not raised")
+finally:
+    m["_request"].__globals__["urllib"].request.urlopen = real_urlopen
 
 # A malformed saved session never blocks the login that would replace it.
 broken = json.load(open(os.environ["LOST_AUTH_STORE"]))

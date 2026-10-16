@@ -31,14 +31,15 @@ TAILSCALE_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
 
 class AuthError(RuntimeError):
-    def __init__(self, message, status=None, transient=False, exit_code=1):
+    def __init__(self, message, status=None, transient=False, exit_code=1, retry_after=None):
         super().__init__(message)
         self.status = status
         self.transient = transient
         self.exit_code = exit_code
+        self.retry_after = retry_after
 
 
-def _request(path, *, form=None, json_body=None, token=None, session=None, method=None):
+def _request(path, *, form=None, json_body=None, token=None, session=None, method=None, timeout=15):
     data = None
     headers = {"Accept": "application/json", "User-Agent": "setup-auth/1.0"}
     if session:
@@ -55,17 +56,22 @@ def _request(path, *, form=None, json_body=None, token=None, session=None, metho
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(ORIGIN + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as exc:
         try:
             detail = json.loads(exc.read()).get("error")
         except Exception:
             detail = None
+        try:
+            retry_after = int(exc.headers.get("Retry-After", ""))
+        except (TypeError, ValueError):
+            retry_after = None
         raise AuthError(
             detail or f"Auth returned HTTP {exc.code}",
             exc.code,
             transient=exc.code >= 500,
+            retry_after=retry_after,
         ) from exc
     except json.JSONDecodeError as exc:
         raise AuthError(f"Auth returned invalid JSON: {exc}") from exc
@@ -505,9 +511,18 @@ def cmd_context():
     print(json.dumps({"origin": origin, "subject": subject}, separators=(",", ":")))
 
 
+# Account config pushes carry up to ~20 MB, which the default would cut off.
+REQUEST_TIMEOUT = 120
+
+
 def cmd_request(method, path, body=None):
     """A request to Auth made with this machine's setup session rather than a
-    bearer token, so revoking the machine ends it (the Fleet endpoints)."""
+    bearer token, so revoking the machine ends it (the Fleet endpoints).
+
+    A body of "-" is read from stdin, since a config push is too large for an
+    argument. When Auth answers with an error, its status, message, and
+    Retry-After go to stdout as JSON with exit code 6, so a caller can tell a
+    stale push (409) or a rate limit (429) from an outage."""
     if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
         raise AuthError(f"unsupported method {method}", exit_code=2)
     if not path.startswith("/api/"):
@@ -515,31 +530,47 @@ def cmd_request(method, path, body=None):
     json_body = None
     if body is not None:
         try:
-            json_body = json.loads(body)
+            json_body = json.loads(sys.stdin.read() if body == "-" else body)
         except json.JSONDecodeError as exc:
             raise AuthError(f"invalid JSON body: {exc}", exit_code=2) from exc
+    # The store lock covers reading the session, not the request: a large push
+    # must not hold up every other auth call (the keepout hook among them).
     with _store_lock():
-        data = _load()
-        if data is None or data.get("version") != 2:
-            raise AuthError("no renewable setup login; run: auth login", exit_code=4)
-        if data.get("origin") != ORIGIN:
-            raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
-        session = data.get("session")
-        if not isinstance(session, dict):
-            session = {}
-        expires_at = session.get("expires_at")
-        expired = isinstance(expires_at, int) and not isinstance(expires_at, bool) and expires_at <= time.time()
-        token = session.get("refresh_token")
-        if data.get("session_state") == "invalid" or expired or not isinstance(token, str) or not token:
-            raise AuthError("setup session is invalid, expired, or revoked; run: auth login", 401, exit_code=4)
-        try:
-            response = _request(path, json_body=json_body, session=token, method=method)
-        except AuthError as exc:
-            if exc.status == 401:
-                _invalidate(data)
-                raise AuthError(str(exc), exc.status, exit_code=4) from exc
-            raise
+        token = _request_session()
+    try:
+        response = _request(path, json_body=json_body, session=token, method=method,
+                            timeout=REQUEST_TIMEOUT)
+    except AuthError as exc:
+        if exc.status == 401:
+            with _store_lock():
+                data = _load()
+                # Another login may have replaced the session meanwhile.
+                if isinstance(data, dict) and (data.get("session") or {}).get("refresh_token") == token:
+                    _invalidate(data)
+            raise AuthError(str(exc), exc.status, exit_code=4) from exc
+        if exc.status is not None:
+            print(json.dumps({"status": exc.status, "error": str(exc), "retry_after": exc.retry_after},
+                             separators=(",", ":")))
+            raise AuthError(str(exc), exc.status, exit_code=6) from exc
+        raise
     print(json.dumps(response, separators=(",", ":")))
+
+
+def _request_session():
+    data = _load()
+    if data is None or data.get("version") != 2:
+        raise AuthError("no renewable setup login; run: auth login", exit_code=4)
+    if data.get("origin") != ORIGIN:
+        raise AuthError("saved login belongs to another Auth origin; restore LOST_AUTH_ORIGIN or run: auth login")
+    session = data.get("session")
+    if not isinstance(session, dict):
+        session = {}
+    expires_at = session.get("expires_at")
+    expired = isinstance(expires_at, int) and not isinstance(expires_at, bool) and expires_at <= time.time()
+    token = session.get("refresh_token")
+    if data.get("session_state") == "invalid" or expired or not isinstance(token, str) or not token:
+        raise AuthError("setup session is invalid, expired, or revoked; run: auth login", 401, exit_code=4)
+    return token
 
 
 def cmd_status():
@@ -567,7 +598,7 @@ def cmd_status():
 
 USAGE = (
     "Usage: auth login | auth refresh | auth token [--cached] <service> | auth status | auth context\n"
-    "       auth request <METHOD> </api/path> [json-body]"
+    "       auth request <METHOD> </api/path> [json-body | -]"
 )
 
 
