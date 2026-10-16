@@ -85,4 +85,29 @@ grep -q '^chained' "$filtered" && fail "prune kept a module depending on a dropp
 manifest_cols=$(awk -F '\t' 'NF { print NF }' "$MANIFEST_FILE" | sort -u | tr '\n' ' ')
 [[ "$manifest_cols" == "4 " ]] || fail "cached manifest has columns '$manifest_cols', expected '4 '"
 
+# --- fleet needs schedule on Linux only ------------------------------
+# Its timer is a systemd unit on Linux and a launchd agent on macOS, which
+# the requires column cannot say, so module_requires adds it.
+write_requires 'fleet\tauth\n'
+uname() { echo Linux; }
+[[ "$(module_requires fleet)" == "auth schedule" ]] || fail "fleet on Linux requires '$(module_requires fleet)'"
+uname() { echo Darwin; }
+[[ "$(module_requires fleet)" == "auth" ]] || fail "fleet on macOS requires '$(module_requires fleet)'"
+unfunction uname
+
+# The same rule keeps schedule from being uninstalled under fleet.
+saved_manifest="$TMP/manifest.saved"
+cp "$MANIFEST_FILE" "$saved_manifest"
+printf '%b' 'schedule\t~/schedule\tscript\tx\nfleet\t~/fleet\tscript\tx\n' > "$MANIFEST_FILE"
+functions[saved_is_installed]=$functions[module_is_installed]
+module_is_installed() { return 0; }
+uname() { echo Linux; }
+[[ "$(installed_dependents_of schedule)" == fleet ]] || fail "schedule dependents on Linux: '$(installed_dependents_of schedule)'"
+[[ "$(installed_dependents_of auth)" == fleet ]] || fail "auth dependents: '$(installed_dependents_of auth)'"
+uname() { echo Darwin; }
+[[ -z "$(installed_dependents_of schedule)" ]] || fail "schedule dependents on macOS: '$(installed_dependents_of schedule)'"
+unfunction uname
+functions[module_is_installed]=$functions[saved_is_installed]
+cp "$saved_manifest" "$MANIFEST_FILE"
+
 echo "module-dependencies: ok"
