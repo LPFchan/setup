@@ -1340,10 +1340,8 @@ def _version_key(path):
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", str(path))]
 
 
-def _nvm_toolchains():
-    """nvm's node bin/ folders: its default first, as a login shell picks
-    it, so a timer finds the same harness copy the user and system-updates
-    run; then the rest, newest first."""
+def _nvm_default():
+    """nvm's default node bin/, as a login shell picks it, or None."""
     root = HOME/".nvm"
     dirs = sorted((root/"versions/node").glob("*/bin"), key=_version_key, reverse=True)
     spec = "default"
@@ -1357,8 +1355,17 @@ def _nvm_toolchains():
     for d in dirs:
         version = d.parent.name.removeprefix("v")
         if spec in ("node", "stable") or version == want or version.startswith(want + "."):
-            return [d] + [x for x in dirs if x != d]
-    return dirs
+            return d
+    return None
+
+
+def _nvm_toolchains():
+    """nvm's node bin/ folders: its default first, so a timer finds the same
+    harness copy the user and system-updates run; then the rest, newest
+    first."""
+    dirs = sorted((HOME/".nvm/versions/node").glob("*/bin"), key=_version_key, reverse=True)
+    default = _nvm_default()
+    return [default] + [x for x in dirs if x != default] if default else dirs
 
 
 def manifest():
@@ -1379,10 +1386,11 @@ def _heal_path():
 
     systemd and launchd start fleet with a login-less PATH, where claude,
     codex, npm and ocx are all invisible. The user's own bin directories lead,
-    even ahead of a system copy of a harness; the node toolchains go on the
-    end, there to be found rather than to win.
+    even ahead of a system copy of a harness, and so does nvm's default node,
+    as a login shell puts it first; the other node toolchains go on the end,
+    there to be found rather than to win.
     """
-    mine = [HOME/".local/bin", HOME/".opencode/bin"]
+    mine = [HOME/".local/bin", HOME/".opencode/bin"] + [d for d in [_nvm_default()] if d]
     toolchains = _nvm_toolchains() + [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
