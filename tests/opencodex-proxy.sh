@@ -82,10 +82,40 @@ PY
 rm "$HOME/proxy-down"
 python3 "$ROOT/files/opencodex" proxy >/dev/null || fail "proxy failed to restore the export"
 touch "$HOME/ocx-fails"
-if python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
+if OPENCODEX_ACTIVATE_WAIT=0 python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
     fail "proxy succeeded when ocx service failed"
 fi
 grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "a failed repair removed the export"
+
+# A fake proxy on a free port answers /healthz and /v1/models, published
+# through a runtime-port file at a non-default OPENCODEX_RUNTIME_PORT path.
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+cat > "$TMP/fake-proxy.py" <<'PY'
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"status": "ok", "version": "1"} if self.path == "/healthz" else {"data": []}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+export OPENCODEX_RUNTIME_PORT="$TMP/runtime-port.json"
+printf '{"port": %s}\n' "$PORT" > "$OPENCODEX_RUNTIME_PORT"
+unset HARNESSES_PROXY_PORT
+
+# A cold start that outlives ocx's own wait is not a failure: the proxy comes
+# up a few seconds later and the export follows it, on the configured port.
+(sleep 3; exec python3 "$TMP/fake-proxy.py" "$PORT") &
+PROXY_PID=$!
+trap 'kill $PROXY_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+OPENCODEX_ACTIVATE_WAIT=30 python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1 \
+    || fail "proxy gave up on a slow cold start"
+grep -q "^export ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT$" "$HOME/.zshenv" \
+    || fail "the export ignored OPENCODEX_RUNTIME_PORT"
+kill $PROXY_PID; wait $PROXY_PID 2>/dev/null || true
+trap 'rm -rf "$TMP"' EXIT
+export HARNESSES_PROXY_PORT=10101
 
 # Settings that do not parse stop the run instead of being overwritten.
 rm "$HOME/ocx-fails"

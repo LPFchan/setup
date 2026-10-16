@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -2433,7 +2434,7 @@ def proxy_port() -> int:
         return int(override)
     port = PROXY_DEFAULT_PORT
     try:
-        port = int(json.loads((HOME / ".opencodex/runtime-port.json").read_text())["port"])
+        port = int(json.loads(RUNTIME_PORT.read_text())["port"])
     except Exception:
         pass
     for candidate in (port + 1, port):
@@ -2550,6 +2551,24 @@ def remove_base_url_export() -> None:
         print(f"  removed the ANTHROPIC_BASE_URL block from {ZSHENV}")
 
 
+def _wait_for_proxy() -> bool:
+    """True once a proxy answers /healthz, polling up to OPENCODEX_ACTIVATE_WAIT.
+
+    `ocx service` gives a fresh proxy ~20s, and a cold start syncing providers
+    and the model catalogue can take longer, so its nonzero exit alone is not
+    a failure (the install path in opencodex.sh waits the same way).
+    """
+    wait = int(os.environ.get("OPENCODEX_ACTIVATE_WAIT", "120"))
+    print(f"  ocx service did not confirm; waiting up to {wait}s for /healthz", file=sys.stderr)
+    deadline = time.monotonic() + wait
+    while True:
+        if live_proxy_port() is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
+
+
 def cmd_proxy() -> int:
     """Install or repair the proxy service, then export the route to it.
 
@@ -2562,7 +2581,7 @@ def cmd_proxy() -> int:
         raise UserError("ocx not installed; run: setup install opencodex")
     print(f"ensuring the opencodex proxy service ({proxy_service_name()}) ...")
     # `ocx service` installs when absent and repairs an existing service.
-    if subprocess.run([ocx, "service"]).returncode != 0:
+    if subprocess.run([ocx, "service"]).returncode != 0 and not _wait_for_proxy():
         print("  ocx service install/repair failed; see ~/.opencodex/service.log", file=sys.stderr)
         return 1
     if not proxy_service_active():
