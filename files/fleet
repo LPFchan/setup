@@ -16,6 +16,7 @@ import pathlib
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -982,7 +983,13 @@ def onboard(account):
     staged = []
     if not agents_md.exists() and sources:
         agents_md.parent.mkdir(parents=True, exist_ok=True)
-        agents_md.write_bytes(sources[0][1])
+        # The copy keeps the source's permissions: an owner-only CLAUDE.md
+        # stays owner-only.
+        source, data = sources[0]
+        fd = os.open(agents_md, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                     stat.S_IMODE(source.stat().st_mode) & 0o666)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
         staged.append(agents_md)
     if agents_md.is_file():
         listed += [str(path) for path, data in sources if data != agents_md.read_bytes()]
