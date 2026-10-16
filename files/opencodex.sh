@@ -23,6 +23,10 @@ OPENCODEX_RELEASE_VERSION="${OPENCODEX_RELEASE_VERSION:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${OPENCODEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/opencodex}"
 REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}}"
+# The proxy drains in-flight turns for 300s on SIGTERM (shutdownTimeoutMs);
+# systemd's default 90s stop timeout would SIGKILL it mid-drain.
+STOP_TIMEOUT_DROPIN="${OPENCODEX_STOP_TIMEOUT_DROPIN:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/opencodex-proxy.service.d/50-stop-timeout.conf}"
+STOP_TIMEOUT_BODY=$'[Service]\nTimeoutStopSec=330'
 
 _installed_version() {
     "$OPENCODEX_BIN" --version 2>/dev/null | awk '{print $NF; exit}'
@@ -286,6 +290,19 @@ _runtime_active() {
     [[ "$live" == "$installed" ]]
 }
 
+_stop_timeout_current() {
+    [[ "$(uname -s)" != Linux ]] && return 0
+    [[ -f "$STOP_TIMEOUT_DROPIN" && "$(<"$STOP_TIMEOUT_DROPIN")" == "$STOP_TIMEOUT_BODY" ]]
+}
+
+_write_stop_timeout() {
+    _stop_timeout_current && return 0
+    mkdir -p "${STOP_TIMEOUT_DROPIN:h}"
+    print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    echo "opencodex: proxy stop timeout raised to 330s"
+}
+
 _apply() {
     local action="$1" staged version hash
     version=$(_resolve_release_version) || return 1
@@ -296,6 +313,7 @@ _apply() {
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
     _apply_all_providers || return 1
+    _write_stop_timeout
     _activate_runtime || return 1
     record_script_state "$MODULE" "$(_release_ref "$version")" "$hash" "$hash"
     echo "opencodex: $action -> $BIN"
@@ -331,6 +349,7 @@ status() {
         _assets_current_from "$staged" || drift=1
         (( drift == 1 )) || _providers_current || drift=1
         (( drift == 1 )) || _runtime_active || drift=1
+        _stop_timeout_current || drift=1
     fi
     rm -rf "$staged"
     if (( drift == 1 )); then
@@ -355,7 +374,8 @@ uninstall() {
             python3 "$BIN" __remove "$REGISTRY" \
             || echo "opencodex: could not remove managed providers from $OPENCODEX_CONFIG" >&2
     fi
-    rm -f "$BIN" "$OPENCODEX_BIN"
+    rm -f "$BIN" "$OPENCODEX_BIN" "$STOP_TIMEOUT_DROPIN"
+    rmdir "${STOP_TIMEOUT_DROPIN:h}" 2>/dev/null || true
     rm -rf "$OPENCODEX_ROOT"
     rm -f "$REGISTRY"
     remove_script_state "$MODULE"

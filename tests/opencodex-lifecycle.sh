@@ -17,6 +17,7 @@ export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
 export OPENCODEX_LAUNCHER_SOURCE="$ROOT/files/opencodex"
 export OPENCODEX_REGISTRY_SOURCE="$ROOT/files/provider-registry.json"
 export OPENCODEX_RELEASE_VERSION="2.7.42"
+export OPENCODEX_STOP_TIMEOUT_DROPIN="$HOME/.config/systemd/user/opencodex-proxy.service.d/50-stop-timeout.conf"
 mkdir -p "${OPENCODEX_LAUNCHER:h}" "${OPENCODEX_REGISTRY:h}" "$XDG_STATE_HOME"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -29,6 +30,8 @@ source "$ROOT/files/opencodex.sh"
 # machine running the tests. Unknown is the tolerated case; the drift cases
 # below stub it deliberately.
 _live_proxy_version() { print '' }
+# Keep the drop-in writes below from reloading this machine's user manager.
+systemctl() { :; }
 
 OPENCODEX_RELEASE_VERSION=""
 npm() { print '9.8.7'; }
@@ -77,6 +80,7 @@ if [ "${1:-}" = service ] && [ "${2:-}" = status ] && [ -e "$HOME/.opencodex/ser
 EOF
     chmod +x "$OPENCODEX_BIN"
     _apply_all_providers
+    _write_stop_timeout >/dev/null
 }
 
 expect_status() {
@@ -164,6 +168,16 @@ print '# drift' >> "$BIN"
 expect_status 1 outdated
 install_surfaces
 
+# systemd's default 90s stop timeout would SIGKILL the proxy mid-drain.
+if [[ "$(uname -s)" == Linux ]]; then
+    [[ "$(<"$OPENCODEX_STOP_TIMEOUT_DROPIN")" == *"TimeoutStopSec=330"* ]] \
+        || fail "the proxy stop-timeout drop-in was not written"
+    rm "$OPENCODEX_STOP_TIMEOUT_DROPIN"
+    expect_status 1 outdated
+    install_surfaces
+    expect_status 0 current
+fi
+
 rm -f "$OPENCODEX_BIN"
 expect_status 1 outdated
 install_surfaces
@@ -182,5 +196,6 @@ cp "$ROOT/files/provider-registry.json" "$providers_registry"
 uninstall
 [[ ! -e "$REGISTRY" ]] || fail "opencodex uninstall left its provider snapshot"
 [[ ! -e "$BIN" && ! -e "$OPENCODEX_ROOT" ]] || fail "opencodex uninstall left runtime files"
+[[ ! -e "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}" ]] || fail "opencodex uninstall left the stop-timeout drop-in"
 
 echo "opencodex lifecycle tests passed"
