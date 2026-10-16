@@ -738,7 +738,10 @@ def _load_record(path, valid):
 def _sync_record_ok(r):
     # An empty or wrong-shaped file map would read as "nothing synced yet".
     files = r.get("files")
-    return (isinstance(r.get("account"), str) and isinstance(r.get("counter"), int)
+    # An account _context() could never give would move ~/.agents aside as
+    # another account's.
+    return (isinstance(r.get("account"), str) and re.fullmatch(r"[^ ]+ [^ ]+", r["account"])
+            and isinstance(r.get("counter"), int)
             and isinstance(r.get("version"), int) and isinstance(files, dict)
             and all(config_path(k) and isinstance(v, list) and len(v) == 2
                     and isinstance(v[0], str) and re.fullmatch(r"[0-9a-f]{64}", v[0])
@@ -1367,11 +1370,11 @@ def config_status():
         return
     try:
         counter, version, server = _listing()
-    except ConfigError as exc:
+        record = _load_sync_record()
+        local, symlinks = scan_local()
+    except (ConfigError, OSError) as exc:
         print(f"fleet: account config: {exc}")
         return
-    record = _load_json(CONFIG_STATE, {})
-    local, symlinks = scan_local()
     if record.get("account") != account:
         print("fleet: account config not set up yet; run: fleet onboard" if counter == 0
               else "fleet: account config not pulled yet; run: fleet sync")

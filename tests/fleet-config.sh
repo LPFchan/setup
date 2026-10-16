@@ -260,12 +260,21 @@ for files in '[]' '{"AGENTS.md": [null, false]}' '{"AGENTS.md": ["abc", false]}'
     mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
     [[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "synced over a record with files $files: $out"
 done
+# An account _context() never gives would read as another account's.
+cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); r["account"]="invalid"; json.dump(r, open(sys.argv[1], "w"))' \
+    "$XDG_STATE_HOME/fleet/config.json"
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+mv "$TMP/record.keep" "$XDG_STATE_HOME/fleet/config.json"
+[[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "synced over a record of account \"invalid\": $out"
 # So does a folder where a synced file was, or a pipe in a skill folder.
 for odd in 'mkdir "$HOME/.agents/AGENTS.md"' 'mkfifo "$HOME/.agents/skills/mine/SKILL.md"'; do
     f=$(eval "echo ${odd#* }"); mv "$f" "$TMP/odd.keep"; eval "$odd"
     rc=0; out=$(fleet sync 2>&1) || rc=$?
+    status=$(fleet status 2>&1) || status="failed: $status"
     rm -rf "$f"; mv "$TMP/odd.keep" "$f"
     [[ $rc != 0 && "$out" == *"is not a regular file"* ]] || fail "synced past $odd: $out"
+    [[ "$status" == *"account config: "*"is not a regular file"* ]] || fail "status past $odd: $status"
 done
 # A file where ~/.agents was stops the sync rather than reading as empty.
 mv "$HOME/.agents" "$TMP/agents.away"; printf 'x\n' > "$HOME/.agents"
