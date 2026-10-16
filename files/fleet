@@ -741,10 +741,14 @@ def _report(text):
 
 def _skill_folders(directory):
     """The real, non-dot folders holding a SKILL.md in a harness skill folder."""
+    # Only a missing folder holds no skills; an unreadable one fails
+    # onboarding, which would otherwise record the account without them.
     try:
         entries = sorted(directory.iterdir())
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return []
+    except OSError as exc:
+        _unreadable(exc)
     # The old agents module's .pre-agents.bak sidecars go back by name when
     # the links are refreshed; they are not skills of their own.
     return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
@@ -1162,8 +1166,10 @@ def onboard(account):
         try:
             if path.is_file() and not _points_into(path, AGENTS_DIR):
                 sources.append((path, path.read_bytes()))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
+        except OSError as exc:
+            _unreadable(exc)
     # What this run copies into ~/.agents comes out again if staging or the
     # upload fails, so a retry gathers the harness files afresh.
     staged = []

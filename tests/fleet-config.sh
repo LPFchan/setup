@@ -185,6 +185,17 @@ fleet onboard >/dev/null 2>&1 && fail "onboard read a failed copy as success"
 rm -f "$HOME/.codex/skills/both/locked.md"
 [[ ! -e "$HOME/.agents/AGENTS.md" && ! -e "$HOME/.agents/skills/claude-only" && ! -e "$HOME/.agents/skills/both" ]] \
     || fail "a failed staging kept what it copied into ~/.agents"
+# An unreadable harness skill folder or instructions file fails onboarding,
+# which would otherwise record the account without them.
+chmod 000 "$HOME/.codex/skills"
+rc=0; out=$(fleet onboard 2>&1) || rc=$?
+chmod 700 "$HOME/.codex/skills"
+[[ $rc != 0 && "$out" == *"cannot read"*".codex/skills"* ]] || fail "onboarded past an unreadable skill folder: $out"
+chmod 000 "$HOME/.claude/CLAUDE.md"
+rc=0; out=$(fleet onboard 2>&1) || rc=$?
+chmod 600 "$HOME/.claude/CLAUDE.md"
+[[ $rc != 0 && "$out" == *"cannot read"*"CLAUDE.md"* ]] || fail "onboarded past unreadable instructions: $out"
+[[ ! -f "$FAKE/pushes" && ! -e "$XDG_STATE_HOME/fleet/config.json" ]] || fail "an unreadable source still uploaded"
 # A harness skill folder that cannot move puts back the ones already moved,
 # and no record is saved, so the next sync joins the account and moves them.
 chmod 500 "$HOME/.codex/skills"
