@@ -98,25 +98,37 @@ def _set_login_marker(needed):
         pass
 
 
+def _subject():
+    rc, context = _auth("context")
+    try:
+        subject = json.loads(context)["subject"] if rc == 0 else None
+    except (ValueError, TypeError, KeyError):
+        return None
+    return subject if isinstance(subject, str) and subject else None
+
+
 def fetch_fleet():
     """('ok', fleet, subject), ('rejected', None, None), or ('unavailable', None, None).
 
     A refresh first keeps the session alive and reports this machine to Auth;
     its failure is not fatal, since the request below says what counts."""
     _auth("refresh")
+    before = _subject()
     rc, out = _auth("request", "GET", "/api/fleet")
     if rc == 4:
         _set_login_marker(True)
         return "rejected", None, None
     if rc != 0:
         return "unavailable", None, None
-    rc, context = _auth("context")
+    # The request and the account it belongs to come from separate calls; a
+    # login in between would pair one account's fleet with another's subject.
+    # Reading the account on both sides of the request rules that out.
+    subject = _subject()
     try:
         fleet = json.loads(out)
-        subject = json.loads(context)["subject"]
-    except (ValueError, TypeError, KeyError):
+    except ValueError:
         return "unavailable", None, None
-    if rc != 0 or not isinstance(fleet, dict):
+    if subject is None or subject != before or not isinstance(fleet, dict):
         return "unavailable", None, None
     _set_login_marker(False)
     return "ok", fleet, subject
@@ -323,6 +335,9 @@ def _write(path, lines, mode=0o600):
     text = "\n".join(lines)
     try:
         if path.read_text() == text:
+            # Current text in a loosened file still fails sshd's checks.
+            if path.stat().st_mode & 0o777 != mode:
+                os.chmod(path, mode)
             return False
     except FileNotFoundError:
         pass

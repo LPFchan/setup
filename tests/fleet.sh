@@ -54,7 +54,7 @@ grep -q 'Host mine' "$FLEET_SSH_DIR/config" || fail "user stanza lost"
 grep -qx 'ssh-ed25519 AAAAPeer' "$FLEET_SSH_DIR/authorized_keys" || fail "peer key missing"
 grep -qx 'ssh-ed25519 AAAAHand hand' "$FLEET_SSH_DIR/authorized_keys" || fail "hand key lost"
 grep -q AAAAOwner "$FLEET_SSH_DIR/authorized_keys" && fail "a friend got the owner's GitHub keys"
-[[ "$(stat -c %a "$FLEET_SSH_DIR/config")" == 600 ]] || fail "config mode"
+[[ "$(ls -l "$FLEET_SSH_DIR/config")" == -rw-------* ]] || fail "config mode"
 fleet sync --check 2>/dev/null || fail "check after a write"
 
 # A stanza appended below the block moves the block back to the end, so the
@@ -102,6 +102,29 @@ fleet status 2>&1 | grep -q 'not yet served by Auth as in FLEET: spark1' || fail
 # An unconfirmed machine is told why its key is not in other machines' files.
 serve "${FLEET_JSON/\"served\":true/\"served\":false}" 0 7
 fleet sync 2>&1 >/dev/null | grep -q 'waiting for confirmation' || fail "no confirmation notice"
+
+# A file whose text is current but whose mode loosened is put back to 0600.
+serve "$FLEET_JSON"
+fleet sync >/dev/null 2>&1
+chmod 664 "$FLEET_SSH_DIR/config"
+fleet sync >/dev/null 2>&1
+[[ "$(ls -l "$FLEET_SSH_DIR/config")" == -rw-------* ]] || fail "loosened mode left alone"
+
+# A login between the request and the account check is no answer: the fleet
+# may belong to the account that was signed in before.
+cp "$FLEET_SSH_DIR/authorized_keys" "$TMP/keys.before"
+cat > "$TMP/auth.switching" <<'SH'
+#!/bin/sh
+case "$1" in
+    refresh) exit 0 ;;
+    context) printf '{"origin":"https://auth.lost.plus","subject":"%s"}\n' "$(cat "$FAKE/subject")" ;;
+    request) printf 1 > "$FAKE/subject"; printf '%s' '{"version":"v1","self":{"served":true,"key_mismatch":false},"keys":["ssh-ed25519 AAAAOther"],"hosts":[]}' ;;
+esac
+SH
+chmod +x "$TMP/auth.switching"
+serve "$FLEET_JSON" 0 7
+FLEET_AUTH_BIN="$TMP/auth.switching" fleet sync >/dev/null 2>&1 && fail "sync across a login change"
+cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written across a login change"
 
 # The setup module: no answer from Auth installs fine and reads as unknown, not
 # outdated, so setup does not fail every run on a machine waiting to log in.

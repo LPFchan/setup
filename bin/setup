@@ -291,20 +291,19 @@ module_requires() {
 
 # Installed modules that declare $1 as a dependency.
 installed_dependents_of() {
-    local wanted="$1" module requires dep target mode
-    [[ -f "$REQUIRES_FILE" ]] || return 0
-    while IFS=$'\t' read -r module requires; do
-        [[ -n "${module:-}" ]] || continue
-        for dep in ${=${requires//,/ }}; do
+    local wanted="$1" module target mode dep
+    [[ -f "$MANIFEST_FILE" ]] || return 0
+    # module_requires, not REQUIRES_FILE alone, so conditional needs such as
+    # fleet's schedule on Linux also protect the dependency.
+    while IFS=$'\t' read -r module target mode _; do
+        [[ -n "${module:-}" && "$module" != \#* && "$module" != "$wanted" ]] || continue
+        for dep in ${=$(module_requires "$module")}; do
             [[ "$dep" == "$wanted" ]] || continue
-            IFS=$'\t' read -r target mode < <(
-                awk -F '\t' -v m="$module" '$1 == m { print $2 "\t" $3; exit }' "$MANIFEST_FILE"
-            )
-            [[ -n "${target:-}" ]] || continue
             module_is_installed "$module" "$target" "$mode" \
                 && printf '%s\n' "$module"
+            break
         done
-    done < "$REQUIRES_FILE"
+    done < "$MANIFEST_FILE"
 }
 
 _dep_visit() {
