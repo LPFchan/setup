@@ -856,10 +856,8 @@ def pull(account, settle_old=False):
         # the way the merge would read the account's files as already here.
         local = {} if foreign or old else scan_local()[0]
         if record is None and counter == 0:
-            if old:
-                settle_old_agents(operator=False)
-            if foreign:
-                _move_foreign(backup)
+            if old or foreign:
+                _settle_pending(old, foreign, backup)
             if other:
                 # Even with no tree to move, the other account's links go. Its
                 # record stays until they have, so a retry finishes the job.
@@ -928,7 +926,7 @@ def pull(account, settle_old=False):
             # The account's copy is in place: a clone that cannot all go
             # still leaves its links made, and the next sync drops the rest.
             try:
-                _drop_old_clone(operator=False)
+                _drop_old_clone(operator=False, backup=backup)
             except BaseException:
                 refresh_links()
                 raise
@@ -1211,8 +1209,27 @@ def settle_old_agents(operator):
     backup = Backup()
     displaced = _displace_old_payload(backup)
     try:
-        _drop_old_clone(operator)
+        _drop_old_clone(operator, backup)
     except BaseException:
+        _restore_displaced(displaced, backup)
+        raise
+    if displaced:
+        _report_displaced(backup)
+
+
+def _settle_pending(old, foreign, backup):
+    """For an account never pushed: the old payload and another account's
+    tree both move aside, or neither does."""
+    displaced = _displace_old_payload(backup) if old else []
+    moved = None
+    try:
+        if foreign:
+            moved = _move_foreign(backup)
+        if old:
+            _drop_old_clone(operator=False, backup=backup)
+    except BaseException:
+        if moved:
+            shutil.move(str(moved), str(AGENTS_DIR))
         _restore_displaced(displaced, backup)
         raise
     if displaced:
@@ -1246,8 +1263,17 @@ def _report_displaced(backup):
     _report(f"moved the operator's AGENTS.md and skills the old agents module left to {backup.root}")
 
 
-def _drop_old_clone(operator):
-    if not operator:
+def _drop_old_clone(operator, backup=None):
+    if operator:
+        if OLD_AGENTS_CLONE.is_dir() and not OLD_AGENTS_CLONE.is_symlink():
+            shutil.rmtree(OLD_AGENTS_CLONE)
+        else:
+            OLD_AGENTS_CLONE.unlink()
+        return
+    # The clone goes first, by a rename that cannot stop halfway, and comes
+    # back if the links cannot go: a clone still here is what a retry finds.
+    saved = backup.move(OLD_AGENTS_CLONE, "agents-src")
+    try:
         for target in AGENTS_LINKS + OLD_AGENTS_LINKS:
             if _points_into(target, AGENTS_DIR):
                 target.unlink()
@@ -1260,10 +1286,9 @@ def _drop_old_clone(operator):
                 elif entry.name.endswith(".pre-agents.bak"):
                     # Its link already deleted: the sidecar still comes back.
                     _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
-    if OLD_AGENTS_CLONE.is_dir() and not OLD_AGENTS_CLONE.is_symlink():
-        shutil.rmtree(OLD_AGENTS_CLONE)
-    else:
-        OLD_AGENTS_CLONE.unlink()
+    except BaseException:
+        shutil.move(str(saved), str(OLD_AGENTS_CLONE))
+        raise
 
 
 def not_the_operators():

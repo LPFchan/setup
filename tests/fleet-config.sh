@@ -207,13 +207,19 @@ chmod 755 "$HOME"
 rm "$XDG_STATE_HOME/fleet/config.json"
 [[ "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
     || fail "a foreign tree that could not move left the old payload displaced"
-# A clone that cannot all go once the copy is in place leaves its links made.
-mkdir -p "$STATE_DIR/agents-src/.git/locked"; : > "$STATE_DIR/agents-src/.git/locked/f"
-chmod 500 "$STATE_DIR/agents-src/.git/locked"
-fleet sync >/dev/null 2>&1 && fail "a clone that could not all go reported success"
-chmod 700 "$STATE_DIR/agents-src/.git/locked"
+# A clone that cannot move once the copy is in place leaves its links made.
+chmod 500 "$STATE_DIR"
+fleet sync >/dev/null 2>&1 && fail "a clone that could not move reported success"
+chmod 755 "$STATE_DIR"
 [[ -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "account instructions" ]] \
-    || fail "a clone that could not all go left the account's links missing"
+    || fail "a clone that could not move left the account's links missing"
+# A link that cannot go puts the clone back, still with the account's links.
+chmod 500 "$HOME/.claude"
+fleet sync >/dev/null 2>&1 && fail "a link that could not go reported success"
+chmod 755 "$HOME/.claude"
+[[ -d "$STATE_DIR/agents-src/.git" ]] || fail "a link that could not go left the clone in the backup"
+[[ -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "account instructions" ]] \
+    || fail "a link that could not go left the account's links missing"
 # With the copy in hand, it replaces the old payload.
 fleet sync >/dev/null 2>&1 || fail "sync replacing the old payload"
 [[ ! -e "$STATE_DIR/agents-src" && "$(cat "$HOME/.agents/AGENTS.md")" == "account instructions" ]] \
@@ -224,19 +230,44 @@ rm -rf "$HOME/.agents" "$FAKE/server.json" "$XDG_STATE_HOME/fleet/config.json"
 old_agents
 # A skill link the user already deleted still gets its sidecar back.
 mkdir -p "$HOME/.claude/skills/lost.pre-agents.bak"; printf 'lost\n' > "$HOME/.claude/skills/lost.pre-agents.bak/SKILL.md"
+# For an account never pushed, another account's ~/.agents that cannot move
+# aside puts the old payload back too.
+printf '{"account": "someone-else", "counter": 1, "files": {}}' > "$XDG_STATE_HOME/fleet/config.json"
+chmod 555 "$HOME"
+fleet sync >/dev/null 2>&1 && fail "a pending account's foreign tree that could not move reported success"
+chmod 755 "$HOME"
+rm "$XDG_STATE_HOME/fleet/config.json"
+[[ -d "$STATE_DIR/agents-src/.git" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" \
+   && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
+    || fail "a pending account's foreign tree that could not move left the old payload displaced"
+# So does a clone that cannot move, with the other account's tree put back.
+printf '{"account": "someone-else", "counter": 1, "files": {}}' > "$XDG_STATE_HOME/fleet/config.json"
+printf 'theirs\n' > "$HOME/.agents/theirs"
+chmod 500 "$STATE_DIR"
+fleet sync >/dev/null 2>&1 && fail "a pending account's clone that could not move reported success"
+chmod 755 "$STATE_DIR"
+rm "$XDG_STATE_HOME/fleet/config.json"
+[[ "$(cat "$HOME/.agents/theirs")" == "theirs" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" ]] \
+    || fail "a pending account's clone that could not move left the other account's tree aside"
+rm "$HOME/.agents/theirs"
 # A payload that cannot all move aside puts back what did.
 chmod 500 "$HOME/.agents/skills"
 fleet sync >/dev/null 2>&1 && fail "a payload that could not move reported success"
 chmod 700 "$HOME/.agents/skills"
 [[ "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" ]] \
     || fail "a failed payload move left AGENTS.md in the backup"
-# A clone that cannot be removed puts the operator's payload back.
-mkdir -p "$STATE_DIR/agents-src/.git/locked"; : > "$STATE_DIR/agents-src/.git/locked/f"
-chmod 500 "$STATE_DIR/agents-src/.git/locked"
-fleet sync >/dev/null 2>&1 && fail "a clone that could not be removed reported success"
-chmod 700 "$STATE_DIR/agents-src/.git/locked"
+# A clone that cannot move puts the operator's payload back.
+chmod 500 "$STATE_DIR"
+fleet sync >/dev/null 2>&1 && fail "a clone that could not move reported success"
+chmod 755 "$STATE_DIR"
 [[ "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
-    || fail "a failed clone removal left the operator's payload in the backup"
+    || fail "a failed clone move left the operator's payload in the backup"
+# A link that cannot go puts the clone and the payload back.
+chmod 500 "$HOME/.claude/skills"
+fleet sync >/dev/null 2>&1 && fail "a link that could not go reported success on a friend's machine"
+chmod 755 "$HOME/.claude/skills"
+[[ -d "$STATE_DIR/agents-src/.git" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
+    || fail "a link that could not go left the clone or the payload in the backup"
 fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
 [[ "$(cat "$HOME/.claude/skills/lost/SKILL.md")" == "lost" && ! -e "$HOME/.claude/skills/lost.pre-agents.bak" ]] \
     || fail "an orphaned skill sidecar not restored"
