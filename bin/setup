@@ -1512,6 +1512,14 @@ cmd_update() {
             echo "Installing $dep, required by $dependent"
             if install_one "$dep" "$dep_target" "$dep_mode" "$dep_source"; then
                 dep_mark "$dep"
+                # Installed here, it is skipped below, so it is enabled here.
+                if is_service_module "$dep" \
+                    && [[ "$(module_service_unit "$dep" 2>/dev/null || true)" != tool ]] \
+                    && ! module_service_transition enable "$dep"; then
+                    echo "Warning: $dep installed but its service could not be enabled." >&2
+                    failure_count=$((failure_count + 1))
+                    failure_names+=("$dep")
+                fi
             else
                 echo "Warning: $dep dependency install failed; $dependent waits for it." >&2
                 failure_count=$((failure_count + 1))

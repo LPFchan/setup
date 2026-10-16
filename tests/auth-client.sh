@@ -345,6 +345,18 @@ try:
 finally:
     sys.stdin = real_stdin
 assert sent[0][1]["json_body"] == {"base":3, "put":[]}
+# A login saved for another origin than the pinned one is refused with exit
+# 5 and nothing sent, so fleet never pushes to an account it did not pull.
+sent.clear()
+m["cmd_request"].__globals__["ORIGIN"] = "https://elsewhere.example"
+try:
+    m["cmd_request"]("POST", "/api/fleet/config/push", '{"base":1}')
+except m["AuthError"] as exc:
+    assert exc.exit_code == 5
+else:
+    raise AssertionError("request for another origin's login was sent")
+assert sent == []
+m["cmd_request"].__globals__["ORIGIN"] = saved_origin
 # An error answer reaches the caller as JSON with its status and Retry-After,
 # so a stale push or a rate limit is not mistaken for an outage.
 def limited(path, **kwargs):
