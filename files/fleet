@@ -996,38 +996,42 @@ def refresh_links():
     folder, adding new skills and pruning removed ones."""
     links = _load_json(LINKS_STATE, {})
     backup = Backup()
-    agents_md = AGENTS_DIR/"AGENTS.md"
-    if agents_md.is_file():
-        for target in AGENTS_LINKS:
-            if target == HOME/"AGENTS.md" or target.parent.is_dir():
-                _link(target, agents_md, links, backup)
-    else:
-        for target in AGENTS_LINKS:
-            _unlink_restoring(target, links)
-    skills = AGENTS_DIR/"skills"
-    names = {e.name for e in _skill_entries(skills)}
-    if SKILL_LINK_DIR.parent.is_dir():
-        for name in sorted(names):
-            _link(SKILL_LINK_DIR/name, skills/name, links, backup)
-        for entry in _skill_link_targets(links):
-            if entry.name not in names:
-                _unlink_restoring(entry, links)
-    # The old agents module's links go, and what they replaced comes back,
-    # also when the link was already deleted: fleet is the only one left to
-    # return it.
-    for target in OLD_AGENTS_LINKS:
-        if _points_into(target, AGENTS_DIR):
-            target.unlink()
-        _restore_old_backup(target)
-    for directory in OLD_SKILL_LINK_DIRS:
-        if directory.is_dir():
-            for entry in list(directory.iterdir()):
-                if _points_into(entry, skills):
-                    entry.unlink()
-                    _restore_old_backup(entry)
-                elif entry.name.endswith(".pre-agents.bak"):
-                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
-    _save_json(LINKS_STATE, links)
+    # Saved however far this gets: a retry finds what it already displaced
+    # linked and would not record it again.
+    try:
+        agents_md = AGENTS_DIR/"AGENTS.md"
+        if agents_md.is_file():
+            for target in AGENTS_LINKS:
+                if target == HOME/"AGENTS.md" or target.parent.is_dir():
+                    _link(target, agents_md, links, backup)
+        else:
+            for target in AGENTS_LINKS:
+                _unlink_restoring(target, links)
+        skills = AGENTS_DIR/"skills"
+        names = {e.name for e in _skill_entries(skills)}
+        if SKILL_LINK_DIR.parent.is_dir():
+            for name in sorted(names):
+                _link(SKILL_LINK_DIR/name, skills/name, links, backup)
+            for entry in _skill_link_targets(links):
+                if entry.name not in names:
+                    _unlink_restoring(entry, links)
+        # The old agents module's links go, and what they replaced comes back,
+        # also when the link was already deleted: fleet is the only one left to
+        # return it.
+        for target in OLD_AGENTS_LINKS:
+            if _points_into(target, AGENTS_DIR):
+                target.unlink()
+            _restore_old_backup(target)
+        for directory in OLD_SKILL_LINK_DIRS:
+            if directory.is_dir():
+                for entry in list(directory.iterdir()):
+                    if _points_into(entry, skills):
+                        entry.unlink()
+                        _restore_old_backup(entry)
+                    elif entry.name.endswith(".pre-agents.bak"):
+                        _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
+    finally:
+        _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
 
