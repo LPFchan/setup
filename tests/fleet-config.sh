@@ -478,6 +478,12 @@ server_put skills/mine/SKILL.md 'from another machine'
 fleet sync --check >/dev/null 2>&1 && fail "check missed a server change"
 fleet sync --pull >/dev/null 2>&1
 [[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from another machine" ]] || fail "server change not taken"
+fleet sync --check >/dev/null 2>&1 || fail "check after a pull read as outdated"
+# A damaged sync record reads as outdated, so the sync that follows says so.
+cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/config.keep"
+python3 -c 'import json,sys; p=sys.argv[1]; r=json.load(open(p)); r["files"]=[]; json.dump(r,open(p,"w"))' "$XDG_STATE_HOME/fleet/config.json"
+fleet sync --check >/dev/null 2>&1 && fail "check read a damaged sync record as current"
+mv "$TMP/config.keep" "$XDG_STATE_HOME/fleet/config.json"
 find "$HOME/.agents/skills/mine/SKILL.md" -perm 600 | grep -q . || fail "an account file is readable by others"
 server_put skills/new/SKILL.md 'new skill'
 fleet sync --pull >/dev/null 2>&1
@@ -714,15 +720,30 @@ out=$(fleet sync 2>&1) || fail "sync with a linked claude skill folder: $out"
     || fail "linked skills through a linked claude skill folder: $out"
 fleet __unlink >/dev/null 2>&1 || fail "unlink with a linked claude skill folder"
 [[ "$(cd "$HOME/.agents/skills" && find . | sort)" == "$before" ]] || fail "unlinked through a linked claude skill folder"
-python3 - "$ROOT/files/fleet" "$HOME/.claude/skills" <<'PY' || fail "onboarding gathers skills through a linked harness folder"
+python3 - "$ROOT/files/fleet" "$HOME/.claude/skills" "$TMP" <<'PY' || fail "onboarding gathers skills through a linked harness folder"
 import importlib.machinery, importlib.util, pathlib, sys
 loader = importlib.machinery.SourceFileLoader("fleet_test", sys.argv[1])
 spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 assert m._skill_folders(pathlib.Path(sys.argv[2])) == []
+# A codex folder linked to ~/.agents gathers nothing from ~/.agents/skills.
+codex = pathlib.Path(sys.argv[3])/"codex-alias"
+codex.symlink_to(m.AGENTS_DIR)
+try:
+    assert m._skill_folders(codex/"skills") == []
+finally:
+    codex.unlink()
 PY
 rm "$HOME/.claude/skills"; mv "$TMP/claude-skills" "$HOME/.claude/skills"
 fleet sync >/dev/null 2>&1 || fail "sync after the claude skill folder came back"
+# A claude folder that is ~/.agents itself leads its skill folder there too.
+mv "$HOME/.claude" "$TMP/claude-dir"; ln -s "$HOME/.agents" "$HOME/.claude"
+before=$(cd "$HOME/.agents" && find . | sort)
+out=$(fleet sync 2>&1)
+[[ "$out" == *"is inside"* && "$(cd "$HOME/.agents" && find . | sort)" == "$before" ]] \
+    || fail "linked skills into ~/.agents through a linked claude folder: $out"
+rm "$HOME/.claude"; mv "$TMP/claude-dir" "$HOME/.claude"
+fleet sync >/dev/null 2>&1 || fail "sync after the claude folder came back"
 
 # Another account while ~/.agents is gone still drops this account's links.
 cp "$FAKE/server.json" "$TMP/server.keep"

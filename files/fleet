@@ -808,11 +808,16 @@ def _report(text):
     add_notice(text)
 
 
+def _inside_agents(path):
+    """Whether `path` leads into ~/.agents, through a linked parent too."""
+    return pathlib.Path(os.path.realpath(path)).is_relative_to(os.path.realpath(AGENTS_DIR))
+
+
 def _skill_folders(directory):
     """The real, non-dot folders holding a SKILL.md in a harness skill folder.
     A linked harness folder is skipped: it may lead into ~/.agents/skills,
     whose folders would then be moved out from under it."""
-    if directory.is_symlink():
+    if directory.is_symlink() or _inside_agents(directory):
         return []
     # Only a missing folder holds no skills; an unreadable one fails
     # onboarding, which would otherwise record the account without them.
@@ -1219,6 +1224,8 @@ def refresh_links():
             # Linking through it would move what it leads to, ~/.agents/skills
             # included, into the backup.
             eprint(f"fleet: {SKILL_LINK_DIR} is a link; not linking skills into it")
+        elif _inside_agents(SKILL_LINK_DIR):
+            eprint(f"fleet: {SKILL_LINK_DIR} is inside {AGENTS_DIR}; not linking skills into it")
         elif SKILL_LINK_DIR.parent.is_dir():
             for name in sorted(names):
                 _link(SKILL_LINK_DIR/name, skills/name, links, backup)
@@ -1415,7 +1422,11 @@ def config_outdated():
         counter, version, _ = _listing()
     except ConfigError:
         return False
-    record = _load_json(CONFIG_STATE, {})
+    # A damaged record is outdated: the sync that follows reports it.
+    try:
+        record = _load_sync_record()
+    except ConfigError:
+        return True
     if record.get("account") != account:
         # Another account's config here is outdated even when this account
         # has none: the pull moves it aside.
