@@ -337,6 +337,15 @@ server_put mcp.json '{"mcpServers": [
 fleet sync --pull >/dev/null 2>&1 || fail "pass changing the user's matching server"
 [[ "$(json "$HOME/.claude.json" 'v["mcpServers"]["theirs"]["url"]')" == https://t.example/mcp ]] \
     || fail "claude re-enrolled the user's own entry"
+# And a later render that finds it matching again leaves it theirs.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "theirs", "url": "https://t.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high", "nudge": 1}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass matching the user's entry again"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
 server_put mcp.json "$with_extra"
 fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the user's matching server"
 [[ "$(json "$HOME/.claude.json" '"theirs" in v["mcpServers"]')" == True ]] || fail "claude lost the user's own entry"
@@ -352,6 +361,46 @@ server_put mcp.json '{"mcpServers": [
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass after the user's own entry test"
+# Once the user deletes their entry, the one fleet adds back is fleet's and
+# goes with the server.
+add_theirs() {
+    python3 - "$HOME/.claude.json" "$HOME/.hermes/config.yaml" <<'EOF2'
+import json, sys
+v = json.load(open(sys.argv[1])); v["mcpServers"]["theirs"] = {"type": "http", "url": "https://t.example/mcp"}
+json.dump(v, open(sys.argv[1], "w"))
+text = open(sys.argv[2]).read().replace("mcp_servers:\n", "mcp_servers:\n  theirs:\n    type: remote\n"
+                                         "    url: https://t.example/mcp\n    oauth: false\n", 1)
+open(sys.argv[2], "w").write(text)
+EOF2
+}
+add_theirs
+with_theirs='{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "theirs", "url": "https://t.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+server_put mcp.json "$with_theirs"
+fleet sync --pull >/dev/null 2>&1 || fail "pass taking the user's entry as theirs again"
+python3 - "$HOME/.claude.json" "$HOME/.hermes/config.yaml" <<'EOF2'
+import json, sys
+v = json.load(open(sys.argv[1])); del v["mcpServers"]["theirs"]; json.dump(v, open(sys.argv[1], "w"))
+text = open(sys.argv[2]).read().replace("  theirs:\n    type: remote\n    url: https://t.example/mcp\n    oauth: false\n", "", 1)
+open(sys.argv[2], "w").write(text)
+EOF2
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high", "nudge": 1}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding the deleted entry back"
+[[ "$(json "$HOME/.claude.json" '"theirs" in v["mcpServers"]')" == True ]] && grep -q '^  theirs:' "$HOME/.hermes/config.yaml" \
+    || fail "the deleted entry was not added back"
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the re-added server"
+[[ "$(json "$HOME/.claude.json" '"theirs" in v["mcpServers"]')" == False ]] || fail "claude kept fleet's re-added entry as the user's"
+grep -q '^  theirs:' "$HOME/.hermes/config.yaml" && fail "hermes kept fleet's re-added entry as the user's"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the re-added entry test"
 
 # A t3 model the user already had stays when the account stops naming it;
 # one fleet added goes.
