@@ -710,5 +710,35 @@ json.dump({"counter": 0, "version": 1, "files": {}, "market": state["market"],
 PY
 fleet sync >/dev/null 2>&1 || true
 [[ -f "$HOME/.agents/skills/foo/SKILL.md" && -L "$HOME/.claude/skills/foo" ]] || fail "a never-pushed account's install not written"
+# An install folder replaced by a link here is backed up and written again.
+mkdir -p "$TMP/elsewhere"; printf 'elsewhere\n' > "$TMP/elsewhere/SKILL.md"
+rm -rf "$HOME/.agents/skills/foo"; ln -s "$TMP/elsewhere" "$HOME/.agents/skills/foo"
+market_put $FOO alice foo run.sh 'echo v3'
+fleet sync >/dev/null 2>&1 || true
+[[ ! -L "$HOME/.agents/skills/foo" && "$(cat "$HOME/.agents/skills/foo/run.sh")" == "echo v3" ]] \
+    || fail "an install folder replaced by a link was not written again"
+[[ "$(cat "$TMP/elsewhere/SKILL.md")" == "elsewhere" ]] || fail "wrote through the link"
+find "$XDG_STATE_HOME/fleet/backup" -type l -name foo | grep -q . || fail "the link was not backed up"
+# Another account's installs that cannot be written put this one's files back,
+# links and record with them.
+export HOME="$TMP/market" XDG_STATE_HOME="$TMP/market-state"
+TMP="$TMP" python3 - <<'PY2'
+import base64, hashlib, json, os
+f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
+json.dump(state, open(f"{os.environ['TMP']}/market.keep", "w"))
+def entry(text):
+    data = text.encode()
+    return {"content": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest(), "executable": False}
+sid = "44444444-4444-4444-8444-444444444444"
+state["market"][sid] = {"author": "carol", "folder": "clash", "published": True, "mine": False,
+                        "files": {"SKILL.md": entry("clash"), "x": entry("a file"), "x/y": entry("and a folder")}}
+json.dump({"counter": 0, "version": 1, "files": {}, "market": state["market"], "installs": {sid: "clash"}}, open(f, "w"))
+PY2
+printf '6' > "$FAKE/subject"
+fleet sync >/dev/null 2>&1 && fail "applied installs that cannot be written"
+[[ "$(cat "$HOME/.agents/AGENTS.md")" == "market account" && -e "$HOME/.claude/skills/pub/SKILL.md" ]] \
+    || fail "failed installs left the old account's files or links out"
+grep -q '"account": "https://auth.lost.plus 5"' "$XDG_STATE_HOME/fleet/config.json" || fail "failed installs dropped the old record"
+printf '5' > "$FAKE/subject"; mv "$TMP/market.keep" "$FAKE/server.json"
 
 echo "fleet config tests passed"
