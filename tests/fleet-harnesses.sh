@@ -183,7 +183,7 @@ printf '{}\n' > "$HOME/.config/harnesses/manifest.json"
 printf 'OnCalendar=daily\n' > "$SCHEDULE_USER_DIR/harnesses-update.timer"
 cat > "$HOME/.claude/settings.json" <<'JSON'
 {"theme": "light", "myKey": 1, "attribution": {"commit": "", "pr": ""},
- "permissions": {"defaultMode": "auto", "allow": ["Read", "mcp__jina__*"]}}
+ "permissions": {"defaultMode": "auto", "allow": ["Read", "WebFetch", "mcp__jina__*"]}}
 JSON
 cat > "$HOME/.claude.json" <<'JSON'
 {"mcpServers": {"jina": {"type": "http", "url": "https://mcp.jina.ai/v1"},
@@ -193,7 +193,7 @@ printf 'model = "gpt"\n\n[mcp_servers.open]\nurl = "https://elsewhere.example/mc
 printf 'model: x\nmcp_servers:\n  personal:\n    url: https://p.example/mcp\n' > "$HOME/.hermes/config.yaml"
 
 # The account's tier.
-server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)", "WebFetch"]}'
 server_put settings/keepout.json '{"enabled": true}'
 server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}]}'
 server_put mcp.json '{"mcpServers": [
@@ -222,7 +222,7 @@ settings="$HOME/.claude/settings.json"
 [[ "$(json "$settings" '"attribution" in v, "defaultMode" in v["permissions"]')" == "(False, False)" ]] \
     || fail "seeded harnesses settings not removed: $(cat "$settings")"
 allow=$(json "$settings" 'v["permissions"]["allow"]')
-for grant in Read 'Bash(ls:*)' 'mcp__daiso__*' 'mcp__notion__*' 'mcp__heatmap__*' 'mcp__wiki__*' 'mcp__mine__*' 'mcp__open__*'; do
+for grant in Read WebFetch 'Bash(ls:*)' 'mcp__daiso__*' 'mcp__notion__*' 'mcp__heatmap__*' 'mcp__wiki__*' 'mcp__mine__*' 'mcp__open__*'; do
     [[ "$allow" == *"'$grant'"* ]] || fail "allow lacks $grant: $allow"
 done
 [[ "$allow" != *jina* && "$allow" != *vault* ]] || fail "allow kept a removed grant: $allow"
@@ -518,6 +518,29 @@ m = v["providerInstances"]["claudeAgent"]["config"]["customModels"]
 m[:] = [r for r in m if r["slug"] != "own-model"]
 json.dump(v, open(sys.argv[1], "w"))
 EOF2
+# A run stopped after writing a setting, a grant and a t3 model still owns
+# them, so they come off when the account drops them.
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high", "crashKey": 1}, "permissionsAllowAdd": ["Bash(ls:*)", "Grep"]}'
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}, {"slug": "crash-model", "name": "Crash"}]}'
+python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_crash", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+def boom(*args): raise OSError("disk gone")
+fleet.render_hermes = boom
+sys.argv = ["fleet", "sync", "--pull"]
+sys.exit(fleet.main())' "$ROOT/files/fleet" </dev/null >/dev/null 2>&1 && fail "a run stopped partway rendered as done"
+[[ "$(json "$settings" 'v["permissions"]["allow"]')" == *Grep* ]] || fail "the stopped run wrote no grant"
+[[ "$(json "$t3" '[m["slug"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" == *crash-model* ]] \
+    || fail "the stopped run wrote no t3 model"
+server_put settings/claude.json '{"json": {"theme": "dark", "effortLevel": "high"}, "permissionsAllowAdd": ["Bash(ls:*)"]}'
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the stopped run"
+[[ "$(json "$settings" 'v["permissions"]["allow"]')" != *Grep* ]] || fail "a stopped run's grant was left as the user's"
+[[ "$(json "$settings" '"crashKey" in v')" == False ]] || fail "a stopped run's setting was left as the user's"
+[[ "$(json "$t3" '[m["slug"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" != *crash-model* ]] \
+    || fail "a stopped run's t3 model was left as the user's"
 # With no models to add, T3 settings without a claude provider stay as they are.
 mkdir -p "$TMP/t3home/.t3/userdata"
 printf '{"theme": "dark"}' > "$TMP/t3home/.t3/userdata/settings.json"
@@ -727,6 +750,8 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass after the tier changed"
 [[ "$(json "$settings" '"theme" in v, v["myKey"]')" == "(False, 1)" ]] || fail "dropped key: $(cat "$settings")"
 allow=$(json "$settings" 'v["permissions"]["allow"]')
 [[ "$allow" != *Bash* && "$allow" != *mcp__open__* && "$allow" == *Read* ]] || fail "allow after drop: $allow"
+# The user's own WebFetch grant, named by the account for a while, stays.
+[[ "$allow" == *WebFetch* ]] || fail "took off the user's own grant: $allow"
 servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
 [[ "$servers" == "['daiso', 'heatmap', 'mine', 'notion', 'personal', 'wiki']" ]] || fail "claude MCP after drop: $servers"
 grep -q '^  open:$' "$hermes" && fail "hermes kept a dropped server"

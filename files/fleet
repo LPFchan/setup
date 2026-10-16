@@ -2175,7 +2175,8 @@ def _drop_path(value, path):
 def render_claude(desired, allow, previous, command):
     """~/.claude/settings.json: the tiers deep-merged in, the allow list
     union-merged, the keepout hook reconciled. What the record says fleet
-    wrote and the tiers no longer set comes off while it holds that value."""
+    wrote and the tiers no longer set comes off while it holds that value.
+    Returns the settings and grants fleet owns."""
     current = load_json(CLAUDE_SETTINGS)
     before = json.dumps(current, sort_keys=True)
     wanted = _leaves(desired)
@@ -2193,7 +2194,11 @@ def render_claude(desired, allow, previous, command):
     # a connector granted per tool leaves a row per tool.
     retired = tuple(f"mcp__{n}__" for n in (manifest().get("retiredMcpServers") or [])
                     + (manifest().get("retiredMcpGrants") or []))
-    gone = set(previous.get("allow") or []) - set(allow)
+    recorded = previous.get("allow") or []
+    gone = set(recorded) - set(allow)
+    # A grant the user had before fleet named it stays theirs: left out of
+    # the record, it is never taken off.
+    owned = [e for e in allow if e in recorded or e not in existing]
     kept = [e for e in existing
             if e not in gone and not (retired and isinstance(e, str) and e.startswith(retired))]
     kept += [e for e in allow if e not in kept]
@@ -2205,7 +2210,7 @@ def render_claude(desired, allow, previous, command):
     if json.dumps(merged, sort_keys=True) != before:
         save_json_atomic(CLAUDE_SETTINGS, merged)
         print(f"  wrote {CLAUDE_SETTINGS}")
-    return wanted
+    return wanted, owned
 
 
 def _claude_mcp_entry(server):
@@ -2932,6 +2937,32 @@ def _prospective_mcp(previous, servers, present):
     return mcp
 
 
+def _prospective_settings(previous, desired, allow, t3_models, present):
+    """The previous claude, allow and t3 records, plus what this run adds: a
+    run stopped after writing them still owns them, and the next run does
+    not read them as the user's."""
+    def dig(value, *keys):
+        for key in keys:
+            value = value.get(key) if isinstance(value, dict) else None
+        return value
+    out = {}
+    if present["claude"]:
+        out["claude"] = {**(previous.get("claude") or {}), **_leaves(desired)}
+        existing = dig(load_json(CLAUDE_SETTINGS), "permissions", "allow")
+        existing = existing if isinstance(existing, list) else []
+        recorded = previous.get("allow") or []
+        out["allow"] = recorded + [e for e in allow if e not in recorded and e not in existing]
+    if present["t3"]:
+        rows = dig(load_json(T3_SETTINGS), "providerInstances", "claudeAgent", "config", "customModels")
+        have = {r.get("slug") if isinstance(r, dict) else r for r in rows if isinstance(r, (dict, str))} \
+            if isinstance(rows, list) else set()
+        out["t3"] = dict(previous.get("t3") or {})
+        for model in t3_models:
+            if model["slug"] not in have and model["slug"] not in out["t3"]:
+                out["t3"][model["slug"]] = {k: v for k, v in model.items() if k != "effortsFrom"}
+    return out
+
+
 def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
     m, present, opencodex, servers, digest = _harness_inputs(account, tier, hub, clear)
     retired = set(m.get("retiredMcpServers") or []) - set(servers)
@@ -2963,9 +2994,17 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         # record must save before any harness file changes, already owning
         # what this run will add; marked unrendered, a run stopped partway
         # renders again.
+        def on(surface):
+            return [s for s in servers.values() if surface in mcp_surfaces(s)]
+        desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {}, tier["claude"])
+        allow = list(tier["allow"])
+        allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
+        t3_models = _t3_models(tier, opencodex)
         try:
             _save_json(APPLIED, dict(previous, hash=None,
-                                     mcp=_prospective_mcp(previous, servers, present)))
+                                     mcp=_prospective_mcp(previous, servers, present),
+                                     **({} if clear else _prospective_settings(
+                                         previous, desired, allow, t3_models, present))))
         except OSError as exc:
             eprint(f"fleet: harness settings: {exc}")
             return 1
@@ -2982,8 +3021,6 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
             eprint(f"fleet: {exc}")
             return 1
 
-        def on(surface):
-            return [s for s in servers.values() if surface in mcp_surfaces(s)]
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False),
@@ -2993,11 +3030,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
-                desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {},
-                                     tier["claude"])
-                allow = list(tier["allow"])
-                allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
-                record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
+                record["claude"], record["allow"] = render_claude(desired, allow, previous, command)
                 claude_ok, kept_mcp, found = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
                 rendered.add("claude")
@@ -3024,7 +3057,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                     _mirror_dotenv(CODEX_DIR/".env", exports, retired_env)
                 rc = rc if render_codex_keepout(command) else 1
             if present["t3"]:
-                record["t3"] = render_t3(_t3_models(tier, opencodex), previous)
+                record["t3"] = render_t3(t3_models, previous)
             hermes = None
             if present["hermes"]:
                 try:
