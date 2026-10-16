@@ -1029,6 +1029,8 @@ def pull(account, settle_old=False):
         try:
             _apply_changes(take, remove, contents, server, backup)
             _apply_installs(installs, writes, drops, fetched, backup)
+            if record is None:
+                _move_harness_skills(backup)
         except BaseException:
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
@@ -1037,7 +1039,7 @@ def pull(account, settle_old=False):
                     backup.move(AGENTS_DIR, "agents-incomplete")
                 shutil.move(str(moved), str(AGENTS_DIR))
                 _report("put the other account's ~/.agents back, since this account's copy "
-                        "could not be written")
+                        "could not be put in place")
             for path, saved in reversed(displaced):
                 if not os.path.lexists(path):
                     shutil.move(str(saved), str(path))
@@ -1046,8 +1048,6 @@ def pull(account, settle_old=False):
             if displaced:
                 _report_displaced(backup)
             _drop_old_clone(operator=False)
-        if record is None:
-            _move_harness_skills(backup)
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(conflicts)))
@@ -2452,17 +2452,19 @@ def _claude_json_remove(name):
 
 
 def render_claude_mcp(claude, servers, previous, retired):
-    """(ok, kept): kept holds the previous records of servers claude would not
-    remove, so the applied record keeps owning them and the next run retries.
-    Without claude (only when taking settings back) the file is edited."""
-    ok, kept = True, {}
+    """(ok, kept, found): kept holds the previous records of servers claude
+    would not remove, so the applied record keeps owning them and the next run
+    retries; found names the user's own entries that already matched ours,
+    which stay theirs. Without claude (only when taking settings back) the
+    file is edited."""
+    ok, kept, found = True, {}, set()
     for name in sorted(retired):
         if _claude_mcp_scope(claude, name) is not None:
             print(f"  unregistering retired MCP server {name}")
             # No -s: the CLI then removes it from whichever scope holds it.
             ok = _claude_remove([claude, "mcp", "remove", name]) and ok
     for name, record in (previous.get("mcp") or {}).items():
-        if name in servers or name in retired:
+        if name in servers or name in retired or "claude" in (record.get("users") or []):
             continue
         entry = _claude_user_entry(name)
         if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
@@ -2486,7 +2488,9 @@ def render_claude_mcp(claude, servers, previous, retired):
                 ok = _claude_add(argv) and ok
             else:
                 ok = False
-    return ok, kept
+        elif server["name"] not in (previous.get("mcp") or {}):
+            found.add(server["name"])
+    return ok, kept, found
 
 
 def _claude_remove(argv):
@@ -2741,8 +2745,13 @@ def _hermes_entry(server):
 
 
 def _yaml_block(lines, key):
-    """(start, end) of a top-level `key:` block, end exclusive, or (None, None)."""
+    """(start, end) of a top-level `key:` block, end exclusive, or (None, None).
+    A key written on one line ({...} or [...]) is not edited: a second block
+    after it would replace it in the loader."""
     for i, line in enumerate(lines):
+        if re.match(rf"^{key}:\s*[^\s#]", line):
+            raise ConfigError(f"{HERMES_CONFIG}: {key} is written on one line; "
+                              f"write it as an indented block for fleet to edit it")
         if re.match(rf"^{key}:\s*(#.*)?$", line):
             j = i + 1
             while j < len(lines) and (lines[j].strip() == "" or lines[j][0] in " \t" or lines[j].startswith("#")):
@@ -2817,7 +2826,8 @@ def _hermes_unskills(lines):
 
 def render_hermes(servers, previous, retired, clear=False):
     """hermes's config.yaml: our MCP entries and the skills folder. Returns
-    whether the file changed, and whether the skills folder is fleet's."""
+    whether the file changed, whether the skills folder is fleet's, and the
+    user's own entries that already matched ours, which stay theirs."""
     original = HERMES_CONFIG.read_text()
     lines = original.split("\n")
     start, end = _yaml_block(lines, "mcp_servers")
@@ -2829,7 +2839,7 @@ def render_hermes(servers, previous, retired, clear=False):
     wanted = {s["name"]: _hermes_entry(s) for s in servers}
     urls = {s["name"]: f"    url: {s['url']}" for s in servers}
     recorded = previous.get("mcp") or {}
-    seen = set()
+    seen, found = set(), set()
     # Bottom-up, so earlier spans keep their indexes through edits.
     for name, k, stop in reversed(_hermes_entries(lines, start, end)):
         body = lines[k:stop]
@@ -2839,12 +2849,15 @@ def render_hermes(servers, previous, retired, clear=False):
         elif name in wanted:
             seen.add(name)
             if body == wanted[name]:
+                if name not in recorded:
+                    found.add(name)
                 continue
             if urls[name] not in body:
                 print(f"  hermes: {name} points somewhere else; leaving it alone")
                 continue
             lines[k:stop] = wanted[name]
-        elif recorded.get(name, {}).get("url") and f"    url: {recorded[name]['url']}" in body:
+        elif (recorded.get(name, {}).get("url") and "hermes" not in (recorded[name].get("users") or [])
+              and f"    url: {recorded[name]['url']}" in body):
             print(f"  hermes: removing MCP server {name}")
             del lines[k:stop]
     start, end = _yaml_block(lines, "mcp_servers")
@@ -2861,10 +2874,10 @@ def render_hermes(servers, previous, retired, clear=False):
         skills = _hermes_skills(lines) or skills
     text = "\n".join(lines)
     if text == original:
-        return False, skills
+        return False, skills, found
     save_text_atomic(HERMES_CONFIG, text)
     print(f"  wrote {HERMES_CONFIG} ({len(servers)} hermes MCP server(s))")
-    return True, skills
+    return True, skills, found
 
 
 def render_kimi():
@@ -3043,7 +3056,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False)}
-        kept_mcp = {}
+        kept_mcp, users = {}, {}
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
@@ -3052,8 +3065,10 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 allow = list(tier["allow"])
                 allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
                 record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
-                claude_ok, kept_mcp = render_claude_mcp(
+                claude_ok, kept_mcp, found = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
+                for name in found:
+                    users.setdefault(name, set()).add("claude")
                 rc = rc if claude_ok else 1
             else:
                 # Nothing took claude's servers off: keep owning the ones fleet
@@ -3070,8 +3085,17 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 rc = rc if render_codex_keepout(command) else 1
             if present["t3"]:
                 record["t3"] = render_t3(_t3_models(tier, opencodex), previous)
+            hermes = None
             if present["hermes"]:
-                changed, record["hermesSkills"] = render_hermes(on("hermes"), previous, retired, clear)
+                try:
+                    hermes = render_hermes(on("hermes"), previous, retired, clear)
+                except ConfigError as exc:
+                    eprint(f"fleet: {exc}")
+                    rc = 1
+            if hermes:
+                changed, record["hermesSkills"], found = hermes
+                for name in found:
+                    users.setdefault(name, set()).add("hermes")
                 if _mirror_dotenv(HERMES_ENV, exports, retired_env) or changed:
                     # A live hermes gateway restarts only on the nightly pass,
                     # never under an agent mid-turn.
@@ -3083,7 +3107,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 # Uninstalling leaves no nightly pass to restart it.
                 if clear and not restart_hermes():
                     rc = 1
-            elif clear and HERMES_ENV.exists():
+            elif not present["hermes"] and clear and HERMES_ENV.exists():
                 # Its config gone, hermes still has the tokens fleet wrote.
                 _mirror_dotenv(HERMES_ENV, exports, retired_env)
             if present["kimi"]:
@@ -3096,6 +3120,11 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                                      "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None}
                          for s in servers.values()}
         record["mcp"].update(kept_mcp)
+        # An entry the user already had stays theirs while fleet wants it.
+        for name, entry in record["mcp"].items():
+            mine = users.get(name, set()) | set((previous.get("mcp") or {}).get(name, {}).get("users") or [])
+            if mine:
+                entry["users"] = sorted(mine)
         # A failed part renders again on the next run.
         record["hash"] = digest if rc == 0 else None
         if clear and rc == 0:

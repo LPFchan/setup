@@ -1474,16 +1474,27 @@ cmd_update() {
     # A dependency an installed module gained since it was installed comes in
     # before anything is updated, so a module that re-enables itself below
     # finds it; script modules included, which the loop only reports as new.
-    local -a dep_tried=()
+    # A filter names modules to update; a dependency it names brings its own
+    # prerequisites with it.
+    local -a dep_tried=() dep_failed=() blocked=() wanted=()
     local dependent dep dep_target dep_mode dep_source
+    for target_module in ${filters[@]+"${filters[@]}"}; do
+        wanted+=(${(f)"$(resolve_install_order "$target_module" 2>/dev/null)"})
+    done
     while IFS=$'\t' read -r dependent target mode _ <&3; do
         [[ -n "${dependent:-}" && "$dependent" != \#* ]] || continue
         module_is_installed "$dependent" "$target" "$mode" || continue
         for dep in ${(f)"$(resolve_install_order "$dependent" 2>/dev/null)"}; do
             [[ "$dep" != "$dependent" ]] || continue
             if (( ${#filters[@]} > 0 )) && ! _list_contains "$dependent" "${filters[@]}" \
-                && ! _list_contains "$dep" "${filters[@]}"; then
+                && ! _list_contains "$dep" ${wanted[@]+"${wanted[@]}"}; then
                 continue
+            fi
+            # A dependent whose dependency failed waits for it: updated now,
+            # it would come up without it.
+            if _list_contains "$dep" ${dep_failed[@]+"${dep_failed[@]}"}; then
+                blocked+=("$dependent")
+                break
             fi
             _list_contains "$dep" ${dep_tried[@]+"${dep_tried[@]}"} && continue
             IFS=$'\t' read -r dep_target dep_mode dep_source < <(
@@ -1496,9 +1507,12 @@ cmd_update() {
             if install_one "$dep" "$dep_target" "$dep_mode" "$dep_source"; then
                 dep_mark "$dep"
             else
-                echo "Warning: $dep dependency install failed." >&2
+                echo "Warning: $dep dependency install failed; $dependent waits for it." >&2
                 failure_count=$((failure_count + 1))
                 failure_names+=("$dep")
+                dep_failed+=("$dep")
+                blocked+=("$dependent")
+                break
             fi
         done
     done 3< "$MANIFEST_FILE"
@@ -1506,7 +1520,7 @@ cmd_update() {
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         # Installed or reported by the dependency pass above.
-        _list_contains "$module" ${dep_tried[@]+"${dep_tried[@]}"} && continue
+        _list_contains "$module" ${dep_tried[@]+"${dep_tried[@]}"} ${blocked[@]+"${blocked[@]}"} && continue
         if [[ ${#filters[@]} -gt 0 ]]; then
             local found=0
             for f in "${filters[@]}"; do
