@@ -301,6 +301,20 @@ loader.exec_module(fleet)
 print(fleet._node_bin_dirs()[0])' "$ROOT/files/fleet")
 [[ "$first" == */v20.0.0/bin ]] || fail "node toolchains in the wrong order: $first"
 
+# nvm's default goes first, through its alias chain, as a login shell picks it.
+mkdir -p "$TMP/nvm/.nvm/alias/lts" "$TMP/nvm/.nvm/versions/node/v9.2.0/bin"
+echo 'lts/*' > "$TMP/nvm/.nvm/alias/default"
+echo 'lts/old' > "$TMP/nvm/.nvm/alias/lts/*"
+echo '9' > "$TMP/nvm/.nvm/alias/lts/old"
+first=$(HOME="$TMP/nvm" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_nvm2", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+print(" ".join(d.split("/")[-2] for d in fleet._node_bin_dirs() if "/.nvm/" in d))' "$ROOT/files/fleet")
+[[ "$first" == "v9.11.2 v20.0.0 v9.2.0" ]] || fail "nvm's default was not first: $first"
+rm -rf "$TMP/nvm/.nvm/alias" "$TMP/nvm/.nvm/versions/node/v9.2.0"
+
 # A Passage outage before the first render keeps the token the environment holds.
 kept=$(HOME="$TMP/nvm" VAULT_MCP_TOKEN=from-env python3 -c '
 import importlib.machinery, importlib.util, sys

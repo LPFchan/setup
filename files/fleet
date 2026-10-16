@@ -1282,6 +1282,27 @@ def _version_key(path):
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", str(path))]
 
 
+def _nvm_toolchains():
+    """nvm's node bin/ folders: its default first, as a login shell picks
+    it, so a timer finds the same harness copy the user and system-updates
+    run; then the rest, newest first."""
+    root = HOME/".nvm"
+    dirs = sorted((root/"versions/node").glob("*/bin"), key=_version_key, reverse=True)
+    spec = "default"
+    # An alias can name another alias: default -> lts/* -> lts/jod -> v22.11.0.
+    for _ in range(8):
+        try:
+            spec = (root/"alias"/spec).read_text().strip()
+        except (OSError, ValueError):
+            break
+    want = spec.removeprefix("v")
+    for d in dirs:
+        version = d.parent.name.removeprefix("v")
+        if spec in ("node", "stable") or version == want or version.startswith(want + "."):
+            return [d] + [x for x in dirs if x != d]
+    return dirs
+
+
 def manifest():
     if not _MANIFEST:
         path = _manifest_path()
@@ -1304,8 +1325,7 @@ def _heal_path():
     end, there to be found rather than to win.
     """
     mine = [HOME/".local/bin", HOME/".opencode/bin"]
-    toolchains = sorted((HOME/".nvm/versions/node").glob("*/bin"), key=_version_key, reverse=True)
-    toolchains += [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
+    toolchains = _nvm_toolchains() + [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
     front = owned + [entry for entry in current if entry not in owned]
@@ -1420,9 +1440,8 @@ def _node_bin_dirs():
         dirs.append(nvm)
     if os.path.isdir("/opt/node/bin"):
         dirs.append("/opt/node/bin")
-    for base in (HOME/".nvm/versions/node", pathlib.Path("/opt")):
-        if base.exists():
-            dirs += [str(d) for d in sorted(base.glob("*/bin"), key=_version_key, reverse=True)]
+    dirs += [str(d) for d in _nvm_toolchains()]
+    dirs += [str(d) for d in sorted(pathlib.Path("/opt").glob("*/bin"), key=_version_key, reverse=True)]
     return dirs
 
 

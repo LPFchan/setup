@@ -60,6 +60,7 @@ For each online run, setup resolves the repository's `main` branch to one exact 
 A module names what it needs in the manifest's `requires` column (comma-separated module names):
 
 - Installing a module installs its dependencies first, and prints what it pulled in.
+- `setup update` installs a dependency an installed module gained since it was installed, before it updates anything, so a module that re-enables itself finds it.
 - Uninstalling is refused while another installed module still needs it — with a yes/no prompt when there is a terminal, and a hard refusal when there is not.
 - A module installed only as a dependency is remembered, so removing the last thing that needed it offers to take it away too.
 - A dependency cycle is a hard error naming the module it runs through.
