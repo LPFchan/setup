@@ -1167,20 +1167,33 @@ def settle_old_agents(operator):
     tools may have added skills there."""
     if not os.path.lexists(OLD_AGENTS_CLONE):
         return
-    if not operator:
-        backup = Backup()
-        if _displace_old_payload(backup):
-            _report_displaced(backup)
-    _drop_old_clone(operator)
+    if operator:
+        _drop_old_clone(operator)
+        return
+    # A clone that cannot be dropped puts the payload back, so a retry
+    # still finds it where the next attempt expects.
+    backup = Backup()
+    displaced = _displace_old_payload(backup)
+    try:
+        _drop_old_clone(operator)
+    except BaseException:
+        _restore_displaced(displaced, backup)
+        raise
+    if displaced:
+        _report_displaced(backup)
 
 
 def _displace_old_payload(backup):
     """Move the operator's AGENTS.md and skills the old module left to the
     backup; the (path, saved) pairs, so a failed sync can put them back."""
     moved = []
-    for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
-        if os.path.lexists(path):
-            moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
+    try:
+        for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
+            if os.path.lexists(path):
+                moved.append((path, backup.move(path, f"displaced/{path.relative_to(HOME)}")))
+    except BaseException:
+        _restore_displaced(moved, backup)
+        raise
     return moved
 
 

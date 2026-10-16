@@ -92,6 +92,13 @@ swap_retired_modules >/dev/null 2>&1 || fail "retry of a failed rerun"
 : > "$LOG"
 swap_retired_modules >/dev/null 2>&1 || fail "swap after the retried rerun"
 [[ ! -s "$LOG" ]] || fail "a finished rerun ran again: $(cat "$LOG")"
+# A swap that cannot write its retry marker keeps the old state entry.
+printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"
+: > "$SWAP_PENDING_FILE"; chmod 400 "$SWAP_PENDING_FILE"
+swap_retired_modules >/dev/null 2>&1 && fail "swap passed with an unwritable retry marker"
+chmod 600 "$SWAP_PENDING_FILE"; rm -f "$SWAP_PENDING_FILE"
+state_has old || fail "an unwritable retry marker dropped the old state entry"
+swap_retired_modules >/dev/null 2>&1 || fail "swap once the marker is writable"
 
 # An outdated dependency is updated before the successor goes in.
 printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"

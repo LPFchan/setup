@@ -196,6 +196,19 @@ rm -rf "$HOME/.agents" "$FAKE/server.json" "$XDG_STATE_HOME/fleet/config.json"
 old_agents
 # A skill link the user already deleted still gets its sidecar back.
 mkdir -p "$HOME/.claude/skills/lost.pre-agents.bak"; printf 'lost\n' > "$HOME/.claude/skills/lost.pre-agents.bak/SKILL.md"
+# A payload that cannot all move aside puts back what did.
+chmod 500 "$HOME/.agents/skills"
+fleet sync >/dev/null 2>&1 && fail "a payload that could not move reported success"
+chmod 700 "$HOME/.agents/skills"
+[[ "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" ]] \
+    || fail "a failed payload move left AGENTS.md in the backup"
+# A clone that cannot be removed puts the operator's payload back.
+mkdir -p "$STATE_DIR/agents-src/.git/locked"; : > "$STATE_DIR/agents-src/.git/locked/f"
+chmod 500 "$STATE_DIR/agents-src/.git/locked"
+fleet sync >/dev/null 2>&1 && fail "a clone that could not be removed reported success"
+chmod 700 "$STATE_DIR/agents-src/.git/locked"
+[[ "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
+    || fail "a failed clone removal left the operator's payload in the backup"
 fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
 [[ "$(cat "$HOME/.claude/skills/lost/SKILL.md")" == "lost" && ! -e "$HOME/.claude/skills/lost.pre-agents.bak" ]] \
     || fail "an orphaned skill sidecar not restored"

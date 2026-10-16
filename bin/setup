@@ -605,9 +605,15 @@ swap_retired_modules() {
             failures=$((failures + 1))
             continue
         fi
+        # The marker is what retries an unfinished takeover once the old
+        # state entry is gone, so without it the old module stays.
         if [[ "$mode" == script && " $swapped " != *" $successor "* ]]; then
+            if ! printf '%s\n' "$successor" 2>/dev/null >> "$SWAP_PENDING_FILE"; then
+                echo "Warning: could not record $successor's pending takeover; keeping $old for now." >&2
+                failures=$((failures + 1))
+                continue
+            fi
             swapped="$swapped $successor"
-            printf '%s\n' "$successor" >> "$SWAP_PENDING_FILE"
         fi
         remove_script_state "$old"
         echo "$old is replaced by $successor."
