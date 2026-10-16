@@ -2742,6 +2742,13 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 claude_ok, kept_mcp = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
                 rc = rc if claude_ok else 1
+            else:
+                # Nothing took claude's servers off: keep owning the ones fleet
+                # put there, so the run that finds claude again (or an
+                # uninstall) still removes them.
+                wanted = {s["name"] for s in on("claude")}
+                kept_mcp = {name: r for name, r in (previous.get("mcp") or {}).items()
+                            if r.get("claude") and name not in wanted}
             if present["codex"]:
                 rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
                 if CODEX_DIR.is_dir():
