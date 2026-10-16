@@ -341,11 +341,18 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass moving open"
 grep -q '^    url: https://open2.example/mcp$' "$HOME/.hermes/config.yaml" || fail "hermes kept open's old url"
 [[ "$(json "$HOME/.claude.json" 'v["mcpServers"]["open"]["url"]')" == https://open2.example/mcp ]] \
     || fail "claude kept open's old url"
+# Moved back while hermes refuses its file, hermes moves once it is fixed.
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+sed -i 's/^mcp_servers:$/mcp_servers:\n odd: 1/' "$HOME/.hermes/config.yaml"
 server_put mcp.json '{"mcpServers": [
   {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 && fail "a refused hermes file went unreported"
+grep -q '^    url: https://open2.example/mcp$' "$HOME/.hermes/config.yaml" || fail "wrote a hermes file it refused"
+cp "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
 fleet sync --pull >/dev/null 2>&1 || fail "pass moving open back"
+grep -q '^    url: https://open.example/mcp$' "$HOME/.hermes/config.yaml" || fail "hermes stayed on a URL moved while it was refused"
 
 # An entry the user already had, matching ours, stays theirs: dropping the
 # server from the account does not remove it.
@@ -729,6 +736,17 @@ for text in ["skills:\n  external_dirs:\n  - ~/.agents/skills\n", "skills:\n  ex
     out.append(after.startswith(text) and after.count("skills") == text.count("skills"))
 open(sys.argv[2], "w").write(str(out))' "$ROOT/files/fleet" "$TMP/skills.out" >/dev/null 2>&1; cat "$TMP/skills.out")
 [[ "$skills" == "[True, True]" ]] || fail "uninstall took the wrong hermes skills folder: $skills"
+# A skills block indented otherwise is left for the user.
+printf 'skills:\n    external_dirs:\n    - ~/mine\n' > "$TMP/hermes-wide.yaml"
+cp "$TMP/hermes-wide.yaml" "$TMP/hermes-wide.keep"
+HERMES_CONFIG="$TMP/hermes-wide.yaml" python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_wide", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.render_hermes([], {}, set())' "$ROOT/files/fleet" >/dev/null 2>&1
+[[ "$(head -3 "$TMP/hermes-wide.yaml")" == "$(cat "$TMP/hermes-wide.keep")" ]] \
+    && ! grep -q agents "$TMP/hermes-wide.yaml" || fail "edited a skills block indented by four: $(cat "$TMP/hermes-wide.yaml")"
 
 # Installing: retired and unknown harnesses are refused.
 out=$(fleet install kimi 2>&1) && fail "installed a retired harness"
