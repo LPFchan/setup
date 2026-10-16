@@ -117,20 +117,31 @@ status() {
 uninstall() {
     # Through python3, so a binary that lost its executable bit still cleans up;
     # a deleted one is fetched again, since only it can put the links back.
-    local cli="$BIN" staged=""
+    local cli="$BIN" staged="" ok=""
     if [[ ! -f "$cli" ]]; then
         staged=$(mktemp)
         _stage "$staged" && cli="$staged"
     fi
-    [[ -f "$cli" ]] && python3 "$cli" schedule disable >/dev/null 2>&1
-    # Only the CLI knows which links and backups are fleet's, so without it
-    # nothing else goes either.
-    if [[ ! -f "$cli" ]] || ! python3 "$cli" __unlink; then
+    # A timer left on would run a binary about to go.
+    if [[ -f "$cli" ]] && python3 "$cli" schedule status 2>/dev/null | grep -q ' on$' \
+        && ! python3 "$cli" schedule disable >/dev/null 2>&1; then
         [[ -n "$staged" ]] && rm -f "$staged"
+        echo "fleet: could not turn off the nightly sync; nothing was removed, try again" >&2
+        return 1
+    fi
+    # Only the CLI knows which links and backups are fleet's, so without it
+    # nothing else goes either. An installed one older than this module may
+    # not know how, so the current one gets a second try.
+    [[ -f "$cli" ]] && python3 "$cli" __unlink && ok=1
+    if [[ -z "$ok" && -z "$staged" ]]; then
+        staged=$(mktemp)
+        _stage "$staged" && python3 "$staged" __unlink && ok=1
+    fi
+    [[ -n "$staged" ]] && rm -f "$staged"
+    if [[ -z "$ok" ]]; then
         echo "fleet: could not take back the agent links; nothing was removed, try again" >&2
         return 1
     fi
-    [[ -n "$staged" ]] && rm -f "$staged"
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
     rm -f "$BIN"

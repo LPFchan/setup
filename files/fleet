@@ -833,6 +833,8 @@ def pull(account):
         moved = _move_foreign(backup) if foreign else None
         try:
             _apply_changes(take, remove, contents, server, backup)
+            if record is None:
+                _move_harness_skills(backup)
         except BaseException:
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
@@ -841,10 +843,8 @@ def pull(account):
                     backup.move(AGENTS_DIR, "agents-incomplete")
                 shutil.move(str(moved), str(AGENTS_DIR))
                 _report("put the other account's ~/.agents back, since this account's copy "
-                        "could not be written")
+                        "could not be put in place")
             raise
-        if record is None:
-            _move_harness_skills(backup)
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(conflicts)))

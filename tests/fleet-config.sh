@@ -410,6 +410,17 @@ fleet sync >/dev/null 2>&1 && fail "applied a copy that cannot be written"
 [[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
     || fail "a failed apply left the old account's links dangling"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "a failed apply dropped the old record"
+# So does a hand-made skill folder that cannot be moved out of claude's way.
+printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+server_put skills/theirs/SKILL.md 'theirs'
+mkdir -p "$HOME/.claude/skills/handmade"; printf 'mine\n' > "$HOME/.claude/skills/handmade/SKILL.md"
+chmod 500 "$HOME/.claude/skills"
+fleet sync >/dev/null 2>&1 && fail "switched accounts with a skill folder that could not move"
+chmod 700 "$HOME/.claude/skills"
+[[ -e "$HOME/.agents/skills/mine" && ! -e "$HOME/.agents/skills/theirs" ]] \
+    || fail "a failed skill-folder move left the other account's files"
+grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "a failed skill-folder move dropped the old record"
+rm -rf "$HOME/.claude/skills/handmade"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 # Links that cannot be cleared yet are cleared by the next sync.
 chmod 500 "$HOME/.claude/skills"
