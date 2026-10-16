@@ -770,9 +770,17 @@ def _link_entry_ok(link, moved):
     link, moved = pathlib.Path(link), pathlib.Path(moved)
     if not (link in AGENTS_LINKS or link.parent == SKILL_LINK_DIR):
         return False
-    return (moved == _old_backup(link)
-            or (moved.is_absolute() and ".." not in moved.parts
-                and moved.is_relative_to(BACKUP_DIR)))
+    if moved == _old_backup(link):
+        return True
+    # Only where _link backs up this very link: a run's folder, then
+    # displaced/<the link's path>, with a collision suffix at most.
+    if not (moved.is_absolute() and moved.is_relative_to(BACKUP_DIR) and link.is_relative_to(HOME)):
+        return False
+    parts, rel = moved.relative_to(BACKUP_DIR).parts, link.relative_to(HOME).parts
+    return (len(parts) == len(rel) + 2
+            and re.fullmatch(r"\d{8}-\d{6}(-\d+)?", parts[0]) is not None
+            and parts[1] == "displaced" and parts[2:-1] == rel[:-1]
+            and re.fullmatch(re.escape(rel[-1]) + r"(\.\d+)?", parts[-1]) is not None)
 
 
 def _save_json(path, value):
@@ -1497,6 +1505,9 @@ def cmd_onboard():
         return 1
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: refusing a symlinked {AGENTS_DIR}")
+        return 1
+    if os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir():
+        eprint(f"fleet: {AGENTS_DIR} is not a folder")
         return 1
     account = _context()
     if account is None:

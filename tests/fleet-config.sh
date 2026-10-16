@@ -533,6 +533,11 @@ rc=0; HOME="$THIRD" XDG_STATE_HOME="$TMP/state3" fleet sync >"$TMP/out" 2>&1 || 
 [[ $rc == 1 ]] || fail "symlinked ~/.agents exited $rc"
 grep -q 'refusing a symlinked' "$TMP/out" || fail "symlinked ~/.agents not reported"
 [[ -z "$(ls -A "$THIRD/real")" ]] || fail "wrote through a symlinked ~/.agents"
+# So is a ~/.agents that is not a folder, by onboarding too.
+FOURTH="$TMP/fourth"; mkdir -p "$FOURTH"; : > "$FOURTH/.agents"
+rc=0; HOME="$FOURTH" XDG_STATE_HOME="$TMP/state4" fleet onboard >"$TMP/out" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q 'is not a folder' "$TMP/out" || fail "onboarding into a file ~/.agents exited $rc"
+[[ ! -e "$TMP/state4/fleet/config.json" ]] || fail "onboarding into a file ~/.agents saved a record"
 
 # A timer from before uploads that cannot be replaced: the run only pulls and
 # says so.
@@ -687,10 +692,14 @@ rc=0; out=$(fleet sync 2>&1) || rc=$?
     || fail "synced over a damaged links record: $out"
 mv "$TMP/links.keep" "$XDG_STATE_HOME/fleet/links.json"
 # Restoring moves a record's file onto its link, so one naming anything
-# but fleet's links, or a file outside the backup, is damaged too.
+# but fleet's links, or anything but that link's own backup, is damaged too.
 for entry in "\"$HOME/.bashrc\": \"$XDG_STATE_HOME/fleet/backup/x\"" \
              "\"$HOME/.claude/CLAUDE.md\": \"$TMP/elsewhere\"" \
-             "\"$HOME/.claude/CLAUDE.md\": \"$XDG_STATE_HOME/fleet/backup/../../x\""; do
+             "\"$HOME/.claude/CLAUDE.md\": \"$XDG_STATE_HOME/fleet/backup/../../x\"" \
+             "\"$HOME/.claude/CLAUDE.md\": \"$XDG_STATE_HOME/fleet/backup\"" \
+             "\"$HOME/.claude/CLAUDE.md\": \"$XDG_STATE_HOME/fleet/backup/20261017-000000/displaced/.gemini/CLAUDE.md\"" \
+             "\"$HOME/.claude/skills/a\": \"$XDG_STATE_HOME/fleet/backup/20261017-000000/displaced/.claude/skills/b\"" \
+             "\"$HOME/.claude/skills/a\": \"$XDG_STATE_HOME/fleet/backup/x/displaced/.claude/skills/a\""; do
     cp "$XDG_STATE_HOME/fleet/links.json" "$TMP/links.keep"; printf '{%s}' "$entry" > "$XDG_STATE_HOME/fleet/links.json"
     rc=0; out=$(fleet sync 2>&1) || rc=$?
     [[ $rc != 0 && "$out" == *"is damaged"* ]] || fail "read a links record of {$entry}: $out"
