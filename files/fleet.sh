@@ -132,8 +132,9 @@ status() {
 }
 
 uninstall() {
-    [[ -x "$BIN" ]] && "$BIN" schedule disable >/dev/null 2>&1
-    [[ -x "$BIN" ]] && "$BIN" __unlink
+    # Through python3, so a binary that lost its executable bit still cleans up.
+    [[ -f "$BIN" ]] && python3 "$BIN" schedule disable >/dev/null 2>&1
+    [[ -f "$BIN" ]] && python3 "$BIN" __unlink
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
     # The harnesses alias fleet left in place of the old client.
