@@ -33,7 +33,7 @@ for name in old next dep owner-only; do
     cat > "$TEST_TMP/src/files/$name.sh" <<SH
 # setup-module: $name
 install() { echo "$name install SWAP=\${SETUP_SWAP_FROM:-}" >> "\$LOG"; [[ "$name" != next || ! -e "$TEST_TMP/broken" ]] || return 1; record_script_state $name x 1 1; }
-update() { echo "$name update" >> "\$LOG"; record_script_state $name x 1 1; }
+update() { echo "$name update" >> "\$LOG"; [[ "$name" != next || ! -e "$TEST_TMP/broken-update" ]] || return 1; record_script_state $name x 1 1; }
 status() { echo "$name status" >> "\$LOG"; printf '%-25s %-12s\n' $name "\${STATUS:-current}"; [[ "\${STATUS:-current}" == current ]]; }
 uninstall() { echo "$name uninstall" >> "\$LOG"; remove_script_state $name; }
 SH
@@ -80,6 +80,18 @@ grep -q "^old " "$LOG" && fail "the old module's script ran"
 : > "$LOG"
 swap_retired_modules >/dev/null 2>&1 || fail "second swap"
 [[ ! -s "$LOG" ]] || fail "swap ran again with nothing to do: $(cat "$LOG")"
+# A rerun that fails after the swap is owed until it succeeds, though the old
+# state entry that started the swap is gone.
+printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"
+touch "$TEST_TMP/broken-update"
+swap_retired_modules >/dev/null 2>&1 && fail "swap reported success after a failed rerun"
+state_has old && fail "old state entry kept after a swap whose rerun failed"
+rm "$TEST_TMP/broken-update"; : > "$LOG"
+swap_retired_modules >/dev/null 2>&1 || fail "retry of a failed rerun"
+[[ "$(cat "$LOG")" == "next update" ]] || fail "failed rerun not retried: $(cat "$LOG")"
+: > "$LOG"
+swap_retired_modules >/dev/null 2>&1 || fail "swap after the retried rerun"
+[[ ! -s "$LOG" ]] || fail "a finished rerun ran again: $(cat "$LOG")"
 
 # An outdated dependency is updated before the successor goes in.
 printf 'old\tx\t1\t1\n' >> "$STATE_DIR/script-state.tsv"

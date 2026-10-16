@@ -34,6 +34,7 @@ SCRIPT_STATE_FILE="$STATE_DIR/script-state.tsv"
 RETIRED_FILE="$STATE_DIR/retired.txt"
 REQUIRES_FILE="$STATE_DIR/requires.tsv"
 SUCCESSOR_FILE="$STATE_DIR/successors.tsv"
+SWAP_PENDING_FILE="$STATE_DIR/swap-pending.txt"
 DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
@@ -575,9 +576,11 @@ _swap_dependencies() {
 # installed, since the successor keeps or rewrites the old target. This runs
 # before a command builds its module list.
 swap_retired_modules() {
-    [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] || return 0
     local old successor target mode source failures=0 swapped=""
-    while IFS=$'\t' read -r old successor _ <&3; do
+    # A successor whose rerun after the swap failed is still owed one: the old
+    # state entry is gone by then, so nothing else would bring it back.
+    [[ -f "$SWAP_PENDING_FILE" ]] && swapped=" $(tr '\n' ' ' < "$SWAP_PENDING_FILE")"
+    [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] && while IFS=$'\t' read -r old successor _ <&3; do
         grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
         target=""
         IFS=$'\t' read -r target mode source < <(
@@ -602,10 +605,12 @@ swap_retired_modules() {
             failures=$((failures + 1))
             continue
         fi
+        if [[ "$mode" == script && " $swapped " != *" $successor "* ]]; then
+            swapped="$swapped $successor"
+            printf '%s\n' "$successor" >> "$SWAP_PENDING_FILE"
+        fi
         remove_script_state "$old"
         echo "$old is replaced by $successor."
-        [[ "$mode" == script && " $swapped " != *" $successor "* ]] \
-            && swapped="$swapped $successor"
         # A timer that does not come on is reported by the successor's own
         # status; it does not undo the swap.
         if is_service_module "$successor" \
@@ -619,11 +624,23 @@ swap_retired_modules() {
     # and a successor may hold back what they managed until they are gone
     # (fleet skips account config). Run it once more now that they are.
     for successor in ${=swapped}; do
+        target=""
         IFS=$'\t' read -r target mode source < <(
             awk -F '\t' -v m="$successor" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
         )
-        _script_update "$successor" "$target" "$source" \
-            || { echo "Warning: $successor could not finish taking over after the swap." >&2; failures=$((failures + 1)); }
+        # One uninstalled or gone from the catalog since owes nothing.
+        if [[ -n "$target" ]] && grep -q "^${successor}"$'\t' "$SCRIPT_STATE_FILE" 2>/dev/null \
+            && ! _script_update "$successor" "$target" "$source"; then
+            echo "Warning: $successor could not finish taking over after the swap; the next run tries again." >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        grep -vx "$successor" "$SWAP_PENDING_FILE" > "$SWAP_PENDING_FILE.tmp" 2>/dev/null || true
+        if [[ -s "$SWAP_PENDING_FILE.tmp" ]]; then
+            mv "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
+        else
+            rm -f "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
+        fi
     done
     (( failures == 0 ))
 }
