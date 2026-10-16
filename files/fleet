@@ -798,9 +798,11 @@ def _move_foreign(backup):
     return moved
 
 
-def pull(account):
+def pull(account, settle_old=False):
     """Bring ~/.agents/ in step with the account. Returns ('synced', record,
-    conflicts) or ('pending', None, []) when the account was never pushed."""
+    conflicts) or ('pending', None, []) when the account was never pushed.
+    settle_old: the old agents module's payload here is not the account's, and
+    goes once the account's copy is in hand."""
     for _ in range(3):
         counter, version, server = _listing()
         if _context() != account:
@@ -813,8 +815,11 @@ def pull(account):
         # fetch leaves the old copy, and its links, working.
         other = bool(state) and record is None
         foreign = other and AGENTS_DIR.exists()
-        local = {} if foreign else scan_local()[0]
+        old = settle_old and os.path.lexists(OLD_AGENTS_CLONE)
+        local = {} if foreign or (old and record is None) else scan_local()[0]
         if record is None and counter == 0:
+            if old:
+                settle_old_agents(operator=False)
             if foreign:
                 _move_foreign(backup)
             if other:
@@ -847,6 +852,8 @@ def pull(account):
         # A sign-in during the fetch: these files are the old account's.
         if _context() != account:
             raise ConfigError("the session changed during the sync")
+        if old:
+            settle_old_agents(operator=False)
         moved = _move_foreign(backup) if foreign else None
         try:
             _apply_changes(take, remove, contents, server, backup)
@@ -1091,6 +1098,9 @@ def settle_old_agents(operator):
                 if _points_into(entry, AGENTS_DIR):
                     entry.unlink()
                     _restore_old_backup(entry)
+                elif entry.name.endswith(".pre-agents.bak"):
+                    # Its link already deleted: the sidecar still comes back.
+                    _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
         backup = Backup()
         for path in (AGENTS_DIR/"AGENTS.md", AGENTS_DIR/"skills"):
             if os.path.lexists(path):
@@ -1210,10 +1220,8 @@ def config_sync(direct):
                 settle_old_agents(operator=False)
             return 3
         operator = account.split(" ", 1)[1] == OPERATOR_SUBJECT
-        if not operator and os.path.lexists(OLD_AGENTS_CLONE):
-            # The old payload stays in use until Auth answers for the account's.
-            _listing()
-        settle_old_agents(operator=operator)
+        if operator:
+            settle_old_agents(operator=True)
     except (Rejected, Unreachable) as exc:
         eprint(f"fleet: account config: {exc}")
         return 3
@@ -1224,7 +1232,9 @@ def config_sync(direct):
         eprint(f"fleet: account config: settling the old agents module: {exc}")
         return 1
     try:
-        outcome, record, conflicts = pull(account)
+        # Another account's machine keeps the old payload in use until the
+        # account's copy is fetched.
+        outcome, record, conflicts = pull(account, settle_old=not operator)
         PULL["outcome"] = outcome
         if outcome == "pending":
             return _offer_onboarding(account)

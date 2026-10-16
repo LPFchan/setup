@@ -159,13 +159,32 @@ fleet sync >/dev/null 2>&1 || fail "sync settling the clone on the operator's ma
 # and the operator's files move to the backup.
 old_agents
 printf '7' > "$FAKE/subject"
-# Until Auth answers for the account's copy, the old one stays in use.
+# Until the account's copy is in hand, the old one stays in use.
 touch "$FAKE/down"
 fleet sync >/dev/null 2>&1 && fail "a sync with Auth down reported success"
 rm "$FAKE/down"
 [[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && -f "$HOME/.agents/AGENTS.md" ]] \
     || fail "settled the clone before Auth answered"
+server_put AGENTS.md 'account instructions'
+touch "$FAKE/fetch-down"
+fleet sync >/dev/null 2>&1 && fail "a failed fetch reported success"
+rm "$FAKE/fetch-down"
+[[ -d "$STATE_DIR/agents-src" && -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" ]] \
+    || fail "settled the clone before the account's copy was fetched"
+# With the copy in hand, it replaces the old payload.
+fleet sync >/dev/null 2>&1 || fail "sync replacing the old payload"
+[[ ! -e "$STATE_DIR/agents-src" && "$(cat "$HOME/.agents/AGENTS.md")" == "account instructions" ]] \
+    || fail "the account's copy did not replace the old payload"
+[[ ! -e "$HOME/.claude/skills/opskill" ]] || fail "the operator's skill link stayed under the account's copy"
+fleet __unlink >/dev/null
+rm -rf "$HOME/.agents" "$FAKE/server.json" "$XDG_STATE_HOME/fleet/config.json"
+old_agents
+# A skill link the user already deleted still gets its sidecar back.
+mkdir -p "$HOME/.claude/skills/lost.pre-agents.bak"; printf 'lost\n' > "$HOME/.claude/skills/lost.pre-agents.bak/SKILL.md"
 fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
+[[ "$(cat "$HOME/.claude/skills/lost/SKILL.md")" == "lost" && ! -e "$HOME/.claude/skills/lost.pre-agents.bak" ]] \
+    || fail "an orphaned skill sidecar not restored"
+rm -rf "$HOME/.claude/skills/lost"
 [[ ! -e "$STATE_DIR/agents-src" ]] || fail "clone left on a friend's machine"
 [[ "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" && ! -L "$HOME/.gemini/GEMINI.md" ]] \
     || fail "GEMINI.md not restored when the clone was settled"
