@@ -875,8 +875,24 @@ def upload(account, record):
 
 # --- links ---------------------------------------------------------------
 
+def _old_backup(target):
+    """Where the old agents module set aside what its link replaced."""
+    return target.with_name(target.name + ".pre-agents.bak")
+
+
+def _restore_old_backup(target):
+    """Put back what the old agents module set aside for a link fleet drops."""
+    old = _old_backup(target)
+    if os.path.lexists(old) and not os.path.lexists(target):
+        shutil.move(old, target)
+
+
 def _link(target, source, links, backup):
-    """Point `target` at `source`; anything it displaces goes to the backup."""
+    """Point `target` at `source`; anything it displaces goes to the backup.
+    A sidecar the old agents module left is taken over, so unlinking later
+    puts it back."""
+    if str(target) not in links and os.path.lexists(_old_backup(target)):
+        links[str(target)] = str(_old_backup(target))
     if target.is_symlink() and os.readlink(target) == str(source):
         return
     if target.is_symlink() or target.exists():
@@ -897,6 +913,8 @@ def _unlink_restoring(target, links):
     if moved and os.path.lexists(moved):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(moved, target)
+    else:
+        _restore_old_backup(target)
 
 
 def _skill_link_targets(links):
@@ -937,11 +955,13 @@ def refresh_links():
     for target in OLD_AGENTS_LINKS:
         if _points_into(target, AGENTS_DIR):
             target.unlink()
+            _restore_old_backup(target)
     for directory in OLD_SKILL_LINK_DIRS:
         if directory.is_dir():
-            for entry in directory.iterdir():
+            for entry in list(directory.iterdir()):
                 if _points_into(entry, skills):
                     entry.unlink()
+                    _restore_old_backup(entry)
     _save_json(LINKS_STATE, links)
     if backup.root:
         _report(f"moved files the links replaced to {backup.root}")
