@@ -41,6 +41,8 @@ if os.path.exists(f"{fake}/down"):
     sys.exit(1)
 if path == "/api/fleet/config/fetch" and os.path.exists(f"{fake}/fetch-down"):
     sys.exit(1)
+if path == "/api/fleet/config" and os.path.exists(f"{fake}/config-down"):
+    sys.exit(1)
 state = load()
 if path == "/api/fleet":
     answer(200, {"version": "v", "self": {"served": True}, "keys": ["ssh-ed25519 AAAASelf"], "hosts": []})
@@ -219,6 +221,10 @@ chmod 700 "$HOME/.codex/skills"
 [[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" ]] \
     || fail "a failed move left an earlier skill folder in the backup"
 [[ ! -e "$XDG_STATE_HOME/fleet/config.json" ]] || fail "a failed move saved the record"
+# One with a link inside is left out whole: the link would not upload, and
+# a relative one leads elsewhere once the folder moves.
+mkdir -p "$HOME/.codex/skills/haslink"; printf 'has a link\n' > "$HOME/.codex/skills/haslink/SKILL.md"
+ln -s ../shared "$HOME/.codex/skills/haslink/res"
 # So does a record that cannot be saved after the upload.
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
 chmod 500 "$XDG_STATE_HOME/fleet"
@@ -230,6 +236,8 @@ chmod 700 "$XDG_STATE_HOME/fleet"
 mkdir "$HOME/.codex/skills/linked"; printf 'linked\n' > "$TMP/linked.md"
 ln -s "$TMP/linked.md" "$HOME/.codex/skills/linked/SKILL.md"
 fleet sync >/dev/null 2>&1 || fail "sync after a failed onboarding move"
+[[ ! -e "$HOME/.agents/skills/haslink" && "$(server_has skills/haslink/SKILL.md)" == "<none>" ]] \
+    || fail "a harness skill with a link inside was staged"
 [[ -L "$HOME/.codex/skills/linked/SKILL.md" && "$(server_has skills/linked/SKILL.md)" == "<none>" ]] \
     || fail "a harness skill with a linked SKILL.md was moved"
 rm -r "$HOME/.codex/skills/linked"
@@ -340,6 +348,11 @@ printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
 fleet sync >/dev/null 2>&1 || fail "sync with a save during it"
 [[ "$(server_has skills/mine/SKILL.md)" == "saved later" ]] || fail "sent '$(server_has skills/mine/SKILL.md)'"
 fleet status | grep -q 'local changes wait' && fail "the version sent was recorded as another"
+# One deleted at the scan but back before the push is uploaded, not deleted.
+rm "$HOME/.agents/skills/mine/SKILL.md"
+printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
+fleet sync >/dev/null 2>&1 || fail "sync with a file back during it"
+[[ "$(server_has skills/mine/SKILL.md)" == "saved later" ]] || fail "a file back before the push was deleted"
 printf 'edited\n' > "$HOME/.agents/skills/mine/SKILL.md"
 fleet sync >/dev/null 2>&1 || fail "direct sync after the save"
 cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record"
@@ -497,6 +510,11 @@ fleet sync --check >/dev/null 2>&1 && fail "check missed a server change"
 fleet sync --pull >/dev/null 2>&1
 [[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from another machine" ]] || fail "server change not taken"
 fleet sync --check >/dev/null 2>&1 || fail "check after a pull read as outdated"
+# An account config Auth did not answer for is unknown, not current.
+touch "$FAKE/config-down"
+rc=0; fleet sync --check >/dev/null 2>&1 || rc=$?
+rm "$FAKE/config-down"
+[[ $rc == 3 ]] || fail "check read an unanswered account config as $rc, not unknown"
 # A damaged sync record reads as outdated, so the sync that follows says so.
 cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/config.keep"
 python3 -c 'import json,sys; p=sys.argv[1]; r=json.load(open(p)); r["files"]=[]; json.dump(r,open(p,"w"))' "$XDG_STATE_HOME/fleet/config.json"

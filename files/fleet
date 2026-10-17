@@ -868,6 +868,13 @@ def _same_tree(a, b):
         _unreadable(exc)
 
 
+def _has_links(folder):
+    for root, dirs, names in os.walk(folder):
+        if any(os.path.islink(os.path.join(root, n)) for n in dirs + names):
+            return True
+    return False
+
+
 def _move_harness_skills(backup):
     """Move the user's own skill folders out of the harness folders, so
     harnesses don't load them next to ~/.agents/skills; list them. A failed
@@ -1107,6 +1114,10 @@ def upload(account, record):
             backup = Backup()
             for rel, data in replaced.items():
                 backup.save(data, f"account/{rel}")
+            # A file deleted at the scan but saved again since goes up, not
+            # out: scanned again.
+            if any(os.path.lexists(AGENTS_DIR/rel) for rel in deletes):
+                continue
             try:
                 new = push(record, local, puts, deletes)
             except HttpError as exc:
@@ -1358,6 +1369,11 @@ def onboard(account):
                 if os.path.lexists(mine):
                     if not _same_tree(folder, mine):
                         listed.append(str(folder))
+                elif _has_links(folder):
+                    # A link is not uploaded, and a relative one would lead
+                    # elsewhere once the folder moves: the whole folder stays
+                    # out, kept in the backup the harness folders go to.
+                    listed.append(str(folder))
                 else:
                     # Listed first: a copy that fails partway comes out too.
                     staged.append(mine)
@@ -1441,7 +1457,8 @@ def config_sync(direct):
 
 
 def config_outdated():
-    """Whether a pull would change something (for setup's status)."""
+    """Whether a pull would change something (for setup's status); None when
+    Auth gave no answer to tell by."""
     if not config_sync_enabled():
         return False
     account = _context()
@@ -1449,8 +1466,9 @@ def config_outdated():
         return False
     try:
         counter, version, _ = _listing()
-    except ConfigError:
-        return False
+    except (ConfigError, Unavailable) as exc:
+        eprint(f"fleet: account config: {exc}")
+        return None
     # A damaged record is outdated: the sync that follows reports it.
     try:
         record = _load_sync_record()
@@ -1512,7 +1530,10 @@ def cmd_sync(check=False, direct=True):
         ssh_rc = 3
     else:
         if check:
-            return 0 if is_current(config_lines, keys_lines) and not config_outdated() else 1
+            if not is_current(config_lines, keys_lines):
+                return 1
+            outdated = config_outdated()
+            return 3 if outdated is None else 1 if outdated else 0
         changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
         try:
             SSH_DIR.chmod(0o700)
