@@ -454,7 +454,7 @@ def cmd_token(scope, expected_context=None):
 
 def cmd_token_cached(scope):
     """The saved token, with no network and no lock wait (saves are atomic
-    renames): for hot paths like the keepout hook. The nightly harnesses
+    renames): for hot paths like the keepout hook. The nightly fleet
     refresh keeps it current."""
     data = _load()
     if data is None:

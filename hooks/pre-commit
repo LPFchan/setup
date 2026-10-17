@@ -9,8 +9,8 @@ for f in install.sh bin/setup bin/schedule lib/script-helpers.sh; do
 done
 while IFS=$'\t' read -r _module _target mode source _audience _platform; do
     [[ "$mode" == script ]] || continue
-    zsh -n "$source" || { echo "Syntax error in $source — commit blocked" >&2; exit 1; }
-done < manifest.tsv
+    zsh -n "$source" </dev/null || { echo "Syntax error in $source — commit blocked" >&2; exit 1; }
+done < <(awk -F '\t' '$7 != "retired"' manifest.tsv)  # retired rows have no source
 
 # bin/setup and bin/schedule are zsh; they are checked with zsh -n above.
 for f in bin/*; do
@@ -19,7 +19,7 @@ for f in bin/*; do
     bash -n "$f" || { echo "Syntax error in $f — commit blocked" >&2; exit 1; }
 done
 
-for f in files/auth files/passage files/harnesses files/providers files/opencodex; do
+for f in files/auth files/passage files/providers files/opencodex; do
     [[ -f "$f" ]] || continue
     python3 -c "import py_compile; py_compile.compile('$f', doraise=True)" || exit 1
 done

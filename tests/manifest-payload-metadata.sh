@@ -11,7 +11,6 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 failures=0
 while IFS=$'\t' read -r module target mode source audience platform state; do
     [[ -z "${module:-}" || "$module" == \#* ]] && continue
-    [[ "${state:-}" == retired ]] && continue
     [[ -n "${source:-}" ]] || continue
     [[ -f "$source" ]] || { echo "  $module: source $source is missing" >&2; failures=$((failures + 1)); continue; }
     declared=$(sed -n 's/^# setup-module: //p' "$source" | head -1)
@@ -22,7 +21,7 @@ while IFS=$'\t' read -r module target mode source audience platform state; do
         echo "  $module: $source declares '$declared'" >&2
         failures=$((failures + 1))
     fi
-done < manifest.tsv
+done < <(awk -F '\t' '$7 != "retired"' manifest.tsv)  # read collapses empty columns
 
 ((failures == 0)) || fail "$failures manifest payload(s) cannot be installed"
 echo "manifest payload metadata ok"

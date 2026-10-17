@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-off move from the harnesses, agents and miniharness modules to fleet.
-# Delete this script once every host has run it.
+# Delete this script once every host has run it (left: yeowoolmac The Rest).
 #
 #   fleet-migrate --seed   on the operator's first machine: write the personal
 #                          settings into ~/.agents and push the tree to Auth

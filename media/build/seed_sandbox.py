@@ -22,7 +22,7 @@ CONF = os.path.join(SB, 'conf')
 FLEET = ['yeowoolair', 'mangchi', 'grimoire', 'bingus', 'yeowoolmac', 'oci-ubuntu']
 SELF  = 'yeowoolair'
 
-SSH_HOSTS = [                       # mirrors files/ssh-aliases.sh
+SSH_HOSTS = [                       # mirrors the fleet's SSH aliases
     ('mangchi',    'mangchi.tailaa113.ts.net', 'yeowool', None),
     ('yeowoolmac', 'mac.lost.plus',   'yeowool', None),
     ('grimoire',   'grimoire.lost.plus', 'yeowool', None),
