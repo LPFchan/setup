@@ -1011,7 +1011,7 @@ def pull(account):
                                           f"either ({again}), so run fleet sync once that is fixed") from exc
                 raise
             return "pending", None, []
-        conflicts = []
+        conflicts, gone = [], []
         if record is None:
             # Joining an account that was pushed: take its copy wholesale.
             take = [p for p in server if local.get(p) != server[p]]
@@ -1024,7 +1024,8 @@ def pull(account):
                 if s == b or s == l:
                     continue
                 if l != b:
-                    conflicts.append(rel)
+                    # Gone here before the scan: there is no copy to keep.
+                    (gone if l is None else conflicts).append(rel)
                 (remove if s is None else take).append(rel)
         try:
             contents = fetch_contents(take, counter, server)
@@ -1050,13 +1051,21 @@ def pull(account):
             _put_foreign_back(moved, backup)
             raise
         conflicts += changed
-        if conflicts:
+        if record is None:
+            displaced = sorted(p for p in set(take) | set(remove) if p in local)
+            if displaced:
+                _report(f"took the account's copy over what was here (yours is in {backup.root}): "
+                        + ", ".join(displaced))
+        elif conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
+        if gone:
+            _report("deleted here but changed in the account, so the account's copy came back: "
+                    + ", ".join(sorted(gone)))
         if deleted:
             _report("deleted here during the sync, so the account's copy came back: " + ", ".join(deleted))
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", new_record, sorted(set(conflicts + deleted))
+        return "synced", new_record, sorted(set(conflicts + gone + deleted))
     raise ConfigError("the account kept changing during the sync; try again")
 
 
