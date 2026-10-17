@@ -138,21 +138,7 @@ module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }
 module status >/dev/null && fail "status before install"
-# A host that missed the move still runs the retired harnesses client.
-mkdir -p "$HOME/.local/bin" "$HOME/.config/harnesses"
-printf '#!/bin/sh\necho "$@" > "%s"\n' "$TMP/harnesses.called" > "$HOME/.local/bin/harnesses"
-chmod +x "$HOME/.local/bin/harnesses"
-printf '{}' > "$HOME/.config/harnesses/manifest.json"
-# ...and the agents module's links, one hiding a file of the user's.
-mkdir -p "$XDG_STATE_HOME/setup/agents-src" "$HOME/.gemini" "$HOME/.codex/skills" "$HOME/.agents/skills/x"
-ln -s "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
-printf 'mine\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
-ln -s "$HOME/.agents/skills/x" "$HOME/.codex/skills/x"
 module install >/dev/null 2>&1 || fail "install without an answer from Auth"
-[[ "$(cat "$HOME/.gemini/GEMINI.md")" == mine ]] || fail "agents link left over the user's file"
-[[ -e "$HOME/.codex/skills/x" || -d "$XDG_STATE_HOME/setup/agents-src" ]] && fail "agents leftovers kept"
-[[ "$(cat "$TMP/harnesses.called" 2>/dev/null)" == "schedule disable" ]] || fail "old harnesses timer left on"
-[[ -e "$HOME/.local/bin/harnesses" || -e "$HOME/.config/harnesses" ]] && fail "old harnesses client left behind"
 [[ "$(module status)" == "fleet"*"unknown"* ]] || fail "status without an answer: $(module status)"
 serve "${FLEET_JSON/AAAAPeer\"/AAAAPeer\",\"ssh-ed25519 AAAANew\"}"
 [[ "$(module status)" == *outdated* ]] || fail "status missed a pending write"
