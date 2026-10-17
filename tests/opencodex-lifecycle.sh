@@ -187,6 +187,13 @@ if [[ "$(uname -s)" == Linux ]]; then
     _write_stop_timeout 2>/dev/null && fail "an unwritable stop-timeout drop-in went unreported"
     rm "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
     mv "$TEST_TMP/dropin.keep" "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
+    # So does a drop-in systemd did not reload, and the next install retries.
+    rm "$OPENCODEX_STOP_TIMEOUT_DROPIN"
+    systemctl() { return 1; }
+    _write_stop_timeout 2>/dev/null && fail "a stop-timeout drop-in systemd did not reload went unreported"
+    systemctl() { :; }
+    _stop_timeout_current && fail "a stop-timeout drop-in systemd did not reload read as current"
+    _write_stop_timeout >/dev/null || fail "the stop-timeout drop-in was not retried"
 fi
 
 rm -f "$OPENCODEX_BIN"

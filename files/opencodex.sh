@@ -299,7 +299,13 @@ _write_stop_timeout() {
     _stop_timeout_current && return 0
     mkdir -p "${STOP_TIMEOUT_DROPIN:h}" || return 1
     print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN" || return 1
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    # systemd only takes the drop-in on a reload. Without one, the file goes
+    # again so the next install retries rather than reads it as done.
+    if ! systemctl --user daemon-reload >/dev/null 2>&1; then
+        rm -f "$STOP_TIMEOUT_DROPIN"
+        echo "opencodex: systemd did not reload the proxy stop timeout" >&2
+        return 1
+    fi
     echo "opencodex: proxy stop timeout raised to 330s"
 }
 

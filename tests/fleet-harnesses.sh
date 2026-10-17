@@ -509,6 +509,29 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server hermes refused
 grep -q '^  open:' "$HOME/.hermes/config.yaml" && fail "hermes kept fleet's entry from before a refused move"
 server_put mcp.json "$withopen"
 fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back after the move tests"
+# A move both wrote before the run stopped short of its record, then a
+# drop, still takes fleet's new entry off.
+server_put mcp.json "$open2"
+python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_crash", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+save = fleet._save_json
+def stop(path, data):
+    if path == fleet.APPLIED and data.get("hash"):
+        raise OSError("disk gone")
+    save(path, data)
+fleet._save_json = stop
+sys.argv = ["fleet", "sync", "--pull"]
+sys.exit(fleet.main())' "$ROOT/files/fleet" </dev/null >/dev/null 2>&1 && fail "a run stopped before its record rendered as done"
+grep -q '^    url: https://open2.example/mcp$' "$HOME/.hermes/config.yaml" || fail "the stopped run did not move hermes"
+server_put mcp.json "$noopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server a stopped run moved"
+[[ "$(json "$HOME/.claude.json" '"open" in v["mcpServers"]')" == False ]] || fail "claude kept the entry a stopped run moved"
+grep -q '^  open:' "$HOME/.hermes/config.yaml" && fail "hermes kept the entry a stopped run moved"
+server_put mcp.json "$withopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back after the stopped move"
 
 # An entry the user already had, matching ours, stays theirs: dropping the
 # server from the account does not remove it.
@@ -648,6 +671,30 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass after the stopped run"
 [[ "$(json "$settings" '"crashKey" in v')" == False ]] || fail "a stopped run's setting was left as the user's"
 [[ "$(json "$t3" '[m["slug"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" != *crash-model* ]] \
     || fail "a stopped run's t3 model was left as the user's"
+# So does a t3 row a stopped run changed.
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}, {"slug": "crash-model", "name": "Crash"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding the t3 model back"
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}, {"slug": "crash-model", "name": "Crash 2"}]}'
+python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_crash", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+save = fleet._save_json
+def stop(path, data):
+    if path == fleet.APPLIED and data.get("hash"):
+        raise OSError("disk gone")
+    save(path, data)
+fleet._save_json = stop
+sys.argv = ["fleet", "sync", "--pull"]
+sys.exit(fleet.main())' "$ROOT/files/fleet" </dev/null >/dev/null 2>&1 && fail "a run stopped before its record rendered as done"
+[[ "$(json "$t3" '[m["name"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" == *"Crash 2"* ]] \
+    || fail "the stopped run did not change the t3 row"
+server_put settings/t3.json '{"claudeCustomModels": [{"slug": "my-model", "name": "Mine"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a t3 row a stopped run changed"
+[[ "$(json "$t3" '[m["slug"] for m in v["providerInstances"]["claudeAgent"]["config"]["customModels"]]')" != *crash-model* ]] \
+    || fail "a t3 row a stopped run changed was left as the user's"
+[[ "$(json "$XDG_STATE_HOME/fleet/applied.json" 'v.get("t3Next")')" == "{}" ]] || fail "a completed render kept the pending t3 rows"
 # With no models to add, T3 settings without a claude provider stay as they are.
 mkdir -p "$TMP/t3home/.t3/userdata"
 printf '{"theme": "dark"}' > "$TMP/t3home/.t3/userdata/settings.json"

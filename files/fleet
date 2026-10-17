@@ -2512,7 +2512,8 @@ def render_claude_mcp(claude, servers, previous, retired):
             ok, kept[name] = False, record
         elif isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
                                         or (record.get("claude") and entry == record["claude"])
-                                        or (record.get("claudeWas") and entry == record["claudeWas"])):
+                                        or (record.get("claudeWas") and entry == record["claudeWas"])
+                                        or (record.get("urlNext") and entry.get("url") == record["urlNext"])):
             print(f"  unregistering MCP server {name}")
             if not (_claude_remove([claude, "mcp", "remove", name, "-s", "user"]) if claude
                     else _claude_json_remove(name)):
@@ -2799,7 +2800,8 @@ def render_t3(models, previous):
             if mine is None or mine.get("user"):
                 record[slug] = {**record[slug], "user": True}
         elif not (slug in recorded and isinstance(row, dict)
-                  and {k: v for k, v in row.items() if k != "capabilities"} == recorded[slug]):
+                  and {k: v for k, v in row.items() if k != "capabilities"}
+                  in (recorded[slug], (previous.get("t3Next") or {}).get(slug))):
             out.append(row)
     out += wanted.values()
     if out or "customModels" in config:
@@ -2990,14 +2992,14 @@ def render_hermes(servers, previous, retired, clear=False):
             # Fleet's entry still names the URL fleet last wrote, when the
             # account has moved the server since.
             # Or, after a render hermes refused, the one before.
-            old = {recorded[name].get(k) for k in ("url", "hermesUrl")} - {None}
+            old = {recorded[name].get(k) for k in ("url", "hermesUrl", "urlNext")} - {None}
             if urls[name] not in body and not any(f"    url: {u}" in body for u in old):
                 print(f"  hermes: {name} points somewhere else; leaving it alone")
                 continue
             lines[k:stop] = wanted[name]
         elif ("hermes" not in (recorded.get(name, {}).get("users") or [])
               # Or, after a render hermes refused, the one before.
-              and any(f"    url: {recorded[name][k]}" in body for k in ("url", "hermesUrl")
+              and any(f"    url: {recorded[name][k]}" in body for k in ("url", "hermesUrl", "urlNext")
                       if recorded.get(name, {}).get(k))):
             print(f"  hermes: removing MCP server {name}")
             del lines[k:stop]
@@ -3200,6 +3202,10 @@ def _prospective_mcp(previous, servers, present):
             pass
     for s in servers.values():
         surfaces = mcp_surfaces(s)
+        if (r := mcp.get(s["name"])) is not None and s.get("url") and s["url"] != r.get("url"):
+            # A server fleet owns keeps its old URL, and its new one is kept
+            # beside it: a run stopped after the write left the new.
+            r["urlNext"] = s["url"]
         new = set()
         if present["claude"] and "claude" in surfaces and _claude_user_entry(s["name"]) is None:
             new.add("claude")
@@ -3252,9 +3258,14 @@ def _prospective_settings(previous, desired, allow, t3_models, present):
         out["t3"] = dict(previous.get("t3") or {})
         out["t3Provider"] = bool(previous.get("t3Provider") or (
             t3_models and "claudeAgent" not in (load_json(T3_SETTINGS).get("providerInstances") or {})))
+        out["t3Next"] = dict(previous.get("t3Next") or {})
         for model in t3_models:
+            row = {k: v for k, v in model.items() if k != "effortsFrom"}
             if model["slug"] not in have and model["slug"] not in out["t3"]:
-                out["t3"][model["slug"]] = {k: v for k, v in model.items() if k != "effortsFrom"}
+                out["t3"][model["slug"]] = row
+            elif (mine := out["t3"].get(model["slug"])) is not None and not mine.get("user") and mine != row:
+                # Like an owned claude leaf: the new row beside the old.
+                out["t3Next"][model["slug"]] = row
     if present["hermes"] and HERMES_CONFIG.is_file():
         lines = HERMES_CONFIG.read_text().split("\n")
         out["hermesSkills"] = previous.get("hermesSkills") or _hermes_skills(lines, warn=False)
@@ -3326,6 +3337,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
                   "t3": previous.get("t3") or {}, "t3Provider": previous.get("t3Provider", False),
+                  "t3Next": previous.get("t3Next") or {},
                   "hermesSkills": previous.get("hermesSkills", False),
                   "hermesBlock": previous.get("hermesBlock", False),
                   "codexReclaimed": previous.get("codexReclaimed", False)}
@@ -3364,6 +3376,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 rc = rc if render_codex_keepout(command) else 1
             if present["t3"]:
                 record["t3"], record["t3Provider"] = render_t3(t3_models, previous)
+                record["t3Next"] = {}
             hermes = None
             if present["hermes"]:
                 try:
