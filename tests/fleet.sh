@@ -169,6 +169,8 @@ import os, sys
 open(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\n")
 if sys.argv[1:] == ["schedule", "status"]:
     print("fleet: nightly sync on")
+if sys.argv[1:] == ["schedule", "enable"]:
+    open(os.environ["FAKE"] + "/path", "w").write(os.environ.get("FLEET_PATH", ""))
 sys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)
 EOF
 cp "$FLEET_BIN" "$TMP/failing.py"
@@ -176,6 +178,7 @@ rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ -e "$FLEET_BIN" ]] || fail "a failed uninstall removed the binary"
 [[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
+[[ "$(cat "$FAKE/path")" == "$FLEET_BIN" ]] || fail "the nightly sync came back on without the installed path"
 # An installed binary older than this module, without __unlink, hands the
 # cleanup to the current one.
 printf 'import sys\nsys.exit(2 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$FLEET_BIN"
@@ -220,9 +223,9 @@ SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet
     || fail "turning off an installed timer failed"
 grep -qx 'uninstall-timer user fleet-sync' "$FAKE/helper" || fail "an installed timer was left behind"
 
-# The launchd job runs the installed binary, also when a temporary copy
-# turned it on.
-HOME="$TMP/machome" python3 - "$ROOT/files/fleet" <<'PY' || fail "the launchd job does not run the installed binary"
+# The launchd job runs the binary that turned it on, or the installed one a
+# temporary copy names.
+HOME="$TMP/machome" FLEET_PATH="$TMP/custom/fleet" python3 - "$ROOT/files/fleet" <<'PY' || fail "the launchd job does not run the installed binary"
 import importlib.machinery, importlib.util, subprocess, sys
 loader = importlib.machinery.SourceFileLoader("fleet_launchd", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
@@ -230,7 +233,11 @@ m.sys.platform = "darwin"
 m.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
 sys.argv[0] = "/tmp/staged-fleet"
 assert m.schedule_enable() == 0
-assert f"<string>{m.HOME}/.local/bin/fleet</string>" in m._plist_path().read_text()
+assert "<string>" + m.os.environ["FLEET_PATH"] + "</string>" in m._plist_path().read_text()
+del m.os.environ["FLEET_PATH"]
+sys.argv[0] = "/opt/fleet/bin/fleet"
+assert m.schedule_enable() == 0
+assert "<string>/opt/fleet/bin/fleet</string>" in m._plist_path().read_text()
 PY
 
 echo "fleet tests passed"

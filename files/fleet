@@ -1495,6 +1495,9 @@ def config_outdated():
     Auth gave no answer to tell by."""
     if not config_sync_enabled():
         return False
+    # A pull refuses these, so it is not current; setup's update says why.
+    if AGENTS_DIR.is_symlink() or (os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir()):
+        return True
     account = _context()
     if account is None:
         return None
@@ -1586,8 +1589,9 @@ def cmd_sync(check=False, direct=True):
         direct = False
         try:
             rc = schedule_enable()
-        except SystemExit as exc:
-            # A missing helper exits; the pull still runs.
+        except (SystemExit, OSError) as exc:
+            # A missing helper exits, timer files may not write; the pull
+            # still runs.
             eprint(f"fleet: {exc}")
             rc = 1
         if rc != 0:
@@ -1705,8 +1709,8 @@ def schedule_stale():
 
 
 def schedule_enable():
-    # Both run the installed binary, not whichever copy turned the job on: the
-    # uninstall retry runs a temporary one.
+    # A temporary copy standing in for the installed one (uninstall's retry)
+    # names it in FLEET_PATH: the copy is deleted once it has run.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -1719,7 +1723,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{HOME/".local/bin/fleet"}</string>
+        <string>{os.environ.get("FLEET_PATH") or os.path.abspath(sys.argv[0])}</string>
         <string>schedule</string>
         <string>run</string>
     </array>
