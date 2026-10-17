@@ -1552,9 +1552,12 @@ cmd_update() {
                 if is_service_module "$dep" \
                     && [[ "$(module_service_unit "$dep" 2>/dev/null || true)" != tool ]] \
                     && ! module_service_transition enable "$dep"; then
-                    echo "Warning: $dep installed but its service could not be enabled." >&2
+                    echo "Warning: $dep installed but its service could not be enabled; $dependent waits for it." >&2
                     failure_count=$((failure_count + 1))
                     failure_names+=("$dep")
+                    dep_failed+=("$dep")
+                    blocked+=("$dependent")
+                    break
                 fi
             else
                 echo "Warning: $dep dependency install failed; $dependent waits for it." >&2
