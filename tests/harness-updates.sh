@@ -94,12 +94,9 @@ is_service_module() {
     for m in ${SERVICE_MODULES}; do [[ "$m" == "$1" ]] && return 0; done
     return 1
 }
-is_service_module harnesses || fail "harnesses is not registered as a service module"
-[[ "$(module_service_unit harnesses)" == harnesses-update.timer ]] \
-    || fail "harnesses service unit is wrong: $(module_service_unit harnesses)"
-[[ "$(module_enable_cmd harnesses)" == *"harnesses schedule" ]] \
-    || fail "setup enable harnesses does not call the module: $(module_enable_cmd harnesses)"
-[[ "$(module_disable_cmd harnesses)" == *"harnesses schedule disable" ]] \
-    || fail "setup disable harnesses does not call the module: $(module_disable_cmd harnesses)"
+if is_service_module harnesses; then fail "the retired harnesses module is still a service module"; fi
+is_service_module fleet || fail "fleet is not registered as a service module"
+[[ "$(module_service_unit fleet)" == fleet-sync.timer ]] \
+    || fail "fleet service unit is wrong: $(module_service_unit fleet)"
 
 echo "ok"

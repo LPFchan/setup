@@ -38,8 +38,8 @@ DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring providers harnesses fleet backup system-updates"
-USER_SERVICE_MODULES="providers harnesses fleet"
+SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring providers fleet backup system-updates"
+USER_SERVICE_MODULES="providers fleet"
 BATCH=0
 
 # Cache revalidation remains useful for custom HTTP sources. The default GitHub
@@ -69,8 +69,8 @@ Commands:
   status [module...]   Show installed/current/outdated/modified state
   install [module...]  Install module files (copies to ~/.local/bin/)
   update [module...]   Update installed modules; reports new modules available
-                       AI harnesses update themselves: see 'harnesses update'
-                       and 'harnesses schedule'
+                       AI harnesses update in fleet's nightly pass: see
+                       'fleet update' and 'fleet schedule'
   uninstall [module...] Remove managed files
   enable [module...]   Enable service modules (requires sudo)
   disable [module...]  Disable service modules (requires sudo)
@@ -115,7 +115,6 @@ module_enable_cmd() {
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin "$1"); echo "$bin enable" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule" ;;
-        harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule" ;;
         fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
@@ -129,7 +128,6 @@ module_disable_cmd() {
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin "$1"); echo "$bin disable" ;;
         providers)     bin=$(_resolve_bin providers); echo "$bin schedule disable" ;;
-        harnesses)      bin=$(_resolve_bin harnesses); echo "$bin schedule disable" ;;
         fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
@@ -142,7 +140,6 @@ module_service_unit() {
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;
         providers)     echo "providers.timer" ;;
-        harnesses)      echo "harnesses-update.timer" ;;
         fleet)          echo "fleet-sync.timer" ;;
         backup)         echo "backup.timer" ;;
         system-updates) echo "system-updates.timer" ;;
@@ -177,7 +174,6 @@ module_is_active() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         case "$1" in
             providers) launchd_agent_active com.lost.plus.providers; return $? ;;
-            harnesses) launchd_agent_active com.lost.plus.harnesses-update; return $? ;;
             fleet) launchd_agent_active com.lost.plus.fleet-sync; return $? ;;
         esac
     fi
@@ -260,10 +256,10 @@ module_is_retired() {
 # (comma-separated module names). Dependencies are installed automatically and
 # a module cannot be uninstalled while something that needs it is installed.
 #
-# Only unconditional dependencies belong here. `providers` and `harnesses`
-# need `schedule` on Linux but use launchd on macOS, and one column cannot say
-# that, so they keep their own runtime check instead. `fleet` has the same
-# need, which module_requires adds itself.
+# Only unconditional dependencies belong here. `providers` needs `schedule`
+# on Linux but uses launchd on macOS, and one column cannot say that, so it
+# keeps its own runtime check instead. `fleet` has the same need, which
+# module_requires adds itself.
 
 # Membership test. The array subscript flag (Ie) reports a match's index, and
 # under KSH_ARRAYS the first element is index 0, which reads as "absent" --
@@ -1430,21 +1426,14 @@ cmd_install() {
     (( failures == 0 ))
 }
 
-# --- AI harness self-updates ----------------------------------------
-#
-# Harness install/update/settings/MCP enrollment now lives in the harnesses
-# module (~/.local/bin/harnesses; see files/harnesses and
-# files/harnesses-manifest.json). setup update delegates to it here. The
-# per-harness resolution and updater logic moved with it.
-
 cmd_update() {
     configure_shell || true
     local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() unchecked_count=0 unchecked_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
     local manifest_input
     # `setup update` only updates modules. The harnesses keep their own
-    # cadence: `harnesses update` runs the per-harness self-updaters and
-    # `harnesses schedule` installs the timer that calls it.
+    # cadence: `fleet update` runs the per-harness self-updaters, and fleet's
+    # nightly pass calls it.
     for target_module in "$@"; do
         filters+=("$target_module")
     done

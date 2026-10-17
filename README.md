@@ -28,11 +28,11 @@ Running `setup` without arguments opens an interactive terminal menu (powered by
 setup                     # Open interactive menu to pick and configure modules
 setup list                # List all available modules
 setup status              # Check installed versions and remote updates
-setup update              # Update all installed modules and AI harnesses
-harnesses install [name]  # Install missing harnesses with their own installers (default: claude, codex)
-harnesses update          # Run each AI harness's own self-updater (claude, codex, opencode, ...)
-harnesses settings        # Apply managed settings and today keepout prompt hooks
-harnesses schedule        # Install the daily 07:00 timer that runs 'harnesses update'
+setup update              # Update all installed modules
+fleet install [name]      # Install missing harnesses with their own installers
+fleet update              # Run each AI harness's own self-updater (claude, codex, opencode, ...)
+fleet sync                # Sync ~/.agents with the account and render harness settings
+fleet schedule            # Install the nightly 04:00 timer that runs 'fleet nightly'
 setup install <module>    # Install and enable a module (e.g., setup install resume)
 setup uninstall <module>  # Disable and remove a module
 setup enable <module>     # Enable a background service module (e.g., setup enable system-updates)
@@ -74,19 +74,14 @@ The current edges:
 | `opencodex` | `providers` | Without it, 11 of 12 registry providers lose model filtering |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
-| `system-updates` | `schedule`, `miniharness` | `schedule` for the timer; `miniharness` because `system-updates enable` refuses to run without the model summon its 07:00 reboot check asks |
+| `system-updates` | `schedule`, `fleet` | `schedule` for the timer; `fleet` because `fleet install miniharness` provides the model summon its 07:00 reboot check asks, and `system-updates enable` refuses to run without it |
 | `setup` | `fzf-multicolumn` | The interactive module picker has no stock-`fzf` fallback by design |
 | `ai-menu` | `fzf-multicolumn` | The `ai` menu falls back to plain `fzf`, but loses its folder column and re-installs the picker on every run |
 | `tmux` | `zsh-basics` | The status bar reads `SYSTEM_COLOR_HEX`, which only `zsh-basics` exports; without it every machine's bar is the same blue |
 
 `setup` bootstraps `fzf-multicolumn` straight from the manifest on first interactive run, so a fresh `curl | zsh` install still lands a working picker — the declared edge only makes that hand-wired behavior explicit and blocks an uninstall that would immediately be undone.
 
-Deliberately not declared, both on `harnesses`, for the same reason — the module is two jobs in one binary, and its updater half stands alone:
-
-- `opencodex`: `harnesses install` and `harnesses update` work fine on a machine with no proxy, even though `harnesses proxy` refuses to run there.
-- `auth`: same two commands need no credentials at all. `harnesses settings` skips only the MCP permission grants without it and reports the gap, and `harnesses mcp` refuses outright. Note that `harnesses daily` runs settings → mcp → update, so on a machine with no Common Auth login the daily timer reports a failure every run.
-
-The one thing the column cannot express is a platform-conditional need: `providers` and `harnesses` need `schedule` on Linux but use launchd on macOS, so they keep their own runtime check instead.
+The one thing the column cannot express is a platform-conditional need: `providers` needs `schedule` on Linux but uses launchd on macOS, so it keeps its own runtime check instead; `fleet` gets the same edge from `bin/setup` itself.
 
 #### External requirements
 
@@ -95,8 +90,7 @@ Some modules need tools that are not modules, so the `requires` column cannot re
 | Module | Needs | Where it comes from |
 |--------|-------|---------------------|
 | `backup` | restic ≥ 0.17, `flock`, `ssh-keygen` | System packages |
-| `system-updates` | `hermes` on the operator's PATH | `harnesses install hermes` (Hermes's own installer, run non-interactively); not part of a bare `harnesses install` |
-| `miniharness` | node and npm | nvm or `/opt/node`; the module reports what to do rather than installing node itself |
+| `system-updates` | `hermes` and `miniharness` on the operator's PATH | `fleet install hermes` and `fleet install miniharness` (miniharness needs node and npm) |
 
 ---
 
@@ -130,15 +124,13 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `fzf-multicolumn` | Multi-column `fzf` wrapper used by the module picker and `ai` menu (`~/.local/bin/fzf-multicolumn`) | `files/fzf-multicolumn.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
-| `agents` | AI agent instructions and skills (`~/.agents/`, linked to all installed AI harnesses) | `files/agents.sh` |
 | `ssh-aliases` | Manages outbound host shortcuts in `~/.ssh/config` and syncs the owner's GitHub keys into a preserved block in `~/.ssh/authorized_keys` | `files/ssh-aliases.sh` |
 | `mac-boot` | Fleet-only macOS boot-volume switcher whose status shows the selected volume and other bootable choices; accepts exact volume names, switches through a narrowly scoped passwordless sudo rule, requests a normal application-aware restart, and guarantees reboot after 60 seconds | `files/mac-boot.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
 | `auth` | Public Common Auth client: one browser-approved login, a local `0600` global/per-service credential store, and service-token resolution for other modules (`~/.local/bin/auth`) | `files/auth.sh` |
-| `harnesses` | AI harness install/update, settings, and MCP enrollment for claude, codex, and hermes (where `~/.hermes/config.yaml` exists). The lost.plus MCP set is read from the Common Auth hub (`GET /api/services`: every registry row the account is admitted to that has an `mcp_url`, its `token_key` as the scope) with the global machine token `auth` holds, so a service registered in the hub enrolls everywhere on the next pass and the manifest lists only third-party MCPs; if the hub cannot be read the MCP pass fails loudly and changes nothing. lost.plus credentials come from `auth`, external-service credentials remain in the passage MCP (`~/.local/bin/harnesses`) | `files/harnesses.sh` |
+| `fleet` | SSH aliases, the account's `~/.agents` tree (instructions, skills, settings, MCP list) synced through Common Auth, harness settings rendered from it, the skill marketplace, and harness install/update (`~/.local/bin/fleet`) | `files/fleet.sh` |
 | `providers` | Provider enrollment, credential mirrors, and model refresh; Grimoire uses `auth`, while third-party provider keys remain in the passage MCP (`~/.local/bin/providers`). A provider dropped from the registry is named in `retired_providers` so every machine sweeps its credential and catalogue instead of keeping them forever (`~/.local/bin/providers`) | `files/providers.sh` |
-| `miniharness` | The headless model summon (`npm install -g miniharness`) that `system-updates` asks at 07:00 whether a reboot is safe. Installed globally through npm, so its path follows the active node version rather than a fixed target | `files/miniharness.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 The fleet-only `ssh-aliases` module also sets an outbound default of
@@ -164,32 +156,23 @@ Every module that installs a user-facing command supports `--help`. Configuratio
 
 ---
 
-`harnesses settings` and `harnesses mcp` discover the newest numeric version of the local `unified-computer-use` Codex plugin on macOS, under `~/.codex/plugins/cache/openai-bundled`. The manifest's `localPluginMcpServers` entry imports `cua_repl` as Claude's user-scope `cua_repl` stdio server, copying its command, arguments, and environment with the manifest's `env` overrides. Claude's import enables only the `computer` surface: desktop app control works independently, while the bundled browser surface requires Codex session metadata. Use separate browser tooling in Claude. The daily refresh updates that registration when the installed plugin changes. ChatGPT and its computer-use components must already be installed and permitted on the Mac; setup does not install them. Linux skips this entry. Missing, malformed, disabled, or unavailable plugin launch settings are reported and leave an existing Claude registration alone; local/project registrations retain precedence. This integration uses the app's unofficial plugin interface and may need adjustment after app updates. Codex continues to use its own plugin.
+### fleet
 
-`harnesses settings` also reconciles the one `keepout.command` in `files/harnesses-manifest.json` into pre-prompt hooks for [Claude Code](https://code.claude.com/docs/en/hooks) (`~/.claude/settings.json`), [Codex](https://learn.chatgpt.com/docs/hooks) (`~/.codex/hooks.json`), and [Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html) (a marked block in `~/.kimi-code/config.toml`). A successful `~/.local/bin/auth token --cached today` (saved token, no hub call) and keepout request with a nonblank body rejects the prompt with exit 2 and the lock message on stderr. Empty responses, unavailable commands, login failures, and HTTP/network failures allow it. Existing user hooks remain; repeated runs replace only commands marked by `today.lost.plus/api/keepout`. Setting `keepout.enabled` to false removes those commands on the next settings pass. Autonomous jobs already in flight pass `TODAY_KEEPOUT_EXEMPT=1` to their children. A single session is exempt when an empty file named after its hook `session_id` exists in `~/.local/state/today/keepout-exempt/`; this is how a T3 thread, which has no per-thread environment, opts out.
+`fleet sync` keeps `~/.agents` in step with the account's copy in Common Auth. Each file is compared three ways (server, last synced, local): one-sided changes move in that direction, and a file changed on both sides takes the server copy and backs the local one up under `~/.local/state/fleet/backup/`. Skills installed from the marketplace (`fleet skills`) arrive the same way.
 
-Codex hooks are enabled by default (`features.hooks`; `features.codex_hooks` is a deprecated alias). Explicit disabling in config or managed requirements still prevents execution. Codex runs a user hook only after its exact definition is trusted, so each settings pass trusts the keepout command it just wrote through `codex app-server` (the same record `/hooks` writes). Other hooks still need review through `/hooks`. If that trust fails, the run reports it and exits nonzero. An existing inline `[hooks]` in `config.toml` remains intact; Codex loads both sources and warns about mixed representations.
+After syncing, fleet renders harness settings line by line: it only touches the keys it manages and records what it wrote in `~/.local/state/fleet/rendered.json`, so anything else in a harness's settings file is left alone. Personal settings come from `~/.agents/settings/*.json` and `~/.agents/mcp.json`; settings every account shares come from `files/fleet-manifest.json`. The lost.plus MCP servers come from `GET /api/services`, which already filters out admin-only services for accounts that aren't admitted. MCP tokens are read from passage and written to a marked block in `~/.zshenv`; Claude reads them through `fleet mcp-headers`, so a Claude started by a service still gets them.
 
-Keepout hook coverage follows the documented blocking contracts: [Grok](https://docs.x.ai/build/features/hooks) has a passive `UserPromptSubmit` event and only blocks `PreToolUse`; [Antigravity](https://antigravity.google/docs/hooks) documents context injection for `PreInvocation`, without an exit-2 prompt gate. [Muse](https://dev.meta.ai/docs/muse-code/extending) lists `UserPromptSubmit` but does not document its handler format or exit-2 behavior, so setup leaves it unwired. [T3](https://github.com/pingdotgg/t3code/blob/main/docs/internals/providers.md) delegates to harness providers and has no documented independent pre-prompt shell gate. Gemini CLI is absent from the managed manifest; Hermes is exempt; OpenCode is skipped by operator choice. The canonical agent instructions require a manual keepout check on unsupported harnesses.
-
-For Claude subscription access from macOS SSH sessions, run `claude auth login --claudeai` inside a fresh SSH connection and complete its browser approval. When the Keychain rejects writes in that session, Claude saves the login in its permission-restricted `~/.claude/.credentials.json` fallback; verify with `claude auth status` from another fresh connection. Unlocking the Keychain inside an existing tmux session can restore access there without restoring it for new SSH sessions. Credentials remain local to Claude and are not part of setup. See [Claude credential management](https://code.claude.com/docs/en/authentication#credential-management).
-
-Claude runs every model with a 400,000-token context window. The managed Claude settings set `autoCompactWindow` to 400000, so every session compacts at that size, and `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` to 400000: Claude never lets the auto-compact window exceed the window it believes a model has, and for a model ID it does not recognize (everything routed through opencodex) it believes 200K. That variable only applies to unrecognized IDs, so Claude models are untouched by it. Earlier versions pointed T3 at a per-model launcher (`claude-gpt-context`, then `claude-context`); a T3 settings file still naming one is moved back to plain `claude` and the launcher is removed. Existing Claude processes pick up the window when restarted.
-
-`harnesses refresh` runs daily at 11:00 and can overlap the hourly provider refresh and active T3 sessions. Its Claude MCP management and self-update commands run with `CLAUDE_CODE_SIMPLE=1` only in their child environment: normal Claude startup can refresh OAuth even for these administrative commands, and a rejected refresh can erase the shared login. Minimal mode preserves MCP configuration management and updates while skipping native OAuth reads. Interactive Claude and T3 sessions retain their normal authentication behavior.
+`fleet nightly` (04:00) runs the sync, then each harness's own updater.
 
 ## Detailed Feature Overview
 
 ### AI Tools Integration
 
-- **`agents`**: Deploys standard AI instructions (`AGENTS.md`) and skills to `~/.agents/`, and symlinks them into Claude Code (`~/.claude/`), Codex (`~/.codex/`), Antigravity (`~/.gemini/`), OpenCode (`~/.config/opencode/`), Muse Code (`~/.config/muse/`), and the home directory.
 - **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, Kimi Code, and Muse Code so you can jump right back into any session.
 - **`opencodex`**: Profile launcher that manages custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
 - **Mixed-tier admission policy**: a provider descriptor may carry `model_allow_ids`, `model_allow_suffixes`, and `model_no_reasoning_suffixes`, which admit only known-free or newly published `-free`/`alpha` model IDs into the mirrored catalogs and keep `alpha` IDs off OpenCodex's generic reasoning ladder. OpenCode Zen used all three; it has since been retired, so no live provider sets them, and they remain for the next mixed free/paid endpoint.
 - **Retiring a provider**: deleting a provider from the registry is not enough, because every consumer write path is an upsert — the credential and model list would sit on each machine forever. Name it in `retired_providers` and each refresh sweeps it out of the credential cache, the `.zshenv` key block, opencode's `auth.json` and provider block, the provider state, the capability cache, Hermes, and Pi. A name that is itself live, or that a live provider borrows as its credential, is rejected at validation.
 - **OpenCode Go session affinity**: `opencodex` carries the stable request/conversation lane required by OpenCode's routes as `x-opencode-session`. This is upstream behaviour — setup used to patch the installed runtime to extend it to OpenCode Zen as well, but Zen is retired and OpenCodex 2.59.0 rewrote that transport, so the patch is gone and the runtime is installed verbatim.
-- **Harness updates**: `setup update` also self-updates every installed AI harness — Claude Code, Codex, OpenCode, Antigravity, Hermes, Grok, Kimi, Muse, and T3 Code. Each harness is a self-installing tool rather than a setup module, so setup locates it and runs its own updater (`claude update`, `opencode upgrade`, `hermes update --yes`, and so on). Muse has no update subcommand, so setup forces its launcher to refresh synchronously with `MUSE_SYNC_UPDATE=1 muse --version`. T3 Code is updated with `t3 update --yes`, which also moves its background service and briefly restarts it; a Linux host set up through npx has no `~/.local/bin/t3`, so setup runs the newest `~/.t3/runtime/versions/*/t3` instead. Harnesses missing from the machine are skipped. `harnesses install <name>` installs any of them on Linux or macOS with the harness's own first-party installer (`t3` also installs its background service; linking T3 Connect stays a manual `t3 connect`); a bare `harnesses install` only installs the harnesses the manifest marks `default` (Claude Code and Codex). The copy it updates is the copy the operator's shell would run: a machine that has run `nvm install` more than once keeps a `codex` and a `claude` under every node version it still has, so the run puts the operator's own bin directories at the front of `PATH` and the node toolchains behind it on the end — those are there to be found, not to win (an unused newer node used to shadow `~/.local/bin`, and the run then upgraded a stale copy nobody starts) — and it hands each self-updater the `npm` belonging to the install its own executable lives in, since `codex update` and `claude update` shell out to `npm install -g` and any other `npm` would install somewhere else. An updater exiting 0 is not taken as proof that it did anything: the run reads each harness's `--version` before and after and prints either the transition or `(unchanged)`, then names the unchanged harnesses at the end. Usually that just means the machine was already current, but it is also what a stuck updater looks like -- a Homebrew-managed opencode answers `opencode upgrade` with "already installed" and exits 0 while a newer release sits in the tap. The module owns its own cadence: `harnesses schedule` installs a daily 07:00 timer (an hour clear of the 06:00 `setup schedule` timer) that runs `harnesses update`, and `setup enable harnesses` / `setup disable harnesses` drive that timer. `setup update` only updates modules, so `setup update harnesses` updates the harnesses module itself like any other filter. Unattended runs defer any module update that needs an interactive administrator prompt and report the command to run later in a terminal.
-- **MCP tokens for Claude, however it was launched**: a `claude` started by a service or a GUI app (T3 Code under systemd or launchd, an app opened from the Dock) never reads `~/.zshenv`, so a `${JINA_MCP_TOKEN}` header expanded to nothing and every token server answered 401. `harnesses mcp` therefore enrolls each token server in Claude with a `headersHelper`, `harnesses mcp-headers <bearer|x-api-key> <VAR>`, which Claude runs at every connect: it reads that one token from the `harnesses:mcp-tokens` block of `~/.zshenv` and prints the header as JSON. The secret lives only in `.zshenv`, the same on macOS and Linux, and a rotated token reaches Claude on its next reconnect. Codex has no released equivalent yet (`http_headers_helper` is on codex main), so for now `harnesses mcp` also mirrors the token block into `~/.codex/.env` (mode 600), which codex loads itself however it was launched; that copy goes once an installed codex has the helper.
 
 ---
 
@@ -285,4 +268,4 @@ git config core.hooksPath hooks
 
 The hook automatically runs `zsh -n` and `bash -n` syntax checks and updates `checksums.tsv` whenever you make a commit.
 
-Every `SKILL.md` under `agents/skills/` carries an `audience:` line in its front matter. `audience: fleet` installs the skill only on machines whose key appears in the owner key list; `audience: public` installs it everywhere. The `agents` module reads this line when it links skills into each harness's skills directory, so a skill that skips the tag reads as unset rather than intentionally scoped. The pre-commit hook blocks a commit when any `SKILL.md` is missing it.
+Every `SKILL.md` under `agents/skills/` carries an `audience:` line in its front matter (`fleet` or `public`), and the pre-commit hook blocks a commit when any `SKILL.md` is missing it. These skills are the starting copy the one-off migration seeds into the operator's account; after that, the account's `~/.agents` tree is what `fleet sync` deploys.
