@@ -1342,6 +1342,12 @@ fleet sync --check >/dev/null 2>&1 && fail "an edited install read as current"
 fleet sync --pull >/dev/null 2>&1 || fail "pull over an edited install"
 [[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "edited install not put back"
 grep -rq edited "$XDG_STATE_HOME/fleet/backup" || fail "the edit was not backed up"
+# An empty folder added is an edit too.
+mkdir "$installed/emptydir"
+fleet status 2>&1 | grep -q 'installed skills changed here.*foo' || fail "status missed an added folder"
+fleet sync --pull >/dev/null 2>&1 || fail "pull over an added folder"
+[[ ! -e "$installed/emptydir" ]] || fail "an added folder was not put back"
+compgen -G "$XDG_STATE_HOME/fleet/backup/*/installed/*/emptydir" >/dev/null || fail "the added folder was not backed up"
 # So is one left unreadable: a file, or a folder whose files cannot be listed.
 for locked in "$installed/run.sh" "$installed/sub"; do
     [[ $locked == */sub ]] && mkdir "$locked"

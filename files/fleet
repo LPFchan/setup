@@ -788,9 +788,10 @@ def _with_name(data, name):
 
 
 def _scan_folder(folder):
-    """{path: [sha256, executable]} of every file under `folder`, a symlink as
-    None and what cannot be read as "unreadable" (or is not a regular
-    file), which never matches what pull wrote; None for a folder that is not a real folder."""
+    """{path: [sha256, executable]} of every file under `folder`, a folder as
+    "folder" (an empty one added is an edit too), a symlink as None and what
+    cannot be read as "unreadable" (or is not a regular file), which never
+    matches what pull wrote; None for a folder that is not a real folder."""
     if folder.is_symlink() or not folder.is_dir():
         return None
     found = {}
@@ -802,10 +803,12 @@ def _scan_folder(folder):
             path = pathlib.Path(base)/name
             if path.is_symlink():
                 found[path.relative_to(folder).as_posix()] = None
-            elif name in names and not path.is_file():
+            elif name in dirs:
+                found[path.relative_to(folder).as_posix()] = "folder"
+            elif not path.is_file():
                 # A FIFO would block a read until something writes to it.
                 found[path.relative_to(folder).as_posix()] = "not a file"
-            elif name in names:
+            else:
                 try:
                     found[path.relative_to(folder).as_posix()] = _digest(path)
                 except OSError:
