@@ -777,10 +777,25 @@ def _scan_folder(folder):
     return found
 
 
+def _install_folder(name):
+    """An installed skill's folder as the disk spells it: gone under its
+    recorded name, another spelling of that name is it (as scan_local reads
+    it), so an edit there is found and a pull replaces it."""
+    path = AGENTS_DIR/"skills"/name
+    if os.path.lexists(path):
+        return path
+    want = unicodedata.normalize("NFC", name)
+    try:
+        others = sorted(e.name for e in path.parent.iterdir() if unicodedata.normalize("NFC", e.name) == want)
+    except OSError:
+        others = []
+    return path.parent/others[0] if others else path
+
+
 def _edited_installs():
     """Installed skills changed here since pull wrote them."""
     return sorted(name for name, entry in _load_json(INSTALLED, {}).items()
-                  if not isinstance(entry, dict) or _scan_folder(AGENTS_DIR/"skills"/name) != entry.get("local"))
+                  if not isinstance(entry, dict) or _scan_folder(_install_folder(name)) != entry.get("local"))
 
 
 def _install_plan(installs, fresh=False):
@@ -812,16 +827,15 @@ def _apply_installs(installs, write, remove, contents, backup):
 
     def clear(name):
         # The folder itself may be a symlink put here; it is what gets replaced.
-        target = _safe_target(f"skills/{name}")
+        target = _safe_target(f"skills/{_install_folder(name).name}")
         if not os.path.lexists(target):
-            return target
+            return
         entry = mine.get(name)
         if isinstance(entry, dict) and _scan_folder(target) == entry.get("local"):
             shutil.rmtree(target)
         else:
             backup.move(target, f"installed/{name}")
             kept.append(name)
-        return target
 
     def save():
         if mine:
@@ -850,7 +864,8 @@ def _apply_installs(installs, write, remove, contents, backup):
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(_with_name(data, name) if rel == "SKILL.md" else data)
             written = _scan_folder(staging)
-            target = clear(name)
+            clear(name)
+            target = _safe_target(f"skills/{name}")
             target.parent.mkdir(parents=True, exist_ok=True)
             os.rename(staging, target)
         finally:

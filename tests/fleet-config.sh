@@ -1050,7 +1050,7 @@ rm -rf "$HOME/.agents/.installing-mine"
 # An installed folder the disk spells otherwise (HFS+ decomposes accents)
 # is still the install, not the account's own files.
 mkdir -p "$TMP/nfd"
-HOME="$TMP/nfd" python3 - "$ROOT/files/fleet" <<'PY' || fail "an otherwise-spelled installed folder read as the account's own"
+HOME="$TMP/nfd" python3 - "$ROOT/files/fleet" >/dev/null <<'PY' || fail "an otherwise-spelled installed folder read as the account's own"
 import importlib.machinery, importlib.util, json, sys, unicodedata
 loader = importlib.machinery.SourceFileLoader("fleet_nfd", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
@@ -1062,6 +1062,17 @@ assert m.scan_local()[0] == {}, m.scan_local()
 # Where the disk keeps both spellings apart, the other one is the account's.
 (m.AGENTS_DIR/"skills"/name).mkdir(); (m.AGENTS_DIR/"skills"/name/"SKILL.md").write_text("y")
 assert list(m.scan_local()[0]) == [f"skills/{folder.name}/SKILL.md"], m.scan_local()
+# An install renamed to another spelling is still found edited, and a pull
+# replaces it rather than writing a second copy beside it.
+import shutil
+shutil.rmtree(m.AGENTS_DIR/"skills"/name)
+m.INSTALLED.write_text(json.dumps({name: {"id": "i", "server": {}, "local": m._scan_folder(folder)}}))
+(folder/"SKILL.md").write_text("edited")
+assert m._edited_installs() == [name], m._edited_installs()
+m._apply_installs({name: {"id": "i", "server": {"SKILL.md": ["h", False]}}}, [name], [],
+                  {name: {"SKILL.md": b"---\nname: x\n---\n"}}, m.Backup())
+assert [e.name for e in (m.AGENTS_DIR/"skills").iterdir()] == [name], list((m.AGENTS_DIR/"skills").iterdir())
+assert m._edited_installs() == [], m._edited_installs()
 PY
 rm -rf "$TMP/nfd"
 
