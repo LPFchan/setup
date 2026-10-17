@@ -372,7 +372,8 @@ out=$(fleet sync --pull 2>&1) || true
 server_put skills/mine/SKILL.md 'from account once more'
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"; touch "$FAKE/edit-as-delete"
 out=$(fleet sync --pull 2>&1) || true
-[[ "$out" == *"changed here and in the account"*"skills/mine/SKILL.md"* ]] || fail "a late deletion undone silently: $out"
+[[ "$out" == *"deleted here during the sync"*"skills/mine/SKILL.md"* ]] || fail "a late deletion undone silently: $out"
+[[ "$out" != *"yours are in"*"skills/mine/SKILL.md"* ]] || fail "a late deletion reported as backed up: $out"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
@@ -490,6 +491,12 @@ rm -rf "$HOME/.codex/AGENTS.md" "$HOME/.gemini" "$HOME/.codex/skills/mine" "$HOM
     "$HOME/.config/muse" "$HOME/.codex/skills/lost"
 server_put AGENTS.md 'my instructions'
 fleet sync --pull >/dev/null 2>&1 || fail "pull restoring AGENTS.md again"
+# An old skill folder that is itself a link is shared: its entries stay.
+mkdir -p "$HOME/.config/muse" "$TMP/muse-shared"; ln -s "$HOME/.agents/skills/mine" "$TMP/muse-shared/mine"
+ln -s "$TMP/muse-shared" "$HOME/.config/muse/skills"
+fleet sync --pull >/dev/null 2>&1 || fail "pull with a linked old skill folder"
+[[ -L "$TMP/muse-shared/mine" ]] || fail "removed a link inside a shared old skill folder"
+rm -rf "$HOME/.config/muse" "$TMP/muse-shared"
 
 # Paths a case-insensitive disk would merge are neither taken nor pushed.
 server_put skills/Mine/SKILL.md 'upper case'

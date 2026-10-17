@@ -917,9 +917,10 @@ def _apply_changes(take, remove, contents, server, backup, then=None, scanned=No
     """Replaced and deleted local copies, symlinks included, go to the backup.
     If a write fails, or `then` (run once all are written) does, the files
     already written go and the moved ones come back, so ~/.agents stays as it
-    was. Returns the paths whose local copy changed since `scanned` was read:
-    an edit saved during the sync, which the merge never saw."""
-    moved, written, changed = [], [], []
+    was. Returns the paths whose local copy changed since `scanned` was read
+    (an edit saved during the sync, which the merge never saw) and those
+    deleted since, which have no copy in the backup."""
+    moved, written, changed, deleted = [], [], [], []
     try:
         for rel in sorted(remove) + sorted(take):
             target = _safe_target(rel)
@@ -933,7 +934,7 @@ def _apply_changes(take, remove, contents, server, backup, then=None, scanned=No
                     changed.append(rel)
             elif scanned is not None and rel in scanned and rel in take:
                 # So is one deleted since: the account's copy would undo that.
-                changed.append(rel)
+                deleted.append(rel)
         for rel in remove:
             _remove_file(rel)
         for rel in sorted(take):
@@ -949,7 +950,7 @@ def _apply_changes(take, remove, contents, server, backup, then=None, scanned=No
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(saved), str(target))
         raise
-    return changed
+    return changed, deleted
 
 
 def _move_foreign(backup):
@@ -1036,18 +1037,21 @@ def pull(account):
             # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
         try:
-            conflicts += _apply_changes(take, remove, contents, server, backup, then=finish, scanned=local)
+            changed, deleted = _apply_changes(take, remove, contents, server, backup, then=finish, scanned=local)
         except BaseException:
             _put_harness_back(harness)
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
             _put_foreign_back(moved, backup)
             raise
+        conflicts += changed
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
+        if deleted:
+            _report("deleted here during the sync, so the account's copy came back: " + ", ".join(deleted))
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", new_record, sorted(set(conflicts))
+        return "synced", new_record, sorted(set(conflicts + deleted))
     raise ConfigError("the account kept changing during the sync; try again")
 
 
@@ -1312,7 +1316,9 @@ def _drop_old_links():
             target.unlink()
         _restore_old_backup(target)
     for directory in OLD_SKILL_LINK_DIRS:
-        if directory.is_dir():
+        # A folder that is itself a link is shared with something else: its
+        # entries aren't this harness's to remove.
+        if directory.is_dir() and not directory.is_symlink():
             for entry in list(directory.iterdir()):
                 if _points_into(entry, skills):
                     entry.unlink()
@@ -3837,6 +3843,8 @@ def schedule_stale():
 
 
 def schedule_enable():
+    # Both run the installed binary, not whichever copy turned the job on: the
+    # uninstall retry runs a temporary one.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -3849,7 +3857,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{os.path.abspath(sys.argv[0])}</string>
+        <string>{HOME/".local/bin/fleet"}</string>
         <string>schedule</string>
         <string>run</string>
     </array>
