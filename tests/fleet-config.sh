@@ -602,6 +602,14 @@ fleet sync >/dev/null 2>&1 || true
 [[ "$(server_has skills/mine/unsent)" == "<none>" ]] || fail "uploaded past a timer it could not read"
 chmod 644 "$SCHEDULE_USER_DIR/fleet-sync.service"
 rm -f "$HOME/.agents/skills/mine/unsent" "$SCHEDULE_USER_DIR"/fleet-sync.*
+# So is half of one.
+mkdir -p "$SCHEDULE_USER_DIR"
+printf 'OnCalendar=*-*-* 04:00:00\n' > "$SCHEDULE_USER_DIR/fleet-sync.timer"
+printf 'unsent\n' > "$HOME/.agents/skills/mine/unsent"
+fleet sync >"$TMP/out" 2>&1 || true
+grep -q 'could not replace the nightly timer' "$TMP/out" || fail "half a timer not replaced"
+[[ "$(server_has skills/mine/unsent)" == "<none>" ]] || fail "uploaded past half a timer"
+rm -f "$HOME/.agents/skills/mine/unsent" "$SCHEDULE_USER_DIR"/fleet-sync.*
 # A file turned into a link after the scan is not read through it.
 python3 - "$ROOT/files/fleet" "$TMP" <<'PY' || fail "pushed through a link swapped in after the scan"
 import importlib.machinery, importlib.util, pathlib, sys

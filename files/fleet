@@ -1653,10 +1653,11 @@ def schedule_stale():
         if sys.platform == "darwin":
             text = _plist_path().read_text()
             return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
-        service = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.service").read_text()
-        timer = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer").read_text()
+        units = [SYSTEMD_USER_DIR/f"{TIMER_NAME}.service", SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer"]
+        service, timer = (unit.read_text() for unit in units)
     except FileNotFoundError:
-        return False
+        # Half a timer is a broken one: only none at all is no timer.
+        return sys.platform != "darwin" and any(os.path.lexists(unit) for unit in units)
     except OSError:
         # One that cannot be read may be the old timer all the same.
         return True
