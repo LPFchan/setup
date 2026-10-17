@@ -225,7 +225,10 @@ grep -q 'old harnesses' "$BIN/harnesses" || fail "took over harnesses while gate
 fleet sync --check >/dev/null 2>&1 && fail "check missed the harnesses client"
 
 # The first pass takes over and renders all three tiers.
-MINE_TOKEN=mine-secret fleet sync --pull > "$TMP/out" 2>&1 || { cat "$TMP/out"; fail "first pass"; }
+chmod 644 "$HOME/.claude/settings.json"
+MINE_TOKEN=tenant:mine-secret fleet sync --pull > "$TMP/out" 2>&1 || { cat "$TMP/out"; fail "first pass"; }
+[[ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o77))' "$HOME/.claude/settings.json")" == 0o0 ]] \
+    || fail "claude settings left readable to others"
 grep -q '^# fleet: harnesses alias' "$BIN/harnesses" || fail "harnesses not aliased"
 [[ ! -e "$HOME/.config/harnesses" ]] || fail "harnesses manifest left"
 [[ ! -e "$SCHEDULE_USER_DIR/harnesses-update.timer" ]] || fail "harnesses timer left"
@@ -247,7 +250,7 @@ servers=$(json "$HOME/.claude.json" 'sorted(v["mcpServers"])')
     || fail "heatmap headersHelper"
 grep -q "skipped vault" "$TMP/out" || fail "a passage server on another account was not reported"
 grep -q "export HEATMAP_MCP_TOKEN=tok-heatmap" "$HOME/.zshenv" || fail "hub token not mirrored"
-grep -q "export MINE_TOKEN=mine-secret" "$HOME/.zshenv" || fail "env token not mirrored"
+grep -qx "export MINE_TOKEN=tenant:mine-secret" "$HOME/.zshenv" || fail "env token not mirrored as it is"
 [[ "$("$BIN/harnesses" mcp-headers bearer HEATMAP_MCP_TOKEN)" == '{"Authorization": "Bearer tok-heatmap"}' ]] \
     || fail "the harnesses alias does not forward mcp-headers"
 # A staged copy standing in for the installed one renders the installed path.
@@ -289,12 +292,22 @@ fleet sync --check >/dev/null 2>&1 && fail "check missed a harness gone since th
 mv "$TMP/hermes.away" "$HOME/.hermes/config.yaml"
 fleet sync --check >/dev/null 2>&1 || fail "check after the harness came back"
 # So does a codex installed beside a ~/.codex it skipped trusting a hook in.
+# (A codex under /opt or nvm on this machine would still be found: the
+# manifest here looks on PATH only.)
+python3 - "$ROOT/files/fleet-manifest.json" "$TMP/path-only.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+for h in m["harnesses"]:
+    h.update(npm=False, candidates=[])
+json.dump(m, open(sys.argv[2], "w"))
+PY
 mv "$BIN/codex" "$TMP/codex.away"; rm "$FAKE/codex-trust.json"
-fleet sync --pull >/dev/null 2>&1 || fail "a pass with no codex"
+FLEET_MANIFEST="$TMP/path-only.json" fleet sync --pull >/dev/null 2>&1 || fail "a pass with no codex"
 mv "$TMP/codex.away" "$BIN/codex"
-fleet sync --check >/dev/null 2>&1 && fail "check missed a codex installed since the render"
-fleet sync --pull >/dev/null 2>&1 || fail "a pass once codex came back"
+FLEET_MANIFEST="$TMP/path-only.json" fleet sync --check >/dev/null 2>&1 && fail "check missed a codex installed since the render"
+FLEET_MANIFEST="$TMP/path-only.json" fleet sync --pull >/dev/null 2>&1 || fail "a pass once codex came back"
 [[ -s "$FAKE/codex-trust.json" ]] || fail "a codex installed later did not get the keepout hook trusted"
+fleet sync --pull >/dev/null 2>&1 || fail "a pass with the manifest back"
 # A server whose token variable already holds another server's token is
 # left out, not handed that token.
 server_put mcp.json '{"mcpServers": [
@@ -1132,6 +1145,12 @@ rm "$FAKE/services-down"
 fleet sync --pull >/dev/null 2>&1 || fail "pass after the hub came back"
 grep -q UserPromptSubmit "$settings" && fail "keepout hook left after it was turned off"
 grep -q UserPromptSubmit "$HOME/.codex/hooks.json" && fail "codex keepout hook left"
+# A check that cannot read the hub's list cannot say it is current.
+fleet sync --check >/dev/null 2>&1 || fail "check after the hub came back"
+touch "$FAKE/services-down"
+rc=0; fleet sync --check >/dev/null 2>&1 || rc=$?
+rm "$FAKE/services-down"
+[[ $rc == 3 ]] || fail "check with the hub down returned $rc"
 
 # A sign-in while the hub's list comes down renders nothing for either account.
 touch "$FAKE/switch-on-services"

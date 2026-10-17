@@ -26,7 +26,8 @@ REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${PROVIDER_REGISTRY_SOURCE:-$SOURC
 # The proxy drains in-flight turns for 300s on SIGTERM (shutdownTimeoutMs);
 # systemd's default 90s stop timeout would SIGKILL it mid-drain.
 STOP_TIMEOUT_DROPIN="${OPENCODEX_STOP_TIMEOUT_DROPIN:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/opencodex-proxy.service.d/50-stop-timeout.conf}"
-STOP_TIMEOUT_BODY=$'[Service]\nTimeoutStopSec=330'
+STOP_TIMEOUT_MARK="# Written by setup's opencodex module."
+STOP_TIMEOUT_BODY="$STOP_TIMEOUT_MARK"$'\n[Service]\nTimeoutStopSec=330'
 
 _installed_version() {
     "$OPENCODEX_BIN" --version 2>/dev/null | awk '{print $NF; exit}'
@@ -290,14 +291,25 @@ _runtime_active() {
     [[ "$live" == "$installed" ]]
 }
 
+# Whether the drop-in is setup's to write and remove: absent, marked, or the
+# unmarked body earlier versions wrote. Anything else is the user's.
+_stop_timeout_ours() {
+    [[ ! -e "$STOP_TIMEOUT_DROPIN" && ! -L "$STOP_TIMEOUT_DROPIN" ]] && return 0
+    [[ -f "$STOP_TIMEOUT_DROPIN" && ! -L "$STOP_TIMEOUT_DROPIN" ]] || return 1
+    local body="$(<"$STOP_TIMEOUT_DROPIN")"
+    [[ "${body%%$'\n'*}" == "$STOP_TIMEOUT_MARK" || "$body" == $'[Service]\nTimeoutStopSec=330' ]]
+}
+
 _stop_timeout_current() {
     [[ "$(uname -s)" != Linux ]] && return 0
+    _stop_timeout_ours || return 0
     [[ -f "$STOP_TIMEOUT_DROPIN" && "$(<"$STOP_TIMEOUT_DROPIN")" == "$STOP_TIMEOUT_BODY" ]]
 }
 
 _write_stop_timeout() {
     [[ "$(uname -s)" != Linux ]] && return 0
     local changed=0
+    _stop_timeout_ours || return 0
     if ! _stop_timeout_current; then
         changed=1
         mkdir -p "${STOP_TIMEOUT_DROPIN:h}" || return 1
@@ -404,7 +416,10 @@ uninstall() {
             python3 "$BIN" __remove "$REGISTRY" \
             || echo "opencodex: could not remove managed providers from $OPENCODEX_CONFIG" >&2
     fi
-    rm -f "$BIN" "$OPENCODEX_BIN" "$STOP_TIMEOUT_DROPIN"
+    rm -f "$BIN" "$OPENCODEX_BIN"
+    if [[ "$(uname -s)" == Linux ]] && _stop_timeout_ours; then
+        rm -f "$STOP_TIMEOUT_DROPIN"
+    fi
     rmdir "${STOP_TIMEOUT_DROPIN:h}" 2>/dev/null || true
     rm -rf "$OPENCODEX_ROOT"
     rm -f "$REGISTRY"

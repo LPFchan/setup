@@ -540,6 +540,26 @@ printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"; touch 
 out=$(fleet sync --pull 2>&1) || true
 [[ "$out" == *"deleted here during the sync"*"skills/mine/SKILL.md"* ]] || fail "a late deletion undone silently: $out"
 [[ "$out" != *"yours are in"*"skills/mine/SKILL.md"* ]] || fail "a late deletion reported as backed up: $out"
+# One deleted before the scan has no copy to point to either.
+server_put skills/mine/SKILL.md 'from account after a delete'
+rm "$HOME/.agents/skills/mine/SKILL.md"
+out=$(fleet sync --pull 2>&1) || true
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from account after a delete" ]] || fail "an earlier deletion kept over the account's edit"
+[[ "$out" == *"deleted here but changed in the account"*"skills/mine/SKILL.md"* ]] || fail "an earlier deletion undone silently: $out"
+[[ "$out" != *"yours are in"* ]] || fail "an earlier deletion reported as backed up: $out"
+# Joining without a record says where what it replaced went.
+# So does one saved during the join.
+server_put skills/mine/joined.md 'joined from account'
+mv "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"
+printf 'mine before joining\n' > "$HOME/.agents/skills/mine/SKILL.md"
+printf '%s' "$HOME/.agents/skills/mine/joined.md" > "$FAKE/edit-on-fetch"
+out=$(fleet sync --pull 2>&1) || true
+rm -f "$TMP/record.keep"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from account after a delete" ]] || fail "a join kept the local copy"
+[[ "$out" == *"took the account's copy over what was here (yours is in "*"skills/mine/SKILL.md"* ]] || fail "a join replaced silently: $out"
+[[ "$out" == *"took the account's copy"*"skills/mine/joined.md"* ]] || fail "a join replaced a late save silently: $out"
+server_del skills/mine/joined.md; fleet sync --pull >/dev/null 2>&1 || fail "pull after the join test"
+grep -rlx 'mine before joining' "$XDG_STATE_HOME/fleet/backup" | grep -q 'skills/mine/SKILL.md' || fail "a join's replaced copy not in the backup"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
