@@ -472,6 +472,11 @@ def config_sync_enabled():
 
 def config_path(rel):
     """Whether `rel` is a path Auth stores, as it checks them."""
+    try:
+        # A name that is not UTF-8 reaches here surrogate-escaped.
+        rel.encode()
+    except UnicodeEncodeError:
+        return False
     if len(rel.encode()) > MAX_PATH_BYTES or re.search(r"[\x00-\x1f\x7f\\]", rel):
         return False
     segments = rel.split("/")
@@ -641,6 +646,8 @@ def fetch_contents(paths, counter, server):
         if len(remaining) >= len(pending):
             raise ConfigError("Auth returned no files for a fetch")
         pending = remaining
+    if set(contents) != set(paths):
+        raise ConfigError("Auth's fetch left out requested files")
     return contents
 
 
@@ -875,6 +882,13 @@ def _same_tree(a, b):
         _unreadable(exc)
 
 
+def _has_links(folder):
+    for root, dirs, names in os.walk(folder):
+        if any(os.path.islink(os.path.join(root, n)) for n in dirs + names):
+            return True
+    return False
+
+
 def _move_harness_skills(backup):
     """Move the user's own skill folders out of the harness folders, so
     harnesses don't load them next to ~/.agents/skills; list them. A failed
@@ -917,6 +931,9 @@ def _apply_changes(take, remove, contents, server, backup, then=None, scanned=No
                 now = _digest(saved) if saved.is_file() and not saved.is_symlink() else None
                 if scanned is not None and now != scanned.get(rel):
                     changed.append(rel)
+            elif scanned is not None and rel in scanned and rel in take:
+                # So is one deleted since: the account's copy would undo that.
+                changed.append(rel)
         for rel in remove:
             _remove_file(rel)
         for rel in sorted(take):
@@ -1117,6 +1134,10 @@ def upload(account, record):
             backup = Backup()
             for rel, data in replaced.items():
                 backup.save(data, f"account/{rel}")
+            # A file deleted at the scan but saved again since goes up, not
+            # out: scanned again.
+            if any(os.path.lexists(AGENTS_DIR/rel) for rel in deletes):
+                continue
             try:
                 new = push(record, local, puts, deletes)
             except HttpError as exc:
@@ -1312,7 +1333,10 @@ def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
     links = _load_links()
-    for path in list(AGENTS_LINKS) + _skill_link_targets(links):
+    # A linked claude skill folder leads to someone else's: what is in it
+    # is not fleet's to drop or fill.
+    skills_linked = SKILL_LINK_DIR.is_symlink()
+    for path in list(AGENTS_LINKS) + ([] if skills_linked else _skill_link_targets(links)):
         _unlink_restoring(path, links)
     # Also the old agents module's, which a sync may not have taken over yet.
     _drop_old_links()
@@ -1321,6 +1345,9 @@ def remove_links():
     stuck = {t: moved for t, moved in links.items() if os.path.lexists(moved)}
     if stuck:
         _save_json(LINKS_STATE, stuck)
+        if skills_linked and any(pathlib.Path(t).parent == SKILL_LINK_DIR for t in stuck):
+            raise ConfigError(f"{SKILL_LINK_DIR} is a link, so the skills fleet moved out of it stay "
+                              "in the backup; make it a folder again and run the uninstall again")
         target = sorted(stuck)[0]
         raise ConfigError(f"{target} is no longer fleet's link, so the file it replaced stays at "
                           f"{stuck[target]}; move one of them aside and run the uninstall again")
@@ -1346,7 +1373,7 @@ def onboard(account):
             _unreadable(exc)
     # What this run copies into ~/.agents comes out again if staging or the
     # upload fails, so a retry gathers the harness files afresh.
-    staged = []
+    staged, relinked = [], []
     try:
         if not agents_md.exists() and sources:
             agents_md.parent.mkdir(parents=True, exist_ok=True)
@@ -1365,9 +1392,21 @@ def onboard(account):
             for folder in _skill_folders(directory):
                 mine = skills/folder.name
                 # lexists: a dangling link there is the user's, not staged.
-                if os.path.lexists(mine):
+                if mine.is_symlink() and not _has_links(folder) and pathlib.Path(
+                        os.path.realpath(mine)).is_relative_to(os.path.realpath(folder)):
+                    # A link to the folder about to move would dangle: it
+                    # becomes a copy, and a link again if the upload fails.
+                    relinked.append((mine, os.readlink(mine)))
+                    mine.unlink()
+                    shutil.copytree(folder, mine, symlinks=True)
+                elif os.path.lexists(mine):
                     if not _same_tree(folder, mine):
                         listed.append(str(folder))
+                elif _has_links(folder):
+                    # A link is not uploaded, and a relative one would lead
+                    # elsewhere once the folder moves: the whole folder stays
+                    # out, kept in the backup the harness folders go to.
+                    listed.append(str(folder))
                 else:
                     # Listed first: a copy that fails partway comes out too.
                     staged.append(mine)
@@ -1385,6 +1424,11 @@ def onboard(account):
                 shutil.rmtree(path)
             else:
                 path.unlink(missing_ok=True)
+        for path, target in reversed(relinked):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            path.unlink(missing_ok=True)
+            os.symlink(target, path)
         if isinstance(exc, HttpError):
             if exc.status == 409:
                 raise ConfigError("another machine set up this account first; run: fleet sync") from None
@@ -1452,16 +1496,18 @@ def config_sync(direct):
 
 
 def config_outdated():
-    """Whether a pull would change something (for setup's status)."""
+    """Whether a pull would change something (for setup's status); None when
+    Auth gave no answer to tell by."""
     if not config_sync_enabled():
         return False
     account = _context()
     if account is None:
-        return False
+        return None
     try:
         counter, version, _ = _listing()
-    except ConfigError:
-        return False
+    except (ConfigError, Unavailable) as exc:
+        eprint(f"fleet: account config: {exc}")
+        return None
     # A damaged record is outdated: the sync that follows reports it.
     try:
         record = _load_sync_record()
@@ -3628,9 +3674,12 @@ def cmd_sync(check=False, direct=True, force=False):
         ssh_rc = 3
     else:
         if check:
-            return 0 if (is_current(config_lines, keys_lines) and not config_outdated()
-                         and not (config_sync_enabled() and harnesses_left())
-                         and not harness_outdated()) else 1
+            if not is_current(config_lines, keys_lines):
+                return 1
+            outdated = config_outdated()
+            if outdated or (config_sync_enabled() and harnesses_left()) or harness_outdated():
+                return 1
+            return 3 if outdated is None else 0
         changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
         try:
             SSH_DIR.chmod(0o700)
@@ -3647,7 +3696,13 @@ def cmd_sync(check=False, direct=True, force=False):
         # Either way this run only pulls: a failed replacement may leave the
         # old timer running plain `fleet sync`.
         direct = False
-        if schedule_enable() != 0:
+        try:
+            rc = schedule_enable()
+        except SystemExit as exc:
+            # A missing helper exits; the pull still runs.
+            eprint(f"fleet: {exc}")
+            rc = 1
+        if rc != 0:
             eprint("fleet: could not replace the nightly timer; run fleet schedule, then fleet sync")
             ssh_rc = 1
         else:
@@ -3770,10 +3825,11 @@ def schedule_stale():
         if sys.platform == "darwin":
             text = _plist_path().read_text()
             return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
-        service = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.service").read_text()
-        timer = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer").read_text()
+        units = [SYSTEMD_USER_DIR/f"{TIMER_NAME}.service", SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer"]
+        service, timer = (unit.read_text() for unit in units)
     except FileNotFoundError:
-        return False
+        # Half a timer is a broken one: only none at all is no timer.
+        return sys.platform != "darwin" and any(os.path.lexists(unit) for unit in units)
     except OSError:
         # One that cannot be read may be the old timer all the same.
         return True
