@@ -1690,7 +1690,8 @@ def config_outdated():
     if record.get("account") != account:
         # Another account's config here is outdated even when this account
         # has none: the pull moves it aside.
-        return counter > 0 or bool(record) or bool(installs)
+        # So is an install the account has since dropped.
+        return counter > 0 or bool(record) or bool(installs) or any(_install_plan(installs))
     return record.get("version") != version or any(_install_plan(installs))
 
 

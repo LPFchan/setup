@@ -957,6 +957,13 @@ fleet sync >/dev/null 2>&1 || true
     || fail "an install folder replaced by a link was not written again"
 [[ "$(cat "$TMP/elsewhere/SKILL.md")" == "elsewhere" ]] || fail "wrote through the link"
 find "$XDG_STATE_HOME/fleet/backup" -type l -name foo | grep -q . || fail "the link was not backed up"
+# An install another machine drops is seen by the check before the pull.
+cp "$FAKE/server.json" "$TMP/market2.keep"
+python3 -c 'import json,os; f=os.environ["FAKE"]+"/server.json"; s=json.load(open(f)); s["installs"]={}; json.dump(s,open(f,"w"))'
+fleet sync --check >/dev/null 2>&1 && fail "a never-pushed account's dropped install read as current"
+fleet sync >/dev/null 2>&1 || true
+[[ ! -e "$HOME/.agents/skills/foo" ]] || fail "a never-pushed account's dropped install stayed"
+mv "$TMP/market2.keep" "$FAKE/server.json"
 # Another account's installs that cannot be written put this one's files back,
 # links and record with them.
 export HOME="$TMP/market" XDG_STATE_HOME="$TMP/market-state"
