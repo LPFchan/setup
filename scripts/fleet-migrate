@@ -58,7 +58,7 @@ fleet schedule
 
 # system-updates' reboot advisor needs miniharness, which fleet now installs.
 if command -v system-updates >/dev/null && ! command -v miniharness >/dev/null; then
-    fleet install miniharness
+    fleet install miniharness || echo "fleet-migrate: miniharness did not install; fix it by hand" >&2
 fi
 
 rm -f "$HOME/.local/bin/harnesses" "$old_manifest"
