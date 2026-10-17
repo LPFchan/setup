@@ -2271,13 +2271,19 @@ def _claude_json():
     return HOME/".claude.json"
 
 
+UNREADABLE = object()
+
+
 def _claude_user_entry(name):
     """The stored user-scope entry, from the file: `claude mcp get` does not
-    print a headersHelper."""
+    print a headersHelper. UNREADABLE when the file is there but cannot be
+    read, so a cleanup does not take fleet's entries for gone."""
     try:
         return (json.loads(_claude_json().read_text()).get("mcpServers") or {}).get(name)
-    except (OSError, ValueError, AttributeError):
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError, AttributeError):
+        return UNREADABLE
 
 
 def _claude_json_remove(name):
@@ -2318,7 +2324,10 @@ def render_claude_mcp(claude, servers, previous, retired):
         if name in servers or name in retired or "claude" in (record.get("users") or []):
             continue
         entry = _claude_user_entry(name)
-        if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
+        if entry is UNREADABLE:
+            eprint(f"fleet: could not read {_claude_json()}; MCP server {name} stays fleet's to remove")
+            ok, kept[name] = False, record
+        elif isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
                                         or (record.get("claude") and entry == record["claude"])
                                         or (record.get("claudeWas") and entry == record["claudeWas"])):
             print(f"  unregistering MCP server {name}")
@@ -2341,7 +2350,10 @@ def render_claude_mcp(claude, servers, previous, retired):
             # when ours changes. Once they delete it, the one fleet adds back
             # is fleet's.
             found.add(server["name"])
-        elif (entry := _claude_user_entry(server["name"])) != want:
+        elif (entry := _claude_user_entry(server["name"])) is UNREADABLE:
+            eprint(f"fleet: could not read {_claude_json()}; left MCP server {server['name']} as it is")
+            ok = False
+        elif entry != want:
             print(f"  re-enrolling {server['name']}")
             if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
                 if not _claude_add(argv):
@@ -2560,16 +2572,18 @@ def _effort_descriptors():
 
 def render_t3(models, previous):
     """T3's claude custom models: ours appended or refreshed by slug, the
-    user's left alone. Returns the record: slug -> row as written, marked
-    user when the row was there before fleet."""
+    user's left alone. Returns the record (slug -> row as written, marked
+    user when the row was there before fleet) and whether the claude provider
+    is fleet's, made only to hold its models."""
     current = load_json(T3_SETTINGS)
     if not models and "claudeAgent" not in (current.get("providerInstances") or {}):
         # Nothing to add and nothing of fleet's there: no provider to create.
         for path in RETIRED_CLAUDE_LAUNCHERS:
             path.unlink(missing_ok=True)
-        return {}
+        return {}, False
     before = json.dumps(current, sort_keys=True)
     instances = current.setdefault("providerInstances", {})
+    created = bool(previous.get("t3Provider")) or "claudeAgent" not in instances
     claude = instances.setdefault("claudeAgent", {"driver": "claudeAgent", "enabled": True, "config": {}})
     config = claude.setdefault("config", {})
     if config.get("binaryPath") in {str(p) for p in RETIRED_CLAUDE_LAUNCHERS}:
@@ -2607,6 +2621,12 @@ def render_t3(models, previous):
     out += wanted.values()
     if out or "customModels" in config:
         config["customModels"] = out
+    if created and not out and set(config) <= {"customModels"} and set(claude) <= {"driver", "enabled", "config"}:
+        # Empty again, the provider fleet made for its models goes with them.
+        del instances["claudeAgent"]
+        if not instances:
+            del current["providerInstances"]
+        created = False
     if json.dumps(current, sort_keys=True) != before:
         save_json_atomic(T3_SETTINGS, current)
         print(f"  wrote {T3_SETTINGS} ({len(out)} claude custom models)")
@@ -2614,7 +2634,7 @@ def render_t3(models, previous):
     if config.get("binaryPath", "claude") == "claude":
         for path in RETIRED_CLAUDE_LAUNCHERS:
             path.unlink(missing_ok=True)
-    return record
+    return record, created
 
 
 def _hermes_entry(server):
@@ -2747,8 +2767,9 @@ def _hermes_unskills(lines, added):
 
 def render_hermes(servers, previous, retired, clear=False):
     """hermes's config.yaml: our MCP entries and the skills folder. Returns
-    whether the file changed, whether the skills folder is fleet's, and the
-    user's own entries that already matched ours, which stay theirs."""
+    whether the file changed, whether the skills folder is fleet's, the
+    user's own entries that already matched ours, which stay theirs, and
+    whether the mcp_servers block is fleet's, made only to hold its entries."""
     original = HERMES_CONFIG.read_text()
     lines = original.split("\n")
     start, end = _yaml_block(lines, "mcp_servers")
@@ -2805,6 +2826,19 @@ def render_hermes(servers, previous, retired, clear=False):
     # With nothing to put in it, a block the file did not have stays out.
     if created and not servers:
         lines = original.split("\n")
+    owned = bool(previous.get("hermesBlock")) or created
+    start, end = _yaml_block(lines, "mcp_servers")
+    if start is None:
+        owned = False
+    elif owned and not servers and not any(line.strip() for line in lines[start + 1:end]):
+        # Empty again, the block fleet made for its entries goes with them.
+        tail = end == len(lines)
+        del lines[start:end]
+        while tail and lines and not lines[-1].strip():
+            lines.pop()
+        if tail:
+            lines.append("")
+        owned = False
     skills = previous.get("hermesSkills") or False
     if clear:
         if skills:
@@ -2814,10 +2848,10 @@ def render_hermes(servers, previous, retired, clear=False):
         skills = _hermes_skills(lines) or skills
     text = "\n".join(lines)
     if text == original:
-        return False, skills, found
+        return False, skills, found, owned
     save_text_atomic(HERMES_CONFIG, text)
     print(f"  wrote {HERMES_CONFIG} ({len(servers)} hermes MCP server(s))")
-    return True, skills, found
+    return True, skills, found, owned
 
 
 def render_kimi():
@@ -3033,12 +3067,18 @@ def _prospective_settings(previous, desired, allow, t3_models, present):
         have = {r.get("slug") if isinstance(r, dict) else r for r in rows if isinstance(r, (dict, str))} \
             if isinstance(rows, list) else set()
         out["t3"] = dict(previous.get("t3") or {})
+        out["t3Provider"] = bool(previous.get("t3Provider") or (
+            t3_models and "claudeAgent" not in (load_json(T3_SETTINGS).get("providerInstances") or {})))
         for model in t3_models:
             if model["slug"] not in have and model["slug"] not in out["t3"]:
                 out["t3"][model["slug"]] = {k: v for k, v in model.items() if k != "effortsFrom"}
     if present["hermes"] and HERMES_CONFIG.is_file():
-        out["hermesSkills"] = previous.get("hermesSkills") or _hermes_skills(
-            HERMES_CONFIG.read_text().split("\n"), warn=False)
+        lines = HERMES_CONFIG.read_text().split("\n")
+        out["hermesSkills"] = previous.get("hermesSkills") or _hermes_skills(lines, warn=False)
+        try:
+            out["hermesBlock"] = bool(previous.get("hermesBlock")) or _yaml_block(lines, "mcp_servers")[0] is None
+        except ConfigError:
+            out["hermesBlock"] = bool(previous.get("hermesBlock"))
     return out
 
 
@@ -3102,7 +3142,9 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
 
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
-                  "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False),
+                  "t3": previous.get("t3") or {}, "t3Provider": previous.get("t3Provider", False),
+                  "hermesSkills": previous.get("hermesSkills", False),
+                  "hermesBlock": previous.get("hermesBlock", False),
                   "codexReclaimed": previous.get("codexReclaimed", False)}
         kept_mcp, users, rendered, hermes_urls, missed, claude_was = {}, {}, set(), {}, set(), {}
         prev_mcp = previous.get("mcp") or {}
@@ -3138,7 +3180,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                     _mirror_dotenv(CODEX_DIR/".env", exports, retired_env)
                 rc = rc if render_codex_keepout(command) else 1
             if present["t3"]:
-                record["t3"] = render_t3(t3_models, previous)
+                record["t3"], record["t3Provider"] = render_t3(t3_models, previous)
             hermes = None
             if present["hermes"]:
                 try:
@@ -3158,7 +3200,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                             hermes_urls[name] = r.get("hermesUrl") or r.get("url")
             if hermes:
                 rendered.add("hermes")
-                changed, record["hermesSkills"], found = hermes
+                changed, record["hermesSkills"], found, record["hermesBlock"] = hermes
                 for name in found:
                     users.setdefault(name, set()).add("hermes")
                 if _mirror_dotenv(HERMES_ENV, exports, retired_env) or changed:

@@ -659,6 +659,30 @@ loader.exec_module(fleet)
 fleet.render_t3([], {})' "$ROOT/files/fleet" || fail "render_t3 with no models failed"
 [[ "$(cat "$TMP/t3home/.t3/userdata/settings.json")" == '{"theme": "dark"}' ]] \
     || fail "created a t3 claude provider with no models: $(cat "$TMP/t3home/.t3/userdata/settings.json")"
+# The provider fleet made to hold its models goes when they do; one the
+# user then configured stays.
+HOME="$TMP/t3home" python3 -c '
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("fleet_t3", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.manifest = lambda: {}
+fleet._effort_descriptors = lambda: {}
+record, made = fleet.render_t3([{"slug": "m", "name": "M"}], {})
+assert made, "a provider fleet made was not recorded"
+assert fleet.render_t3([], {"t3": record, "t3Provider": made}) == ({}, False)
+assert json.load(open(fleet.T3_SETTINGS)) == {"theme": "dark"}, open(fleet.T3_SETTINGS).read()
+record, made = fleet.render_t3([{"slug": "m", "name": "M"}], {})
+v = json.load(open(fleet.T3_SETTINGS)); v["providerInstances"]["claudeAgent"]["config"]["binaryPath"] = "/x/claude"
+json.dump(v, open(fleet.T3_SETTINGS, "w"))
+fleet.render_t3([], {"t3": record, "t3Provider": made})
+assert "claudeAgent" in json.load(open(fleet.T3_SETTINGS))["providerInstances"], "took a provider the user configured"
+v = json.load(open(fleet.T3_SETTINGS)); del v["providerInstances"]["claudeAgent"]["config"]["binaryPath"]
+v["providerInstances"]["claudeAgent"]["displayName"] = "Mine"
+json.dump(v, open(fleet.T3_SETTINGS, "w"))
+fleet.render_t3([], {"t3": record, "t3Provider": True})
+assert "claudeAgent" in json.load(open(fleet.T3_SETTINGS))["providerInstances"], "took a provider the user named"
+' "$ROOT/files/fleet" >/dev/null || fail "the t3 provider fleet made was not taken back"
 rm -r "$TMP/t3home"
 
 # A hermes key written on one line is left alone, not followed by a second
@@ -1104,7 +1128,8 @@ loader.exec_module(fleet)
 print(os.environ.get("CLAUDE_CONFIG_DIR"), fleet._claude_json() == fleet.HOME/".claude.json")' "$ROOT/files/fleet")
 [[ "$profile" == "None True" ]] || fail "fleet followed CLAUDE_CONFIG_DIR: $profile"
 
-# Uninstalling takes back only the hermes skills folder fleet added.
+# Uninstalling takes back only the hermes skills folder and MCP block fleet
+# added.
 skills=$(HERMES_CONFIG="$TMP/hermes-skills.yaml" python3 -c '
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("fleet_skills", sys.argv[1])
@@ -1113,14 +1138,16 @@ loader.exec_module(fleet)
 out = []
 for text in ["skills:\n  external_dirs:\n  - ~/.agents/skills\n", "skills:\n  external_dirs:\n  - ~/mine\n",
              "model: x\n", "skills:\n  other: 1\n", "skills:\n  external_dirs:\n", "skills:\n  external_dirs: []\n",
-             "model: x\nskills:\n"]:
+             "model: x\nskills:\n", "mcp_servers:\n", "model: x\nmcp_servers:\n  mine:\n    url: https://m.example\n"]:
     fleet.HERMES_CONFIG.write_text(text)
-    _, ours, _ = fleet.render_hermes([], {}, set())
-    fleet.render_hermes([], {"hermesSkills": ours}, set(), clear=True)
+    server = {"name": "s", "url": "https://s.example/mcp", "auth": "none"}
+    _, ours, _, block = fleet.render_hermes([server], {}, set())
+    fleet.render_hermes([], {"hermesSkills": ours, "hermesBlock": block,
+                             "mcp": {"s": {"url": server["url"], "rendered": ["hermes"]}}}, set(), clear=True)
     after = fleet.HERMES_CONFIG.read_text()
     out.append(after == text)
 open(sys.argv[2], "w").write(str(out))' "$ROOT/files/fleet" "$TMP/skills.out" >/dev/null 2>&1; cat "$TMP/skills.out")
-[[ "$skills" == "[True, True, True, True, True, True, True]" ]] || fail "uninstall took the wrong hermes skills folder: $skills"
+[[ "$skills" == "[True, True, True, True, True, True, True, True, True]" ]] || fail "uninstall took the wrong hermes skills folder: $skills"
 # A skills block indented otherwise is left for the user.
 printf 'skills:\n    external_dirs:\n    - ~/mine\n' > "$TMP/hermes-wide.yaml"
 cp "$TMP/hermes-wide.yaml" "$TMP/hermes-wide.keep"
@@ -1161,6 +1188,15 @@ grep -q "cannot read .*applied.json" "$TMP/out" || fail "an unreadable record we
 fleet __unrender >/dev/null 2>&1 && fail "unrender passed an unreadable record"
 cmp -s "$HOME/.claude.json" "$TMP/claude-json.before" || fail "rendered past an unreadable record"
 mv "$TMP/applied.keep" "$applied"
+# Nor does a claude.json it cannot read: fleet's entries there are not gone.
+chmod 000 "$HOME/.claude.json"
+mv "$BIN/claude" "$TMP/claude.away"
+fleet __unrender >/dev/null 2>&1 && fail "unrender passed an unreadable claude.json"
+mv "$TMP/claude.away" "$BIN/claude"
+chmod 600 "$HOME/.claude.json"
+[[ -e "$applied" ]] || fail "an unreadable claude.json lost fleet's record"
+cmp -s "$HOME/.claude.json" "$TMP/claude-json.before" || fail "unrender edited an unreadable claude.json"
+fleet sync --pull >/dev/null 2>&1 || fail "sync after an unreadable claude.json"
 # Hermes restarts there and then, and a failed restart fails the uninstall.
 mv "$BIN/claude" "$TMP/claude.away"
 : > "$FAKE/systemctl.log"

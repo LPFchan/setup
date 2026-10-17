@@ -2490,18 +2490,21 @@ def _claude_settings() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _remove_legacy_service_env() -> None:
-    """Undo the launchctl / environment.d exports settings.json replaced."""
-    if _is_macos():
-        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
-        return
-    if ENVIRONMENT_D.exists():
+def _remove_legacy_service_env(strict: bool = False) -> None:
+    """Undo the launchctl / environment.d exports settings.json replaced.
+    Strict (removing the route) refuses when the service manager would not
+    clear it, since apps it starts would keep the dead proxy URL."""
+    command = (["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"] if _is_macos()
+               else ["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"])
+    try:
+        cleared = subprocess.run(command, check=False, capture_output=True).returncode == 0
+    except FileNotFoundError:
+        cleared = True
+    if strict and not cleared:
+        raise UserError(f"{command[0]} did not clear ANTHROPIC_BASE_URL; nothing removed, re-run once it works")
+    if not _is_macos() and ENVIRONMENT_D.exists():
         ENVIRONMENT_D.unlink()
         print(f"  removed {ENVIRONMENT_D}")
-    subprocess.run(
-        ["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
-        check=False, capture_output=True,
-    )
 
 
 def _base_url_block(text: str) -> bool:
@@ -2545,7 +2548,7 @@ def remove_base_url_export() -> None:
         text = ZSHENV.read_text() if ZSHENV.exists() else ""
         block = _base_url_block(text)
         settings = _claude_settings()
-        _remove_legacy_service_env()
+        _remove_legacy_service_env(strict=True)
         env = settings.get("env")
         # Only the loopback proxy URL is ours; a gateway the user set stays.
         if isinstance(env, dict) and re.fullmatch(

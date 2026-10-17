@@ -32,6 +32,11 @@ source "$ROOT/files/opencodex.sh"
 _live_proxy_version() { print '' }
 # Keep the drop-in writes below from reloading this machine's user manager.
 systemctl() { :; }
+# The launcher runs systemctl itself; keep it off this machine's manager too.
+mkdir -p "$TEST_TMP/bin"
+printf '#!/bin/sh\n[ -e "%s/systemctl-fails" ] && exit 1\nexit 0\n' "$TEST_TMP" > "$TEST_TMP/bin/systemctl"
+chmod +x "$TEST_TMP/bin/systemctl"
+export PATH="$TEST_TMP/bin:$PATH"
 
 OPENCODEX_RELEASE_VERSION=""
 npm() { print '9.8.7'; }
@@ -219,6 +224,16 @@ printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claud
 python3 "$BIN" __unexport >/dev/null 2>&1 && fail "unexport passed a route block without its end"
 grep -q 'ANTHROPIC_BASE_URL=http://127.0.0.1:1' "$HOME/.zshenv" || fail "unexport cut into a block without its end"
 grep -q '127.0.0.1:1' "$HOME/.claude/settings.json" || fail "a refused unexport still took claude's route"
+# Nor while the service manager keeps the route for the apps it starts.
+cp "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan"
+cp "$TEST_TMP/zshenv.keep" "$HOME/.zshenv"
+printf '# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n# END harnesses:anthropic-base-url\n' >> "$HOME/.zshenv"
+touch "$TEST_TMP/systemctl-fails"
+python3 "$BIN" __unexport >/dev/null 2>&1 && fail "unexport passed a route the service manager kept"
+rm "$TEST_TMP/systemctl-fails"
+grep -q 'ANTHROPIC_BASE_URL=http://127.0.0.1:1' "$HOME/.zshenv" || fail "a refused unexport still took the shell route"
+grep -q '127.0.0.1:1' "$HOME/.claude/settings.json" || fail "a refused unexport still took claude's route (service manager)"
+mv "$TEST_TMP/zshenv.orphan" "$HOME/.zshenv"
 # Nor is a block appended after it, which the next removal would take
 # together with every line between.
 cp "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan"
