@@ -2175,7 +2175,7 @@ def resolve_tokens(servers, context, warnings):
         drop.add("PASSAGE_MCP_TOKEN")
         for name in drop:
             existing.pop(name, None)
-    tokens, exports, skipped, missing = {}, {}, set(), set()
+    tokens, exports, skipped, missing, holders = {}, {}, set(), set(), {}
 
     def common(scope):
         if scope not in tokens:
@@ -2186,6 +2186,12 @@ def resolve_tokens(servers, context, warnings):
         if server["auth"] == "none":
             continue
         var, source, value = mcp_env_var(server), server.get("credentialSource"), None
+        # foo-bar and foo_bar share a variable: one value would go to both.
+        holder = (source, server.get("scope") or server.get("vaultItem") or var)
+        if holders.setdefault(var, holder) != holder:
+            eprint(f"fleet: {server['name']}: {var} already holds another server's token; server skipped")
+            skipped.add(server["name"])
+            continue
         try:
             if source == "common-auth":
                 value = common(server["scope"])
@@ -2529,6 +2535,11 @@ def render_claude_mcp(claude, servers, previous, retired):
         elif scope not in ("", "user"):
             # A local or project registration is the user's and shadows ours.
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
+            # Unless fleet's own sits at user scope beneath it, one the user
+            # puts there later is theirs too.
+            record = (previous.get("mcp") or {}).get(server["name"])
+            if "claude" in ((record or {}).get("users") or []) or not _rendered_on(record, "claude"):
+                found.add(server["name"])
         elif "claude" in (((previous.get("mcp") or {}).get(server["name"]) or {}).get("users") or []):
             # The user's own entry, which matched ours once, stays theirs
             # when ours changes. Once they delete it, the one fleet adds back

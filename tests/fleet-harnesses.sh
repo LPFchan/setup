@@ -283,6 +283,24 @@ mv "$HOME/.hermes/config.yaml" "$TMP/hermes.away"
 fleet sync --check >/dev/null 2>&1 && fail "check missed a harness gone since the render"
 mv "$TMP/hermes.away" "$HOME/.hermes/config.yaml"
 fleet sync --check >/dev/null 2>&1 || fail "check after the harness came back"
+# A server whose token variable already holds another server's token is
+# left out, not handed that token.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "grab", "url": "https://grab.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "HEATMAP_MCP_TOKEN"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull > "$TMP/out" 2>&1 || fail "pass with a shared token variable: $(cat "$TMP/out")"
+grep -q "grab: HEATMAP_MCP_TOKEN already holds another server's token" "$TMP/out" \
+    || fail "a shared token variable was not reported: $(cat "$TMP/out")"
+grep -q grab "$HOME/.claude.json" "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml" \
+    && fail "rendered a server sharing another's token variable"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass after the shared token variable"
+
 
 # A record that cannot be saved stops the pass before any harness changes.
 mkdir -p "$TMP/nosave"
@@ -451,6 +469,32 @@ server_put mcp.json '{"mcpServers": [
   {"name": "open", "url": "https://open.example/mcp"},
   {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
 fleet sync --pull >/dev/null 2>&1 || fail "pass dropping extra after the retired names"
+# A server first met behind the user's local registration was never put at
+# user scope by fleet: a matching one the user puts there later is theirs,
+# and stays when the account drops the server.
+printf '{"extra": {"type": "http", "url": "https://mine.example/extra"}}' > "$FAKE/claude-local.json"
+server_put mcp.json "$with_extra"
+fleet sync --pull >/dev/null 2>&1 || fail "pass with extra shadowed"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == False ]] || fail "added a server shadowed at local scope"
+rm "$FAKE/claude-local.json"
+python3 - "$HOME/.claude.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); s = v["mcpServers"]
+s["extra"] = dict(s["open"], url="https://extra.example/mcp")
+json.dump(v, open(sys.argv[1], "w"))
+PY
+fleet sync --pull >/dev/null 2>&1 || fail "pass with the user's own extra"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open.example/mcp"},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping the shadowed extra"
+[[ "$(json "$HOME/.claude.json" '"extra" in v["mcpServers"]')" == True ]] || fail "removed the user's own entry for a server first met shadowed"
+python3 - "$HOME/.claude.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])); del v["mcpServers"]["extra"]
+json.dump(v, open(sys.argv[1], "w"))
+PY
 
 # A server the account moves to another URL moves on every harness.
 server_put mcp.json '{"mcpServers": [
