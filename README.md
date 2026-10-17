@@ -266,5 +266,3 @@ git config core.hooksPath hooks
 ```
 
 The hook automatically runs `zsh -n` and `bash -n` syntax checks and updates `checksums.tsv` whenever you make a commit.
-
-Every `SKILL.md` under `agents/skills/` carries an `audience:` line in its front matter (`fleet` or `public`), and the pre-commit hook blocks a commit when any `SKILL.md` is missing it. These skills are the starting copy the one-off migration seeds into the operator's account; after that, the account's `~/.agents` tree is what `fleet sync` deploys.
