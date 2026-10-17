@@ -486,9 +486,12 @@ def cmd_context():
     with _store_lock():
         data = _load()
     # Exit 4 is a definite answer that there is no usable login; fleet acts
-    # on it, so a store that cannot be read stays exit 1.
-    if data is None or data.get("version") != 2:
+    # on it, so a store that cannot be read stays exit 1, as does a version-one
+    # store, whose tokens still serve until it is renewed.
+    if data is None:
         raise AuthError("no renewable setup login; run: auth login", exit_code=4)
+    if data.get("version") != 2:
+        raise AuthError("no renewable setup login; run: auth login")
     # A login from another Auth origin says nothing about this one.
     if data.get("origin") != ORIGIN:
         raise AuthError(

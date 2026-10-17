@@ -105,6 +105,8 @@ current = json.load(open(store_path))
 for changed, wanted_exit in (
     ({**current, "session": {**current["session"], "expires_at": 1}}, 4),
     ({**current, "origin": "https://auth.example.test"}, 1),
+    # A version-one store still serves its tokens: not a logout.
+    ({**current, "version": 1}, 1),
 ):
     json.dump(changed, open(store_path, "w"))
     try:
