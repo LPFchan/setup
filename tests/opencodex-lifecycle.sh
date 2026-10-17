@@ -194,6 +194,12 @@ if [[ "$(uname -s)" == Linux ]]; then
     systemctl() { :; }
     _stop_timeout_current && fail "a stop-timeout drop-in systemd did not reload read as current"
     _write_stop_timeout >/dev/null || fail "the stop-timeout drop-in was not retried"
+    # A drop-in already in place is reloaded all the same: the run that wrote
+    # it may have stopped before its reload.
+    systemctl() { [[ "$*" == "--user daemon-reload" ]] && : > "$TEST_TMP/reloaded"; }
+    _write_stop_timeout >/dev/null || fail "a current stop-timeout drop-in failed"
+    [[ -e "$TEST_TMP/reloaded" ]] || fail "a current stop-timeout drop-in was not reloaded"
+    systemctl() { :; }
 fi
 
 rm -f "$OPENCODEX_BIN"

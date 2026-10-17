@@ -296,17 +296,23 @@ _stop_timeout_current() {
 }
 
 _write_stop_timeout() {
-    _stop_timeout_current && return 0
-    mkdir -p "${STOP_TIMEOUT_DROPIN:h}" || return 1
-    print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN" || return 1
-    # systemd only takes the drop-in on a reload. Without one, the file goes
+    [[ "$(uname -s)" != Linux ]] && return 0
+    local changed=0
+    if ! _stop_timeout_current; then
+        changed=1
+        mkdir -p "${STOP_TIMEOUT_DROPIN:h}" || return 1
+        print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN" || return 1
+    fi
+    # systemd only takes the drop-in on a reload, so each install reloads: a
+    # run stopped before it left the file in place. Without one, the file goes
     # again so the next install retries rather than reads it as done.
     if ! systemctl --user daemon-reload >/dev/null 2>&1; then
         rm -f "$STOP_TIMEOUT_DROPIN"
         echo "opencodex: systemd did not reload the proxy stop timeout" >&2
         return 1
     fi
-    echo "opencodex: proxy stop timeout raised to 330s"
+    (( changed )) && echo "opencodex: proxy stop timeout raised to 330s"
+    return 0
 }
 
 _apply() {
