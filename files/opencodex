@@ -2519,11 +2519,33 @@ def _base_url_block(text: str) -> bool:
     raise UserError(f"{ZSHENV} has a broken {BASE_URL_BEGIN!r} block; fix or remove it by hand")
 
 
+def _our_base_url(url: str, text: str) -> bool:
+    """Whether a Claude settings base URL is the route written here (or by the
+    harnesses module before): the one in the .zshenv block, or the proxy's
+    port. Another loopback port is a local gateway of the user's."""
+    if not url:
+        return False
+    ours = set()
+    if _base_url_block(text):
+        inside = text[text.index(BASE_URL_BEGIN):text.index(BASE_URL_END)]
+        ours.update(re.findall(r"^export ANTHROPIC_BASE_URL=(\S+)$", inside, re.M))
+    port = PROXY_DEFAULT_PORT
+    try:
+        port = int(json.loads(RUNTIME_PORT.read_text())["port"])
+    except Exception:
+        pass
+    override = os.environ.get("HARNESSES_PROXY_PORT")
+    for candidate in {port, port + 1, *([int(override)] if override else [])}:
+        ours.add(f"http://127.0.0.1:{candidate}")
+    return url in ours
+
+
 def write_base_url_export() -> None:
     url = f"http://127.0.0.1:{proxy_port()}"
     block = f"{BASE_URL_BEGIN}\nexport ANTHROPIC_BASE_URL={url}\n{BASE_URL_END}\n"
     with _ConsumerSyncLock():
         text = ZSHENV.read_text() if ZSHENV.exists() else ""
+        previous = text
         if _base_url_block(text):
             text = re.sub(
                 re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
@@ -2539,7 +2561,7 @@ def write_base_url_export() -> None:
         env = settings.setdefault("env", {})
         current = str(env.get("ANTHROPIC_BASE_URL", "")) if isinstance(env, dict) else ""
         # A gateway the user set there is theirs: unexport could not put it back.
-        if current and not re.fullmatch(r"http://127\.0\.0\.1:\d+", current):
+        if current and not _our_base_url(current, previous):
             print(f"  left the user's env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS} alone")
         else:
             env["ANTHROPIC_BASE_URL"] = url
@@ -2556,9 +2578,8 @@ def remove_base_url_export() -> None:
         settings = _claude_settings()
         _remove_legacy_service_env(strict=True)
         env = settings.get("env")
-        # Only the loopback proxy URL is ours; a gateway the user set stays.
-        if isinstance(env, dict) and re.fullmatch(
-                r"http://127\.0\.0\.1:\d+", str(env.get("ANTHROPIC_BASE_URL", ""))):
+        # Only the proxy's URL is ours; a gateway the user set stays.
+        if isinstance(env, dict) and _our_base_url(str(env.get("ANTHROPIC_BASE_URL", "")), text):
             del env["ANTHROPIC_BASE_URL"]
             if not env:
                 del settings["env"]

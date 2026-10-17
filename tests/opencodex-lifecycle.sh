@@ -261,7 +261,7 @@ except m.UserError:
 sys.exit(1)' "$BIN" >/dev/null || fail "export appended a block after an orphaned begin"
 cmp -s "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan" || fail "a refused export changed .zshenv"
 mv "$TEST_TMP/zshenv.keep" "$HOME/.zshenv"
-printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:10100"}}\n' > "$HOME/.claude/settings.json"
 # A deleted launcher is fetched again for the route; while it cannot be,
 # nothing is torn down.
 rm "$BIN"

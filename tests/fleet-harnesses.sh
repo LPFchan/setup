@@ -774,6 +774,28 @@ json.dump(v, open(fleet.T3_SETTINGS, "w"))
 fleet.render_t3([], {"t3": record, "t3Provider": True})
 assert "claudeAgent" in json.load(open(fleet.T3_SETTINGS))["providerInstances"], "took a provider the user named"
 ' "$ROOT/files/fleet" >/dev/null || fail "the t3 provider fleet made was not taken back"
+# A reasoning ladder the catalog stops listing leaves fleet's row; one the
+# catalog could not be asked for stays.
+HOME="$TMP/t3home" python3 -c '
+import importlib.machinery, importlib.util, json, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_t3", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.manifest = lambda: {}
+fleet.OPENCODEX = pathlib.Path(sys.executable)
+def rows():
+    return json.load(open(fleet.T3_SETTINGS))["providerInstances"]["claudeAgent"]["config"]["customModels"]
+fleet._effort_descriptors = lambda: {"m": {"id": "effort"}}
+record, made = fleet.render_t3([{"slug": "m", "name": "M"}], {})
+assert "capabilities" in rows()[0], rows()
+previous = {"t3": record, "t3Provider": made}
+fleet._effort_descriptors = lambda: None
+record, made = fleet.render_t3([{"slug": "m", "name": "M"}], previous)
+assert "capabilities" in rows()[0], "an unread catalog dropped a ladder"
+fleet._effort_descriptors = lambda: {}
+fleet.render_t3([{"slug": "m", "name": "M"}], previous)
+assert "capabilities" not in rows()[0], rows()
+' "$ROOT/files/fleet" >/dev/null || fail "a reasoning ladder the catalog dropped stayed"
 rm -r "$TMP/t3home"
 
 # A hermes key written on one line is left alone, not followed by a second

@@ -95,6 +95,15 @@ printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claud
 rm -f "$HOME/proxy-down"
 python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export with a user gateway"
 grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "__export replaced the user's own base URL"
+# So is one on another loopback port, nor does removing the route take it.
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080"}}\n' > "$HOME/.claude/settings.json"
+python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export with a local user gateway"
+grep -q '127.0.0.1:8080' "$HOME/.claude/settings.json" || fail "__export replaced the user's local gateway"
+touch "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1 && fail "proxy succeeded with an inactive service"
+grep -q '127.0.0.1:8080' "$HOME/.claude/settings.json" || fail "removing the route took the user's local gateway"
+rm -f "$HOME/proxy-down"
+printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
 touch "$HOME/proxy-down"
 [[ $(python3 "$ROOT/files/opencodex" __proxy-url) == http://127.0.0.1:10100 ]] \
     || fail "__proxy-url did not print the proxy address"

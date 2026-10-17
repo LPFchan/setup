@@ -2738,14 +2738,15 @@ def _trust_codex_keepout(command):
 def _effort_descriptors():
     """Model slug -> a t3 'effort' option descriptor, from the opencodex
     proxy's catalog: t3 shows a reasoning selector only for a custom model
-    that declares one, and the levels are the provider's to publish."""
+    that declares one, and the levels are the provider's to publish. None
+    when the catalog could not be read."""
     try:
         url = subprocess.run([sys.executable, str(OPENCODEX), "__proxy-url"], capture_output=True,
                              text=True, timeout=30).stdout.strip()
         with urllib.request.urlopen(url + "/v1/models", timeout=T3_CATALOG_TIMEOUT) as response:
             payload = json.load(response)
     except (OSError, ValueError, subprocess.SubprocessError):
-        return {}
+        return None
     out = {}
     for row in (payload.get("data") or []) if isinstance(payload, dict) else []:
         if not isinstance(row, dict) or not isinstance(row.get("id"), str):
@@ -2783,7 +2784,10 @@ def render_t3(models, previous):
     config = claude.setdefault("config", {})
     if config.get("binaryPath") in {str(p) for p in RETIRED_CLAUDE_LAUNCHERS}:
         config["binaryPath"] = "claude"
-    descriptors = _effort_descriptors() if models and os.access(OPENCODEX, os.X_OK) else {}
+    descriptors = _effort_descriptors() if models and os.access(OPENCODEX, os.X_OK) else None
+    # A catalog that answered without a model's ladder takes back the one
+    # fleet gave it; one that did not answer keeps it.
+    known, descriptors = descriptors is not None, descriptors or {}
     wanted = {}
     for model in models:
         entry = dict(model)
@@ -2803,13 +2807,16 @@ def render_t3(models, previous):
             continue
         if slug in wanted:
             merged = dict(row) if isinstance(row, dict) else {"slug": slug}
-            merged.update(wanted.pop(slug))
+            entry = wanted.pop(slug)
+            merged.update(entry)
             out.append(merged)
             # A row fleet did not add is the user's: refreshed while fleet
             # ships its slug, but never removed.
             mine = recorded.get(slug) if isinstance(recorded.get(slug), dict) else None
             if mine is None or mine.get("user"):
                 record[slug] = {**record[slug], "user": True}
+            elif known and "capabilities" not in entry:
+                merged.pop("capabilities", None)
         elif not (slug in recorded and isinstance(row, dict)
                   and {k: v for k, v in row.items() if k != "capabilities"}
                   in (recorded[slug], (previous.get("t3Next") or {}).get(slug))):
