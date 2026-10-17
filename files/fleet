@@ -831,10 +831,16 @@ def _apply_installs(installs, write, remove, contents, backup):
         if not os.path.lexists(target):
             return
         entry = mine.get(name)
-        if isinstance(entry, dict) and _scan_folder(target) == entry.get("local"):
-            shutil.rmtree(target)
+        # Moved out of the way before it is compared: an edit saved during
+        # the comparison lands in the copy that is checked, never in one
+        # deleted unseen. A run stopped here leaves it aside, not deleted.
+        aside = pathlib.Path(tempfile.mkdtemp(prefix=".replacing-", dir=AGENTS_DIR))
+        os.rename(target, aside/name)
+        if isinstance(entry, dict) and _scan_folder(aside/name) == entry.get("local"):
+            shutil.rmtree(aside)
         else:
-            backup.move(target, f"installed/{name}")
+            backup.move(aside/name, f"installed/{name}")
+            aside.rmdir()
             kept.append(name)
 
     def save():

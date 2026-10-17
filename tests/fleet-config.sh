@@ -823,6 +823,28 @@ fleet sync --check >/dev/null 2>&1 && fail "an author's update read as current"
 fleet sync --pull >/dev/null 2>&1 || fail "pull of an author's update"
 [[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "author's update not written"
 grep -q '^\.installing-' "$XDG_STATE_HOME/fleet/staging" || fail "a pull's staging folder went unrecorded"
+# The copy being replaced is compared only once moved out of the skills
+# folder, so a save that lands during the comparison is never deleted unseen.
+market_put $FOO alice foo run.sh 'echo v3'
+python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_aside", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+scan, aside = fleet._scan_folder, []
+def check(folder):
+    aside.append(folder.parent.name.startswith(".replacing-"))
+    return scan(folder)
+fleet._scan_folder = check
+sys.argv = ["fleet", "sync", "--pull"]
+rc = fleet.main()
+assert any(aside), "the replaced install was compared in place"
+sys.exit(rc)' "$ROOT/files/fleet" </dev/null >"$TMP/aside.out" 2>&1 || fail "pull replacing an install: $(tail -3 "$TMP/aside.out")"
+[[ "$(cat "$installed/run.sh")" == "echo v3" ]] || fail "author's second update not written"
+ls -a "$HOME/.agents" | grep -q '^\.replacing-' && fail "a replaced install was left aside"
+grep -rq 'echo v2' "$XDG_STATE_HOME/fleet/backup" 2>/dev/null && fail "an unchanged install was backed up"
+market_put $FOO alice foo run.sh 'echo v2'
+fleet sync --pull >/dev/null 2>&1 || fail "pull putting the author's update back"
 # A local edit is reported, then put back, and kept in the backup.
 printf 'edited\n' >> "$installed/run.sh"
 fleet status 2>&1 | grep -q 'installed skills changed here.*foo' || fail "status missed an edited install"
