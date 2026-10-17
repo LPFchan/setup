@@ -2490,18 +2490,54 @@ def _claude_settings() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _remove_legacy_service_env() -> None:
-    """Undo the launchctl / environment.d exports settings.json replaced."""
-    if _is_macos():
-        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
-        return
-    if ENVIRONMENT_D.exists():
+def _remove_legacy_service_env(strict: bool = False) -> None:
+    """Undo the launchctl / environment.d exports settings.json replaced.
+    Strict (removing the route) refuses when the service manager would not
+    clear it, since apps it starts would keep the dead proxy URL."""
+    command = (["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"] if _is_macos()
+               else ["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"])
+    try:
+        cleared = subprocess.run(command, check=False, capture_output=True).returncode == 0
+    except FileNotFoundError:
+        cleared = True
+    if strict and not cleared:
+        raise UserError(f"{command[0]} did not clear ANTHROPIC_BASE_URL; nothing removed, re-run once it works")
+    if not _is_macos() and ENVIRONMENT_D.exists():
         ENVIRONMENT_D.unlink()
         print(f"  removed {ENVIRONMENT_D}")
-    subprocess.run(
-        ["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
-        check=False, capture_output=True,
-    )
+
+
+def _base_url_block(text: str) -> bool:
+    """Whether .zshenv holds the route block whole. A lone or repeated marker
+    refuses the edit: a block appended after an orphaned begin would have the
+    next removal take every line between them."""
+    begins, ends = text.count(BASE_URL_BEGIN), text.count(BASE_URL_END)
+    if begins == ends == 0:
+        return False
+    if begins == ends == 1 and text.index(BASE_URL_BEGIN) < text.index(BASE_URL_END):
+        return True
+    raise UserError(f"{ZSHENV} has a broken {BASE_URL_BEGIN!r} block; fix or remove it by hand")
+
+
+def _our_base_url(url: str, text: str) -> bool:
+    """Whether a Claude settings base URL is the route written here (or by the
+    harnesses module before): the one in the .zshenv block, or the proxy's
+    port. Another loopback port is a local gateway of the user's."""
+    if not url:
+        return False
+    ours = set()
+    if _base_url_block(text):
+        inside = text[text.index(BASE_URL_BEGIN):text.index(BASE_URL_END)]
+        ours.update(re.findall(r"^export ANTHROPIC_BASE_URL=(\S+)$", inside, re.M))
+    port = PROXY_DEFAULT_PORT
+    try:
+        port = int(json.loads(RUNTIME_PORT.read_text())["port"])
+    except Exception:
+        pass
+    override = os.environ.get("HARNESSES_PROXY_PORT")
+    for candidate in {port, port + 1, *([int(override)] if override else [])}:
+        ours.add(f"http://127.0.0.1:{candidate}")
+    return url in ours
 
 
 def write_base_url_export() -> None:
@@ -2509,7 +2545,8 @@ def write_base_url_export() -> None:
     block = f"{BASE_URL_BEGIN}\nexport ANTHROPIC_BASE_URL={url}\n{BASE_URL_END}\n"
     with _ConsumerSyncLock():
         text = ZSHENV.read_text() if ZSHENV.exists() else ""
-        if BASE_URL_BEGIN in text and BASE_URL_END in text:
+        previous = text
+        if _base_url_block(text):
             text = re.sub(
                 re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
                 lambda _: block, text, flags=re.S,
@@ -2521,29 +2558,34 @@ def write_base_url_export() -> None:
         # .zshenv only reaches shells. A claude started by a GUI app or a
         # service (T3 Code) reads the env block of its own settings file.
         settings = _claude_settings()
-        settings.setdefault("env", {})["ANTHROPIC_BASE_URL"] = url
-        _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
-        print(f"  set env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
+        env = settings.setdefault("env", {})
+        current = str(env.get("ANTHROPIC_BASE_URL", "")) if isinstance(env, dict) else ""
+        # A gateway the user set there is theirs: unexport could not put it back.
+        if current and not _our_base_url(current, previous):
+            print(f"  left the user's env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS} alone")
+        else:
+            env["ANTHROPIC_BASE_URL"] = url
+            _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
+            print(f"  set env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
         _remove_legacy_service_env()
 
 
 def remove_base_url_export() -> None:
     with _ConsumerSyncLock():
-        _remove_legacy_service_env()
+        # Checked before anything changes, so a refusal leaves the route whole.
+        text = ZSHENV.read_text() if ZSHENV.exists() else ""
+        block = _base_url_block(text)
         settings = _claude_settings()
+        _remove_legacy_service_env(strict=True)
         env = settings.get("env")
-        # Only the loopback proxy URL is ours; a gateway the user set stays.
-        if isinstance(env, dict) and re.fullmatch(
-                r"http://127\.0\.0\.1:\d+", str(env.get("ANTHROPIC_BASE_URL", ""))):
+        # Only the proxy's URL is ours; a gateway the user set stays.
+        if isinstance(env, dict) and _our_base_url(str(env.get("ANTHROPIC_BASE_URL", "")), text):
             del env["ANTHROPIC_BASE_URL"]
             if not env:
                 del settings["env"]
             _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
             print(f"  removed env.ANTHROPIC_BASE_URL from {CLAUDE_SETTINGS}")
-        if not ZSHENV.exists():
-            return
-        text = ZSHENV.read_text()
-        if BASE_URL_BEGIN not in text:
+        if not block:
             return
         text = re.sub(
             re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
