@@ -354,17 +354,22 @@ dependency_ordered_manifest() {
         names+=("$module")
     done < "$1"
     for module in ${names[@]+"${names[@]}"}; do
-        _manifest_visit "$module"
+        _manifest_visit "$module" || return 1
     done
 }
 
 _manifest_visit() {
     local module="$1" dep
-    [[ -n "${row[$module]+x}" && -z "${seen[$module]+x}" ]] || return 0
-    seen[$module]=1
+    [[ -n "${row[$module]+x}" && "${seen[$module]:-}" != done ]] || return 0
+    if [[ "${seen[$module]:-}" == visiting ]]; then
+        echo "Error: the manifest's dependencies loop through $module" >&2
+        return 1
+    fi
+    seen[$module]=visiting
     for dep in ${=$(module_requires "$module")}; do
-        _manifest_visit "$dep"
+        _manifest_visit "$dep" || return 1
     done
+    seen[$module]=done
     printf '%s\n' "${row[$module]}"
 }
 
@@ -1476,6 +1481,12 @@ cmd_update() {
         filters+=("$target_module")
     done
     fetch_manifest || return 1
+    # No order exists for a loop, so nothing is updated out of one.
+    manifest_input=$(mktemp) || return 1
+    if ! dependency_ordered_manifest "$MANIFEST_FILE" > "$manifest_input"; then
+        rm -f "$manifest_input"
+        return 1
+    fi
     if ! swap_retired_modules; then
         failure_count=$((failure_count + 1))
         failure_names+=(swap)
@@ -1536,18 +1547,29 @@ cmd_update() {
             fi
         done
     done 3< "$MANIFEST_FILE"
-    manifest_input=$(mktemp) || return 1
-    dependency_ordered_manifest "$MANIFEST_FILE" > "$manifest_input"
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         # Installed or reported by the dependency pass above.
         _list_contains "$module" ${dep_tried[@]+"${dep_tried[@]}"} ${blocked[@]+"${blocked[@]}"} && continue
         if [[ ${#filters[@]} -gt 0 ]]; then
             local found=0
-            for f in "${filters[@]}"; do
+            # What a named module needs is updated with it, ahead of it.
+            for f in "${filters[@]}" ${wanted[@]+"${wanted[@]}"}; do
                 [[ "$module" == "$f" ]] && found=1 && break
             done
             [[ "$found" -eq 0 ]] && continue
+        fi
+        # Rows come dependencies first, so a failed one is known by now; a
+        # dependent updated anyway would come up against the old copy.
+        local failed_dep=""
+        for dep in ${=$(module_requires "$module")}; do
+            _list_contains "$dep" ${failure_names[@]+"${failure_names[@]}"} && failed_dep=$dep && break
+        done
+        if [[ -n "$failed_dep" ]]; then
+            echo "Warning: $module waits for $failed_dep, which failed." >&2
+            failure_count=$((failure_count + 1))
+            failure_names+=("$module")
+            continue
         fi
         local target_path local_hash disk_hash_before disk_hash_after was_active
         target_path=$(expand_path "$target")

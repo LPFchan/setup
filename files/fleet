@@ -75,6 +75,8 @@ LAUNCHD_DIR = HOME/"Library/LaunchAgents"
 SYSTEMD_USER_DIR = pathlib.Path(os.environ.get("SCHEDULE_USER_DIR") or HOME/".config/systemd/user")
 # After setup's own 06:00 run, as the harnesses timer this replaces ran.
 SCHEDULE_HOUR = 11
+# The node install miniharness.sh offers next to nvm.
+OPT_NODE_BIN = pathlib.Path("/opt/node/bin")
 
 
 class Unavailable(Exception):
@@ -1699,11 +1701,12 @@ def _heal_path():
 
     systemd and launchd start fleet with a login-less PATH, where claude,
     codex, npm and ocx are all invisible. nvm's default node leads, as nvm's
-    init puts it ahead of everything in a login shell; the user's own bin
-    directories follow, even ahead of a system copy of a harness; the other
-    node toolchains go on the end, there to be found rather than to win.
+    init puts it ahead of everything in a login shell, then /opt/node, the
+    other install miniharness.sh offers; the user's own bin directories
+    follow, even ahead of a system copy of a harness; the other node
+    toolchains go on the end, there to be found rather than to win.
     """
-    mine = [d for d in [_nvm_default()] if d] + [HOME/".local/bin", HOME/".opencode/bin"]
+    mine = [d for d in [_nvm_default()] if d] + [OPT_NODE_BIN, HOME/".local/bin", HOME/".opencode/bin"]
     toolchains = _nvm_toolchains() + [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
@@ -1821,8 +1824,8 @@ def _node_bin_dirs():
     nvm = os.environ.get("NVM_BIN")
     if nvm and os.path.isdir(nvm):
         dirs.append(nvm)
-    if os.path.isdir("/opt/node/bin"):
-        dirs.append("/opt/node/bin")
+    if OPT_NODE_BIN.is_dir():
+        dirs.append(str(OPT_NODE_BIN))
     dirs += [str(d) for d in _nvm_toolchains()]
     dirs += [str(d) for d in sorted(pathlib.Path("/opt").glob("*/bin"), key=_version_key, reverse=True)]
     return dirs

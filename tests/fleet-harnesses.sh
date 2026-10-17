@@ -1046,6 +1046,17 @@ loader.exec_module(fleet)
 fleet._heal_path()
 print(os.environ["PATH"].split(os.pathsep)[0])' "$ROOT/files/fleet")
 [[ "$healed" == */v9.11.2/bin ]] || fail "nvm's default did not lead a timer's PATH: $healed"
+# Without nvm, /opt/node leads it the same way.
+mkdir -p "$TMP/optnode/bin"
+healed=$(HOME="$TMP/optnode" PATH="/usr/local/bin:/usr/bin" python3 -c '
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("fleet_optnode", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+fleet.OPT_NODE_BIN = fleet.pathlib.Path(sys.argv[2])
+fleet._heal_path()
+print(os.environ["PATH"].split(os.pathsep)[0])' "$ROOT/files/fleet" "$TMP/optnode/bin")
+[[ "$healed" == "$TMP/optnode/bin" ]] || fail "/opt/node did not lead a timer's PATH: $healed"
 rm -rf "$TMP/nvm/.nvm/alias" "$TMP/nvm/.nvm/versions/node/v9.2.0" "$TMP/nvm/.local"
 
 # A Passage outage before the first render keeps the token the environment holds.
