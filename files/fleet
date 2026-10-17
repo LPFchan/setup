@@ -1593,7 +1593,11 @@ def refresh_links():
     # linked and would not record it again.
     try:
         agents_md = AGENTS_DIR/"AGENTS.md"
-        if agents_md.is_file():
+        if agents_md.is_symlink():
+            # One leading to a harness file would have that file swapped for
+            # a link back to it, and neither readable.
+            eprint(f"fleet: {agents_md} is a link; not linking it where harnesses read it")
+        elif agents_md.is_file():
             for target in AGENTS_LINKS:
                 if target != HOME/"AGENTS.md" and not target.parent.is_dir():
                     continue
@@ -3762,9 +3766,13 @@ def _harness_inputs(account, tier, hub, clear):
     block = managed_exports()
     env_values = {mcp_env_var(s): os.environ.get(mcp_env_var(s)) or block.get(mcp_env_var(s), "")
                   for s in servers.values() if s.get("credentialSource") == "env"}
+    # A ~/.codex with no codex to trust the keepout hook through renders
+    # again once codex turns up.
+    codex = bool(present["codex"] and harness_resolve("codex", harness_specs().get("codex", {})))
     digest = hashlib.sha256(json.dumps({
         "account": account, "tier": tier, "manifest": m["_digest"], "servers": servers,
-        "env": env_values, "present": present, "opencodex": opencodex, "fleet": _self_path(),
+        "env": env_values, "present": present, "codex": codex, "opencodex": opencodex,
+        "fleet": _self_path(),
         "self": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
     }, sort_keys=True).encode()).hexdigest()
     return m, present, opencodex, servers, digest
