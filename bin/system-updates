@@ -24,6 +24,7 @@ OPERATOR_FILE="$STATE_DIR/operator"
 TOOLING_FILE="$STATE_DIR/tooling.tsv"
 LAST_ADVICE_FILE="$STATE_DIR/last-advice.tsv"
 HOLD_COUNT_FILE="$STATE_DIR/consecutive-holds"
+FLEET_RETRY_FILE="$STATE_DIR/fleet-schedule-pending"
 ADVISOR_SESSION_DIR="$STATE_DIR/sessions"
 ADVISOR_PROMPT="${SYSTEM_UPDATES_ADVISOR_PROMPT:-${ROOT}/usr/local/libexec/system-updates-advisor-prompt}"
 # The advisor is one bounded summon. miniharness owns no timeout by contract
@@ -394,14 +395,23 @@ as_operator_login() {
     runuser -u "$operator" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$operator")" "$shell" -lc "$cmd"
 }
 
-# fleet's nightly pass is what keeps miniharness up to date.
+# fleet's nightly pass is what keeps miniharness up to date. Nothing else
+# turns it on, so until it is on each update run tries again.
 enable_fleet_schedule() {
     local operator="$1" fleet="$2"
-    if [[ "$TEST_MODE" != 1 && ! -S "/run/user/$(id -u "$operator")/bus" ]]; then
-        warn "${operator} has no running user session, so fleet's nightly pass is still off; run 'fleet schedule on' as ${operator}"
-        return 0
+    if [[ "$TEST_MODE" != 1 && ! -S "/run/user/$(id -u "$operator")/bus" ]] \
+        || ! as_operator_login "$operator" "$fleet" schedule on >/dev/null; then
+        atomic_write_text "$FLEET_RETRY_FILE" 0644 "$operator"$'\t'"$fleet"
+        warn "fleet's nightly pass is still off; the next update run tries again, or run 'fleet schedule on' as ${operator}"
+        return 1
     fi
-    as_operator_login "$operator" "$fleet" schedule on >/dev/null
+    rm -f "$FLEET_RETRY_FILE"
+}
+retry_fleet_schedule() {
+    local operator fleet
+    [[ -r "$FLEET_RETRY_FILE" ]] || return 0
+    IFS=$'\t' read -r operator fleet < "$FLEET_RETRY_FILE" || return 0
+    enable_fleet_schedule "$operator" "$fleet" || true
 }
 
 record_advisor_tooling() {
@@ -512,10 +522,7 @@ cmd_enable() {
     rm -rf "$stage" "$transaction"
     # Last, so a failed enable leaves the operator's own timers as they were;
     # the rollback above only knows the system ones.
-    # Failing the enable has setup retry it: nothing else would turn the
-    # nightly pass on, and miniharness would go stale.
-    enable_fleet_schedule "$ADVISOR_OPERATOR" "$ADVISOR_FLEET" \
-        || die "system-updates is on, but fleet's nightly pass could not be; run 'fleet schedule on' as ${ADVISOR_OPERATOR}"
+    enable_fleet_schedule "$ADVISOR_OPERATOR" "$ADVISOR_FLEET" || true
     info "system-updates enabled ($backend): updates 03:00–03:30; unattended reboot check 07:00"
 }
 
@@ -536,7 +543,7 @@ cmd_disable() {
     restore_native_timer_states "$saved_state"
     rm -f "$saved_state"
     if [[ -d "$STATE_DIR" ]]; then
-        rm -f "$STATE_DIR/last-run.tsv" "$OPERATOR_FILE" "$TOOLING_FILE" \
+        rm -f "$STATE_DIR/last-run.tsv" "$OPERATOR_FILE" "$TOOLING_FILE" "$FLEET_RETRY_FILE" \
             "$LAST_ADVICE_FILE" "$HOLD_COUNT_FILE"
         # Advisor transcripts are the record of what was inspected before each
         # reboot decision; keep them and leave the directory behind if present.
@@ -580,6 +587,7 @@ cmd_run() {
         write_last_run contention 75 "another system-updates run is active" "$backend"
         die "another system-updates run is active"
     fi
+    retry_fleet_schedule
     set +e
     case "$backend" in apt) run_apt_update ;; dnf) run_dnf_update ;; *) false ;; esac
     rc=$?

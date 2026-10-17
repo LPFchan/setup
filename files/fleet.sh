@@ -183,7 +183,7 @@ uninstall() {
         local again="$BIN" back=""
         [[ -n "$staged" && -f "$staged/fleet" ]] && again="$staged/fleet"
         [[ -f "$again" ]] && FLEET_PATH="$BIN" python3 "$again" sync --pull >/dev/null 2>&1 && back=1
-        if [[ -n "$was_on" ]] && ! { [[ -f "$cli" ]] && python3 "$cli" schedule enable >/dev/null 2>&1; }; then
+        if [[ -n "$was_on" ]] && ! { [[ -f "$cli" ]] && FLEET_PATH="$BIN" python3 "$cli" schedule enable >/dev/null 2>&1; }; then
             echo "fleet: could not turn the nightly sync back on; run: fleet schedule on" >&2
         fi
         [[ -n "$staged" ]] && rm -rf "$staged"

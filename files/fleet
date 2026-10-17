@@ -828,9 +828,14 @@ def _link_entry_ok(link, moved):
 
 def _save_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}")
-    temporary.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n")
-    os.replace(temporary, path)
+    # Owner-only: an applied record can hold an account's secrets.
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(value, indent=1, sort_keys=True) + "\n")
+        os.replace(temporary, path)
+    finally:
+        pathlib.Path(temporary).unlink(missing_ok=True)
 
 
 def add_notice(text):
@@ -1713,6 +1718,9 @@ def config_outdated():
     Auth gave no answer to tell by."""
     if not config_sync_enabled():
         return False
+    # A pull refuses these, so it is not current; setup's update says why.
+    if AGENTS_DIR.is_symlink() or (os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir()):
+        return True
     account = _context()
     if account is None:
         return None
@@ -1926,8 +1934,10 @@ def load_json(path):
     return value if isinstance(value, dict) else {}
 
 
-def save_text_atomic(path, text):
-    """Replace the file in one rename, through a symlink to its target."""
+def save_text_atomic(path, text, private=False):
+    """Replace the file in one rename, through a symlink to its target.
+
+    Private text is kept from the group and others whatever the old mode."""
     path = os.path.realpath(path)
     directory = os.path.dirname(path)
     pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
@@ -1935,6 +1945,8 @@ def save_text_atomic(path, text):
         mode = os.stat(path).st_mode & 0o777
     except FileNotFoundError:
         mode = 0o600
+    if private:
+        mode &= 0o700
     fd, temporary = tempfile.mkstemp(prefix=".fleet.", dir=directory)
     try:
         with os.fdopen(fd, "w") as handle:
@@ -2540,7 +2552,7 @@ def _mirror_zshenv(exports, drop, context, retired):
         new = re.sub(r"^export\s+%s=.*\n?" % re.escape(name), "", new, flags=re.M)
     if new != text:
         # Atomic: claude's headersHelper reads this file at any moment.
-        save_text_atomic(ZSHENV, new)
+        save_text_atomic(ZSHENV, new, private=True)
         print(f"  wrote {len(lines)} token(s) to {ZSHENV}")
 
 
@@ -3661,6 +3673,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                   "hermesBlock": previous.get("hermesBlock", False),
                   "codexReclaimed": previous.get("codexReclaimed", False)}
         kept_mcp, users, rendered, hermes_urls, missed, claude_was = {}, {}, set(), {}, set(), {}
+        kept_hermes = {}
         prev_mcp = previous.get("mcp") or {}
         try:
             # Taking settings back needs no claude: its files are edited.
@@ -3708,7 +3721,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                     wanted = {s["name"] for s in on("hermes")}
                     for name, r in prev_mcp.items():
                         if name not in wanted and r.get("url") and _rendered_on(r, "hermes"):
-                            kept_mcp.setdefault(name, r)
+                            kept_hermes[name] = r
                         elif name in wanted and _rendered_on(r, "hermes"):
                             # And knows the URL it left there, should the
                             # account have moved the server meanwhile.
@@ -3747,7 +3760,17 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                                          x for x in SURFACES if x not in rendered
                                          and _rendered_on(prev_mcp.get(s["name"]), x)})}
                          for s in servers.values()}
-        record["mcp"].update(kept_mcp)
+        # A server still wanted on another surface keeps this run's record,
+        # which also goes on owning what fleet could not take off this one.
+        for surface, kept in (("claude", kept_mcp), ("hermes", kept_hermes)):
+            for name, r in kept.items():
+                current = record["mcp"].setdefault(name, r)
+                if current is not r:
+                    current["rendered"] = sorted(set(current["rendered"]) | {surface})
+                    if surface == "claude":
+                        claude_was.setdefault(name, r.get("claude") or r.get("claudeWas"))
+                    else:
+                        hermes_urls.setdefault(name, r.get("hermesUrl") or r.get("url"))
         for name, url in hermes_urls.items():
             if url and url != record["mcp"][name]["url"]:
                 record["mcp"][name]["hermesUrl"] = url
@@ -3953,8 +3976,9 @@ def cmd_sync(check=False, direct=True, force=False):
         direct = False
         try:
             rc = schedule_enable()
-        except SystemExit as exc:
-            # A missing helper exits; the pull still runs.
+        except (SystemExit, OSError) as exc:
+            # A missing helper exits, timer files may not write; the pull
+            # still runs.
             eprint(f"fleet: {exc}")
             rc = 1
         if rc != 0:
@@ -4097,8 +4121,8 @@ def schedule_stale():
 
 
 def schedule_enable():
-    # Both run the installed binary, not whichever copy turned the job on: the
-    # uninstall retry runs a temporary one.
+    # A temporary copy standing in for the installed one (uninstall's retry)
+    # names it in FLEET_PATH: the copy is deleted once it has run.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -4111,7 +4135,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{HOME/".local/bin/fleet"}</string>
+        <string>{os.environ.get("FLEET_PATH") or os.path.abspath(sys.argv[0])}</string>
         <string>schedule</string>
         <string>run</string>
     </array>
