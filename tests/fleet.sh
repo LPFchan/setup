@@ -33,7 +33,8 @@ FLEET_JSON='{"version":"v1","self":{"key":"ssh-ed25519 AAAASelf","key_mismatch":
 "keys":["ssh-ed25519 AAAASelf","ssh-ed25519 AAAAPeer"],
 "hosts":[{"alias":"grimoire","address":"grimoire.ts.net","user":"fox","term_fallback":false},
 {"alias":"bingus","address":"bingus.lan","user":"fox","term_fallback":true},
-{"alias":"evil","address":"x\nProxyCommand sh","user":"fox","term_fallback":false}]}'
+{"alias":"evil","address":"x\nProxyCommand sh","user":"fox","term_fallback":false}],
+"known_hosts":["mac.lost.plus ssh-ed25519 AAAAMacA","mac.lost.plus ssh-ed25519 AAAAMacB","x ProxyCommand sh"]}'
 
 # A friend's machine writes only its fleet: itself left out, the TERM
 # fallback kept, a host with an unsafe field dropped.
@@ -60,6 +61,10 @@ grep -qx 'ssh-ed25519 AAAAPeer' "$FLEET_SSH_DIR/authorized_keys" || fail "peer k
 grep -qx 'ssh-ed25519 AAAAHand hand' "$FLEET_SSH_DIR/authorized_keys" || fail "hand key lost"
 grep -q AAAAOwner "$FLEET_SSH_DIR/authorized_keys" && fail "a friend got the owner's GitHub keys"
 [[ "$(ls -l "$FLEET_SSH_DIR/config")" == -rw-------* ]] || fail "config mode"
+[[ "$(cat "$FLEET_SSH_DIR/known_hosts.fleet")" == $'mac.lost.plus ssh-ed25519 AAAAMacA\nmac.lost.plus ssh-ed25519 AAAAMacB' ]] \
+    || fail "vouched host keys not written"
+grep -qx '    GlobalKnownHostsFile ~/.ssh/known_hosts.fleet /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2' \
+    "$FLEET_SSH_DIR/config" || fail "known_hosts.fleet not trusted"
 fleet sync --check 2>/dev/null || fail "check after a write"
 
 # A stanza appended below the block moves the block back to the end, so the
