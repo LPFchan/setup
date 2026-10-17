@@ -228,6 +228,11 @@ touch "$units/fleet-sync.timer"
 SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet" schedule disable >/dev/null 2>&1 \
     || fail "turning off an installed timer failed"
 grep -qx 'uninstall-timer user fleet-sync' "$FAKE/helper" || fail "an installed timer was left behind"
+# The systemd job runs the binary turning it on, quoted for systemd.
+SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" FLEET_PATH='/opt/my "fleet" 100%/fleet' \
+    python3 "$ROOT/files/fleet" schedule enable >/dev/null 2>&1 || fail "turning on the systemd timer failed"
+grep -qF 'install-timer user fleet-sync Nightly fleet SSH sync "/opt/my \"fleet\" 100%%/fleet" schedule run' "$FAKE/helper" \
+    || fail "the systemd job does not run the installed binary"
 
 # The launchd job runs the binary that turned it on, or the installed one a
 # temporary copy names.
@@ -244,6 +249,9 @@ del m.os.environ["FLEET_PATH"]
 sys.argv[0] = "/opt/fleet/bin/fleet"
 assert m.schedule_enable() == 0
 assert "<string>/opt/fleet/bin/fleet</string>" in m._plist_path().read_text()
+sys.argv[0] = "/Volumes/Tools & Data/fleet"
+assert m.schedule_enable() == 0
+assert "<string>/Volumes/Tools &amp; Data/fleet</string>" in m._plist_path().read_text()
 PY
 
 echo "fleet tests passed"

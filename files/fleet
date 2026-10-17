@@ -26,6 +26,7 @@ import tempfile
 import time
 import unicodedata
 import urllib.request
+from xml.sax.saxutils import escape as xml_escape
 
 HOME = pathlib.Path.home()
 SSH_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_SSH_DIR", "~/.ssh")))
@@ -867,7 +868,7 @@ def _same_tree(a, b):
                 if p.is_symlink():
                     files[rel] = ("link", os.readlink(p))
                 elif name in names:
-                    files[rel] = p.read_bytes() if p.is_file() else ("special",)
+                    files[rel] = _digest(p) if p.is_file() else ("special",)
         return files
     try:
         return tree(a) == tree(b)
@@ -1042,7 +1043,8 @@ def pull(account):
         if record is None:
             # A join: whatever it replaced here, scanned or saved since, is
             # in the backup.
-            replaced = sorted({p for p in set(take) | set(remove) if p in local} | set(conflicts))
+            replaced = sorted(({p for p in set(take) | set(remove) if p in local} | set(conflicts))
+                              - set(deleted))
             if replaced:
                 _report(f"took the account's copy over what was here (yours is in {backup.root}): "
                         + ", ".join(replaced))
@@ -1266,6 +1268,8 @@ def refresh_links():
             # One leading to a harness file would have that file swapped for
             # a link back to it, and neither readable.
             eprint(f"fleet: {agents_md} is a link; not linking it where harnesses read it")
+            for target in AGENTS_LINKS:
+                _unlink_restoring(target, links)
         elif agents_md.is_file():
             for target in AGENTS_LINKS:
                 if target != HOME/"AGENTS.md" and not target.parent.is_dir():
@@ -1334,7 +1338,9 @@ def _drop_old_links():
 
 def _skill_entries(skills):
     try:
-        return [e for e in sorted(skills.iterdir()) if e.is_dir() and not e.name.startswith(".")]
+        # A linked one is not synced, and may lead back to claude's own copy.
+        return [e for e in sorted(skills.iterdir())
+                if e.is_dir() and not e.is_symlink() and not e.name.startswith(".")]
     except OSError:
         return []
 
@@ -1720,12 +1726,16 @@ def schedule_stale():
     except OSError:
         # One that cannot be read may be the old timer all the same.
         return True
-    return "fleet schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
+    return "schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
+
+
+def _fleet_path():
+    # A temporary copy standing in for the installed one (uninstall's retry)
+    # names it in FLEET_PATH: the copy is deleted once it has run.
+    return os.environ.get("FLEET_PATH") or os.path.abspath(sys.argv[0])
 
 
 def schedule_enable():
-    # A temporary copy standing in for the installed one (uninstall's retry)
-    # names it in FLEET_PATH: the copy is deleted once it has run.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -1738,7 +1748,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{os.environ.get("FLEET_PATH") or os.path.abspath(sys.argv[0])}</string>
+        <string>{xml_escape(_fleet_path())}</string>
         <string>schedule</string>
         <string>run</string>
     </array>
@@ -1748,9 +1758,9 @@ def schedule_enable():
         <key>Minute</key><integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>{log}</string>
+    <string>{xml_escape(str(log))}</string>
     <key>StandardErrorPath</key>
-    <string>{log}</string>
+    <string>{xml_escape(str(log))}</string>
 </dict>
 </plist>
 """)
@@ -1774,13 +1784,18 @@ def schedule_enable():
         timer_extra = handle.name
     try:
         rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet SSH sync",
-                           "%h/.local/bin/fleet schedule run", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
+                           f"{_systemd_quote(_fleet_path())} schedule run", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
                            "", timer_extra)
     finally:
         os.unlink(timer_extra)
     if rc == 0:
         print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
     return rc
+
+
+def _systemd_quote(word):
+    # ExecStart reads % as a specifier and splits on spaces.
+    return '"' + word.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
 def schedule_disable():
