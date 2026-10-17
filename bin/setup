@@ -341,6 +341,33 @@ _dep_visit() {
     return 0
 }
 
+# The manifest's module rows with each one's dependencies ahead of it, so an
+# installed dependency is current before a dependent that re-enables against it.
+dependency_ordered_manifest() {
+    local -A row seen
+    local -a names
+    local line module
+    while IFS= read -r line; do
+        module=${line%%$'\t'*}
+        [[ -n "$module" && "$module" != \#* && -z "${row[$module]+x}" ]] || continue
+        row[$module]=$line
+        names+=("$module")
+    done < "$1"
+    for module in ${names[@]+"${names[@]}"}; do
+        _manifest_visit "$module"
+    done
+}
+
+_manifest_visit() {
+    local module="$1" dep
+    [[ -n "${row[$module]+x}" && -z "${seen[$module]+x}" ]] || return 0
+    seen[$module]=1
+    for dep in ${=$(module_requires "$module")}; do
+        _manifest_visit "$dep"
+    done
+    printf '%s\n' "${row[$module]}"
+}
+
 # Print the requested modules and everything they need, dependencies first.
 resolve_install_order() {
     typeset -gA _dep_state
@@ -1509,7 +1536,8 @@ cmd_update() {
             fi
         done
     done 3< "$MANIFEST_FILE"
-    manifest_input="$MANIFEST_FILE"
+    manifest_input=$(mktemp) || return 1
+    dependency_ordered_manifest "$MANIFEST_FILE" > "$manifest_input"
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         # Installed or reported by the dependency pass above.
@@ -1604,6 +1632,7 @@ cmd_update() {
             fi
         fi
     done < "$manifest_input"
+    rm -f "$manifest_input"
     # Update setup last — self-update exec restarts the process
     if [[ -n "${setup_target:-}" ]] && [[ -n "${setup_local_hash:-}" ]]; then
         if ! install_one setup "$setup_target" "$setup_mode" "$setup_source"; then
