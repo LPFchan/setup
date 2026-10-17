@@ -462,8 +462,11 @@ class Changed(Exception):
 def config_sync_enabled():
     try:
         rows = SETUP_STATE.read_text().splitlines()
-    except OSError:
+    except FileNotFoundError:
         return True
+    except OSError:
+        # Unread, the old modules may still own ~/.agents: wait.
+        return False
     return not any(row.split("\t", 1)[0] in PREDECESSOR_MODULES for row in rows)
 
 
@@ -498,7 +501,11 @@ def scan_local():
     def add(path, rel):
         if path.is_symlink():
             symlinks.append(rel)
-        elif path.is_file() and config_path(rel):
+        elif config_path(rel) and os.path.lexists(path):
+            # A folder or device here cannot be synced; skipped, the file it
+            # replaced would read as deleted on every machine.
+            if not path.is_file():
+                raise ConfigError(f"{path} is not a regular file")
             files[rel] = _digest(path)
 
     for name in ("AGENTS.md", "mcp.json"):
@@ -721,6 +728,68 @@ def _load_json(path, default):
     return value if isinstance(value, type(default)) else default
 
 
+def _load_record(path, valid):
+    """A state record; {} only when there is none. A damaged one stops the
+    command: read as empty, it would lose what the record keeps."""
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read {path} ({exc}); move it aside to start afresh") from None
+    if not isinstance(value, dict) or not valid(value):
+        raise ConfigError(f"{path} is damaged; move it aside to start afresh")
+    return value
+
+
+def _sync_record_ok(r):
+    # An empty or wrong-shaped file map would read as "nothing synced yet".
+    files = r.get("files")
+    # An account _context() could never give would move ~/.agents aside as
+    # another account's.
+    return (isinstance(r.get("account"), str) and re.fullmatch(r"[^ ]+ [^ ]+", r["account"])
+            and isinstance(r.get("counter"), int)
+            and isinstance(r.get("version"), int) and isinstance(files, dict)
+            and all(config_path(k) and isinstance(v, list) and len(v) == 2
+                    and isinstance(v[0], str) and re.fullmatch(r"[0-9a-f]{64}", v[0])
+                    and isinstance(v[1], bool) for k, v in files.items()))
+
+
+def _load_sync_record():
+    """The sync record. Read as a first join, a damaged one would take the
+    account's copy over local edits."""
+    return _load_record(CONFIG_STATE, _sync_record_ok)
+
+
+def _load_links():
+    """{link: what it displaced}. Read as empty, a damaged one would forget
+    the user files the links displaced."""
+    return _load_record(LINKS_STATE, lambda r: all(
+        _link_entry_ok(k, v) for k, v in r.items()))
+
+
+def _link_entry_ok(link, moved):
+    """A link fleet makes, mapped to the backup or the old agents module's
+    sidecar beside it: restoring moves `moved` onto `link`, so anything else
+    would move arbitrary files around."""
+    if not isinstance(moved, str):
+        return False
+    link, moved = pathlib.Path(link), pathlib.Path(moved)
+    if not (link in AGENTS_LINKS or link.parent == SKILL_LINK_DIR):
+        return False
+    if moved == _old_backup(link):
+        return True
+    # Only where _link backs up this very link: a run's folder, then
+    # displaced/<the link's path>, with a collision suffix at most.
+    if not (moved.is_absolute() and moved.is_relative_to(BACKUP_DIR) and link.is_relative_to(HOME)):
+        return False
+    parts, rel = moved.relative_to(BACKUP_DIR).parts, link.relative_to(HOME).parts
+    return (len(parts) == len(rel) + 2
+            and re.fullmatch(r"\d{8}-\d{6}(-\d+)?", parts[0]) is not None
+            and parts[1] == "displaced" and parts[2:-1] == rel[:-1]
+            and re.fullmatch(re.escape(rel[-1]) + r"(\.\d+)?", parts[-1]) is not None)
+
+
 def _save_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}")
@@ -746,27 +815,64 @@ def _report(text):
     add_notice(text)
 
 
+def _inside_agents(path):
+    """Whether `path` leads into ~/.agents, through a linked parent too."""
+    return pathlib.Path(os.path.realpath(path)).is_relative_to(os.path.realpath(AGENTS_DIR))
+
+
 def _skill_folders(directory):
-    """The real, non-dot folders holding a SKILL.md in a harness skill folder."""
+    """The real, non-dot folders holding a SKILL.md in a harness skill folder.
+    A linked harness folder is skipped: it may lead into ~/.agents/skills,
+    whose folders would then be moved out from under it."""
+    if directory.is_symlink() or _inside_agents(directory):
+        return []
+    # Only a missing folder holds no skills; an unreadable one fails
+    # onboarding, which would otherwise record the account without them.
     try:
         entries = sorted(directory.iterdir())
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return []
+    except OSError as exc:
+        _unreadable(exc)
     # The old agents module's .pre-agents.bak sidecars go back by name when
     # the links are refreshed; they are not skills of their own.
     return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
             and not e.name.endswith(".pre-agents.bak")
-            and e.is_dir() and (e/"SKILL.md").is_file()]
+            and _is(e, stat.S_ISDIR) and _is(e/"SKILL.md", stat.S_ISREG)
+            # A linked SKILL.md is not uploaded; the folder would go without it.
+            and not (e/"SKILL.md").is_symlink()]
+
+
+def _is(path, kind):
+    """Path.is_dir and is_file can hide an unreadable folder as "not one",
+    which would leave its skill behind; only a missing path is not one."""
+    try:
+        return kind(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as exc:
+        _unreadable(exc)
 
 
 def _same_tree(a, b):
+    # os.walk, not rglob: rglob skips a folder it cannot read, and the trees
+    # would match without it.
+    # A link counts by where it points, so a tree with an extra one differs.
     def tree(root):
-        return {p.relative_to(root).as_posix(): p.read_bytes()
-                for p in root.rglob("*") if p.is_file() and not p.is_symlink()}
+        files = {}
+        for top, dirs, names in os.walk(root, onerror=_unreadable):
+            for name in names + dirs:
+                p = pathlib.Path(top)/name
+                rel = p.relative_to(root).as_posix()
+                if p.is_symlink():
+                    files[rel] = ("link", os.readlink(p))
+                elif name in names:
+                    files[rel] = p.read_bytes() if p.is_file() else ("special",)
+        return files
     try:
         return tree(a) == tree(b)
-    except OSError:
-        return False
+    except OSError as exc:
+        _unreadable(exc)
 
 
 def _move_harness_skills(backup):
@@ -780,26 +886,37 @@ def _move_harness_skills(backup):
             for folder in _skill_folders(directory):
                 moved.append((folder, backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")))
     except BaseException:
-        for folder, saved in reversed(moved):
-            if not os.path.lexists(folder):
-                shutil.move(str(saved), str(folder))
+        _put_harness_back(moved)
         raise
     if moved:
         _report(f"moved skill folders to {backup.root}: " + ", ".join(str(f) for f, _ in moved))
     return moved
 
 
-def _apply_changes(take, remove, contents, server, backup, then=None):
+def _put_harness_back(moved):
+    for folder, saved in reversed(moved):
+        if not os.path.lexists(folder):
+            shutil.move(str(saved), str(folder))
+
+
+def _apply_changes(take, remove, contents, server, backup, then=None, scanned=None):
     """Replaced and deleted local copies, symlinks included, go to the backup.
     If a write fails, or `then` (run once all are written) does, the files
     already written go and the moved ones come back, so ~/.agents stays as it
-    was."""
-    moved, written = [], []
+    was. Returns the paths whose local copy changed since `scanned` was read:
+    an edit saved during the sync, which the merge never saw."""
+    moved, written, changed = [], [], []
     try:
         for rel in sorted(remove) + sorted(take):
             target = _safe_target(rel)
             if target.is_symlink() or target.exists():
-                moved.append((target, backup.move(target, f"agents/{rel}")))
+                saved = backup.move(target, f"agents/{rel}")
+                moved.append((target, saved))
+                # A symlink or folder put in its place since the scan is a
+                # change too; the scan holds regular files only.
+                now = _digest(saved) if saved.is_file() and not saved.is_symlink() else None
+                if scanned is not None and now != scanned.get(rel):
+                    changed.append(rel)
         for rel in remove:
             _remove_file(rel)
         for rel in sorted(take):
@@ -815,12 +932,22 @@ def _apply_changes(take, remove, contents, server, backup, then=None):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(saved), str(target))
         raise
+    return changed
 
 
 def _move_foreign(backup):
     moved = backup.move(AGENTS_DIR, "agents-other-account")
     _report(f"moved another account's ~/.agents to {backup.root}")
     return moved
+
+
+def _put_foreign_back(moved, backup):
+    if moved:
+        if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
+            backup.move(AGENTS_DIR, "agents-incomplete")
+        shutil.move(str(moved), str(AGENTS_DIR))
+        _report("put the other account's ~/.agents back, since this account's copy "
+                "could not be put in place")
 
 
 def pull(account):
@@ -830,7 +957,7 @@ def pull(account):
         counter, version, server = _listing()
         if _context() != account:
             raise ConfigError("the session changed during the sync")
-        state = _load_json(CONFIG_STATE, {})
+        state = _load_sync_record()
         record = state if state.get("account") == account else None
         backup = Backup()
         # Another account's files: they are not this account's to push. They
@@ -840,15 +967,26 @@ def pull(account):
         foreign = other and AGENTS_DIR.exists()
         local = {} if foreign else scan_local()[0]
         if record is None and counter == 0:
-            if foreign:
-                _move_foreign(backup)
-            if other:
-                # Even with no tree to move, the other account's links go. Its
-                # record stays until they have, so a retry finishes the job.
-                refresh_links()
+            moved = _move_foreign(backup) if foreign else None
+            try:
+                # Even with no tree to move, the other account's links go.
+                if other:
+                    refresh_links()
+                ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                ONBOARDING_MARKER.touch()
+                # Its record goes last: until then a failure puts its tree and
+                # links back, and a retry finishes the job.
                 CONFIG_STATE.unlink(missing_ok=True)
-            ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
-            ONBOARDING_MARKER.touch()
+            except BaseException as exc:
+                if other:
+                    _put_foreign_back(moved, backup)
+                    try:
+                        refresh_links()
+                    except Exception as again:
+                        # Its links stay down until a sync gets through.
+                        raise ConfigError(f"{exc}; the other account's links could not be put back "
+                                          f"either ({again}), so run fleet sync once that is fixed") from exc
+                raise
             return "pending", None, []
         conflicts = []
         if record is None:
@@ -881,25 +1019,18 @@ def pull(account):
             # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
         try:
-            _apply_changes(take, remove, contents, server, backup, then=finish)
+            conflicts += _apply_changes(take, remove, contents, server, backup, then=finish, scanned=local)
         except BaseException:
-            for folder, saved in reversed(harness):
-                if not os.path.lexists(folder):
-                    shutil.move(str(saved), str(folder))
+            _put_harness_back(harness)
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
-            if moved:
-                if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
-                    backup.move(AGENTS_DIR, "agents-incomplete")
-                shutil.move(str(moved), str(AGENTS_DIR))
-                _report("put the other account's ~/.agents back, since this account's copy "
-                        "could not be put in place")
+            _put_foreign_back(moved, backup)
             raise
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
-                    f"{backup.root}): " + ", ".join(sorted(conflicts)))
+                    f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", new_record, sorted(conflicts)
+        return "synced", new_record, sorted(set(conflicts))
     raise ConfigError("the account kept changing during the sync; try again")
 
 
@@ -917,11 +1048,26 @@ def _check_json_objects(payloads):
                 raise ConfigError(f"{rel}: {problem}; fix it before uploading")
 
 
+def _read_regular(rel):
+    """A file's bytes, refusing one turned into a link (or a FIFO, which
+    would block) since it was scanned: its target is not fleet's to send."""
+    try:
+        fd = os.open(AGENTS_DIR/rel, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ConfigError(f"{rel} became a link while syncing; nothing pushed, run fleet sync again")
+        raise
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ConfigError(f"{rel} is no longer a regular file; nothing pushed, run fleet sync again")
+        return f.read()
+
+
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
     # Each file is read once, so what is checked, sent, and recorded as sent
     # is the same version even while an editor saves over it.
-    payloads = {rel: (AGENTS_DIR/rel).read_bytes() for rel in sorted(puts)}
+    payloads = {rel: _read_regular(rel) for rel in sorted(puts)}
     _check_json_objects(payloads)
     clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts))
     if clashes:
@@ -1051,7 +1197,9 @@ def _skill_link_targets(links):
 
 def _points_into(path, root):
     try:
-        return path.is_symlink() and pathlib.Path(os.readlink(path)).is_relative_to(root)
+        # Resolved as the link would be, .. and all, but not followed further.
+        return path.is_symlink() and pathlib.Path(
+            os.path.normpath(os.path.join(path.parent, os.readlink(path)))).is_relative_to(root)
     except OSError:
         return False
 
@@ -1081,7 +1229,7 @@ def _config_locked():
 def refresh_links():
     """AGENTS.md where each harness reads it, and each skill in claude's
     folder, adding new skills and pruning removed ones."""
-    links = _load_json(LINKS_STATE, {})
+    links = _load_links()
     before = dict(links)
     backup = Backup()
     # Saved however far this gets: a retry finds what it already displaced
@@ -1090,14 +1238,26 @@ def refresh_links():
         agents_md = AGENTS_DIR/"AGENTS.md"
         if agents_md.is_file():
             for target in AGENTS_LINKS:
-                if target == HOME/"AGENTS.md" or target.parent.is_dir():
-                    _link(target, agents_md, links, backup)
+                if target != HOME/"AGENTS.md" and not target.parent.is_dir():
+                    continue
+                # A harness folder that is ~/.agents, or a folder in it, by
+                # another name would have a synced file replaced by a link.
+                if _inside_agents(target.parent):
+                    eprint(f"fleet: {target.parent} is inside {AGENTS_DIR}; not linking AGENTS.md into it")
+                    continue
+                _link(target, agents_md, links, backup)
         else:
             for target in AGENTS_LINKS:
                 _unlink_restoring(target, links)
         skills = AGENTS_DIR/"skills"
         names = {e.name for e in _skill_entries(skills)}
-        if SKILL_LINK_DIR.parent.is_dir():
+        if SKILL_LINK_DIR.is_symlink():
+            # Linking through it would move what it leads to, ~/.agents/skills
+            # included, into the backup.
+            eprint(f"fleet: {SKILL_LINK_DIR} is a link; not linking skills into it")
+        elif _inside_agents(SKILL_LINK_DIR):
+            eprint(f"fleet: {SKILL_LINK_DIR} is inside {AGENTS_DIR}; not linking skills into it")
+        elif SKILL_LINK_DIR.parent.is_dir():
             for name in sorted(names):
                 _link(SKILL_LINK_DIR/name, skills/name, links, backup)
             for entry in _skill_link_targets(links):
@@ -1151,11 +1311,19 @@ def _skill_entries(skills):
 def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
-    links = _load_json(LINKS_STATE, {})
+    links = _load_links()
     for path in list(AGENTS_LINKS) + _skill_link_targets(links):
         _unlink_restoring(path, links)
     # Also the old agents module's, which a sync may not have taken over yet.
     _drop_old_links()
+    # A target the user has since filled keeps its mapping, so the file it
+    # replaced is not left stranded in a backup.
+    stuck = {t: moved for t, moved in links.items() if os.path.lexists(moved)}
+    if stuck:
+        _save_json(LINKS_STATE, stuck)
+        target = sorted(stuck)[0]
+        raise ConfigError(f"{target} is no longer fleet's link, so the file it replaced stays at "
+                          f"{stuck[target]}; move one of them aside and run the uninstall again")
     LINKS_STATE.unlink(missing_ok=True)
 
 
@@ -1172,8 +1340,10 @@ def onboard(account):
         try:
             if path.is_file() and not _points_into(path, AGENTS_DIR):
                 sources.append((path, path.read_bytes()))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
+        except OSError as exc:
+            _unreadable(exc)
     # What this run copies into ~/.agents comes out again if staging or the
     # upload fails, so a retry gathers the harness files afresh.
     staged = []
@@ -1223,9 +1393,14 @@ def onboard(account):
     print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
     # Only now: a refused upload leaves the harness skill folders in use. And
     # before the record: a failed move leaves the next sync to join the
-    # account, which moves them again.
-    _move_harness_skills(backup)
-    _save_json(CONFIG_STATE, record)
+    # account, which moves them again. So does a record that cannot be saved,
+    # once the folders are back where claude reads them.
+    moved = _move_harness_skills(backup)
+    try:
+        _save_json(CONFIG_STATE, record)
+    except BaseException:
+        _put_harness_back(moved)
+        raise
     ONBOARDING_MARKER.unlink(missing_ok=True)
     refresh_links()
 
@@ -1251,6 +1426,10 @@ def config_sync(direct):
         return 0
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: account config: refusing a symlinked {AGENTS_DIR}")
+        return 1
+    # Anything else in its place would scan as empty: every file deleted.
+    if os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir():
+        eprint(f"fleet: account config: {AGENTS_DIR} is not a folder")
         return 1
     account = _context()
     if account is None:
@@ -1283,7 +1462,11 @@ def config_outdated():
         counter, version, _ = _listing()
     except ConfigError:
         return False
-    record = _load_json(CONFIG_STATE, {})
+    # A damaged record is outdated: the sync that follows reports it.
+    try:
+        record = _load_sync_record()
+    except ConfigError:
+        return True
     if record.get("account") != account:
         # Another account's config here is outdated even when this account
         # has none: the pull moves it aside.
@@ -1300,11 +1483,11 @@ def config_status():
         return
     try:
         counter, version, server = _listing()
-    except ConfigError as exc:
+        record = _load_sync_record()
+        local, symlinks = scan_local()
+    except (ConfigError, OSError) as exc:
         print(f"fleet: account config: {exc}")
         return
-    record = _load_json(CONFIG_STATE, {})
-    local, symlinks = scan_local()
     if record.get("account") != account:
         print("fleet: account config not set up yet; run: fleet onboard" if counter == 0
               else "fleet: account config not pulled yet; run: fleet sync")
@@ -3456,6 +3639,9 @@ def cmd_onboard():
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: refusing a symlinked {AGENTS_DIR}")
         return 1
+    if os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir():
+        eprint(f"fleet: {AGENTS_DIR} is not a folder")
+        return 1
     account = _context()
     if account is None:
         eprint("fleet: no session; run: auth login")
@@ -3555,8 +3741,11 @@ def schedule_stale():
             return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
         service = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.service").read_text()
         timer = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer").read_text()
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        # One that cannot be read may be the old timer all the same.
+        return True
     return "fleet schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
 
 
@@ -3673,7 +3862,11 @@ def dispatch(args):
         return heavy_pass()
     # setup uninstall fleet: drop the harness links, restoring what they replaced.
     if args == ["__unlink"]:
-        remove_links()
+        try:
+            remove_links()
+        except ConfigError as exc:
+            eprint(f"fleet: {exc}")
+            return 1
         return 0
     if args == ["__unrender"]:
         return harness_render(clear=True)
