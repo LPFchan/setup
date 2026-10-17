@@ -1430,7 +1430,9 @@ cmd_update() {
     configure_shell || true
     local new_count=0 new_names=() failure_count=0 failure_names=() deferred_count=0 deferred_names=() unchecked_count=0 unchecked_names=() filters=()
     local target_module setup_target setup_mode setup_source setup_local_hash
-    local manifest_input
+    local manifest_input found target_path local_hash disk_hash_before disk_hash_after was_active
+    local script_target script_state script_status script_local script_remote script_installed script_extra
+    local script_update_rc needed_by
     # `setup update` only updates modules. The harnesses keep their own
     # cadence: `fleet update` runs the per-harness self-updaters, and fleet's
     # nightly pass calls it.
@@ -1446,23 +1448,20 @@ cmd_update() {
     while IFS=$'\t' read -r module target mode source; do
         [[ -z "${module:-}" || "$module" == \#* ]] && continue
         if [[ ${#filters[@]} -gt 0 ]]; then
-            local found=0
+            found=0
             for f in "${filters[@]}"; do
                 [[ "$module" == "$f" ]] && found=1 && break
             done
             [[ "$found" -eq 0 ]] && continue
         fi
-        local target_path local_hash disk_hash_before disk_hash_after was_active
         target_path=$(expand_path "$target")
         if [[ "$mode" == "script" ]]; then
-            local script_target script_state script_status script_local script_remote script_installed script_extra
             IFS=$'\t' read -r script_target script_state script_status script_local script_remote script_installed script_extra \
                 < <(script_status_fields "$module" "$target" "$source")
             case "$script_state" in
                 current)
                     ;;
                 outdated)
-                    local script_update_rc
                     if _script_update "$module" "$target" "$source"; then
                         script_update_rc=0
                     else
@@ -1510,7 +1509,6 @@ cmd_update() {
             if [[ -z "$local_hash" ]]; then
                 # A dependency of something already installed is not a "new
                 # module available" — it is missing, so bring it in now.
-                local needed_by
                 needed_by=$(installed_dependents_of "$module" | tr '\n' ' ')
                 if [[ -n "${needed_by// /}" ]]; then
                     echo "Installing $module, required by: ${needed_by% }"
