@@ -1017,7 +1017,7 @@ def pull(account):
                                           f"either ({again}), so run fleet sync once that is fixed") from exc
                 raise
             return "pending", None, []
-        conflicts = []
+        conflicts, gone = [], []
         if record is None:
             # Joining an account that was pushed: take its copy wholesale.
             take = [p for p in server if local.get(p) != server[p]]
@@ -1030,7 +1030,8 @@ def pull(account):
                 if s == b or s == l:
                     continue
                 if l != b:
-                    conflicts.append(rel)
+                    # Gone here before the scan: there is no copy to keep.
+                    (gone if l is None else conflicts).append(rel)
                 (remove if s is None else take).append(rel)
         try:
             contents = fetch_contents(take, counter, server)
@@ -1056,13 +1057,21 @@ def pull(account):
             _put_foreign_back(moved, backup)
             raise
         conflicts += changed
-        if conflicts:
+        if record is None:
+            displaced = sorted(p for p in set(take) | set(remove) if p in local)
+            if displaced:
+                _report(f"took the account's copy over what was here (yours is in {backup.root}): "
+                        + ", ".join(displaced))
+        elif conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
+        if gone:
+            _report("deleted here but changed in the account, so the account's copy came back: "
+                    + ", ".join(sorted(gone)))
         if deleted:
             _report("deleted here during the sync, so the account's copy came back: " + ", ".join(deleted))
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", new_record, sorted(set(conflicts + deleted))
+        return "synced", new_record, sorted(set(conflicts + gone + deleted))
     raise ConfigError("the account kept changing during the sync; try again")
 
 
@@ -1762,8 +1771,8 @@ def save_text_atomic(path, text, private=False):
         pathlib.Path(temporary).unlink(missing_ok=True)
 
 
-def save_json_atomic(path, data):
-    save_text_atomic(path, json.dumps(data, indent=2) + "\n")
+def save_json_atomic(path, data, private=False):
+    save_text_atomic(path, json.dumps(data, indent=2) + "\n", private=private)
 
 
 def deep_merge(base, overlay):
@@ -2304,7 +2313,9 @@ def resolve_tokens(servers, context, warnings):
             if source == "common-auth":
                 value = common(server["scope"])
             elif source == "passage":
-                value = _vault_get(common("passage"), server.get("vaultItem") or var)
+                # Only a vault record may say how to send it; other
+                # credentials are taken as they are.
+                value = mcp_token_value(_vault_get(common("passage"), server.get("vaultItem") or var))
             else:
                 value = os.environ.get(var) or existing.get(var)
                 if not value:
@@ -2327,7 +2338,6 @@ def resolve_tokens(servers, context, warnings):
                 if not exc.authoritative:
                     missing.add(server["name"])
                 continue
-        value = mcp_token_value(value)
         if value:
             exports[var] = value
             drop.discard(var)
@@ -2523,7 +2533,8 @@ def render_claude(desired, allow, previous, command):
         merged.pop("permissions")
     _merge_keepout_hooks(merged, command)
     if json.dumps(merged, sort_keys=True) != before:
-        save_json_atomic(CLAUDE_SETTINGS, merged)
+        # The account's env can carry credentials.
+        save_json_atomic(CLAUDE_SETTINGS, merged, private=True)
         print(f"  wrote {CLAUDE_SETTINGS}")
     return owned_leaves, owned
 
@@ -3302,7 +3313,8 @@ def _harness_inputs(account, tier, hub, clear):
 def harness_outdated():
     """Whether a sync would render the harnesses' settings (for setup's
     status): a failed render, or inputs changed since the last one. A tier
-    the account changed shows in config_outdated instead."""
+    the account changed shows in config_outdated instead. None when Auth's
+    service list cannot be read."""
     if not config_sync_enabled():
         return False
     account = _context()
@@ -3314,7 +3326,7 @@ def harness_outdated():
     try:
         digest = _harness_inputs(account, previous["tier"], hub_servers(), False)[4]
     except ConfigError:
-        return False
+        return None
     return previous.get("hash") != digest
 
 
@@ -3754,9 +3766,10 @@ def cmd_sync(check=False, direct=True, force=False):
             if not is_current(config_lines, keys_lines):
                 return 1
             outdated = config_outdated()
-            if outdated or (config_sync_enabled() and harnesses_left()) or harness_outdated():
+            rendered = harness_outdated()
+            if outdated or (config_sync_enabled() and harnesses_left()) or rendered:
                 return 1
-            return 3 if outdated is None else 0
+            return 3 if outdated is None or rendered is None else 0
         changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
         try:
             SSH_DIR.chmod(0o700)
