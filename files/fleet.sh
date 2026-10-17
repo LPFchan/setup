@@ -148,7 +148,8 @@ uninstall() {
     fi
     if [[ -z "$ok" && -n "$was_on" ]]; then
         python3 "$cli" schedule enable >/dev/null 2>&1 \
-            || { [[ -n "$staged" ]] && python3 "$staged" schedule enable >/dev/null 2>&1; }
+            || { [[ -n "$staged" ]] && python3 "$staged" schedule enable >/dev/null 2>&1; } \
+            || echo "fleet: could not turn the nightly sync back on; run: fleet schedule on" >&2
     fi
     [[ -n "$staged" ]] && rm -f "$staged"
     if [[ -z "$ok" ]]; then

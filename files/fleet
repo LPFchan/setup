@@ -1705,6 +1705,8 @@ def schedule_stale():
 
 
 def schedule_enable():
+    # Both run the installed binary, not whichever copy turned the job on: the
+    # uninstall retry runs a temporary one.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -1717,7 +1719,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{os.path.abspath(sys.argv[0])}</string>
+        <string>{HOME/".local/bin/fleet"}</string>
         <string>schedule</string>
         <string>run</string>
     </array>

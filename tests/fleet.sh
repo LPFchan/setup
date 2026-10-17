@@ -220,4 +220,17 @@ SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet
     || fail "turning off an installed timer failed"
 grep -qx 'uninstall-timer user fleet-sync' "$FAKE/helper" || fail "an installed timer was left behind"
 
+# The launchd job runs the installed binary, also when a temporary copy
+# turned it on.
+HOME="$TMP/machome" python3 - "$ROOT/files/fleet" <<'PY' || fail "the launchd job does not run the installed binary"
+import importlib.machinery, importlib.util, subprocess, sys
+loader = importlib.machinery.SourceFileLoader("fleet_launchd", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+m.sys.platform = "darwin"
+m.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
+sys.argv[0] = "/tmp/staged-fleet"
+assert m.schedule_enable() == 0
+assert f"<string>{m.HOME}/.local/bin/fleet</string>" in m._plist_path().read_text()
+PY
+
 echo "fleet tests passed"
