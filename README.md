@@ -29,7 +29,7 @@ setup                     # Open interactive menu to pick and configure modules
 setup list                # List all available modules
 setup status              # Check installed versions and remote updates
 setup update              # Update all installed modules
-fleet install [name]      # Install missing harnesses with their own installers
+fleet install [name...]   # Install harnesses with their own installers; asks which when none named
 fleet update              # Run each AI harness's own self-updater (claude, codex, opencode, ...)
 fleet sync                # Sync ~/.agents with the account and render harness settings
 fleet schedule            # Install the nightly 04:00 timer that runs 'fleet nightly'

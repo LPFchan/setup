@@ -145,4 +145,8 @@ serve "${FLEET_JSON/AAAAPeer\"/AAAAPeer\",\"ssh-ed25519 AAAANew\"}"
 module update >/dev/null 2>&1 || fail "update"
 [[ "$(module status)" == *current* ]] || fail "status after update"
 
+# A bare install with nobody at a terminal names nothing and installs nothing.
+fleet install </dev/null >/dev/null 2>&1 && fail "bare install without a terminal"
+[[ "$(fleet install bogus 2>&1)" == *"unknown harness: bogus"* ]] || fail "unknown harness accepted"
+
 echo "fleet tests passed"

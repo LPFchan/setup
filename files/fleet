@@ -1501,10 +1501,22 @@ def _harnesses(names):
     return [specs[n] for n in names] if names else None, specs
 
 
+def _pick(specs):
+    if not sys.stdin.isatty():
+        raise SystemExit("fleet: name the harnesses to install, e.g. fleet install claude codex")
+    for name, spec in specs.items():
+        print(f"  {name}{'  (installed)' if _resolve(spec) else ''}")
+    try:
+        names = input("fleet: install which? ").replace(",", " ").split()
+    except EOFError:
+        names = []
+    return _harnesses(names)[0] or []
+
+
 def cmd_install(names):
     chosen, specs = _harnesses(names)
     rc = 0
-    for spec in chosen or [s for s in specs.values() if s.get("default")]:
+    for spec in chosen or _pick(specs):
         if _resolve(spec) and not spec.get("rerunWhenInstalled"):
             print(f"fleet: {spec['name']} already installed")
             continue
@@ -1784,7 +1796,7 @@ def schedule_disable():
 
 USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, harness settings
        fleet status
-       fleet install [harness...]          the default harnesses when none named
+       fleet install [harness...]          asks which when none named
        fleet update [harness...]           every installed harness when none named
        fleet skills [list|install|uninstall|publish|unpublish] ...
        fleet schedule [enable|disable|status]
