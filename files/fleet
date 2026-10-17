@@ -1040,10 +1040,12 @@ def pull(account):
             raise
         conflicts += changed
         if record is None:
-            displaced = sorted(p for p in set(take) | set(remove) if p in local)
-            if displaced:
+            # A join: whatever it replaced here, scanned or saved since, is
+            # in the backup.
+            replaced = sorted({p for p in set(take) | set(remove) if p in local} | set(conflicts))
+            if replaced:
                 _report(f"took the account's copy over what was here (yours is in {backup.root}): "
-                        + ", ".join(displaced))
+                        + ", ".join(replaced))
         elif conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
                     f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
