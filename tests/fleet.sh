@@ -228,6 +228,18 @@ touch "$units/fleet-sync.timer"
 SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet" schedule disable >/dev/null 2>&1 \
     || fail "turning off an installed timer failed"
 grep -qx 'uninstall-timer user fleet-sync' "$FAKE/helper" || fail "an installed timer was left behind"
+# A timer running another binary than this one is stale.
+printf 'ExecStart="/old/fleet" schedule run\n' > "$units/fleet-sync.service"
+printf 'OnCalendar=*-*-* 11:00:00\n' > "$units/fleet-sync.timer"
+SCHEDULE_USER_DIR="$units" FLEET_PATH=/new/fleet python3 - "$ROOT/files/fleet" <<'PY' || fail "a timer running another binary read as current"
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_stale", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+assert m.schedule_stale()
+(m.SYSTEMD_USER_DIR/"fleet-sync.service").write_text('ExecStart="/new/fleet" schedule run\n')
+assert not m.schedule_stale()
+PY
+rm -f "$units"/fleet-sync.*
 # The systemd job runs the binary turning it on, quoted for systemd.
 SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" FLEET_PATH='/opt/my "fleet" 100%/fleet' \
     python3 "$ROOT/files/fleet" schedule enable >/dev/null 2>&1 || fail "turning on the systemd timer failed"
