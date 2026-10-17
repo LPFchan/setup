@@ -283,6 +283,13 @@ mv "$HOME/.hermes/config.yaml" "$TMP/hermes.away"
 fleet sync --check >/dev/null 2>&1 && fail "check missed a harness gone since the render"
 mv "$TMP/hermes.away" "$HOME/.hermes/config.yaml"
 fleet sync --check >/dev/null 2>&1 || fail "check after the harness came back"
+# So does a codex installed beside a ~/.codex it skipped trusting a hook in.
+mv "$BIN/codex" "$TMP/codex.away"; rm "$FAKE/codex-trust.json"
+fleet sync --pull >/dev/null 2>&1 || fail "a pass with no codex"
+mv "$TMP/codex.away" "$BIN/codex"
+fleet sync --check >/dev/null 2>&1 && fail "check missed a codex installed since the render"
+fleet sync --pull >/dev/null 2>&1 || fail "a pass once codex came back"
+[[ -s "$FAKE/codex-trust.json" ]] || fail "a codex installed later did not get the keepout hook trusted"
 # A server whose token variable already holds another server's token is
 # left out, not handed that token.
 server_put mcp.json '{"mcpServers": [
