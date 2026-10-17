@@ -71,6 +71,7 @@ for link in "$HOME/.gemini/GEMINI.md" "$HOME/.config/muse/AGENTS.md" \
     if [[ -L "$link" && "$(readlink "$link")" == "$HOME/.agents"* ]]; then
         rm -f "$link"
         echo "fleet-migrate: removed $link"
+        [[ -e "$link.pre-agents.bak" ]] && mv "$link.pre-agents.bak" "$link" && echo "fleet-migrate: restored $link"
     fi
 done
 
