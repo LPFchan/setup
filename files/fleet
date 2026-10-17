@@ -4425,11 +4425,40 @@ def cmd_install_args(args):
         eprint("fleet: install one skill at a time")
         return 2
     account = _marketplace()
+    clash = _local_clash(_install_name(args[0], local_name))
+    if clash:
+        eprint(f"fleet: this machine already has skills/{clash}; pick another name with --as")
+        return 1
     body = {"skill": args[0], **({"as": local_name} if local_name is not None else {})}
     value = _skill_change(account, "install", body)
     print(f"fleet: installed {value.get('name')}" if value.get("installed")
           else f"fleet: already installed as {value.get('name')}")
     return config_sync(direct=False)
+
+
+def _install_name(ref, local_name):
+    """The local name Auth gives an install of `ref`: `--as`, else the
+    skill's folder. None when Auth will not find the skill anyway."""
+    if local_name is not None:
+        return local_name
+    if "/" in ref:
+        return ref.split("/", 1)[1]
+    return next((s.get("folder") for s in _market() if s.get("id") == ref), None)
+
+
+def _local_clash(name):
+    """A folder here an install named `name` would replace, other than one of
+    this account's installs. Auth cannot see one never pushed, and the pull
+    after the install would move it to the backup."""
+    if not isinstance(name, str):
+        return None
+    fold = lambda n: unicodedata.normalize("NFC", n).casefold()
+    installed = _load_json(INSTALLED, {})
+    try:
+        entries = os.listdir(AGENTS_DIR/"skills")
+    except OSError:
+        return None
+    return next((e for e in sorted(entries) if fold(e) == fold(name) and e not in installed), None)
 
 
 def _pick_install():

@@ -1586,6 +1586,24 @@ out=$(fleet install bob/foo --as Owned 2>&1) && fail "installed under a name the
 [[ "$out" == *"your own skills include Owned"* ]] || fail "the owned name was not refused: $out"
 [[ "$(python3 -c 'import json,os; print(list(json.load(open(os.environ["FAKE"]+"/server.json"))["installs"].values()))')" == "['foo']" ]] \
     || fail "an install named after an owned folder was stored"
+# Nor does fleet install over a skill folder here that never reached Auth,
+# by --as or by the skill's own folder name.
+mkdir -p "$HOME/.agents/skills/localonly"; printf 'unpushed\n' > "$HOME/.agents/skills/localonly/SKILL.md"
+out=$(fleet install bob/foo --as LocalOnly 2>&1) && fail "installed over an unpushed local skill"
+[[ "$out" == *"already has skills/localonly"* ]] || fail "the local skill was not named: $out"
+python3 - <<'PY2'
+import json, os
+f = f"{os.environ['FAKE']}/server.json"; state = json.load(open(f))
+state["market"]["66666666-6666-4666-8666-666666666666"] = {"author": "carol", "folder": "localonly", "published": True, "mine": False,
+    "files": {"SKILL.md": {"content": "aGk=", "sha256": "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4", "executable": False}}}
+json.dump(state, open(f, "w"))
+PY2
+out=$(fleet install 66666666-6666-4666-8666-666666666666 2>&1) && fail "installed by id over an unpushed local skill"
+[[ "$out" == *"already has skills/localonly"* ]] || fail "the local skill was not named for an id: $out"
+[[ "$(cat "$HOME/.agents/skills/localonly/SKILL.md")" == unpushed ]] || fail "the unpushed local skill was touched"
+[[ "$(python3 -c 'import json,os; print(list(json.load(open(os.environ["FAKE"]+"/server.json"))["installs"].values()))')" == "['foo']" ]] \
+    || fail "an install over an unpushed local skill was stored"
+rm -rf "$HOME/.agents/skills/localonly"
 # Installs that cannot be written put the account's files back too, so a
 # local edit the account's copy replaced is not lost behind a stale record.
 printf 'edited here\n' > "$HOME/.agents/AGENTS.md"
