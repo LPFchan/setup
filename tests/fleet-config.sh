@@ -290,6 +290,13 @@ chmod 755 "$HOME/.claude/skills"
 [[ -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.gemini/GEMINI.md")" == "operator instructions" \
     && "$(cat "$HOME/.gemini/GEMINI.md.pre-agents.bak")" == "gemini own" ]] \
     || fail "a link that could not go left an earlier link removed"
+# So does an onboarding marker that cannot be written.
+mkdir -p "$XDG_STATE_HOME/fleet/backup"
+chmod 500 "$XDG_STATE_HOME/fleet"
+fleet sync >/dev/null 2>&1 && fail "an unwritten onboarding marker reported success"
+chmod 700 "$XDG_STATE_HOME/fleet"
+[[ -d "$STATE_DIR/agents-src/.git" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
+    || fail "an unwritten onboarding marker left the clone or the payload in the backup"
 fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
 [[ "$(cat "$HOME/.claude/skills/lost/SKILL.md")" == "lost" && ! -e "$HOME/.claude/skills/lost.pre-agents.bak" ]] \
     || fail "an orphaned skill sidecar not restored"
@@ -933,18 +940,33 @@ chmod 700 "$XDG_STATE_HOME/fleet"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "an unsaved record dropped the old record"
 rm -rf "$HOME/.claude/skills/handmade"
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
-# A switch that cannot be written down puts the other account's files and
-# links back.
+# A switch that cannot be written down moves nothing.
+chmod 500 "$XDG_STATE_HOME/fleet"
+fleet sync >/dev/null 2>&1 && fail "switched accounts without writing the switch down"
+chmod 700 "$XDG_STATE_HOME/fleet"
+[[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
+    || fail "an unwritten switch moved the other account's files or links"
+[[ ! -e "$XDG_STATE_HOME/fleet/onboarding.pending" ]] || fail "an unwritten switch left onboarding pending"
+# Nor does one whose files cannot move; it leaves no onboarding either.
+chmod 555 "$HOME"
+fleet sync >/dev/null 2>&1 && fail "switched accounts without moving the other's files"
+chmod 755 "$HOME"
+[[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
+    || fail "an unmoved switch left the other account's files or links out"
+[[ ! -e "$XDG_STATE_HOME/fleet/onboarding.pending" ]] || fail "an unmoved switch left onboarding pending"
+# One that fails once they moved puts the other account's files and links
+# back.
+touch "$XDG_STATE_HOME/fleet/onboarding.pending"
 chmod 500 "$XDG_STATE_HOME/fleet"
 out=$(fleet sync 2>&1) && fail "switched accounts without writing the switch down"
 chmod 700 "$XDG_STATE_HOME/fleet"
+rm "$XDG_STATE_HOME/fleet/onboarding.pending"
 # A link that displaced a file cannot be put back without its record, and
 # the failure says so.
 grep -q "links could not be put back" <<<"$out" || fail "an unwritten switch hid the links it could not put back: $out"
 [[ -e "$HOME/.agents/skills/mine" && -e "$HOME/.claude/skills/mine/SKILL.md" ]] \
     || fail "an unwritten switch left the other account's files or links out"
 grep -q '"account": "https://auth.lost.plus 7"' "$XDG_STATE_HOME/fleet/config.json" || fail "an unwritten switch dropped the old record"
-[[ ! -e "$XDG_STATE_HOME/fleet/onboarding.pending" ]] || fail "an unwritten switch left onboarding pending"
 # Links that cannot be cleared yet are cleared by the next sync.
 chmod 500 "$HOME/.claude/skills"
 fleet sync >/dev/null 2>&1 && fail "sync read uncleared links as done"

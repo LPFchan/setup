@@ -1019,25 +1019,35 @@ def pull(account, settle_old=False):
         # the way the merge would read the account's files as already here.
         local = {} if foreign or old else scan_local()[0]
         if record is None and counter == 0:
-            moved = _settle_pending(old, foreign, backup) if old or foreign else None
+            # Before anything moves: the old payload cannot come back once
+            # its clone is gone, so a failure here must leave it in place.
+            created = not ONBOARDING_MARKER.exists()
+            ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            ONBOARDING_MARKER.touch()
             try:
-                # Even with no tree to move, the other account's links go.
-                if other:
-                    refresh_links()
-                ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
-                ONBOARDING_MARKER.touch()
-                # Its record goes last: until then a failure puts its tree and
-                # links back, and a retry finishes the job.
-                CONFIG_STATE.unlink(missing_ok=True)
-            except BaseException as exc:
-                if other:
-                    _put_foreign_back(moved, backup)
-                    try:
+                moved = _settle_pending(old, foreign, backup) if old or foreign else None
+                try:
+                    # Even with no tree to move, the other account's links go.
+                    if other:
                         refresh_links()
-                    except Exception as again:
-                        # Its links stay down until a sync gets through.
-                        raise ConfigError(f"{exc}; the other account's links could not be put back "
-                                          f"either ({again}), so run fleet sync once that is fixed") from exc
+                    # Its record goes last: until then a failure puts its
+                    # tree and links back, and a retry finishes the job.
+                    CONFIG_STATE.unlink(missing_ok=True)
+                except BaseException as exc:
+                    if other:
+                        _put_foreign_back(moved, backup)
+                        try:
+                            refresh_links()
+                        except Exception as again:
+                            # Its links stay down until a sync gets through.
+                            raise ConfigError(f"{exc}; the other account's links could not be put back "
+                                              f"either ({again}), so run fleet sync once that is fixed") from exc
+                    raise
+            except BaseException:
+                # Not pending after all: the record here still stands.
+                if created:
+                    with contextlib.suppress(OSError):
+                        ONBOARDING_MARKER.unlink()
                 raise
             return "pending", None, []
         conflicts = []
