@@ -1643,8 +1643,6 @@ def cmd_sync(check=False, pull=False):
 
 def _warn_self(fleet):
     me = (fleet or {}).get("self") or {}
-    if fleet and not me.get("served"):
-        eprint("fleet: this machine's key is waiting for confirmation in the Fleet tab")
     if me.get("key_mismatch"):
         eprint("fleet: this machine's key changed; log in again: auth login")
 
