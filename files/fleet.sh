@@ -80,6 +80,18 @@ _login_if_needed() {
     "$auth_bin" login </dev/tty >/dev/tty 2>&1 || echo "fleet: login skipped; run: auth login" >&2
 }
 
+# A host that missed the move to fleet (an offline partition) still has the
+# retired harnesses client and its daily timer, which would keep rewriting the
+# harness settings fleet now owns. Stop it while its binary can still do it.
+_retire_harnesses() {
+    local old="$HOME/.local/bin/harnesses"
+    [[ -x "$old" ]] || return 0
+    "$old" schedule disable >/dev/null 2>&1
+    rm -f "$old" "$HOME/.config/harnesses/manifest.json"
+    rmdir "$HOME/.config/harnesses" 2>/dev/null
+    echo "fleet: removed the retired harnesses client"
+}
+
 _apply() {
     local action="$1" staged hash
     mkdir -p "${BIN:h}" "${MANIFEST:h}"
@@ -91,6 +103,7 @@ _apply() {
     rm -rf "$staged"
     record_script_state "$MODULE" "fleet" "$hash" "$hash"
     echo "fleet: $action -> $BIN"
+    _retire_harnesses
     [[ "$action" == installed ]] && _login_if_needed
     # A pull: local edits in ~/.agents go up only when the operator syncs.
     # Exit 3 means Auth gave no authoritative answer: what is on disk stays,
