@@ -6,17 +6,22 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake"
 export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
-mkdir -p "$FLEET_SSH_DIR" "$FAKE"
+mkdir -p "$FLEET_SSH_DIR" "$FAKE/api/fleet"
+printf '{"counter":0,"version":"","files":[],"installs":[],"skills":[]}' > "$FAKE/api/fleet/config.json"
+printf '[]' > "$FAKE/api/services.json"
 printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
 
-# A stand-in auth CLI: `request` prints $FAKE/fleet.json and exits $FAKE/rc,
+# A stand-in auth CLI: `request GET /api/fleet` prints $FAKE/fleet.json and
+# exits $FAKE/rc, other requests print $FAKE<path>.json,
 # `context` names $FAKE/subject.
 cat > "$FLEET_AUTH_BIN" <<'SH'
 #!/bin/sh
 case "$1" in
     refresh) exit 0 ;;
     context) printf '{"origin":"https://auth.lost.plus","subject":"%s"}\n' "$(cat "$FAKE/subject")" ;;
-    request) cat "$FAKE/fleet.json"; exit "$(cat "$FAKE/rc")" ;;
+    request) [ "$(cat "$FAKE/rc")" = 4 ] && exit 4
+             [ "$3" = /api/fleet ] || { cat "$FAKE${3}.json" 2>/dev/null || echo '{"status":404,"error":"not found"}'; [ -f "$FAKE${3}.json" ] || exit 6; exit 0; }
+             cat "$FAKE/fleet.json"; exit "$(cat "$FAKE/rc")" ;;
 esac
 SH
 chmod +x "$FLEET_AUTH_BIN"
@@ -79,10 +84,11 @@ done
 [[ -f "$XDG_STATE_HOME/setup/auth.needs-login" ]] || fail "rejected session left no login marker"
 
 # With no session, a machine holding an owner key keeps the old sources, as
-# ssh-aliases did.
+# ssh-aliases did; the account tree has no answer, so the run exits 3.
 printf 'ssh-ed25519 AAAAOwner me@grimoire\n' > "$FLEET_SSH_DIR/id_ed25519.pub"
 serve '{}' 4
-fleet sync >/dev/null 2>&1 || fail "owner machine without a session"
+rc=0; fleet sync >/dev/null 2>&1 || rc=$?
+[[ $rc == 3 ]] || fail "owner machine without a session exited $rc"
 grep -q 'Host mangchi mangchi.lost.plus' "$FLEET_SSH_DIR/config" || fail "FLEET table not used"
 grep -q 'Host bingus bingus.lost.plus' "$FLEET_SSH_DIR/config" || fail "FLEET TERM host missing"
 grep -q 'Host grimoire' "$FLEET_SSH_DIR/config" && fail "own FLEET alias written"
@@ -130,7 +136,8 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 # outdated, so setup does not fail every run on a machine waiting to log in.
 serve '{}' 4
 rm -f "$FLEET_SSH_DIR/id_ed25519.pub"
-export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet" STATE_DIR="$XDG_STATE_HOME/setup"
+export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet" \
+    FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" STATE_DIR="$XDG_STATE_HOME/setup"
 module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }

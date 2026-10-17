@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 # setup-module: fleet
 # setup-source: files/fleet
-"""fleet — keeps this machine's SSH config and authorized_keys in step with its
-account's fleet in Common Auth (DEC-20261015-001)."""
+"""fleet — keeps this machine in step with its account in Common Auth: the SSH
+config and authorized_keys (DEC-20261015-001), the account's ~/.agents tree
+with its marketplace installs, and the harness settings and MCP servers built
+from it (DEC-20261016-001)."""
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import fcntl
+import glob
+import hashlib
 import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
 import urllib.request
 
 HOME = pathlib.Path.home()
@@ -75,13 +85,14 @@ def _auth_bin():
     return str(installed) if os.access(installed, os.X_OK) else shutil.which("auth")
 
 
-def _auth(*args):
+def _auth(*args, stdin=None):
     """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session."""
     binary = _auth_bin()
     if not binary:
         return 4, ""
     try:
-        result = subprocess.run([binary, *args], capture_output=True, text=True, timeout=60)
+        result = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True,
+                                timeout=300)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
     return result.returncode, result.stdout
@@ -384,11 +395,1207 @@ def _load_state():
     return value if isinstance(value, dict) else {}
 
 
+# --- account tree --------------------------------------------------------
+# ~/.agents mirrors the account's files in Auth. The base is the server copy
+# each path had at the last sync; a side that moved off it is the side that
+# changed, and when both moved the server wins and the local copy is backed up.
+
+AGENTS = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_AGENTS_DIR", "~/.agents")))
+FLEET_STATE = STATE.parent
+AGENTS_STATE = FLEET_STATE/"agents.json"
+RENDERED = FLEET_STATE/"rendered.json"
+LOCK = FLEET_STATE/"fleet.lock"
+MANIFEST_PATH = pathlib.Path(os.path.expanduser(
+    os.environ.get("FLEET_MANIFEST", "~/.config/fleet/manifest.json")))
+SKIP = {".git", "node_modules", "__pycache__", ".ds_store"}
+
+
+class ApiError(Exception):
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+def _api(method, path, body=None):
+    """One Auth request; the parsed answer, or ApiError. Busy answers retry."""
+    for attempt in range(3):
+        if body is None:
+            rc, out = _auth("request", method, path)
+        else:
+            rc, out = _auth("request", method, path, "-", stdin=json.dumps(body))
+        if rc == 4:
+            _set_login_marker(True)
+            raise ApiError("not signed in; run: auth login", 401)
+        if rc == 6:
+            try:
+                error = json.loads(out)
+            except ValueError:
+                error = {}
+            status = error.get("status")
+            if status in (429, 503) and attempt < 2:
+                time.sleep(min(float(error.get("retry_after") or 2), 30))
+                continue
+            raise ApiError(f"{path}: {error.get('error') or 'HTTP %s' % status}", status)
+        if rc != 0:
+            raise ApiError(f"{path}: Auth unreachable")
+        try:
+            return json.loads(out)
+        except ValueError:
+            raise ApiError(f"{path}: not a JSON answer") from None
+    raise ApiError(f"{path}: Auth stayed busy")
+
+
+@contextlib.contextmanager
+def _fleet_lock():
+    FLEET_STATE.mkdir(parents=True, exist_ok=True)
+    with open(LOCK, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def load_json(path):
+    try:
+        value = json.loads(pathlib.Path(path).read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path}: {exc}") from None
+    return value if isinstance(value, dict) else {}
+
+
+def save_text(path, text, mode=None):
+    """Replace the file in one rename. A symlink is followed, not replaced."""
+    path = pathlib.Path(os.path.realpath(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None:
+        try:
+            mode = path.stat().st_mode & 0o777
+        except FileNotFoundError:
+            mode = 0o600
+    data = text.encode() if isinstance(text, str) else text
+    fd, temporary = tempfile.mkstemp(prefix=".fleet.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        pathlib.Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def save_json(path, value):
+    save_text(path, json.dumps(value, indent=2) + "\n")
+
+
+def _sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _synced(rel):
+    return rel in ("AGENTS.md", "mcp.json") or rel.split("/", 1)[0] in ("settings", "skills") and "/" in rel
+
+
+def scan_local(installed):
+    """{path: file} for what this machine holds of the account tree.
+    Installed skills are the marketplace's copy, not the account's."""
+    found = {}
+    for root, dirs, files in os.walk(AGENTS):
+        here = pathlib.Path(root)
+        rel_root = here.relative_to(AGENTS).as_posix()
+        dirs[:] = [d for d in dirs if d.lower() not in SKIP and not (here/d).is_symlink()
+                   and (rel_root != "." or d in ("settings", "skills"))
+                   and not (rel_root == "skills" and (d in installed or d.startswith(".fleet-")))]
+        for name in files:
+            path = here/name
+            rel = path.relative_to(AGENTS).as_posix()
+            if name.lower() not in SKIP and not path.is_symlink() and _synced(rel):
+                found[rel] = path
+    return found
+
+
+def _fetch(endpoint, extra, paths):
+    """{path: (bytes, executable)} for every path, checked against its sha."""
+    got, pending = {}, sorted(paths)
+    while pending:
+        answer = _api("POST", endpoint, {**extra, "paths": pending})
+        if answer.get("missing"):
+            raise ApiError(f"{endpoint}: gone from Auth: {', '.join(answer['missing'])}")
+        for entry in answer.get("files", []):
+            data = base64.b64decode(entry["content"])
+            if _sha(data) != entry["sha256"]:
+                raise ApiError(f"{endpoint}: {entry['path']} arrived damaged")
+            got[entry["path"]] = (data, bool(entry.get("executable")))
+        pending = answer.get("remaining") or []
+    return got
+
+
+def _put_file(path, data, executable):
+    save_text(path, data, 0o755 if executable else 0o644)
+
+
+def _remove_file(path):
+    path.unlink(missing_ok=True)
+    parent = path.parent
+    while parent != AGENTS and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+
+def sync_agents(push=True):
+    """Pull the account tree, push local changes when asked; the conflicts."""
+    try:
+        return _sync_agents_once(push)
+    except ApiError as exc:
+        if exc.status != 409 or "stale" not in str(exc):
+            raise
+        return _sync_agents_once(push)  # someone pushed in between: once more
+
+
+def _sync_agents_once(push):
+    subject = _subject()
+    if not subject:
+        raise ApiError("not signed in; run: auth login", 401)
+    config = _api("GET", "/api/fleet/config")
+    if _subject() != subject:
+        raise ApiError("the signed-in account changed during the sync")
+    _set_login_marker(False)
+    state = _load_json_quiet(AGENTS_STATE)
+    if state.get("subject") != subject:
+        state = {"subject": subject}
+    first = "files" not in state
+    joining = first and config["counter"] > 0
+    base = state.get("files", {})
+    server = {f["path"]: f for f in config["files"]}
+    installs = config.get("installs", [])
+    # An install's folder, or one Auth just uninstalled, is not account content.
+    local = scan_local({i["name"] for i in installs} | {i["name"] for i in state.get("installs", {}).values()})
+    local_sha = {rel: _sha(path.read_bytes()) for rel, path in local.items()}
+
+    take, put, drop, conflicts = [], [], [], []
+    for rel in sorted(set(server) | set(local_sha) | set(base)):
+        s, b, l = server.get(rel, {}).get("sha256"), base.get(rel), local_sha.get(rel)
+        if s == l:
+            continue
+        if joining or (s != b and l != b):
+            if l is not None:
+                conflicts.append(rel)
+            take.append(rel)
+        elif s == b:
+            if push:
+                (put if l is not None else drop).append(rel)
+        else:
+            take.append(rel)
+
+    if conflicts:
+        backup = FLEET_STATE/"backup"/time.strftime("%Y%m%d-%H%M%S")
+        for rel in conflicts:
+            (backup/rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local[rel], backup/rel)
+        eprint(f"fleet: Auth's copy won over local edits; yours are in {backup}:")
+        for rel in conflicts:
+            eprint(f"  {rel}")
+    fetched = _fetch("/api/fleet/config/fetch", {}, [r for r in take if r in server])
+    for rel in take:
+        if rel in fetched:
+            _put_file(AGENTS/rel, *fetched[rel])
+        else:
+            _remove_file(AGENTS/rel)
+
+    files = {}
+    for rel, entry in server.items():
+        if rel in fetched or local_sha.get(rel) == entry["sha256"]:
+            files[rel] = entry["sha256"]
+        elif rel in base and rel not in take:
+            files[rel] = base[rel]  # a local change still to push
+    state.update(counter=config["counter"], version=config.get("version", ""))
+    if push or not first or joining:
+        state["files"] = files
+    sync_installs(installs, state)
+    save_json(AGENTS_STATE, state)
+
+    if put or drop:
+        answer = _api("POST", "/api/fleet/config/push", {
+            "base": config["counter"], "subject": subject, "delete": drop,
+            "put": [{"path": rel, "executable": os.access(local[rel], os.X_OK),
+                     "content": base64.b64encode(local[rel].read_bytes()).decode()} for rel in put]})
+        for rel in put:
+            files[rel] = local_sha[rel]
+        for rel in drop:
+            files.pop(rel, None)
+        state.update(files=files, counter=answer["counter"], version=answer.get("version", ""))
+        save_json(AGENTS_STATE, state)
+        print(f"fleet: pushed {len(put)} file(s), removed {len(drop)}")
+    if take:
+        print(f"fleet: pulled {len(take)} change(s) from Auth")
+    return conflicts
+
+
+def _load_json_quiet(path):
+    try:
+        return load_json(path)
+    except ValueError:
+        return {}
+
+
+def pending_local():
+    """Local changes the next push sync would send."""
+    state = _load_json_quiet(AGENTS_STATE)
+    base = state.get("files")
+    if base is None:
+        return None
+    installed = {i["name"] for i in state.get("installs", {}).values()}
+    local = {rel: _sha(p.read_bytes()) for rel, p in scan_local(installed).items()}
+    return sorted(rel for rel in set(base) | set(local) if base.get(rel) != local.get(rel))
+
+
+# --- marketplace installs ------------------------------------------------
+
+def sync_installs(installs, state):
+    """Each installed skill as its own folder under skills/, named locally."""
+    old, new = state.get("installs", {}), {}
+    for install in installs:
+        files = {f["path"]: f["sha256"] for f in install["files"]}
+        previous = old.get(install["id"]) or {}
+        target = AGENTS/"skills"/install["name"]
+        if previous.get("name") not in (None, install["name"]):
+            _remove_tree(AGENTS/"skills"/previous["name"])
+        if previous.get("files") != files or previous.get("name") != install["name"] or not target.is_dir():
+            _install_tree(install, target)
+            print(f"fleet: installed skill {install['name']}")
+        new[install["id"]] = {"name": install["name"], "files": files}
+    for skill_id, previous in old.items():
+        if skill_id not in new:
+            _remove_tree(AGENTS/"skills"/previous["name"])
+            print(f"fleet: removed skill {previous['name']}")
+    state["installs"] = new
+
+
+def _remove_tree(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+
+
+def _rename_skill(text, name):
+    """The frontmatter name is the local name, so --as is what harnesses see."""
+    match = re.match(r"---\n(.*?)\n---", text, re.S)
+    if not match:
+        return text
+    body = re.sub(r"^name:.*$", f"name: {name}", match.group(1), count=1, flags=re.M)
+    return text[:match.start(1)] + body + text[match.end(1):]
+
+
+def _install_tree(install, target):
+    fetched = _fetch("/api/fleet/skills/fetch", {"id": install["id"]}, [f["path"] for f in install["files"]])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=".fleet-", dir=target.parent))
+    try:
+        for rel, (data, executable) in fetched.items():
+            if rel == "SKILL.md":
+                data = _rename_skill(data.decode(), install["name"]).encode()
+            _put_file(staging/rel, data, executable)
+        _remove_tree(target)
+        staging.rename(target)
+    finally:
+        _remove_tree(staging)
+
+
+# --- links ---------------------------------------------------------------
+
+AGENTS_MD_LINKS = [HOME/"AGENTS.md", HOME/".claude/CLAUDE.md", HOME/".codex/AGENTS.md",
+                   HOME/".config/opencode/AGENTS.md"]
+SKILL_LINK_DIR = HOME/".claude/skills"
+
+
+def _backup_of(path):
+    return path.with_name(path.name + ".pre-agents.bak")
+
+
+def _link(target, source):
+    if target.is_symlink():
+        if os.readlink(target) == str(source):
+            return
+        target.unlink()
+    elif target.exists():
+        if os.path.lexists(_backup_of(target)):
+            eprint(f"fleet: {target} is not ours and {_backup_of(target).name} exists; left alone")
+            return
+        target.rename(_backup_of(target))
+    target.symlink_to(source)
+
+
+def _unlink_ours(target):
+    """Drop a link into ~/.agents whose source is gone; restore what it hid."""
+    if target.is_symlink() and os.readlink(target).startswith(str(AGENTS) + "/") and not target.exists():
+        target.unlink()
+        if _backup_of(target).exists() and not _backup_of(target).is_symlink():
+            _backup_of(target).rename(target)
+
+
+def sync_links():
+    source = AGENTS/"AGENTS.md"
+    for target in AGENTS_MD_LINKS:
+        if source.exists() and target.parent.is_dir():
+            _link(target, source)
+        _unlink_ours(target)
+    if not SKILL_LINK_DIR.parent.is_dir():
+        return
+    SKILL_LINK_DIR.mkdir(exist_ok=True)
+    skills = AGENTS/"skills"
+    for skill in sorted(skills.iterdir()) if skills.is_dir() else []:
+        if skill.is_dir() and not skill.name.startswith("."):
+            _link(SKILL_LINK_DIR/skill.name, skill)
+    for entry in SKILL_LINK_DIR.iterdir():
+        _unlink_ours(entry)
+
+
+# --- manifest and personal settings ---------------------------------------
+# The common manifest ships with setup; personal settings live in the account
+# tree (~/.agents/settings, mcp.json). Every key fleet writes into a harness
+# file is recorded in rendered.json, so a key dropped from either source is
+# removed again while everything else in those files stays as it is.
+
+def manifest():
+    try:
+        return load_json(MANIFEST_PATH)
+    except ValueError as exc:
+        raise SystemExit(f"fleet: {exc}")
+
+
+def personal(name):
+    try:
+        return load_json(AGENTS/"settings"/name)
+    except ValueError as exc:
+        eprint(f"fleet: ignoring {exc}")
+        return {}
+
+
+def deep_merge(base, overlay):
+    out = dict(base)
+    for key, value in overlay.items():
+        out[key] = deep_merge(out[key], value) if isinstance(out.get(key), dict) and isinstance(value, dict) else value
+    return out
+
+
+def _leaves(value, prefix=()):
+    for key, child in value.items():
+        if isinstance(child, dict) and child:
+            yield from _leaves(child, prefix + (key,))
+        else:
+            yield prefix + (key,), child
+
+
+def _set_path(target, path, value):
+    for key in path[:-1]:
+        if not isinstance(target.get(key), dict):
+            target[key] = {}
+        target = target[key]
+    target[path[-1]] = value
+
+
+def _del_path(target, path):
+    if len(path) > 1:
+        child = target.get(path[0])
+        if isinstance(child, dict):
+            _del_path(child, path[1:])
+            if not child:
+                del target[path[0]]
+    else:
+        target.pop(path[0], None)
+
+
+def retired_env_vars(common):
+    derived = {mcp_env_var(name) for name in common.get("retiredMcpServers", [])}
+    return derived | set(common.get("retiredEnvVars", []))
+
+
+def mcp_env_var(name):
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).upper() + "_MCP_TOKEN"
+
+
+# --- MCP servers ---------------------------------------------------------
+
+PASSAGE_URL = os.environ.get("PASSAGE_MCP_URL", "https://passage.lost.plus/mcp")
+TOKEN_BLOCK = "harnesses:mcp-tokens"  # the block name predates fleet; kept
+ZSHENV = HOME/".zshenv"
+
+
+class McpUnavailable(Exception):
+    pass
+
+
+def _token(scope):
+    rc, out = _auth("token", scope)
+    if rc != 0 or not out.strip():
+        raise McpUnavailable(f"no Common Auth token for {scope}")
+    return out.strip()
+
+
+def _http_json(url, token, body=None):
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json, text/event-stream",
+               "User-Agent": "fleet/1.0"}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read())
+    except (OSError, ValueError) as exc:
+        raise McpUnavailable(f"{url}: {exc}") from None
+
+
+def hub_servers():
+    """lost.plus MCPs this account is admitted to; Auth filters by its admin gate."""
+    try:
+        rows = _api("GET", "/api/services")
+    except ApiError as exc:
+        raise McpUnavailable(str(exc)) from None
+    if not isinstance(rows, list):
+        raise McpUnavailable("/api/services: not a row list")
+    servers = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("mcp_url"):
+            continue
+        key = row["key"]
+        name = key[:-len(".lost.plus")] if key.endswith(".lost.plus") else key
+        servers.append({"name": name, "url": row["mcp_url"], "auth": "bearer" if row.get("token_key") else "none",
+                        "scope": row.get("token_key") or None})
+    return servers
+
+
+def plugin_servers(common):
+    """Codex's bundled plugin MCPs, imported for claude on Macs."""
+    if sys.platform != "darwin":
+        return []
+    servers = []
+    for spec in common.get("localPluginMcpServers", []):
+        root = HOME/".codex/plugins/cache/openai-bundled"/spec["plugin"]
+        versions = [p for p in root.glob("*") if p.is_dir() and re.fullmatch(r"\d+(\.\d+)*", p.name)]
+        if not versions:
+            continue
+        latest = max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".")))
+        try:
+            entry = json.loads((latest/".mcp.json").read_text())["mcpServers"][spec["server"]]
+            stdio = {"type": "stdio", "command": entry["command"], "args": entry.get("args", []),
+                     "env": {**entry.get("env", {}), **spec.get("env", {})}}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            eprint(f"fleet: cannot import {spec['name']}: {exc}")
+            continue
+        servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"], "stdio": stdio})
+    return servers
+
+
+def wanted_servers(common):
+    """Hub servers, the account's own (mcp.json), and local plugins."""
+    hub = hub_servers()
+    taken = {s["name"] for s in hub}
+    try:
+        own = load_json(AGENTS/"mcp.json").get("mcpServers", [])
+    except ValueError as exc:
+        eprint(f"fleet: ignoring {exc}")
+        own = []
+    servers = list(hub)
+    for server in own + plugin_servers(common):
+        if server.get("name") in taken:
+            eprint(f"fleet: {server['name']} is a lost.plus service; the registry's entry wins")
+            continue
+        taken.add(server["name"])
+        servers.append(server)
+    return servers
+
+
+def surfaces(server):
+    return server.get("surfaces") or ["claude", "codex", "hermes"]
+
+
+def token_value(raw):
+    """The bare token from an item that may read "<url> | Header: token"."""
+    value = (raw or "").strip().split("|")[-1].strip()
+    if not value.lower().startswith(("http://", "https://")):
+        match = re.match(r"^([A-Za-z][A-Za-z0-9-]*)\s*:\s*(.+)$", value, re.S)
+        if match:
+            value = match.group(2).strip()
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    return value
+
+
+def _passage_get(token, item):
+    answer = _http_json(PASSAGE_URL, token, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "get_secret", "arguments": {"folder": "mcp", "item_name": item}}})
+    result = answer.get("result") or {}
+    content = result.get("content") or []
+    text = content[0].get("text", "") if content and not result.get("isError") else ""
+    if not text.strip():
+        raise McpUnavailable(f"passage has no mcp/{item}")
+    return text
+
+
+def resolve_tokens(servers, context):
+    """{VAR: token} for every token server. A token that cannot be fetched
+    keeps its last value, unless the account changed since it was written."""
+    previous_context, previous = token_block()
+    if previous_context != context:
+        previous = {}
+    tokens, passage = {}, None
+    for server in servers:
+        if server["auth"] == "none":
+            continue
+        var = mcp_env_var(server["name"])
+        try:
+            if server.get("scope"):
+                value = _token(server["scope"])
+            else:
+                passage = passage or _token("passage")
+                value = _passage_get(passage, var)
+            tokens[var] = token_value(value)
+        except McpUnavailable as exc:
+            eprint(f"fleet: {var}: {exc}; {'keeping the last value' if var in previous else 'skipped'}")
+            if var in previous:
+                tokens[var] = previous[var]
+    return tokens
+
+
+def token_block():
+    """(context, {VAR: value}) from the managed ~/.zshenv block, read as zsh would."""
+    text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    match = re.search(rf"^# BEGIN {TOKEN_BLOCK}\n(.*?)^# END {TOKEN_BLOCK}$", text, re.S | re.M)
+    if not match:
+        return None, {}
+    context, found, pending = None, {}, ""
+    for line in match.group(1).splitlines(keepends=True):
+        if not pending and line.startswith("# common-auth-context "):
+            try:
+                context = json.loads(line.split(" ", 2)[2])
+            except ValueError:
+                pass
+            continue
+        if not pending and line.lstrip().startswith("#"):
+            continue
+        pending += line
+        try:
+            words = shlex.split(pending)
+        except ValueError:
+            continue  # a quoted value runs onto the next line
+        pending = ""
+        for word in words:
+            name, eq, value = word.partition("=")
+            if eq and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                found[name] = value
+    return context, found
+
+
+def _replace_block(text, begin, end, block):
+    pattern = re.escape(begin) + r".*?" + re.escape(end) + r"\n?"
+    if re.search(pattern, text, re.S):
+        return re.sub(pattern, lambda _: block, text, count=1, flags=re.S)
+    return text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
+
+
+def write_tokens(tokens, context, retired):
+    begin, end = f"# BEGIN {TOKEN_BLOCK}", f"# END {TOKEN_BLOCK}"
+    original = ZSHENV.read_text() if ZSHENV.exists() else ""
+    lines = [f"# common-auth-context {json.dumps(context, sort_keys=True, separators=(',', ':'))}"]
+    lines += [f"export {var}={shlex.quote(value)}" for var, value in sorted(tokens.items())]
+    text = _replace_block(original, begin, end, begin + "\n" + "\n".join(lines) + "\n" + end + "\n")
+    for var in retired:
+        text = re.sub(rf"^export\s+{re.escape(var)}=.*\n?", "", text, flags=re.M)
+    if text != original:
+        save_text(ZSHENV, text)  # atomic: claude's headersHelper may read it at any moment
+
+
+def _dotenv_value(value):
+    return value if re.fullmatch(r"[A-Za-z0-9_./:=+@,-]+", value) else "'" + value.replace("'", "'\\''") + "'"
+
+
+def write_dotenv(path, tokens, retired):
+    begin, end = f"# BEGIN {TOKEN_BLOCK}", f"# END {TOKEN_BLOCK}"
+    original = path.read_text() if path.exists() else ""
+    body = "".join(f"{var}={_dotenv_value(value)}\n" for var, value in sorted(tokens.items()))
+    text = _replace_block(original, begin, end, begin + "\n" + body + end + "\n")
+    for var in retired:
+        text = re.sub(rf"^{re.escape(var)}=.*\n?", "", text, flags=re.M)
+    if text == original:
+        return False
+    save_text(path, text, 0o600)
+    return True
+
+
+def cmd_mcp_headers(args):
+    """claude's headersHelper: one server's auth header as JSON."""
+    if len(args) != 2 or args[0] not in ("bearer", "x-api-key"):
+        eprint("usage: fleet mcp-headers bearer|x-api-key VAR")
+        return 2
+    token = token_block()[1].get(args[1])
+    if not token:
+        eprint(f"fleet: no {args[1]} in {ZSHENV}; run: fleet sync")
+        return 1
+    print(json.dumps({"Authorization": "Bearer " + token} if args[0] == "bearer" else {"X-API-Key": token}))
+    return 0
+
+
+# --- claude --------------------------------------------------------------
+
+CLAUDE_SETTINGS = HOME/".claude/settings.json"
+CLAUDE_JSON = pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
+CONSUMER_LOCK = HOME/".config/auth/consumer-sync.lock"
+KEEPOUT_MARKER = "today.lost.plus/api/keepout"
+
+
+@contextlib.contextmanager
+def _consumer_lock():
+    """Shared with opencodex and providers, which also write claude's settings."""
+    CONSUMER_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONSUMER_LOCK, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def keepout_command():
+    spec = personal("keepout.json")
+    command = spec.get("command") if spec.get("enabled") else None
+    if command is not None and (not isinstance(command, str) or KEEPOUT_MARKER not in command):
+        eprint(f"fleet: settings/keepout.json command must contain {KEEPOUT_MARKER}; keepout not rendered")
+        return False
+    return command
+
+
+def merge_keepout(settings, command):
+    """Our UserPromptSubmit handler only; other hooks in the group stay."""
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    out = []
+    for group in hooks.get("UserPromptSubmit", []):
+        handlers = group.get("hooks", [])
+        kept = [h for h in handlers if not (isinstance(h, dict) and KEEPOUT_MARKER in str(h.get("command", "")))]
+        if kept:
+            out.append(group if kept == handlers else {**group, "hooks": kept})
+    if command:
+        out.append({"hooks": [{"type": "command", "command": command}]})
+    if out:
+        settings.setdefault("hooks", {})["UserPromptSubmit"] = out
+    elif "UserPromptSubmit" in hooks:
+        del hooks["UserPromptSubmit"]
+        if not hooks:
+            settings.pop("hooks", None)
+
+
+def render_claude(common, servers, record, keepout):
+    overlay = deep_merge(common.get("claude", {}), personal("claude.json"))
+    allow = list(overlay.get("permissions", {}).get("allow", []))
+    overlay = json.loads(json.dumps(overlay))
+    _del_path(overlay, ("permissions", "allow"))
+    if servers is None:  # registry unreadable: keep the grants written last time
+        allow += [a for a in record.get("allow", []) if a.startswith("mcp__")]
+    else:
+        allow += [f"mcp__{s['name']}__*" for s in servers if "claude" in surfaces(s)]
+    retired = tuple(f"mcp__{name}__" for name in common.get("retiredMcpServers", []) + common.get("retiredMcpGrants", []))
+    leaves = dict(_leaves(overlay))
+    with _consumer_lock():
+        settings = load_json(CLAUDE_SETTINGS)
+        before = json.dumps(settings)
+        for path in record.get("keys", []):
+            if tuple(path) not in leaves:
+                _del_path(settings, tuple(path))
+        for path, value in leaves.items():
+            _set_path(settings, path, value)
+        dropped = set(record.get("allow", [])) - set(allow)
+        current = settings.get("permissions", {}).get("allow", [])
+        current = [a for a in current if a not in dropped and not (retired and a.startswith(retired))]
+        current += [a for a in dict.fromkeys(allow) if a not in current]
+        if current:
+            _set_path(settings, ("permissions", "allow"), current)
+        else:
+            _del_path(settings, ("permissions", "allow"))
+        if keepout is not False:
+            merge_keepout(settings, keepout)
+        if json.dumps(settings) != before:
+            save_json(CLAUDE_SETTINGS, settings)
+            print(f"fleet: wrote {CLAUDE_SETTINGS}")
+    record.update(keys=[list(path) for path in leaves], allow=list(dict.fromkeys(allow)))
+
+
+def _claude_env():
+    """Maintenance mode: claude skips its OAuth refresh, which can log T3 out."""
+    return {**os.environ, "CLAUDE_CODE_SIMPLE": "1"}
+
+
+def _claude_entry(server):
+    if "stdio" in server:
+        return dict(server["stdio"])
+    entry = {"type": "http", "url": server["url"]}
+    if server["auth"] != "none":
+        # The helper reads the token block at each connect: a claude started by
+        # a service never read .zshenv, so a ${VAR} header would be empty.
+        entry["headersHelper"] = (f"{shlex.quote(os.path.abspath(sys.argv[0]))} mcp-headers "
+                                  f"{server['auth']} {mcp_env_var(server['name'])}")
+    return entry
+
+
+def _claude_user_servers():
+    try:
+        return json.loads(CLAUDE_JSON.read_text()).get("mcpServers") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _claude(*args):
+    return subprocess.run(["claude", *args], capture_output=True, text=True, env=_claude_env())
+
+
+def render_claude_mcp(common, servers, record):
+    if not shutil.which("claude"):
+        return
+    mine = [s for s in servers if "claude" in surfaces(s)]
+    names = {s["name"] for s in mine}
+    stored = _claude_user_servers()
+    for name in set(record.get("claude_mcp", [])) | set(common.get("retiredMcpServers", [])):
+        if name not in names and name in stored:
+            _claude("mcp", "remove", name, "-s", "user")
+            print(f"fleet: removed claude MCP {name}")
+    for server in mine:
+        want = _claude_entry(server)
+        if stored.get(server["name"]) == want:
+            continue
+        got = _claude("mcp", "get", server["name"])
+        scope = re.search(r"^\s*Scope:\s*(\w+)", got.stdout, re.M) if got.returncode == 0 else None
+        if scope and scope.group(1).lower() != "user":
+            continue  # the operator's own local or project entry outranks ours
+        if server["name"] in stored:
+            _claude("mcp", "remove", server["name"], "-s", "user")
+        _claude("mcp", "add-json", "--scope", "user", server["name"], json.dumps(want))
+        print(f"fleet: enrolled claude MCP {server['name']}")
+    record["claude_mcp"] = sorted(names)
+
+
+# --- codex ---------------------------------------------------------------
+
+CODEX_DIR = HOME/".codex"
+CODEX_REGION = ("# BEGIN harnesses:mcp-servers", "# END harnesses:mcp-servers")  # name predates fleet
+
+
+def _toml(text):
+    import tomllib
+    return tomllib.loads(text)
+
+
+def render_codex_mcp(servers):
+    config = CODEX_DIR/"config.toml"
+    original = config.read_text() if config.exists() else ""
+    try:
+        _toml(original)
+    except Exception as exc:
+        eprint(f"fleet: {config} does not parse; left alone: {exc}")
+        return
+    begin, end = CODEX_REGION
+    text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", "", original, flags=re.S)
+    # A server the operator declares outside the region is theirs; a table of
+    # only [.tools.*] rules still needs our url, so it does not count.
+    declared = {name for name, table in (_toml(text).get("mcp_servers") or {}).items()
+                if not isinstance(table, dict) or any(not isinstance(v, dict) for v in table.values())}
+    blocks = []
+    for server in servers:
+        if server["name"] in declared:
+            continue
+        lines = [f'[mcp_servers.{json.dumps(server["name"])}]', f'url = {json.dumps(server["url"])}']
+        var = mcp_env_var(server["name"])
+        if server["auth"] == "bearer":
+            lines.append(f'bearer_token_env_var = "{var}"')
+        elif server["auth"] == "x-api-key":
+            lines.append(f'env_http_headers = {{ "X-API-Key" = "{var}" }}')
+        blocks.append("\n".join(lines) + "\n")
+    text = text.rstrip("\n") + "\n"
+    if blocks:
+        text += "\n" + begin + "\n" + "\n".join(blocks) + end + "\n"
+    try:
+        _toml(text)
+    except Exception as exc:
+        eprint(f"fleet: the codex MCP region would not parse; {config} left alone: {exc}")
+        return
+    if text != original:
+        save_text(config, text)
+        print(f"fleet: wrote {config} ({len(blocks)} MCP server(s))")
+
+
+def render_codex_keepout(command, record):
+    hooks_path = CODEX_DIR/"hooks.json"
+    hooks = load_json(hooks_path)
+    before = json.dumps(hooks)
+    merge_keepout(hooks, command)
+    if json.dumps(hooks) != before:
+        save_json(hooks_path, hooks)
+        print(f"fleet: wrote {hooks_path}")
+    if command and record.get("codex_trusted") != command and _trust_codex(command, hooks_path):
+        record["codex_trusted"] = command
+
+
+def _trust_codex(command, hooks_path):
+    """Trust our hook the way /hooks does; codex skips an untrusted one."""
+    if not shutil.which("codex"):
+        return False
+    proc = subprocess.Popen(["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True)
+    timer = threading.Timer(30, proc.kill)
+    timer.start()
+    ids = iter(range(1, 100))
+
+    def call(method, params):
+        rid = next(ids)
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}) + "\n")
+        proc.stdin.flush()
+        for line in proc.stdout:
+            message = json.loads(line)
+            if message.get("id") == rid:
+                if "error" in message:
+                    raise RuntimeError(f"{method}: {message['error']}")
+                return message["result"]
+        raise RuntimeError(f"codex app-server exited during {method}")
+
+    def ours():
+        listed = call("hooks/list", {"cwds": [str(HOME)]})
+        return [h for entry in listed.get("data", []) for h in entry.get("hooks", [])
+                if h.get("command") == command and h.get("sourcePath") == str(hooks_path)]
+
+    try:
+        call("initialize", {"clientInfo": {"name": "fleet", "version": "1"}})
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "initialized"}) + "\n")
+        hooks = ours()
+        pending = {h["key"]: {"trusted_hash": h["currentHash"]} for h in hooks if h.get("trustStatus") != "trusted"}
+        if pending:
+            call("config/batchWrite", {"edits": [{"keyPath": "hooks.state", "value": pending,
+                                                  "mergeStrategy": "upsert"}], "reloadUserConfig": True})
+            hooks = ours()
+        if not hooks or any(h.get("trustStatus") != "trusted" for h in hooks):
+            raise RuntimeError("the hook is still untrusted")
+        return True
+    except (OSError, ValueError, RuntimeError) as exc:
+        eprint(f"fleet: cannot trust the codex keepout hook ({exc}); trust it via /hooks")
+        return False
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+
+
+# --- hermes --------------------------------------------------------------
+
+HERMES_CONFIG = HOME/".hermes/config.yaml"
+
+
+def _hermes_entry(server):
+    lines = [f"  {server['name']}:", "    type: remote", f"    url: {server['url']}", "    oauth: false"]
+    var = mcp_env_var(server["name"])
+    if server["auth"] == "bearer":
+        lines += ["    headers:", f"      Authorization: Bearer ${{{var}}}"]
+    elif server["auth"] == "x-api-key":
+        lines += ["    headers:", f"      X-API-Key: ${{{var}}}"]
+    return lines
+
+
+def _hermes_block(lines):
+    for i, line in enumerate(lines):
+        if re.match(r"^mcp_servers:\s*(#.*)?$", line):
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j][0] in " \t#"):
+                j += 1
+            return i, j
+    return None, None
+
+
+def render_hermes(common, servers, tokens, record):
+    if not HERMES_CONFIG.exists():
+        return
+    original = HERMES_CONFIG.read_text()
+    lines = original.split("\n")
+    start, end = _hermes_block(lines)
+    if start is None:
+        lines += ([""] if lines[-1].strip() else []) + ["mcp_servers:"]
+        start, end = len(lines) - 1, len(lines)
+    wanted = {s["name"]: s for s in servers}
+    ours = set(record.get("hermes", [])) | set(common.get("retiredMcpServers", []))
+    heads = [k for k in range(start + 1, end) if re.match(r"^  [^\s#][^:]*:\s*$", lines[k])]
+    seen = set()
+    for n in reversed(range(len(heads))):
+        k = heads[n]
+        stop = heads[n + 1] if n + 1 < len(heads) else end
+        while stop > k + 1 and not lines[stop - 1].strip():
+            stop -= 1
+        name = lines[k].strip()[:-1]
+        server = wanted.get(name)
+        if server is None:
+            if name in ours:
+                del lines[k:stop]
+            continue
+        # An entry we never wrote stays the operator's unless it is the same server.
+        if name in ours or f"    url: {server['url']}" in lines[k:stop]:
+            lines[k:stop] = _hermes_entry(server)
+        seen.add(name)
+    start, end = _hermes_block(lines)
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    lines[end:end] = [line for s in servers if s["name"] not in seen for line in _hermes_entry(s)]
+    text = "\n".join(lines)
+    changed = text != original
+    if changed:
+        save_text(HERMES_CONFIG, text)
+        print(f"fleet: wrote {HERMES_CONFIG}")
+    hermes_tokens = {v: t for v, t in tokens.items() if v in {mcp_env_var(n) for n in wanted}}
+    if write_dotenv(HOME/".hermes/.env", hermes_tokens, retired_env_vars(common)) or changed:
+        if shutil.which("systemctl"):
+            subprocess.run(["systemctl", "--user", "try-restart", "hermes-gateway.service"], capture_output=True)
+    record["hermes"] = sorted(wanted)
+
+
+# --- t3 ------------------------------------------------------------------
+
+T3_SETTINGS = HOME/".t3/userdata/settings.json"
+
+
+def _effort_descriptors():
+    """slug -> t3's reasoning selector, from the opencodex proxy's catalog."""
+    opencodex = HOME/".local/bin/opencodex"
+    try:
+        url = subprocess.run([sys.executable, str(opencodex), "__proxy-url"], capture_output=True,
+                             text=True, timeout=15).stdout.strip()
+        with urllib.request.urlopen(url + "/v1/models", timeout=15) as response:
+            rows = json.load(response).get("data") or []
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return {}
+    out = {}
+    for row in rows:
+        options = []
+        for level in row.get("reasoning_efforts") or [] if isinstance(row, dict) else []:
+            if isinstance(level, dict) and isinstance(level.get("value"), str):
+                label = str(level.get("label") or level["value"]).removesuffix(" Effort")
+                options.append({"id": level["value"], "label": label, **({"isDefault": True} if level.get("default") is True else {})})
+        if options:
+            out[row["id"]] = {"id": "effort", "label": "Reasoning", "type": "select", "options": options}
+    return out
+
+
+def render_t3(common, record):
+    if not T3_SETTINGS.exists():
+        return
+    models = personal("t3.json").get("claudeCustomModels", [])
+    descriptors = _effort_descriptors()
+    wanted = {}
+    for model in models:
+        entry = dict(model)
+        sibling = entry.pop("effortsFrom", None)  # listed late by the proxy: borrow a sibling's ladder
+        descriptor = descriptors.get(entry["slug"]) or descriptors.get(sibling)
+        if descriptor:
+            entry["capabilities"] = {"optionDescriptors": [descriptor]}
+        wanted[entry["slug"]] = entry
+    drop = (set(record.get("t3", [])) | set(common.get("retiredT3Models", []))) - set(wanted)
+    settings = load_json(T3_SETTINGS)
+    before = json.dumps(settings)
+    config = (settings.setdefault("providerInstances", {})
+              .setdefault("claudeAgent", {"driver": "claudeAgent", "enabled": True, "config": {}})
+              .setdefault("config", {}))
+    out = []
+    for row in config.get("customModels", []):
+        slug = row.get("slug") if isinstance(row, dict) else row
+        if slug in drop:
+            continue
+        out.append({**(row if isinstance(row, dict) else {"slug": slug}), **wanted.pop(slug)} if slug in wanted else row)
+    config["customModels"] = out + list(wanted.values())
+    if json.dumps(settings) != before:
+        save_json(T3_SETTINGS, settings)
+        print(f"fleet: wrote {T3_SETTINGS}")
+    record["t3"] = [m["slug"] for m in models]
+
+
+# --- render --------------------------------------------------------------
+
+def render_harnesses():
+    """Every harness file fleet manages, from the manifest and the account tree."""
+    common = manifest()
+    record = _load_json_quiet(RENDERED)
+    servers = tokens = context = None
+    try:
+        rc, out = _auth("context")
+        context = json.loads(out) if rc == 0 else None
+        if not isinstance(context, dict) or not context.get("origin"):
+            raise McpUnavailable("not signed in")
+        context = {"origin": context["origin"], "subject": context.get("subject")}
+        servers = wanted_servers(common)
+        tokens = resolve_tokens(servers, context)
+    except (McpUnavailable, ValueError) as exc:
+        eprint(f"fleet: MCP servers not rendered: {exc}")
+        servers = None
+    keepout = keepout_command()
+    steps = []
+    if CLAUDE_SETTINGS.parent.is_dir():
+        steps.append(lambda: render_claude(common, servers, record.setdefault("claude", {}), keepout))
+    if servers is not None:
+        retired = retired_env_vars(common)
+        steps.append(lambda: write_tokens(tokens, context, retired))
+        if CLAUDE_SETTINGS.parent.is_dir():
+            steps.append(lambda: render_claude_mcp(common, servers, record))
+        if CODEX_DIR.is_dir():
+            steps.append(lambda: render_codex_mcp([s for s in servers if "codex" in surfaces(s)]))
+            steps.append(lambda: write_dotenv(CODEX_DIR/".env", tokens, retired))
+        steps.append(lambda: render_hermes(common, [s for s in servers if "hermes" in surfaces(s)], tokens, record))
+    if CODEX_DIR.is_dir() and keepout is not False:
+        steps.append(lambda: render_codex_keepout(keepout, record))
+    steps.append(lambda: render_t3(common, record))
+    ok = servers is not None
+    for step in steps:
+        try:
+            step()
+        except (OSError, ValueError) as exc:
+            eprint(f"fleet: {exc}")
+            ok = False
+    save_json(RENDERED, record)
+    return ok
+
+
+# --- harnesses -----------------------------------------------------------
+
+def _heal_path():
+    """A timer starts us without the user's PATH; put their bins back first."""
+    mine = [str(d) for d in (HOME/".local/bin", HOME/".opencode/bin") if d.is_dir()]
+    tools = [str(d) for d in sorted((HOME/".nvm/versions/node").glob("*/bin"), reverse=True)]
+    tools += [d for d in ("/opt/homebrew/bin", "/usr/local/bin") if os.path.isdir(d)]
+    current = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and p not in mine]
+    os.environ["PATH"] = os.pathsep.join(mine + current + [d for d in tools if d not in current])
+
+
+def _resolve(spec):
+    found = shutil.which(spec["name"])
+    if found:
+        return found
+    for pattern in spec.get("candidates", []):
+        for path in sorted(glob.glob(os.path.expanduser(pattern)), reverse=True):
+            if os.access(path, os.X_OK):
+                return path
+    return None
+
+
+def _version(binary):
+    try:
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = (out.stdout or out.stderr).strip().splitlines() if out.returncode == 0 else []
+    return lines[0].strip() if lines else None
+
+
+def _node_bin(binary):
+    """The bin/ of the node install npm put this harness under: its own
+    updater runs `npm install -g`, which must land in that same install."""
+    for parent in pathlib.Path(os.path.realpath(binary)).parents:
+        if parent.name == "node_modules" and parent.parent.name == "lib" and (parent.parent.parent/"bin/npm").exists():
+            return str(parent.parent.parent/"bin")
+    return None
+
+
+def _harnesses(names):
+    specs = {h["name"]: h for h in manifest().get("harnesses", [])}
+    unknown = [n for n in names if n not in specs]
+    if unknown:
+        raise SystemExit(f"fleet: unknown harness: {' '.join(unknown)} (known: {' '.join(specs)})")
+    return [specs[n] for n in names] if names else None, specs
+
+
+def cmd_install(names):
+    chosen, specs = _harnesses(names)
+    rc = 0
+    for spec in chosen or [s for s in specs.values() if s.get("default")]:
+        if _resolve(spec) and not spec.get("rerunWhenInstalled"):
+            print(f"fleet: {spec['name']} already installed")
+            continue
+        print(f"fleet: installing {spec['name']}")
+        # pipefail: a failed download piped into sh otherwise exits 0
+        if subprocess.run(["bash", "-o", "pipefail", "-c", spec["install"]]).returncode:
+            eprint(f"fleet: {spec['name']} install failed")
+            rc = 1
+    return rc
+
+
+def cmd_update(names):
+    chosen, specs = _harnesses(names)
+    failed = []
+    for spec in chosen or specs.values():
+        binary = _resolve(spec)
+        if not binary:
+            if chosen:
+                eprint(f"fleet: {spec['name']} is not installed")
+                failed.append(spec["name"])
+            continue
+        env = dict(os.environ)
+        lead = [p for p in (_node_bin(binary), os.path.dirname(binary)) if p]
+        env["PATH"] = os.pathsep.join(lead + [env.get("PATH", "")])
+        if spec["name"] == "claude":
+            env["CLAUDE_CODE_SIMPLE"] = "1"
+        argv = (["bash", "-o", "pipefail", "-c", spec["update"]] if spec.get("update")
+                else [binary, *spec.get("updateArgs", "update").split()])
+        before = _version(binary)
+        try:
+            ok = subprocess.run(argv, stdin=subprocess.DEVNULL, env=env, timeout=900).returncode == 0
+        except subprocess.TimeoutExpired:
+            ok = False
+        after = _version(binary)
+        if not ok:
+            failed.append(spec["name"])
+        elif before and after and before != after:
+            print(f"fleet: {spec['name']} {before} -> {after}")
+        else:
+            print(f"fleet: {spec['name']} {after or 'updated'} (unchanged)")
+    if failed:
+        eprint(f"fleet: could not update: {' '.join(failed)}")
+    return 1 if failed else 0
+
+
+# --- marketplace ---------------------------------------------------------
+
+def cmd_skills(args):
+    action, rest = (args[0], args[1:]) if args else ("list", [])
+    try:
+        if action == "list" and not rest:
+            listing = _api("GET", "/api/fleet/skills")["skills"]
+            installed = {k: v["name"] for k, v in _load_json_quiet(AGENTS_STATE).get("installs", {}).items()}
+            for skill in listing:
+                mark = "own" if skill.get("own") else (f"installed as {installed[skill['id']]}" if skill["id"] in installed else "")
+                print(f"{skill['author']}/{skill['folder']:<24} {skill.get('installs', 0):>4}  {mark}")
+                if skill.get("description"):
+                    print(f"    {skill['description']}")
+            return 0
+        subject = _subject()
+        if action == "install" and len(rest) in (1, 3) and (len(rest) == 1 or rest[1] == "--as"):
+            body = {"skill": rest[0], "subject": subject, **({"as": rest[2]} if len(rest) == 3 else {})}
+            print(f"fleet: installed {_api('POST', '/api/fleet/skills/install', body).get('name', rest[0])}")
+        elif action == "uninstall" and len(rest) == 1:
+            _api("POST", "/api/fleet/skills/uninstall", {"skill": rest[0], "subject": subject})
+        elif action == "publish" and len(rest) == 1:
+            with _fleet_lock():
+                sync_agents(push=True)  # Auth publishes what it holds
+            answer = _api("POST", "/api/fleet/skills/publish", {"folder": rest[0], "subject": subject})
+            print(f"fleet: published {rest[0]} ({answer['id']})")
+            return 0
+        elif action == "unpublish" and len(rest) == 1:
+            _api("POST", "/api/fleet/skills/unpublish", {"skill": rest[0], "subject": subject})
+            return 0
+        else:
+            eprint(SKILLS_USAGE)
+            return 2
+    except ApiError as exc:
+        eprint(f"fleet: {exc}")
+        return 1
+    return cmd_sync(pull=True)
+
+
+SKILLS_USAGE = ("Usage: fleet skills [list] | install <author/folder|id> [--as NAME] | uninstall <name|id>\n"
+                "                    | publish <folder> | unpublish <folder|id>")
+
+
 # --- commands ------------------------------------------------------------
 
-def cmd_sync(check=False):
-    """Write the blocks. With --check, exit 1 instead when they would change.
-    Exit 3 when nothing authoritative could be worked out."""
+def sync_ssh(check):
+    """Write the SSH blocks; 0, 1 (check: they would change) or 3 (no answer)."""
     try:
         config_lines, keys_lines, info = planned()
     except Unavailable as exc:
@@ -402,10 +1609,36 @@ def cmd_sync(check=False):
     except OSError:
         pass
     _save_state(info)
-    verb = "updated" if changed else "current"
-    print(f"fleet: SSH blocks {verb} ({info['hosts']} hosts, {info['keys']} keys)")
+    if changed:
+        print(f"fleet: SSH blocks updated ({info['hosts']} hosts, {info['keys']} keys)")
     _warn_self(info.get("fleet"))
     return 0
+
+
+def cmd_sync(check=False, pull=False):
+    """Exit 0 when done, 1 for a conflict or (with --check) pending changes,
+    3 when Auth gave no answer and what is on disk stays."""
+    with _fleet_lock():
+        rc = sync_ssh(check)
+        if check:
+            try:
+                config = _api("GET", "/api/fleet/config")
+            except ApiError:
+                return 3
+            state = _load_json_quiet(AGENTS_STATE)
+            if rc == 0 and (config["counter"] != state.get("counter") or pending_local()):
+                rc = 1
+            return rc
+        try:
+            if sync_agents(push=not pull):
+                rc = rc or 1
+        except ApiError as exc:
+            eprint(f"fleet: account tree not synced: {exc}")
+            rc = 3
+        sync_links()
+        if not render_harnesses() and rc == 0:
+            rc = 3
+        return rc
 
 
 def _warn_self(fleet):
@@ -417,24 +1650,39 @@ def _warn_self(fleet):
 
 
 def cmd_status():
-    state = _load_state()
     try:
         config_lines, keys_lines, info = planned()
-    except Unavailable as exc:
-        print(f"fleet: {exc}")
-        info = None
-    if info:
         current = is_current(config_lines, keys_lines)
         source = "Auth" if info["source"] == "auth" else "FLEET table and GitHub keys (before cutover)"
-        print(f"fleet: SSH blocks {'current' if current else 'outdated; run: fleet sync'}"
+        print(f"fleet: SSH blocks {'current' if current else 'outdated'}"
               f" ({info['hosts']} hosts, {info['keys']} keys from {source})")
         _warn_self(info.get("fleet"))
         if info.get("missing"):
             print("fleet: not yet served by Auth as in FLEET: " + ", ".join(info["missing"]))
+    except Unavailable as exc:
+        print(f"fleet: {exc}")
+    pending = pending_local()
+    if pending is None:
+        print(f"fleet: {AGENTS} has not synced yet; run: fleet sync")
+    elif pending:
+        print(f"fleet: {len(pending)} local change(s) to push; run: fleet sync")
+    state = _load_state()
     if state.get("synced_at"):
         print("fleet: last sync " + time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(state["synced_at"])))
-    print(f"fleet: nightly sync {'on' if schedule_installed() else 'off; run: fleet schedule'}")
+    print(f"fleet: nightly pass {'on' if schedule_installed() else 'off; run: fleet schedule'}")
     return 0
+
+
+def cmd_nightly():
+    """The scheduled pass: proxy, pull sync, harness updates, proxy route."""
+    opencodex = HOME/".local/bin/opencodex"
+    if opencodex.exists():
+        subprocess.run([sys.executable, str(opencodex), "__apply"])
+    rc = cmd_sync(pull=True)
+    rc = cmd_update([]) or rc
+    if opencodex.exists():
+        subprocess.run([sys.executable, str(opencodex), "__export"])
+    return 0 if rc == 3 else rc
 
 
 # --- schedule ------------------------------------------------------------
@@ -481,7 +1729,7 @@ def schedule_enable():
     <key>ProgramArguments</key>
     <array>
         <string>{os.path.abspath(sys.argv[0])}</string>
-        <string>sync</string>
+        <string>nightly</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
@@ -501,26 +1749,26 @@ def schedule_enable():
                                 capture_output=True)
         # 125: no GUI session (over SSH). The agent loads at the next login.
         if result.returncode == 125:
-            print(f"fleet: nightly sync installed at {_plist_path()}")
+            print(f"fleet: nightly pass installed at {_plist_path()}")
             print("  no GUI session; it loads at the next login on the Mac's screen")
             return 0
         if result.returncode != 0:
             eprint(f"fleet: launchd enable failed (rc={result.returncode})")
             return 1
-        print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (launchd)")
+        print(f"fleet: nightly pass scheduled at {SCHEDULE_HOUR:02d}:00 (launchd)")
         return 0
     # Persistent=true replays a run missed while the machine was off.
     with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:
         handle.write("Persistent=true\n")
         timer_extra = handle.name
     try:
-        rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet SSH sync",
-                           "%h/.local/bin/fleet sync", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
+        rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet sync and harness update",
+                           "%h/.local/bin/fleet nightly", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
                            "", timer_extra)
     finally:
         os.unlink(timer_extra)
     if rc == 0:
-        print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
+        print(f"fleet: nightly pass scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
     return rc
 
 
@@ -532,25 +1780,44 @@ def schedule_disable():
         rc = _run_schedule("uninstall-timer", "user", TIMER_NAME)
         if rc:
             return rc
-    print("fleet: nightly sync off")
+    print("fleet: nightly pass off")
     return 0
 
 
-USAGE = "Usage: fleet sync [--check] | fleet status | fleet schedule [enable|disable|status]"
+USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, harness settings
+       fleet status
+       fleet install [harness...]          the default harnesses when none named
+       fleet update [harness...]           every installed harness when none named
+       fleet skills [list|install|uninstall|publish|unpublish] ...
+       fleet schedule [enable|disable|status]
+       fleet nightly                       what the schedule runs"""
 
 
 def main():
     args = sys.argv[1:]
-    if args in (["sync"], ["sync", "--check"]):
-        return cmd_sync(check=len(args) == 2)
+    command, rest = (args[0], args[1:]) if args else (None, [])
+    if command in ("install", "update", "nightly", "sync"):
+        _heal_path()
+    if command == "sync" and rest in ([], ["--check"], ["--pull"]):
+        return cmd_sync(check=rest == ["--check"], pull=rest == ["--pull"])
     if args == ["status"]:
         return cmd_status()
+    if command == "install":
+        return cmd_install(rest)
+    if command == "update":
+        return cmd_update(rest)
+    if command == "skills":
+        return cmd_skills(rest)
+    if command == "mcp-headers":
+        return cmd_mcp_headers(rest)
+    if args == ["nightly"]:
+        return cmd_nightly()
     if args in (["schedule"], ["schedule", "enable"]):
         return schedule_enable()
     if args == ["schedule", "disable"]:
         return schedule_disable()
     if args == ["schedule", "status"]:
-        print(f"fleet: nightly sync {'on' if schedule_installed() else 'off'}")
+        print(f"fleet: nightly pass {'on' if schedule_installed() else 'off'}")
         return 0
     eprint(USAGE)
     return 2

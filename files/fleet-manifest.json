@@ -1,0 +1,91 @@
+{
+  "comment": "What every machine on every account gets from fleet. Personal settings live in the account's ~/.agents tree (settings/*.json, mcp.json); lost.plus MCPs come from Auth's /api/services. The retired* lists are removed wherever fleet finds them.",
+  "harnesses": [
+    {
+      "name": "claude",
+      "install": "curl -fsSL https://claude.ai/install.sh | bash",
+      "default": true,
+      "updateArgs": "update",
+      "candidates": [
+        "~/.local/bin/claude",
+        "~/.claude/local/claude"
+      ]
+    },
+    {
+      "name": "codex",
+      "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+      "default": true,
+      "updateArgs": "update"
+    },
+    {
+      "name": "opencode",
+      "install": "curl -fsSL https://opencode.ai/install | bash",
+      "updateArgs": "upgrade",
+      "candidates": [
+        "~/.opencode/bin/opencode"
+      ]
+    },
+    {
+      "name": "hermes",
+      "install": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive",
+      "updateArgs": "update --yes",
+      "candidates": [
+        "~/.local/bin/hermes"
+      ]
+    },
+    {
+      "name": "t3",
+      "install": "set -e; t3=\"$HOME/.local/bin/t3\"; [ -x \"$t3\" ] || curl -fsSL https://t3.codes/install.sh | sh; case \"$(\"$t3\" service status)\" in *\"Status: installed\"*) ;; *) \"$t3\" service install ;; esac",
+      "rerunWhenInstalled": true,
+      "updateArgs": "update --yes",
+      "candidates": [
+        "~/.local/bin/t3",
+        "~/.t3/runtime/versions/*/t3"
+      ]
+    },
+    {
+      "name": "miniharness",
+      "install": "npm install -g miniharness",
+      "update": "npm install -g miniharness@latest"
+    }
+  ],
+  "claude": {
+    "attribution": {
+      "commit": "",
+      "pr": ""
+    }
+  },
+  "localPluginMcpServers": [
+    {
+      "name": "cua_repl",
+      "plugin": "unified-computer-use",
+      "server": "cua_repl",
+      "env": {
+        "CUA_REPL_ENABLED_SURFACES": "computer"
+      }
+    }
+  ],
+  "retiredMcpServers": [
+    "obsidian-direct",
+    "vaultwarden-secrets"
+  ],
+  "retiredMcpGrants": [
+    "claude_ai_Obsidian_Vault",
+    "claude_ai_Vaultwarden_Secrets",
+    "claude_ai_tweet-fetch-mcp"
+  ],
+  "retiredEnvVars": [
+    "VAULTWARDEN_MCP_TOKEN",
+    "VAULTWARDEN_SECRETS_TOKEN"
+  ],
+  "retiredT3Models": [
+    "codex/gpt-6-astra",
+    "codex/gpt-5.6-sol",
+    "codex/gpt-5.6-luna",
+    "grimoire/qwen3.8-flash-next-uncensored-nvfp4",
+    "kimicode/k3-256k",
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna"
+  ]
+}

@@ -2,9 +2,10 @@
 # setup-module: fleet
 # setup-type: script
 #
-# Installs the fleet CLI (files/fleet), which keeps the managed ~/.ssh/config
-# and authorized_keys blocks in step with the account's fleet in Common Auth,
-# and takes over ssh-aliases' blocks in place on its first write.
+# Installs the fleet CLI (files/fleet) and its common manifest
+# (files/fleet-manifest.json). fleet keeps the managed ~/.ssh/config and
+# authorized_keys blocks, the account's ~/.agents tree and the harness settings
+# built from it in step with the account in Common Auth.
 
 (( ${+functions[fetch_source_url]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
@@ -12,25 +13,36 @@ MODULE="fleet"
 BIN="${FLEET_BIN:-$HOME/.local/bin/fleet}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${FLEET_SOURCE:-$SOURCE_BASE/files/fleet}"
+MANIFEST="${FLEET_MANIFEST:-$HOME/.config/fleet/manifest.json}"
+MANIFEST_SOURCE="${FLEET_MANIFEST_SOURCE:-$SOURCE_BASE/files/fleet-manifest.json}"
 
-_stage() {
-    local destination="$1"
-    if [[ -f "$BIN_SOURCE" ]]; then
-        cp "$BIN_SOURCE" "$destination"
+_fetch() {
+    local source="$1" destination="$2"
+    if [[ -f "$source" ]]; then
+        cp "$source" "$destination"
     elif (( ${+functions[fetch_source_url]} )); then
-        fetch_source_url "$BIN_SOURCE" -o "$destination"
+        fetch_source_url "$source" -o "$destination"
     else
-        curl -fsSL "$BIN_SOURCE" -o "$destination"
+        curl -fsSL "$source" -o "$destination"
     fi
-    chmod +x "$destination"
-    python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$destination"
 }
 
+# Both files into a temporary directory, checked: fleet and manifest.json.
+_stage() {
+    local dir="$1"
+    _fetch "$BIN_SOURCE" "$dir/fleet" && _fetch "$MANIFEST_SOURCE" "$dir/manifest.json" || return 1
+    chmod +x "$dir/fleet"
+    python3 -c 'import ast,json,sys; ast.parse(open(sys.argv[1]).read()); json.load(open(sys.argv[2]))' \
+        "$dir/fleet" "$dir/manifest.json"
+}
+
+_hash() { cat "$1" "$2" 2>/dev/null | setup_sha256_string; }
+
 _desired_hash() {
-    local staged; staged=$(mktemp)
-    _stage "$staged" || { rm -f "$staged"; return 1; }
-    setup_sha256_string < "$staged"
-    rm -f "$staged"
+    local staged; staged=$(mktemp -d)
+    _stage "$staged" || { rm -rf "$staged"; return 1; }
+    _hash "$staged/fleet" "$staged/manifest.json"
+    rm -rf "$staged"
 }
 
 _auth_bin() {
@@ -69,18 +81,21 @@ _login_if_needed() {
 }
 
 _apply() {
-    local action="$1" temporary hash
-    mkdir -p "${BIN:h}"
-    temporary="${BIN}.tmp.$$"
-    _stage "$temporary" || { rm -f "$temporary"; return 1; }
-    hash=$(setup_sha256_string < "$temporary")
-    mv "$temporary" "$BIN"
+    local action="$1" staged hash
+    mkdir -p "${BIN:h}" "${MANIFEST:h}"
+    staged=$(mktemp -d "${BIN:h}/.fleet.XXXXXX")
+    _stage "$staged" || { rm -rf "$staged"; return 1; }
+    hash=$(_hash "$staged/fleet" "$staged/manifest.json")
+    mv "$staged/manifest.json" "$MANIFEST"
+    mv "$staged/fleet" "$BIN"
+    rm -rf "$staged"
     record_script_state "$MODULE" "fleet" "$hash" "$hash"
     echo "fleet: $action -> $BIN"
     [[ "$action" == installed ]] && _login_if_needed
-    # Exit 3 means Auth gave no authoritative answer: the blocks already there
-    # stay, and status says so rather than failing every run.
-    "$BIN" sync || (( $? == 3 ))
+    # A pull: local edits in ~/.agents go up only when the operator syncs.
+    # Exit 3 means Auth gave no authoritative answer: what is on disk stays,
+    # and status says so rather than failing every run.
+    "$BIN" sync --pull || (( $? == 3 ))
 }
 
 install() { _apply installed; }
@@ -93,7 +108,7 @@ status() {
     fi
     local desired actual rc
     desired=$(_desired_hash) || return 1
-    actual=$([[ -f "$BIN" ]] && setup_sha256_string < "$BIN")
+    actual=$([[ -f "$BIN" ]] && _hash "$BIN" "$MANIFEST")
     if [[ ! -x "$BIN" || "$actual" != "$desired" ]]; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' \
             "$MODULE" "outdated" "${actual:0:7}" "${desired:0:7}" "$BIN"
@@ -115,7 +130,7 @@ uninstall() {
     [[ -x "$BIN" ]] && "$BIN" schedule disable >/dev/null 2>&1
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
-    rm -f "$BIN"
+    rm -f "$BIN" "$MANIFEST"
     remove_script_state "$MODULE"
     echo "fleet: uninstalled. This machine stays in its fleet until it is revoked in the Fleet tab."
 }
