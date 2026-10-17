@@ -90,6 +90,12 @@ grep -q '^export ANTHROPIC_BASE_URL=http://127.0.0.1:10100$' "$HOME/.zshenv" \
 touch "$HOME/proxy-down"
 python3 "$ROOT/files/opencodex" __export >/dev/null
 grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export removed the route"
+# A gateway the user set in Claude's settings is never replaced.
+printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
+rm -f "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export with a user gateway"
+grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "__export replaced the user's own base URL"
+touch "$HOME/proxy-down"
 [[ $(python3 "$ROOT/files/opencodex" __proxy-url) == http://127.0.0.1:10100 ]] \
     || fail "__proxy-url did not print the proxy address"
 

@@ -2536,9 +2536,15 @@ def write_base_url_export() -> None:
         # .zshenv only reaches shells. A claude started by a GUI app or a
         # service (T3 Code) reads the env block of its own settings file.
         settings = _claude_settings()
-        settings.setdefault("env", {})["ANTHROPIC_BASE_URL"] = url
-        _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
-        print(f"  set env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
+        env = settings.setdefault("env", {})
+        current = str(env.get("ANTHROPIC_BASE_URL", "")) if isinstance(env, dict) else ""
+        # A gateway the user set there is theirs: unexport could not put it back.
+        if current and not re.fullmatch(r"http://127\.0\.0\.1:\d+", current):
+            print(f"  left the user's env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS} alone")
+        else:
+            env["ANTHROPIC_BASE_URL"] = url
+            _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
+            print(f"  set env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
         _remove_legacy_service_env()
 
 
