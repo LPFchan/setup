@@ -119,6 +119,9 @@ if path == "/api/fleet/config/push":
     state["version"] += 1
     json.dump(state, open(f"{fake}/server.json", "w"))
     open(f"{fake}/pushes", "a").write(json.dumps(body["put"] and [p["path"] for p in body["put"]]) + " " + json.dumps(body["delete"]) + "\n")
+    if os.path.exists(f"{fake}/bad-ack"):
+        os.remove(f"{fake}/bad-ack")
+        answer(200, {"counter": str(state["counter"])})
     answer(200, {"counter": state["counter"], "version": state["version"]})
 answer(404, {"error": "not found"})
 PY
@@ -705,6 +708,21 @@ rc=0; HOME="$THIRD" XDG_STATE_HOME="$TMP/state3" fleet sync >"$TMP/out" 2>&1 || 
 [[ $rc == 1 ]] || fail "symlinked ~/.agents exited $rc"
 grep -q 'refusing a symlinked' "$TMP/out" || fail "symlinked ~/.agents not reported"
 [[ -z "$(ls -A "$THIRD/real")" ]] || fail "wrote through a symlinked ~/.agents"
+# Status does not call one current either.
+mv "$HOME/.agents" "$TMP/agents.keep"; ln -s "$TMP/agents.keep" "$HOME/.agents"
+out=$(fleet status 2>&1)
+rm "$HOME/.agents"; mv "$TMP/agents.keep" "$HOME/.agents"
+[[ "$out" != *"account config current"* && "$out" == *"is a link or not a folder"* ]] \
+    || fail "status called a symlinked ~/.agents current: $out"
+# A push Auth acknowledges without a counter and version saves no record.
+printf 'acked badly\n' > "$HOME/.agents/skills/mine/acked"
+cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.before"
+touch "$FAKE/bad-ack"
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+[[ $rc != 0 && "$out" == *"no counter and version"* ]] || fail "a bad push acknowledgement exited $rc: $out"
+cmp -s "$TMP/record.before" "$XDG_STATE_HOME/fleet/config.json" || fail "a bad push acknowledgement was saved"
+rm -f "$TMP/record.before" "$HOME/.agents/skills/mine/acked"
+fleet sync >/dev/null 2>&1 || fail "sync after the bad acknowledgement"
 # So is a ~/.agents that is not a folder, by onboarding too.
 FOURTH="$TMP/fourth"; mkdir -p "$FOURTH"; : > "$FOURTH/.agents"
 rc=0; HOME="$FOURTH" XDG_STATE_HOME="$TMP/state4" fleet onboard >"$TMP/out" 2>&1 || rc=$?

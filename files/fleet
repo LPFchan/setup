@@ -1134,6 +1134,8 @@ def push(record, local, puts, deletes):
         if exc.status == 409 and str(exc) == "account changed":
             raise ConfigError("the session changed during the sync") from None
         raise
+    if not isinstance(value, dict) or not all(type(value.get(k)) is int for k in ("counter", "version")):
+        raise ConfigError("Auth answered the push with no counter and version")
     files = dict(record.get("files") or {})
     for rel, data in payloads.items():
         files[rel] = [hashlib.sha256(data).hexdigest(), local[rel][1]]
@@ -1571,6 +1573,9 @@ def config_status():
     if account is None:
         return
     try:
+        # A sync refuses these, so they are never current.
+        if AGENTS_DIR.is_symlink() or (os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir()):
+            raise ConfigError(f"{AGENTS_DIR} is a link or not a folder; fleet sync refuses it")
         counter, version, server = _listing()
         record = _load_sync_record()
         local, symlinks = scan_local()
@@ -3922,11 +3927,13 @@ def schedule_installed():
 
 
 def schedule_stale():
-    """Whether the installed timer runs something other than today's pass."""
+    """Whether the installed timer runs something other than today's pass,
+    or another binary than this one."""
     try:
         if sys.platform == "darwin":
             text = _plist_path().read_text()
-            return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
+            return (f"<string>{xml_escape(_fleet_path())}</string>" not in text
+                    or "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text)
         units = [SYSTEMD_USER_DIR/f"{TIMER_NAME}.service", SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer"]
         service, timer = (unit.read_text() for unit in units)
     except FileNotFoundError:
@@ -3935,7 +3942,8 @@ def schedule_stale():
     except OSError:
         # One that cannot be read may be the old timer all the same.
         return True
-    return "schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
+    return (f"{_systemd_quote(_fleet_path())} schedule run" not in service
+            or f"{SCHEDULE_HOUR:02d}:00:00" not in timer)
 
 
 def _fleet_path():

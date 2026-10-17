@@ -1015,7 +1015,7 @@ grep -q '^  extra:' "$HOME/.hermes/config.yaml" && fail "a server dropped while 
 
 # Node toolchains are tried newest version first, v20 ahead of v9.
 mkdir -p "$TMP/nvm/.nvm/versions/node/v9.11.2/bin" "$TMP/nvm/.nvm/versions/node/v20.0.0/bin"
-first=$(HOME="$TMP/nvm" python3 -c '
+first=$(HOME="$TMP/nvm" env -u NVM_BIN python3 -c '
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("fleet_nvm", sys.argv[1])
 fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
