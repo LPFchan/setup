@@ -1292,6 +1292,7 @@ fleet sync --check >/dev/null 2>&1 && fail "an author's update read as current"
 fleet sync --pull >/dev/null 2>&1 || fail "pull of an author's update"
 [[ "$(cat "$installed/run.sh")" == "echo v2" ]] || fail "author's update not written"
 grep -q '^\.installing-' "$XDG_STATE_HOME/fleet/staging" || fail "a pull's staging folder went unrecorded"
+grep -q '^\.replacing-' "$XDG_STATE_HOME/fleet/staging" || fail "a pull's set-aside folder went unrecorded"
 # The copy being replaced is compared only once moved out of the skills
 # folder, so a save that lands during the comparison is never deleted unseen.
 market_put $FOO alice foo run.sh 'echo v3'
@@ -1544,6 +1545,17 @@ fleet sync --pull >/dev/null 2>&1 || true
 [[ -e "$HOME/.agents/.installing-mine/keep" ]] || fail "a pull removed a staging-like folder it did not make"
 [[ ! -e "$HOME/.agents/.installing-stopped" ]] || fail "a pull left its own stopped staging folder"
 rm -rf "$HOME/.agents/.installing-mine"
+# An installed copy a stopped run set aside goes to the backup, reported;
+# a lookalike folder it did not make stays.
+mkdir -p "$HOME/.agents/.replacing-stopped/aside" "$HOME/.agents/.replacing-mine"
+printf 'edited aside\n' > "$HOME/.agents/.replacing-stopped/aside/SKILL.md"
+printf '.replacing-stopped\n' > "$XDG_STATE_HOME/fleet/staging"
+out=$(fleet sync --pull 2>&1) || true
+[[ -d "$HOME/.agents/.replacing-mine" ]] || fail "a pull removed a set-aside-like folder it did not make"
+[[ ! -e "$HOME/.agents/.replacing-stopped" ]] || fail "a pull left a stopped run's set-aside copy"
+[[ "$out" == *"set these installed skills aside"*aside* ]] || fail "a recovered set-aside copy went unreported: $out"
+grep -rlx 'edited aside' "$XDG_STATE_HOME/fleet/backup" | grep -q 'installed/aside/SKILL.md' || fail "a set-aside copy not in the backup"
+rm -rf "$HOME/.agents/.replacing-mine"
 
 # An installed folder the disk spells otherwise (HFS+ decomposes accents)
 # is still the install, not the account's own files.

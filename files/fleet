@@ -857,10 +857,29 @@ def _apply_installs(installs, write, remove, contents, backup):
         left = STAGING.read_text().split("\n")
     except FileNotFoundError:
         left = []
+    recovered = []
     for stale in left:
-        if stale.startswith(".installing-") and "/" not in stale:
+        if "/" in stale:
+            continue
+        if stale.startswith(".installing-"):
             shutil.rmtree(AGENTS_DIR/stale, ignore_errors=True)
+        elif stale.startswith(".replacing-") and (AGENTS_DIR/stale).is_dir() \
+                and not (AGENTS_DIR/stale).is_symlink():
+            # A stopped run's copy set aside before its comparison: it may
+            # hold an edit, so it goes to the backup rather than away.
+            for child in sorted((AGENTS_DIR/stale).iterdir()):
+                backup.move(child, f"installed/{child.name}")
+                recovered.append(child.name)
+            (AGENTS_DIR/stale).rmdir()
     STAGING.unlink(missing_ok=True)
+    if recovered:
+        _report(f"a stopped sync had set these installed skills aside; they are in "
+                f"{backup.root}: " + ", ".join(recovered))
+
+    def record(folder):
+        STAGING.parent.mkdir(parents=True, exist_ok=True)
+        with open(STAGING, "a") as journal:
+            journal.write(folder.name + "\n")
 
     def clear(name):
         # The folder itself may be a symlink put here; it is what gets replaced.
@@ -872,6 +891,11 @@ def _apply_installs(installs, write, remove, contents, backup):
         # the comparison lands in the copy that is checked, never in one
         # deleted unseen. A run stopped here leaves it aside, not deleted.
         aside = pathlib.Path(tempfile.mkdtemp(prefix=".replacing-", dir=AGENTS_DIR))
+        try:
+            record(aside)
+        except BaseException:
+            aside.rmdir()
+            raise
         os.rename(target, aside/name)
         if isinstance(entry, dict) and _scan_folder(aside/name) == entry.get("local"):
             shutil.rmtree(aside)
@@ -895,9 +919,7 @@ def _apply_installs(installs, write, remove, contents, backup):
         AGENTS_DIR.mkdir(parents=True, exist_ok=True)
         staging = pathlib.Path(tempfile.mkdtemp(prefix=".installing-", dir=AGENTS_DIR))
         try:
-            STAGING.parent.mkdir(parents=True, exist_ok=True)
-            with open(STAGING, "a") as record:
-                record.write(staging.name + "\n")
+            record(staging)
             for rel, data in contents[name].items():
                 path = staging/rel
                 path.parent.mkdir(parents=True, exist_ok=True)
