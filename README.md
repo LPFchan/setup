@@ -124,7 +124,6 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `starship` | Custom shell prompt (`~/.local/bin/starship`) | `files/starship.sh` |
 | `fzf-multicolumn` | Multi-column `fzf` wrapper used by the module picker and `ai` menu (`~/.local/bin/fzf-multicolumn`) | `files/fzf-multicolumn.sh` |
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
-| `ssh-aliases` | Manages outbound host shortcuts in `~/.ssh/config` and syncs the owner's GitHub keys into a preserved block in `~/.ssh/authorized_keys` | `files/ssh-aliases.sh` |
 | `mac-boot` | Fleet-only macOS boot-volume switcher whose status shows the selected volume and other bootable choices; accepts exact volume names, switches through a narrowly scoped passwordless sudo rule, requests a normal application-aware restart, and guarantees reboot after 60 seconds | `files/mac-boot.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
@@ -133,7 +132,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `providers` | Provider enrollment, credential mirrors, and model refresh; Grimoire uses `auth`, while third-party provider keys remain in the passage MCP (`~/.local/bin/providers`). A provider dropped from the registry is named in `retired_providers` so every machine sweeps its credential and catalogue instead of keeping them forever (`~/.local/bin/providers`) | `files/providers.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
-The fleet-only `ssh-aliases` module also sets an outbound default of
+The `fleet` module also sets an outbound default of
 `StrictHostKeyChecking accept-new`, including destinations outside the alias
 list. OpenSSH automatically records first-seen keys in its normal known-hosts
 files and rejects changed keys; first use is trust-on-first-use, not independent
@@ -152,7 +151,7 @@ normal setup updates, including their enabled nightly schedule.
 
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
 
-`auth login` performs one browser-approved onboarding for the machine and stores a renewable setup session plus the account's active global or per-service bearer set locally with mode `0600`. It reports the machine hostname during login and later refreshes so Auth can identify each setup device without exposing its network address in the console. `auth status`, `auth refresh`, and `auth token` sync through `/api/setup/session/token`, so bearer rotations, revocations, token-mode changes, and admission changes arrive without another browser login. The local bundle and setup-managed consumer copies are bound to the Auth origin and immutable account subject. A confirmed session rejection is remembered and fails closed; temporary Auth unavailability may use the last-known-good bearer while that session remains active. Setup sessions and bearer tokens are separately revokable in Auth. `auth token` uses distinct exit statuses for authoritative absence, rejected setup sessions, and temporary failures, allowing `providers` and `harnesses` to remove only confirmed revoked managed mirrors while preserving same-account copies during outages or temporary unreadability. During MCP reconciliation, each declared credential source is authoritative; an existing environment or `.zshenv` value is used only as a last-known-good fallback when its source is unavailable. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
+`auth login` performs one browser-approved onboarding for the machine and stores a renewable setup session plus the account's active global or per-service bearer set locally with mode `0600`. It reports the machine hostname during login and later refreshes so Auth can identify each setup device without exposing its network address in the console. `auth status`, `auth refresh`, and `auth token` sync through `/api/setup/session/token`, so bearer rotations, revocations, token-mode changes, and admission changes arrive without another browser login. The local bundle and setup-managed consumer copies are bound to the Auth origin and immutable account subject. A confirmed session rejection is remembered and fails closed; temporary Auth unavailability may use the last-known-good bearer while that session remains active. Setup sessions and bearer tokens are separately revokable in Auth. `auth token` uses distinct exit statuses for authoritative absence, rejected setup sessions, and temporary failures, allowing `providers` and `fleet` to remove only confirmed revoked managed mirrors while preserving same-account copies during outages or temporary unreadability. During MCP reconciliation, each declared credential source is authoritative; an existing environment or `.zshenv` value is used only as a last-known-good fallback when its source is unavailable. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
 
 ---
 
@@ -201,10 +200,10 @@ dead, and the terminal is left in whatever modes the remote tmux had set — wit
 SGR mouse reporting still enabled, every mouse movement types an escape sequence
 at the local prompt, so the window has to be thrown away.
 
-This lives in the `tmux` module rather than `ssh-aliases`: this module is what
+This lives in the `tmux` module rather than `fleet`: this module is what
 turns mouse mode on, so it owns undoing it, and the reattach is only lossless
 because the same module installs `tmux-autostart` on every machine. The `Host`
-stanza options below stay in `ssh-aliases`, which owns `~/.ssh/config`.
+stanza options below stay in `fleet`, which owns `~/.ssh/config`.
 
 - The `ssh-reconnect` block wraps `ssh` in interactive shells. It restores the
   local terminal on every return, and reconnects on a dropped link — landing
