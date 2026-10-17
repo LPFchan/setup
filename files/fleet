@@ -1712,12 +1712,13 @@ def _heal_path():
 
     systemd and launchd start fleet with a login-less PATH, where claude,
     codex, npm and ocx are all invisible. nvm's default node leads, as nvm's
-    init puts it ahead of everything in a login shell, then /opt/node, the
-    other install miniharness.sh offers; the user's own bin directories
-    follow, even ahead of a system copy of a harness; the other node
-    toolchains go on the end, there to be found rather than to win.
+    init puts it ahead of everything in a login shell; the user's own bin
+    directories follow, even ahead of a system copy of a harness, with
+    /opt/node, the other install miniharness.sh offers, behind ~/.local/bin
+    as setup's login PATH has it; the other node toolchains go on the end,
+    there to be found rather than to win.
     """
-    mine = [d for d in [_nvm_default()] if d] + [OPT_NODE_BIN, HOME/".local/bin", HOME/".opencode/bin"]
+    mine = [d for d in [_nvm_default()] if d] + [HOME/".local/bin", OPT_NODE_BIN, HOME/".opencode/bin"]
     toolchains = _nvm_toolchains() + [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
