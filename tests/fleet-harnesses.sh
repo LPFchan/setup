@@ -227,7 +227,7 @@ MINE_TOKEN=tenant:mine-secret fleet sync --pull > "$TMP/out" 2>&1 || { cat "$TMP
 grep -q '^# fleet: harnesses alias' "$BIN/harnesses" || fail "harnesses not aliased"
 [[ ! -e "$HOME/.config/harnesses" ]] || fail "harnesses manifest left"
 [[ ! -e "$SCHEDULE_USER_DIR/harnesses-update.timer" ]] || fail "harnesses timer left"
-grep -q 'fleet schedule run' "$SCHEDULE_USER_DIR/fleet-sync.service" || fail "fleet timer not installed"
+grep -q '/fleet" schedule run$' "$SCHEDULE_USER_DIR/fleet-sync.service" || fail "fleet timer not installed"
 settings="$HOME/.claude/settings.json"
 [[ "$(json "$settings" 'v["theme"], v["effortLevel"], v["myKey"]')" == "('dark', 'high', 1)" ]] \
     || fail "claude settings: $(cat "$settings")"
