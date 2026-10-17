@@ -193,4 +193,17 @@ functions[is_service_module]=${functions[saved_is_service]}
 rm -f "$HASH_FILE" "$SCRIPT_STATE_FILE" "$DEP_FILE" "$HOME/u"
 cp "$saved_manifest" "$MANIFEST_FILE"
 
+# --- an installed dependency updates before the module that needs it ---
+# u needs d but comes first in the manifest; both are installed.
+printf '%b' 'u\t~/u\t0755\tx\nd\t~/d\t0755\tx\n' > "$MANIFEST_FILE"
+write_requires 'u\td\n'
+: > "$HOME/u"; : > "$HOME/d"
+printf '%s\tH\n%s\tH\n' "$HOME/u" "$HOME/d" > "$HASH_FILE"
+: > "$TMP/installed"
+install_one() { printf '%s ' "$1" >> "$TMP/installed"; return 0; }
+out=$(cmd_update 2>&1) || fail "update with an installed dependency failed: $out"
+[[ "$(<"$TMP/installed")" == "d u " ]] || fail "update sequence was '$(<"$TMP/installed")', expected 'd u '"
+rm -f "$HASH_FILE" "$HOME/u" "$HOME/d"
+cp "$saved_manifest" "$MANIFEST_FILE"
+
 echo "module-dependencies: ok"

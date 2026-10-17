@@ -200,6 +200,17 @@ if [[ "$(uname -s)" == Linux ]]; then
     _write_stop_timeout >/dev/null || fail "a current stop-timeout drop-in failed"
     [[ -e "$TEST_TMP/reloaded" ]] || fail "a current stop-timeout drop-in was not reloaded"
     systemctl() { :; }
+    # One the user wrote stays as it is, and reads as current.
+    printf '[Service]\nTimeoutStopSec=600\n' > "$OPENCODEX_STOP_TIMEOUT_DROPIN"
+    _stop_timeout_current || fail "the user's stop-timeout drop-in read as outdated"
+    _write_stop_timeout >/dev/null || fail "the user's stop-timeout drop-in failed the install"
+    systemctl() { return 1; }
+    _write_stop_timeout >/dev/null 2>&1 || fail "the user's stop-timeout drop-in failed the install"
+    systemctl() { :; }
+    [[ "$(<"$OPENCODEX_STOP_TIMEOUT_DROPIN")" == *"TimeoutStopSec=600"* ]] || fail "the user's stop-timeout drop-in was replaced"
+    printf '[Service]\nTimeoutStopSec=330\n' > "$OPENCODEX_STOP_TIMEOUT_DROPIN"
+    _write_stop_timeout >/dev/null || fail "an earlier stop-timeout drop-in failed"
+    [[ "$(<"$OPENCODEX_STOP_TIMEOUT_DROPIN")" == "$STOP_TIMEOUT_BODY" ]] || fail "an earlier stop-timeout drop-in was not taken over"
 fi
 
 rm -f "$OPENCODEX_BIN"
