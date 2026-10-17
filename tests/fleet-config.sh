@@ -818,6 +818,11 @@ printf 'gemini own\n' > "$HOME/.gemini/GEMINI.md.pre-agents.bak"
 ln -s "$HOME/.agents/AGENTS.md" "$HOME/.gemini/GEMINI.md"
 mkdir -p "$HOME/.config/muse/skills/mine.pre-agents.bak"
 ln -s "$HOME/.agents/skills/mine" "$HOME/.config/muse/skills/mine"
+# A link the user has since replaced keeps the way back to what it displaced.
+rm "$HOME/.claude/CLAUDE.md"; printf 'replaced\n' > "$HOME/.claude/CLAUDE.md"
+fleet __unlink >/dev/null 2>&1 && fail "uninstall passed a displaced file it could not put back"
+grep -q CLAUDE.md "$XDG_STATE_HOME/fleet/links.json" || fail "uninstall dropped the way back to a displaced file"
+rm "$HOME/.claude/CLAUDE.md"
 fleet __unlink
 [[ ! -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.gemini/GEMINI.md")" == "gemini own" ]] \
     || fail "uninstall left the old module's instructions link"
@@ -841,5 +846,23 @@ rc=0; timeout 2 python3 "$ROOT/files/fleet" __unlink </dev/null || rc=$?
 kill $holder; wait $holder 2>/dev/null || true
 [[ $rc == 124 ]] || fail "a run did not wait for the one holding the config lock"
 fleet __unlink || fail "a run after the lock was released"
+
+# Onboarding compares a colliding skill's links too, not only its files.
+mkdir -p "$TMP/tree-a" "$TMP/tree-b"
+printf 'same\n' | tee "$TMP/tree-a/SKILL.md" > "$TMP/tree-b/SKILL.md"
+ln -s /etc/hostname "$TMP/tree-a/extra"
+ln -s /etc "$TMP/tree-a/extra-dir"
+python3 -c '
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("fleet_tree", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+a, b = map(fleet.pathlib.Path, sys.argv[2:])
+assert not fleet._same_tree(a, b), "an extra file link"
+os.symlink("/etc/hostname", b/"extra")
+assert not fleet._same_tree(a, b), "an extra folder link"
+os.symlink("/etc", b/"extra-dir")
+assert fleet._same_tree(a, b), "the same links"' "$ROOT/files/fleet" "$TMP/tree-a" "$TMP/tree-b" \
+    || fail "onboarding read skill trees with different links as the same"
 
 echo "fleet config tests passed"

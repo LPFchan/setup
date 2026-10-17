@@ -850,13 +850,17 @@ def _is(path, kind):
 def _same_tree(a, b):
     # os.walk, not rglob: rglob skips a folder it cannot read, and the trees
     # would match without it.
+    # A link counts by where it points, so a tree with an extra one differs.
     def tree(root):
         files = {}
-        for top, _, names in os.walk(root, onerror=_unreadable):
-            for name in names:
+        for top, dirs, names in os.walk(root, onerror=_unreadable):
+            for name in names + dirs:
                 p = pathlib.Path(top)/name
-                if p.is_file() and not p.is_symlink():
-                    files[p.relative_to(root).as_posix()] = p.read_bytes()
+                rel = p.relative_to(root).as_posix()
+                if p.is_symlink():
+                    files[rel] = ("link", os.readlink(p))
+                elif name in names:
+                    files[rel] = p.read_bytes() if p.is_file() else ("special",)
         return files
     try:
         return tree(a) == tree(b)
@@ -1302,6 +1306,14 @@ def remove_links():
         _unlink_restoring(path, links)
     # Also the old agents module's, which a sync may not have taken over yet.
     _drop_old_links()
+    # A target the user has since filled keeps its mapping, so the file it
+    # replaced is not left stranded in a backup.
+    stuck = {t: moved for t, moved in links.items() if os.path.lexists(moved)}
+    if stuck:
+        _save_json(LINKS_STATE, stuck)
+        target = sorted(stuck)[0]
+        raise ConfigError(f"{target} is no longer fleet's link, so the file it replaced stays at "
+                          f"{stuck[target]}; move one of them aside and run the uninstall again")
     LINKS_STATE.unlink(missing_ok=True)
 
 
