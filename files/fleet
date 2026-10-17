@@ -32,6 +32,8 @@ HOME = pathlib.Path.home()
 SSH_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_SSH_DIR", "~/.ssh")))
 SSH_CONFIG = SSH_DIR/"config"
 AUTHORIZED_KEYS = SSH_DIR/"authorized_keys"
+# Host keys the owner vouches for in Auth, e.g. both boot partitions of one Mac.
+KNOWN_HOSTS = SSH_DIR/"known_hosts.fleet"
 STATE_HOME = pathlib.Path(os.environ.get("XDG_STATE_HOME") or HOME/".local/state")
 STATE = STATE_HOME/"fleet/sync.json"
 LOGIN_MARKER = STATE_HOME/"setup/auth.needs-login"
@@ -216,8 +218,19 @@ def config_body(hosts, own_aliases):
     # and existing user configuration so explicit stricter policies survive.
     # Use OpenSSH's normal known_hosts files: never discard or replace keys.
     # Defer until reparsing so earlier Match final/canonical policies win too.
-    lines += ["Match final", "    StrictHostKeyChecking accept-new", "Host *"]
+    lines += ["Match final", "    StrictHostKeyChecking accept-new",
+              # OpenSSH accepts a host when any of these files has its key, so
+              # the vouched keys sit beside the user's own known_hosts.
+              f"    GlobalKnownHostsFile {_home_path(KNOWN_HOSTS)} /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2",
+              "Host *"]
     return "\n".join(lines)
+
+
+def _home_path(path):
+    try:
+        return "~/" + str(path.relative_to(HOME))
+    except ValueError:
+        return str(path)
 
 
 def legacy_hosts():
@@ -253,6 +266,17 @@ def auth_keys(fleet):
     return keys
 
 
+def auth_known_hosts(fleet):
+    lines = []
+    for line in fleet.get("known_hosts") or []:
+        address, _, key = line.partition(" ") if isinstance(line, str) else ("", "", "")
+        if ADDRESS.match(address) and KEY.match(key):
+            lines.append(line)
+        else:
+            eprint("fleet: skipping a host key Auth served in an invalid shape")
+    return lines
+
+
 def _unique(items):
     return list(dict.fromkeys(items))
 
@@ -274,7 +298,8 @@ def desired():
         self_alias = (fleet.get("self") or {}).get("alias") or ""
         hosts = auth_hosts(fleet)
         return config_body(hosts, [self_alias, me]), "\n".join(keys), {
-            "source": "auth", "fleet": fleet, "hosts": len(hosts), "keys": len(keys)}
+            "source": "auth", "fleet": fleet, "hosts": len(hosts), "keys": len(keys),
+            "known_hosts": auth_known_hosts(fleet)}
     owner_keys = fetch_owner_keys()
     if outcome == "rejected" and not set(_local_keys()) & set(owner_keys):
         raise Unavailable("no session; run: auth login")
@@ -286,6 +311,7 @@ def desired():
             "keys": len(keys)}
     if fleet:
         info["missing"] = cutover_gaps(fleet, hosts)
+        info["known_hosts"] = auth_known_hosts(fleet)
     return config_body(hosts, [me]), "\n".join(keys), info
 
 
@@ -366,13 +392,18 @@ def _write(path, lines, mode=0o600):
 
 
 def planned():
+    """The files to write as path -> lines; known_hosts.fleet is left alone
+    when Auth gave no fleet to take it from."""
     config, keys, info = desired()
-    return (render(_read_lines(SSH_CONFIG), CONFIG_BLOCK, config, at_end=True),
-            render(_read_lines(AUTHORIZED_KEYS), KEYS_BLOCK, keys, at_end=False), info)
+    files = {SSH_CONFIG: render(_read_lines(SSH_CONFIG), CONFIG_BLOCK, config, at_end=True),
+             AUTHORIZED_KEYS: render(_read_lines(AUTHORIZED_KEYS), KEYS_BLOCK, keys, at_end=False)}
+    if info.get("known_hosts") is not None:
+        files[KNOWN_HOSTS] = info["known_hosts"] + [""]
+    return files, info
 
 
-def is_current(config_lines, keys_lines):
-    return _read_lines(SSH_CONFIG) == config_lines and _read_lines(AUTHORIZED_KEYS) == keys_lines
+def is_current(files):
+    return all(_read_lines(path) == lines for path, lines in files.items())
 
 
 def _save_state(info):
@@ -1609,13 +1640,15 @@ SKILLS_USAGE = ("Usage: fleet skills [list] | install <author/folder|id> [--as N
 def sync_ssh(check):
     """Write the SSH blocks; 0, 1 (check: they would change) or 3 (no answer)."""
     try:
-        config_lines, keys_lines, info = planned()
+        files, info = planned()
     except Unavailable as exc:
         eprint(f"fleet: {exc}; keeping the current SSH blocks")
         return 3
     if check:
-        return 0 if is_current(config_lines, keys_lines) else 1
-    changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
+        return 0 if is_current(files) else 1
+    changed = False
+    for path, lines in files.items():
+        changed |= _write(path, lines)
     try:
         SSH_DIR.chmod(0o700)
     except OSError:
@@ -1661,8 +1694,8 @@ def _warn_self(fleet):
 
 def cmd_status():
     try:
-        config_lines, keys_lines, info = planned()
-        current = is_current(config_lines, keys_lines)
+        files, info = planned()
+        current = is_current(files)
         source = "Auth" if info["source"] == "auth" else "FLEET table and GitHub keys (before cutover)"
         print(f"fleet: SSH blocks {'current' if current else 'outdated'}"
               f" ({info['hosts']} hosts, {info['keys']} keys from {source})")
