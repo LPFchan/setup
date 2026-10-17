@@ -553,6 +553,36 @@ fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server hermes refused
 grep -q '^  open:' "$HOME/.hermes/config.yaml" && fail "hermes kept fleet's entry from before a refused move"
 server_put mcp.json "$withopen"
 fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back after the move tests"
+# A server claude failed to drop while hermes moved it keeps both owned.
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open2.example/mcp", "surfaces": ["hermes"]},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+touch "$FAKE/claude-remove-fail"
+fleet sync --pull >/dev/null 2>&1 && fail "a failed claude removal went unreported"
+rm "$FAKE/claude-remove-fail"
+grep -q 'open2.example' "$HOME/.hermes/config.yaml" || fail "hermes did not move while claude failed"
+server_put mcp.json "$noopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server claude failed to drop"
+[[ "$(json "$HOME/.claude.json" '"open" in v["mcpServers"]')" == False ]] || fail "claude kept fleet's entry after a failed drop"
+grep -q '^  open:' "$HOME/.hermes/config.yaml" && fail "hermes kept its moved entry after claude failed to drop"
+server_put mcp.json "$withopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back after the drop test"
+# And the same with hermes refusing while claude moved it.
+cp "$HOME/.hermes/config.yaml" "$TMP/hermes.keep"
+sed -i 's/^mcp_servers:$/mcp_servers:\n odd: 1/' "$HOME/.hermes/config.yaml"
+server_put mcp.json '{"mcpServers": [
+  {"name": "mine", "url": "https://mine.example/mcp", "auth": "bearer", "credentialSource": "env", "env": "MINE_TOKEN"},
+  {"name": "open", "url": "https://open2.example/mcp", "surfaces": ["claude"]},
+  {"name": "vault", "url": "https://v.example/mcp", "auth": "bearer", "credentialSource": "passage"}]}'
+fleet sync --pull >/dev/null 2>&1 && fail "a refused hermes file went unreported on a move"
+cp "$TMP/hermes.keep" "$HOME/.hermes/config.yaml"
+server_put mcp.json "$noopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass dropping a server hermes refused to drop"
+grep -q '^  open:' "$HOME/.hermes/config.yaml" && fail "hermes kept fleet's entry after it refused a drop"
+[[ "$(json "$HOME/.claude.json" '"open" in v["mcpServers"]')" == False ]] || fail "claude kept its moved entry after hermes refused"
+server_put mcp.json "$withopen"
+fleet sync --pull >/dev/null 2>&1 || fail "pass adding open back after the hermes drop test"
 # A move both wrote before the run stopped short of its record, then a
 # drop, still takes fleet's new entry off.
 server_put mcp.json "$open2"
@@ -1108,6 +1138,13 @@ for f in .zshenv .codex/.env .codex/config.toml; do
     cp "$TMP/stray.keep" "$HOME/$f"
 done
 fleet schedule run >/dev/null 2>&1 || fail "nightly pass after the stray markers"
+# A readable zshenv is made owner-only once fleet writes a token into it.
+sed -i.bak '/^export MINE_TOKEN=/d' "$HOME/.zshenv" && rm -f "$HOME/.zshenv.bak"
+chmod 644 "$HOME/.zshenv"
+MINE_TOKEN=mine-secret fleet sync --pull >/dev/null 2>&1 || fail "pass putting a token back"
+grep -q MINE_TOKEN "$HOME/.zshenv" || fail "the token did not come back"
+[[ "$(python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$HOME/.zshenv")" == 0o600 ]] \
+    || fail "a token went into a zshenv others can read"
 # A setting the user already had at the tier's value stays theirs.
 python3 - "$settings" <<'EOF'
 import json, sys
@@ -1192,6 +1229,18 @@ for previous in ({}, {"codexReclaimed": True}):
     out.append(fleet.CODEX_MCP_BEGIN in fleet.CODEX_CONFIG.read_text())
 print(out)' "$ROOT/files/fleet" "$TMP/same.toml" 2>&1 | tail -1)
 [[ "$same" == "[True, False]" ]] || fail "an identical codex block was not told apart by whether fleet rendered before: $same"
+
+# fleet's records stay owner-only whatever the umask.
+modes=$(HOME="$TMP/modes" XDG_STATE_HOME="$TMP/modes/state" python3 -c '
+import importlib.machinery, importlib.util, os, sys
+loader = importlib.machinery.SourceFileLoader("fleet_modes", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+os.umask(0o022)
+fleet._save_json(fleet.APPLIED, {"env": {"KEY": "secret"}})
+print(oct(fleet.APPLIED.stat().st_mode & 0o777))' "$ROOT/files/fleet" 2>&1)
+rm -rf "$TMP/modes"
+[[ "$modes" == 0o600 ]] || fail "fleet left its record readable by others: $modes"
 
 # A cached plugin version that cannot be imported keeps the registration the
 # last good one gave.
