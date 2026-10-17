@@ -268,6 +268,9 @@ fleet sync >/dev/null 2>&1 && fail "a link that could not go reported success on
 chmod 755 "$HOME/.claude/skills"
 [[ -d "$STATE_DIR/agents-src/.git" && "$(cat "$HOME/.agents/AGENTS.md")" == "operator instructions" && -f "$HOME/.agents/skills/opskill/SKILL.md" ]] \
     || fail "a link that could not go left the clone or the payload in the backup"
+[[ -L "$HOME/.gemini/GEMINI.md" && "$(cat "$HOME/.gemini/GEMINI.md")" == "operator instructions" \
+    && "$(cat "$HOME/.gemini/GEMINI.md.pre-agents.bak")" == "gemini own" ]] \
+    || fail "a link that could not go left an earlier link removed"
 fleet sync >/dev/null 2>&1 || fail "sync settling the clone on a friend's machine"
 [[ "$(cat "$HOME/.claude/skills/lost/SKILL.md")" == "lost" && ! -e "$HOME/.claude/skills/lost.pre-agents.bak" ]] \
     || fail "an orphaned skill sidecar not restored"
@@ -294,6 +297,16 @@ python3 -c 'import json, sys; f = json.load(open(sys.argv[1]))["files"]; sys.exi
     "$FAKE/server.json" || fail "settling with a record uploaded deletions"
 fleet __unlink >/dev/null
 rm -rf "$HOME/.gemini" "$HOME/.agents" "$FAKE/server.json" "$XDG_STATE_HOME/fleet/config.json" \
+    "$XDG_STATE_HOME/fleet/onboarding.pending"
+# Onboarding run by hand settles the old payload first too, so the
+# operator's files are never uploaded as this account's.
+old_agents
+fleet onboard >/dev/null 2>&1 || true
+[[ ! -e "$STATE_DIR/agents-src" ]] || fail "onboard left the clone"
+[[ "$(server_has AGENTS.md)" != "operator instructions" && "$(server_has skills/opskill/SKILL.md)" == "<none>" ]] \
+    || fail "onboard uploaded the old module's payload as the account's"
+fleet __unlink >/dev/null
+rm -rf "$HOME/.gemini" "$HOME/.agents" "$FAKE/server.json" "$FAKE/pushes" "$XDG_STATE_HOME/fleet/config.json" \
     "$XDG_STATE_HOME/fleet/onboarding.pending"
 
 # A friend's machine, account never pushed: local files stay, nothing is

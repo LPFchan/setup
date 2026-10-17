@@ -1286,20 +1286,36 @@ def _drop_old_clone(operator, backup=None):
     # The clone goes first, by a rename that cannot stop halfway, and comes
     # back if the links cannot go: a clone still here is what a retry finds.
     saved = backup.move(OLD_AGENTS_CLONE, "agents-src")
+    undone = []
+
+    def drop(link):
+        undone.append((link, os.readlink(link)))
+        link.unlink()
+
     try:
         for target in AGENTS_LINKS + OLD_AGENTS_LINKS:
             if _points_into(target, AGENTS_DIR):
-                target.unlink()
+                drop(target)
             _restore_old_backup(target)
         for directory in [SKILL_LINK_DIR, *OLD_SKILL_LINK_DIRS]:
             for entry in (list(directory.iterdir()) if directory.is_dir() else []):
                 if _points_into(entry, AGENTS_DIR):
-                    entry.unlink()
+                    drop(entry)
                     _restore_old_backup(entry)
                 elif entry.name.endswith(".pre-agents.bak"):
                     # Its link already deleted: the sidecar still comes back.
                     _restore_old_backup(entry.with_name(entry.name[:-len(".pre-agents.bak")]))
     except BaseException:
+        # The links already gone come back too, with what they displaced
+        # set aside again, so the old payload stays in use.
+        for link, source in reversed(undone):
+            try:
+                if os.path.lexists(link) and not os.path.lexists(_old_backup(link)):
+                    os.rename(link, _old_backup(link))
+                if not os.path.lexists(link):
+                    os.symlink(source, link)
+            except OSError:
+                pass
         shutil.move(str(saved), str(OLD_AGENTS_CLONE))
         raise
 
@@ -3361,7 +3377,12 @@ def cmd_onboard():
         eprint("fleet: no session; run: auth login")
         return 3
     try:
-        outcome, _, _ = pull(account)
+        # As in a sync: the old module's payload is the operator's, never
+        # another account's starting copy.
+        operator = account.split(" ", 1)[1] == OPERATOR_SUBJECT
+        if operator:
+            settle_old_agents(operator=True)
+        outcome, _, _ = pull(account, settle_old=not operator)
         if outcome != "pending":
             print("fleet: this account already has its agent config; fleet sync keeps it in step")
             refresh_links()
