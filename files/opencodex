@@ -2683,6 +2683,11 @@ def main() -> int:
             # never remove it, since a proxy caught mid-restart must keep it.
             if proxy_service_active():
                 write_base_url_export()
+            elif _base_url_block(ZSHENV.read_text() if ZSHENV.exists() else ""):
+                # But a route left to a stopped proxy is a failed pass.
+                print("opencodex: the proxy is not running, but requests are still routed to it",
+                      file=sys.stderr)
+                return 1
         elif command == "__unexport":
             remove_base_url_export()
         elif command == "__proxy-url":
