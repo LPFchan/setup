@@ -209,6 +209,12 @@ EOF
 rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/ontimer.py" module uninstall >/dev/null 2>&1 || fail "uninstall with a broken binary"
 grep -qx 'schedule disable' "$FAKE/ran" || fail "a broken binary's timer was left on"
+# And when the cleanup then fails, the timer it found on comes back.
+printf 'syntax error(\n' > "$FLEET_BIN"
+rm -f "$FAKE/ran"
+FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+[[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left a broken binary's timer off"
+rm -f "$FLEET_BIN"
 # The CLI removes an installed timer whether or not it runs, and calls a
 # missing one off without asking the helper, which would refuse it.
 printf '#!/bin/sh\necho "$@" >> "$FAKE/helper"\n' > "$TMP/helper"

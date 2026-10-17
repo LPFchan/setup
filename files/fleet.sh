@@ -131,7 +131,12 @@ uninstall() {
         off=1
     elif [[ -f "$cli" && -z "$staged" ]]; then
         staged=$(mktemp)
-        _stage "$staged" && cli="$staged" && python3 "$cli" schedule disable >/dev/null 2>&1 && off=1
+        if _stage "$staged"; then
+            cli="$staged"
+            # The installed one may not have answered whether it was on either.
+            [[ -n "$was_on" ]] || { python3 "$cli" schedule status 2>/dev/null | grep -q ' on$' && was_on=1; }
+            python3 "$cli" schedule disable >/dev/null 2>&1 && off=1
+        fi
     fi
     if [[ -f "$cli" && -z "$off" ]]; then
         [[ -n "$staged" ]] && rm -f "$staged"
