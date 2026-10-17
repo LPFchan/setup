@@ -32,6 +32,8 @@ if cmd == "refresh":
     sys.exit(0)
 origin = open(f"{fake}/origin").read() if os.path.exists(f"{fake}/origin") else "https://auth.lost.plus"
 if cmd == "context":
+    if os.path.exists(f"{fake}/no-session"):
+        sys.exit(4)
     print(json.dumps({"origin": origin, "subject": open(f"{fake}/subject").read()}))
     sys.exit(0)
 method, path = sys.argv[2], sys.argv[3]
@@ -68,6 +70,11 @@ if path == "/api/fleet/config/fetch":
     paths = body["paths"]
     # One file per answer, so callers must follow `remaining`.
     first = [p for p in paths if p in state["files"]][:1]
+    if os.path.exists(f"{fake}/fetch-short"):
+        # Claims to be done without sending what was asked for.
+        os.remove(f"{fake}/fetch-short")
+        answer(200, {"counter": state["counter"], "version": state["version"],
+                     "files": [], "remaining": [], "missing": []})
     answer(200, {"counter": state["counter"], "version": state["version"],
                  "files": [{"path": p, **state["files"][p]} for p in first],
                  "remaining": [p for p in paths if p in state["files"] and p not in first],
@@ -191,6 +198,14 @@ fleet onboard >/dev/null 2>&1 && fail "onboard read a refused upload as success"
 rm "$FAKE/limited"
 [[ -L "$HOME/.agents/skills/both" ]] || fail "a failed onboarding removed the user's dangling link"
 rm "$HOME/.agents/skills/both"
+# So does a link there to the harness folder, put back by a failed one.
+ln -s "$HOME/.codex/skills/both" "$HOME/.agents/skills/both"
+touch "$FAKE/limited"
+fleet onboard >/dev/null 2>&1 && fail "onboard read a refused upload as success"
+rm "$FAKE/limited"
+[[ "$(readlink "$HOME/.agents/skills/both")" == "$HOME/.codex/skills/both" ]] \
+    || fail "a failed onboarding kept a copy where a link to a harness skill was"
+rm "$HOME/.agents/skills/both"
 # A copy that fails partway comes out with everything else it staged.
 printf 'locked\n' > "$HOME/.codex/skills/both/locked.md"; chmod 000 "$HOME/.codex/skills/both/locked.md"
 fleet onboard >/dev/null 2>&1 && fail "onboard read a failed copy as success"
@@ -229,9 +244,14 @@ mkdir -p "$HOME/.codex/skills/haslink"; printf 'has a link\n' > "$HOME/.codex/sk
 ln -s ../shared "$HOME/.codex/skills/haslink/res"
 # So does a record that cannot be saved after the upload.
 printf '{"counter":0,"version":0,"files":{}}' > "$FAKE/server.json"
+# A link in ~/.agents to a harness skill folder about to move becomes a copy,
+# uploaded, instead of a link left dangling. (The failed move left a copy.)
+rm -r "$HOME/.agents/skills/both"; ln -s "$HOME/.codex/skills/both" "$HOME/.agents/skills/both"
 chmod 500 "$XDG_STATE_HOME/fleet"
 fleet onboard >/dev/null 2>&1 && fail "onboard read an unsaved record as success"
 chmod 700 "$XDG_STATE_HOME/fleet"
+[[ -d "$HOME/.agents/skills/both" && ! -L "$HOME/.agents/skills/both" && "$(server_has skills/both/SKILL.md)" == "codex skill" ]] \
+    || fail "a link to a harness skill folder was not uploaded as a copy"
 [[ -d "$HOME/.claude/skills/claude-only" && ! -L "$HOME/.claude/skills/claude-only" && -d "$HOME/.codex/skills/both" ]] \
     || fail "an unsaved onboarding record left the skill folders in the backup"
 # A harness skill whose SKILL.md is a link stays where it is.
@@ -522,6 +542,33 @@ touch "$FAKE/config-down"
 rc=0; fleet sync --check >/dev/null 2>&1 || rc=$?
 rm "$FAKE/config-down"
 [[ $rc == 3 ]] || fail "check read an unanswered account config as $rc, not unknown"
+# So is one with no session to ask with.
+touch "$FAKE/no-session"
+rc=0; fleet sync --check >/dev/null 2>&1 || rc=$?
+[[ $rc == 3 ]] || fail "check without a session read as $rc, not unknown"
+# Also when SSH blocks are told some other way.
+python3 - "$ROOT/files/fleet" <<'PY' || fail "a config check without a session read as known"
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_nosession", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+assert m.config_outdated() is None
+PY
+rm "$FAKE/no-session"
+# A fetch that leaves out a file it was asked for is refused.
+prev=$(cat "$HOME/.agents/skills/mine/SKILL.md")
+server_put skills/mine/SKILL.md 'short fetch'
+touch "$FAKE/fetch-short"
+rc=0; out=$(fleet sync --pull 2>&1) || rc=$?
+rm -f "$FAKE/fetch-short"
+[[ $rc != 0 && "$out" == *"left out requested files"* && "$out" != *Traceback* ]] || fail "took a short fetch: $out"
+fleet sync --pull >/dev/null 2>&1 || fail "pull after a short fetch"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "short fetch" ]] || fail "short fetch not retried"
+server_put skills/mine/SKILL.md "$prev"; fleet sync --pull >/dev/null 2>&1 || fail "pull back after a short fetch"
+# A name that is not UTF-8 is skipped, not a crash.
+touch "$HOME/.agents/skills/mine/"$'\xff'
+rc=0; out=$(fleet sync 2>&1) || rc=$?
+rm -f "$HOME/.agents/skills/mine/"$'\xff'
+[[ "$out" != *Traceback* ]] || fail "a non-UTF-8 name crashed the sync: $out"
 # A damaged sync record reads as outdated, so the sync that follows says so.
 cp "$XDG_STATE_HOME/fleet/config.json" "$TMP/config.keep"
 python3 -c 'import json,sys; p=sys.argv[1]; r=json.load(open(p)); r["files"]=[]; json.dump(r,open(p,"w"))' "$XDG_STATE_HOME/fleet/config.json"
@@ -563,7 +610,7 @@ printf 'x\n' > "$HOME/.agents/skills/mine/extra"
 touch "$FAKE/limited"
 fleet sync >"$TMP/out" 2>&1 && fail "rate limit read as success"
 grep -q 'uploads resume in 10 min' "$TMP/out" || fail "no retry time: $(cat "$TMP/out")"
-grep -q 'symlinks are not uploaded: skills/mine/linked' "$TMP/out" || fail "symlink not listed"
+grep -q "symlinks are not uploaded: skills/mine/linked" "$TMP/out" || fail "symlink not listed: $(cat "$TMP/out")"
 rm "$FAKE/limited"
 fleet sync >/dev/null 2>&1 || fail "sync after the limit"
 [[ "$(server_has skills/mine/linked)" == "<none>" ]] || fail "symlink uploaded"
@@ -599,6 +646,17 @@ rc=0; fleet sync >"$TMP/out" 2>&1 || rc=$?
 grep -q 'could not replace the nightly timer' "$TMP/out" || fail "failed timer swap not reported"
 [[ "$(server_has skills/mine/unsent)" == "<none>" ]] || fail "uploaded while the old timer may remain"
 rm -f "$HOME/.agents/skills/mine/unsent" "$SCHEDULE_USER_DIR"/fleet-sync.*
+# Nor does a missing schedule helper stop the pull.
+mkdir -p "$SCHEDULE_USER_DIR"
+printf 'ExecStart=%%h/.local/bin/fleet sync\n' > "$SCHEDULE_USER_DIR/fleet-sync.service"
+printf 'OnCalendar=*-*-* 04:00:00\n' > "$SCHEDULE_USER_DIR/fleet-sync.timer"
+prev=$(cat "$HOME/.agents/skills/mine/SKILL.md")
+server_put skills/mine/SKILL.md 'pulled past the helper'
+rc=0; SCHEDULE_BIN="$TMP/no-schedule" fleet sync >"$TMP/out" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q 'schedule helper not found' "$TMP/out" || fail "a missing schedule helper exited $rc"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "pulled past the helper" ]] || fail "a missing schedule helper skipped the pull"
+rm -f "$SCHEDULE_USER_DIR"/fleet-sync.*
+server_put skills/mine/SKILL.md "$prev"; fleet sync --pull >/dev/null 2>&1 || fail "pull back after the helper test"
 # One that cannot be read is taken as that old timer too.
 mkdir -p "$SCHEDULE_USER_DIR"
 printf 'ExecStart=%%h/.local/bin/fleet schedule run\n' > "$SCHEDULE_USER_DIR/fleet-sync.service"
@@ -797,6 +855,12 @@ out=$(fleet sync 2>&1) || fail "sync with a linked claude skill folder: $out"
     || fail "linked skills through a linked claude skill folder: $out"
 fleet __unlink >/dev/null 2>&1 || fail "unlink with a linked claude skill folder"
 [[ "$(cd "$HOME/.agents/skills" && find . | sort)" == "$before" ]] || fail "unlinked through a linked claude skill folder"
+# Nor is a link into ~/.agents that the folder it leads to holds dropped.
+mkdir "$TMP/shared"; ln -s "$HOME/.agents/skills/mine" "$TMP/shared/mine"
+rm "$HOME/.claude/skills"; ln -s "$TMP/shared" "$HOME/.claude/skills"
+fleet __unlink >/dev/null 2>&1 || fail "unlink with a shared claude skill folder"
+[[ -L "$TMP/shared/mine" ]] || fail "unlinked a link in a shared claude skill folder"
+rm "$HOME/.claude/skills"; ln -s "$HOME/.agents/skills" "$HOME/.claude/skills"; rm -r "$TMP/shared"
 python3 - "$ROOT/files/fleet" "$HOME/.claude/skills" "$TMP" <<'PY' || fail "onboarding gathers skills through a linked harness folder"
 import importlib.machinery, importlib.util, pathlib, sys
 loader = importlib.machinery.SourceFileLoader("fleet_test", sys.argv[1])

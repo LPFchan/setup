@@ -465,6 +465,11 @@ def config_sync_enabled():
 
 def config_path(rel):
     """Whether `rel` is a path Auth stores, as it checks them."""
+    try:
+        # A name that is not UTF-8 reaches here surrogate-escaped.
+        rel.encode()
+    except UnicodeEncodeError:
+        return False
     if len(rel.encode()) > MAX_PATH_BYTES or re.search(r"[\x00-\x1f\x7f\\]", rel):
         return False
     segments = rel.split("/")
@@ -634,6 +639,8 @@ def fetch_contents(paths, counter, server):
         if len(remaining) >= len(pending):
             raise ConfigError("Auth returned no files for a fetch")
         pending = remaining
+    if set(contents) != set(paths):
+        raise ConfigError("Auth's fetch left out requested files")
     return contents
 
 
@@ -1316,7 +1323,10 @@ def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
     links = _load_links()
-    for path in list(AGENTS_LINKS) + _skill_link_targets(links):
+    # A linked claude skill folder leads to someone else's: what is in it
+    # is not fleet's to drop or fill.
+    skills_linked = SKILL_LINK_DIR.is_symlink()
+    for path in list(AGENTS_LINKS) + ([] if skills_linked else _skill_link_targets(links)):
         _unlink_restoring(path, links)
     # Also the old agents module's, which a sync may not have taken over yet.
     _drop_old_links()
@@ -1325,6 +1335,9 @@ def remove_links():
     stuck = {t: moved for t, moved in links.items() if os.path.lexists(moved)}
     if stuck:
         _save_json(LINKS_STATE, stuck)
+        if skills_linked and any(pathlib.Path(t).parent == SKILL_LINK_DIR for t in stuck):
+            raise ConfigError(f"{SKILL_LINK_DIR} is a link, so the skills fleet moved out of it stay "
+                              "in the backup; make it a folder again and run the uninstall again")
         target = sorted(stuck)[0]
         raise ConfigError(f"{target} is no longer fleet's link, so the file it replaced stays at "
                           f"{stuck[target]}; move one of them aside and run the uninstall again")
@@ -1350,7 +1363,7 @@ def onboard(account):
             _unreadable(exc)
     # What this run copies into ~/.agents comes out again if staging or the
     # upload fails, so a retry gathers the harness files afresh.
-    staged = []
+    staged, relinked = [], []
     try:
         if not agents_md.exists() and sources:
             agents_md.parent.mkdir(parents=True, exist_ok=True)
@@ -1369,7 +1382,14 @@ def onboard(account):
             for folder in _skill_folders(directory):
                 mine = skills/folder.name
                 # lexists: a dangling link there is the user's, not staged.
-                if os.path.lexists(mine):
+                if mine.is_symlink() and not _has_links(folder) and pathlib.Path(
+                        os.path.realpath(mine)).is_relative_to(os.path.realpath(folder)):
+                    # A link to the folder about to move would dangle: it
+                    # becomes a copy, and a link again if the upload fails.
+                    relinked.append((mine, os.readlink(mine)))
+                    mine.unlink()
+                    shutil.copytree(folder, mine, symlinks=True)
+                elif os.path.lexists(mine):
                     if not _same_tree(folder, mine):
                         listed.append(str(folder))
                 elif _has_links(folder):
@@ -1394,6 +1414,11 @@ def onboard(account):
                 shutil.rmtree(path)
             else:
                 path.unlink(missing_ok=True)
+        for path, target in reversed(relinked):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            path.unlink(missing_ok=True)
+            os.symlink(target, path)
         if isinstance(exc, HttpError):
             if exc.status == 409:
                 raise ConfigError("another machine set up this account first; run: fleet sync") from None
@@ -1466,7 +1491,7 @@ def config_outdated():
         return False
     account = _context()
     if account is None:
-        return False
+        return None
     try:
         counter, version, _ = _listing()
     except (ConfigError, Unavailable) as exc:
@@ -1553,7 +1578,13 @@ def cmd_sync(check=False, direct=True):
         # Either way this run only pulls: a failed replacement may leave the
         # old timer running plain `fleet sync`.
         direct = False
-        if schedule_enable() != 0:
+        try:
+            rc = schedule_enable()
+        except SystemExit as exc:
+            # A missing helper exits; the pull still runs.
+            eprint(f"fleet: {exc}")
+            rc = 1
+        if rc != 0:
             eprint("fleet: could not replace the nightly timer; run fleet schedule, then fleet sync")
             ssh_rc = 1
         else:
