@@ -37,8 +37,6 @@ KNOWN_HOSTS = SSH_DIR/"known_hosts.fleet"
 STATE_HOME = pathlib.Path(os.environ.get("XDG_STATE_HOME") or HOME/".local/state")
 STATE = STATE_HOME/"fleet/sync.json"
 LOGIN_MARKER = STATE_HOME/"setup/auth.needs-login"
-OWNER_KEYS_URL = os.environ.get("SETUP_OWNER_KEYS_URL", "https://github.com/LPFchan.keys")
-OPERATOR_SUBJECT = "1"
 
 CONFIG_BLOCK = "fleet"
 KEYS_BLOCK = "fleet-keys"
@@ -46,20 +44,6 @@ KEYS_BLOCK = "fleet-keys"
 PREDECESSORS = {CONFIG_BLOCK: ["ssh-aliases"], KEYS_BLOCK: ["ssh-aliases-github-keys"]}
 WARN = ("# [setup] managed block — do NOT edit between these markers; "
         "overwritten on 'setup update'. Source: LPFchan/setup")
-
-# The operator's hosts until the SSH cutover, when Auth's fleet replaces this
-# table. alias | address | user | optional TERM fallback
-FLEET = [
-    "spark1|spark1.tailaa113.ts.net|yeowool",
-    "spark2|spark2.tailaa113.ts.net|yeowool",
-    "mangchi|mangchi.lost.plus|yeowool",
-    "yeowoolmac|mac.lost.plus|yeowool",
-    "grimoire|grimoire.lost.plus|yeowool",
-    "oci-ubuntu|oci.lost.plus|ubuntu",
-    "bingus|bingus.lost.plus|yeowool|xterm-256color",
-    "yeowoolair|yeowool-air.tailaa113.ts.net|yeowool",
-    "dumpling|dumpling.tailaa113.ts.net|yeowool",
-]
 
 NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 ADDRESS = re.compile(r"^[A-Za-z0-9.:-]+$")
@@ -147,28 +131,6 @@ def fetch_fleet():
     return "ok", fleet, subject
 
 
-def fetch_owner_keys():
-    try:
-        with urllib.request.urlopen(OWNER_KEYS_URL, timeout=30) as response:
-            text = response.read().decode()
-    except (OSError, ValueError):
-        raise Unavailable(f"could not fetch owner keys from {OWNER_KEYS_URL}") from None
-    return [" ".join(line.split()[:2]) for line in text.splitlines()
-            if len(line.split()) >= 2 and re.match(r"^(ssh-|ecdsa-|sk-)", line)]
-
-
-def _local_keys():
-    keys = []
-    for path in sorted(SSH_DIR.glob("*.pub")):
-        try:
-            fields = path.read_text().split()
-        except (OSError, ValueError):
-            continue
-        if len(fields) >= 2:
-            keys.append(" ".join(fields[:2]))
-    return keys
-
-
 def _output(command):
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)
@@ -233,15 +195,6 @@ def _home_path(path):
         return str(path)
 
 
-def legacy_hosts():
-    hosts = []
-    for row in FLEET:
-        alias, address, user, *rest = row.split("|")
-        hosts.append({"alias": alias, "address": address, "user": user,
-                      "term": rest[0] if rest else ""})
-    return hosts
-
-
 def auth_hosts(fleet):
     hosts = []
     for host in fleet.get("hosts") or []:
@@ -277,48 +230,21 @@ def auth_known_hosts(fleet):
     return lines
 
 
-def _unique(items):
-    return list(dict.fromkeys(items))
-
-
 def desired():
-    """The blocks this machine should hold, as (config body, keys body, info).
-
-    Until the SSH cutover the operator's account (and, with no session, a
-    machine holding one of the owner's GitHub keys) keeps the old sources:
-    aliases from FLEET and the GitHub keys, with Auth's keys added."""
-    outcome, fleet, subject = fetch_fleet()
-    me = short_hostname()
+    """The blocks this machine should hold, as (config body, keys body, info)."""
+    outcome, fleet, _ = fetch_fleet()
     if outcome == "unavailable":
         raise Unavailable("Auth is unreachable")
-    if outcome == "ok" and subject != OPERATOR_SUBJECT:
-        keys = auth_keys(fleet)
-        if not keys:
-            raise Unavailable("Auth served an empty key set")
-        self_alias = (fleet.get("self") or {}).get("alias") or ""
-        hosts = auth_hosts(fleet)
-        return config_body(hosts, [self_alias, me]), "\n".join(keys), {
-            "source": "auth", "fleet": fleet, "hosts": len(hosts), "keys": len(keys),
-            "known_hosts": auth_known_hosts(fleet)}
-    owner_keys = fetch_owner_keys()
-    if outcome == "rejected" and not set(_local_keys()) & set(owner_keys):
+    if outcome == "rejected":
         raise Unavailable("no session; run: auth login")
-    keys = _unique(owner_keys + (auth_keys(fleet) if fleet else []))
+    keys = auth_keys(fleet)
     if not keys:
-        raise Unavailable("no keys to write")
-    hosts = legacy_hosts()
-    info = {"source": "legacy", "fleet": fleet, "hosts": len(hosts) - (me in [h["alias"] for h in hosts]),
-            "keys": len(keys)}
-    if fleet:
-        info["missing"] = cutover_gaps(fleet, hosts)
-        info["known_hosts"] = auth_known_hosts(fleet)
-    return config_body(hosts, [me]), "\n".join(keys), info
-
-
-def cutover_gaps(fleet, legacy):
-    """FLEET rows Auth does not yet serve as the same stanza."""
-    served = {(h["alias"], h["address"], h["user"]) for h in auth_hosts(fleet)}
-    return [h["alias"] for h in legacy if (h["alias"], h["address"], h["user"]) not in served]
+        raise Unavailable("Auth served an empty key set")
+    self_alias = (fleet.get("self") or {}).get("alias") or ""
+    hosts = auth_hosts(fleet)
+    return config_body(hosts, [self_alias, short_hostname()]), "\n".join(keys), {
+        "fleet": fleet, "hosts": len(hosts), "keys": len(keys),
+        "known_hosts": auth_known_hosts(fleet)}
 
 
 # --- managed blocks ------------------------------------------------------
@@ -408,9 +334,8 @@ def is_current(files):
 
 def _save_state(info):
     fleet = info.get("fleet") or {}
-    record = {"synced_at": int(time.time()), "source": info["source"],
-              "version": fleet.get("version", ""), "self": fleet.get("self") or {},
-              "missing": info.get("missing", [])}
+    record = {"synced_at": int(time.time()),
+              "version": fleet.get("version", ""), "self": fleet.get("self") or {}}
     try:
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps(record) + "\n")
@@ -1696,12 +1621,9 @@ def cmd_status():
     try:
         files, info = planned()
         current = is_current(files)
-        source = "Auth" if info["source"] == "auth" else "FLEET table and GitHub keys (before cutover)"
         print(f"fleet: SSH blocks {'current' if current else 'outdated'}"
-              f" ({info['hosts']} hosts, {info['keys']} keys from {source})")
+              f" ({info['hosts']} hosts, {info['keys']} keys from Auth)")
         _warn_self(info.get("fleet"))
-        if info.get("missing"):
-            print("fleet: not yet served by Auth as in FLEET: " + ", ".join(info["missing"]))
     except Unavailable as exc:
         print(f"fleet: {exc}")
     pending = pending_local()

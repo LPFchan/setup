@@ -5,11 +5,9 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake"
-export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
 mkdir -p "$FLEET_SSH_DIR" "$FAKE/api/fleet"
 printf '{"counter":0,"version":"","files":[],"installs":[],"skills":[]}' > "$FAKE/api/fleet/config.json"
 printf '[]' > "$FAKE/api/services.json"
-printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/github.keys"
 
 # A stand-in auth CLI: `request GET /api/fleet` prints $FAKE/fleet.json and
 # exits $FAKE/rc, other requests print $FAKE<path>.json,
@@ -36,7 +34,7 @@ FLEET_JSON='{"version":"v1","self":{"key":"ssh-ed25519 AAAASelf","key_mismatch":
 {"alias":"evil","address":"x\nProxyCommand sh","user":"fox","term_fallback":false}],
 "known_hosts":["mac.lost.plus ssh-ed25519 AAAAMacA","mac.lost.plus ssh-ed25519 AAAAMacB","x ProxyCommand sh"]}'
 
-# A friend's machine writes only its fleet: itself left out, the TERM
+# A machine writes only its fleet: itself left out, the TERM
 # fallback kept, a host with an unsafe field dropped.
 cat > "$FLEET_SSH_DIR/config" <<'CFG'
 Host mine
@@ -59,7 +57,6 @@ grep -q 'Host mine' "$FLEET_SSH_DIR/config" || fail "user stanza lost"
 [[ "$(tail -1 "$FLEET_SSH_DIR/config")" == "# <<< setup:fleet <<<" ]] || fail "block not last"
 grep -qx 'ssh-ed25519 AAAAPeer' "$FLEET_SSH_DIR/authorized_keys" || fail "peer key missing"
 grep -qx 'ssh-ed25519 AAAAHand hand' "$FLEET_SSH_DIR/authorized_keys" || fail "hand key lost"
-grep -q AAAAOwner "$FLEET_SSH_DIR/authorized_keys" && fail "a friend got the owner's GitHub keys"
 [[ "$(ls -l "$FLEET_SSH_DIR/config")" == -rw-------* ]] || fail "config mode"
 [[ "$(cat "$FLEET_SSH_DIR/known_hosts.fleet")" == $'mac.lost.plus ssh-ed25519 AAAAMacA\nmac.lost.plus ssh-ed25519 AAAAMacB' ]] \
     || fail "vouched host keys not written"
@@ -76,7 +73,7 @@ fleet sync >/dev/null 2>&1
 [[ "$(grep -c 'setup:fleet >>>' "$FLEET_SSH_DIR/config")" == 1 ]] || fail "block duplicated"
 
 # No authoritative answer keeps the blocks: an empty set, Auth down, or a
-# rejected session on a machine without an owner key.
+# rejected session.
 cp "$FLEET_SSH_DIR/config" "$TMP/config.before"
 cp "$FLEET_SSH_DIR/authorized_keys" "$TMP/keys.before"
 for case in '{"version":"v","self":{},"keys":[],"hosts":[]} 0' 'oops 1' '{} 4'; do
@@ -88,27 +85,13 @@ for case in '{"version":"v","self":{},"keys":[],"hosts":[]} 0' 'oops 1' '{} 4'; 
 done
 [[ -f "$XDG_STATE_HOME/setup/auth.needs-login" ]] || fail "rejected session left no login marker"
 
-# With no session, a machine holding an owner key keeps the old sources, as
-# ssh-aliases did; the account tree has no answer, so the run exits 3.
-printf 'ssh-ed25519 AAAAOwner me@grimoire\n' > "$FLEET_SSH_DIR/id_ed25519.pub"
-serve '{}' 4
-rc=0; fleet sync >/dev/null 2>&1 || rc=$?
-[[ $rc == 3 ]] || fail "owner machine without a session exited $rc"
-grep -q 'Host mangchi mangchi.lost.plus' "$FLEET_SSH_DIR/config" || fail "FLEET table not used"
-grep -q 'Host bingus bingus.lost.plus' "$FLEET_SSH_DIR/config" || fail "FLEET TERM host missing"
-grep -q 'Host grimoire' "$FLEET_SSH_DIR/config" && fail "own FLEET alias written"
-grep -qx 'ssh-ed25519 AAAAOwner' "$FLEET_SSH_DIR/authorized_keys" || fail "owner key missing"
-
-# The operator's account keeps the old sources until cutover, with Auth's keys
-# added, and status lists the FLEET rows Auth does not serve yet.
+# The operator's account gets its fleet from Auth like any other.
 serve "$FLEET_JSON" 0 1
 fleet sync >/dev/null 2>&1 || fail "operator sync"
-grep -q 'Host mangchi' "$FLEET_SSH_DIR/config" || fail "operator lost FLEET aliases"
-grep -q 'bingus.lan' "$FLEET_SSH_DIR/config" && fail "operator got Auth's stanzas before cutover"
-grep -qx 'ssh-ed25519 AAAAOwner' "$FLEET_SSH_DIR/authorized_keys" || fail "operator lost GitHub keys"
+grep -q 'Host bingus bingus.lan' "$FLEET_SSH_DIR/config" || fail "operator missing Auth's stanzas"
 grep -qx 'ssh-ed25519 AAAAPeer' "$FLEET_SSH_DIR/authorized_keys" || fail "operator missing Auth keys"
 [[ -f "$XDG_STATE_HOME/setup/auth.needs-login" ]] && fail "login marker kept after a good answer"
-fleet status 2>&1 | grep -q 'not yet served by Auth as in FLEET: spark1' || fail "status shows no cutover gaps"
+fleet status 2>&1 | grep -q 'keys from Auth' || fail "status does not name Auth"
 
 # A file whose text is current but whose mode loosened is put back to 0600.
 serve "$FLEET_JSON"
@@ -136,7 +119,6 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 # The setup module: no answer from Auth installs fine and reads as unknown, not
 # outdated, so setup does not fail every run on a machine waiting to log in.
 serve '{}' 4
-rm -f "$FLEET_SSH_DIR/id_ed25519.pub"
 export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet" \
     FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" STATE_DIR="$XDG_STATE_HOME/setup"
 module() {

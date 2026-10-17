@@ -7,9 +7,7 @@ TMP=$(mktemp -d)
 trap '[[ -n "${KEEP:-}" ]] && cat "$TMP/err"; rm -rf "$TMP"' EXIT
 export FAKE="$TMP/fake" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/ssh" FLEET_SELF=grimoire
 export FLEET_AUTH_BIN="$TMP/bin/auth" FLEET_MANIFEST="$ROOT/files/fleet-manifest.json"
-export SETUP_OWNER_KEYS_URL="file://$TMP/github.keys"
 mkdir -p "$FAKE" "$TMP/bin" "$FLEET_SSH_DIR"
-: > "$TMP/github.keys"
 # claude, codex and systemctl are stand-ins that only record their calls.
 export PATH="$TMP/bin:/usr/bin:/bin"
 for tool in claude systemctl; do
