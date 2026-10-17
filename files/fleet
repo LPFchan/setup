@@ -525,7 +525,9 @@ def scan_local():
         if key is None or key == name:
             return key is not None
         if not os.path.lexists(base/key):
-            return True
+            # Two other spellings cannot both be the install: neither is
+            # known to be, so both stay the account's (and clash).
+            return sum(nfc(n) == nfc(name) for n in os.listdir(base)) == 1
         here, there = os.lstat(base/name), os.lstat(base/key)
         return (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
 

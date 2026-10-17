@@ -1095,6 +1095,13 @@ m._apply_installs({name: {"id": "i", "server": {"SKILL.md": ["h", False]}}}, [na
                   {name: {"SKILL.md": b"---\nname: x\n---\n"}}, m.Backup())
 assert [e.name for e in (m.AGENTS_DIR/"skills").iterdir()] == [name], list((m.AGENTS_DIR/"skills").iterdir())
 assert m._edited_installs() == [], m._edited_installs()
+# Two other spellings, with the recorded one gone: neither is known to be
+# the install, so both are the account's.
+shutil.rmtree(m.AGENTS_DIR/"skills")
+m.INSTALLED.write_text(json.dumps({"\u1ead": {}}))
+for spelling in ("a\u0323\u0302", "a\u0302\u0323"):
+    (m.AGENTS_DIR/"skills"/spelling).mkdir(parents=True); (m.AGENTS_DIR/"skills"/spelling/"SKILL.md").write_text("z")
+assert len(m.scan_local()[0]) == 2, m.scan_local()
 PY
 rm -rf "$TMP/nfd"
 
