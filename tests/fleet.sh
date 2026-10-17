@@ -164,10 +164,18 @@ grep -qx __unlink "$FAKE/ran" || fail "uninstall skipped __unlink when the binar
 module install >/dev/null 2>&1 || fail "reinstall"
 rm -f "$FLEET_BIN"
 FLEET_SOURCE="$TMP/missing" module uninstall >/dev/null 2>&1 && fail "uninstall went on without a CLI"
-printf 'import sys\nsys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)\n' > "$FLEET_BIN"
+cat > "$FLEET_BIN" <<'EOF'
+import os, sys
+open(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["schedule", "status"]:
+    print("fleet: nightly sync on")
+sys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)
+EOF
 cp "$FLEET_BIN" "$TMP/failing.py"
+rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ -e "$FLEET_BIN" ]] || fail "a failed uninstall removed the binary"
+[[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
 # An installed binary older than this module, without __unlink, hands the
 # cleanup to the current one.
 printf 'import sys\nsys.exit(2 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$FLEET_BIN"

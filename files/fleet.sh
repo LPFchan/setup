@@ -117,11 +117,13 @@ status() {
 uninstall() {
     # Through python3, so a binary that lost its executable bit still cleans up;
     # a deleted one is fetched again, since only it can put the links back.
-    local cli="$BIN" staged="" ok="" off=""
+    local cli="$BIN" staged="" ok="" off="" was_on=""
     if [[ ! -f "$cli" ]]; then
         staged=$(mktemp)
         _stage "$staged" && cli="$staged"
     fi
+    # If the cleanup then fails, fleet stays installed, so the timer comes back.
+    [[ -f "$cli" ]] && python3 "$cli" schedule status 2>/dev/null | grep -q ' on$' && was_on=1
     # A timer left behind would run a binary about to go, so it goes first,
     # running or not. A CLI that cannot turn it off (broken, or older than one
     # that knows a missing timer is already off) hands over to the current one.
@@ -143,6 +145,10 @@ uninstall() {
     if [[ -z "$ok" && -z "$staged" ]]; then
         staged=$(mktemp)
         _stage "$staged" && python3 "$staged" __unlink && ok=1
+    fi
+    if [[ -z "$ok" && -n "$was_on" ]]; then
+        python3 "$cli" schedule enable >/dev/null 2>&1 \
+            || { [[ -n "$staged" ]] && python3 "$staged" schedule enable >/dev/null 2>&1; }
     fi
     [[ -n "$staged" ]] && rm -f "$staged"
     if [[ -z "$ok" ]]; then
