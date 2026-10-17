@@ -1251,7 +1251,11 @@ def refresh_links():
     # linked and would not record it again.
     try:
         agents_md = AGENTS_DIR/"AGENTS.md"
-        if agents_md.is_file():
+        if agents_md.is_symlink():
+            # One leading to a harness file would have that file swapped for
+            # a link back to it, and neither readable.
+            eprint(f"fleet: {agents_md} is a link; not linking it where harnesses read it")
+        elif agents_md.is_file():
             for target in AGENTS_LINKS:
                 if target != HOME/"AGENTS.md" and not target.parent.is_dir():
                     continue

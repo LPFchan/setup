@@ -444,6 +444,12 @@ fleet sync --pull >/dev/null 2>&1 || fail "pull removing AGENTS.md"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
     || fail "CLAUDE.md not restored when AGENTS.md left"
 [[ ! -L "$HOME/AGENTS.md" ]] || fail "~/AGENTS.md left dangling"
+# An AGENTS.md that is a link to a harness file is not linked back to.
+ln -s "$HOME/.claude/CLAUDE.md" "$HOME/.agents/AGENTS.md"
+fleet sync --pull >/dev/null 2>&1 || fail "pull with a linked AGENTS.md"
+[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
+    || fail "a linked AGENTS.md had the harness file it leads to linked back to it"
+rm "$HOME/.agents/AGENTS.md"
 # A user's link that only passes through ~/.agents by name is not fleet's.
 mv "$HOME/.claude/CLAUDE.md" "$TMP/claude.keep"; printf 'theirs\n' > "$HOME/instructions"
 ln -s "$HOME/.agents/../instructions" "$HOME/.claude/CLAUDE.md"
