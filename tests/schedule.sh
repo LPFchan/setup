@@ -53,7 +53,8 @@ printf "Persistent=true\n" > "$TMP/timer-extra"
 grep -q "Nice=19" "$SCHEDULE_USER_DIR/demo.service" || fail "service extra lines dropped"
 grep -q "Persistent=true" "$SCHEDULE_USER_DIR/demo.timer" || fail "timer extra lines dropped"
 grep -q "systemctl --user daemon-reload" "$LOG" || fail "user daemon-reload missing"
-grep -q "systemctl --user enable --now demo.timer" "$LOG" || fail "user enable --now missing"
+grep -q "systemctl --user enable demo.timer" "$LOG" || fail "user enable missing"
+grep -q "systemctl --user start demo.timer" "$LOG" || fail "user start missing"
 
 # status reports enabled/active and exits 0.
 "$SCHEDULE" status user demo >/dev/null || fail "status returned nonzero for enabled+active"
@@ -65,7 +66,7 @@ grep -q "systemctl --user enable --now demo.timer" "$LOG" || fail "user enable -
     >/dev/null || fail "system install-timer failed"
 [[ -f "$SCHEDULE_SYSTEM_DIR/kernel-simmer.timer" ]] || fail "system timer not written"
 grep -q "^systemctl daemon-reload" "$LOG" || fail "system daemon-reload should not use --user"
-grep -q "^systemctl enable --now kernel-simmer.timer" "$LOG" || fail "system enable should not use --user"
+grep -q "^systemctl enable kernel-simmer.timer" "$LOG" || fail "system enable should not use --user"
 
 # uninstall removes the units and reloads.
 "$SCHEDULE" uninstall-timer user demo >/dev/null || fail "uninstall-timer failed"
