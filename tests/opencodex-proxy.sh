@@ -90,6 +90,21 @@ grep -q '^export ANTHROPIC_BASE_URL=http://127.0.0.1:10100$' "$HOME/.zshenv" \
 touch "$HOME/proxy-down"
 python3 "$ROOT/files/opencodex" __export >/dev/null
 grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export removed the route"
+# A gateway the user set in Claude's settings is never replaced.
+printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
+rm -f "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export with a user gateway"
+grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "__export replaced the user's own base URL"
+# So is one on another loopback port, nor does removing the route take it.
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080"}}\n' > "$HOME/.claude/settings.json"
+python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export with a local user gateway"
+grep -q '127.0.0.1:8080' "$HOME/.claude/settings.json" || fail "__export replaced the user's local gateway"
+touch "$HOME/proxy-down"
+python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1 && fail "proxy succeeded with an inactive service"
+grep -q '127.0.0.1:8080' "$HOME/.claude/settings.json" || fail "removing the route took the user's local gateway"
+rm -f "$HOME/proxy-down"
+printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
+touch "$HOME/proxy-down"
 [[ $(python3 "$ROOT/files/opencodex" __proxy-url) == http://127.0.0.1:10100 ]] \
     || fail "__proxy-url did not print the proxy address"
 
@@ -144,5 +159,15 @@ if python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
     fail "proxy overwrote unparseable settings"
 fi
 [[ $(<"$HOME/.claude/settings.json") == '{broken' ]] || fail "unparseable settings were rewritten"
+# Removing the route reads them before touching the legacy exports, so a
+# refusal leaves service-started claude its route.
+touch "$HOME/proxy-down" "$HOME/.config/environment.d/10-harnesses-anthropic.conf"
+: > "$HOME/systemctl.log"
+if python3 "$ROOT/files/opencodex" proxy >/dev/null 2>&1; then
+    fail "proxy removed the route past unparseable settings"
+fi
+[[ -e "$HOME/.config/environment.d/10-harnesses-anthropic.conf" ]] \
+    || fail "a refused removal took the legacy environment.d export"
+! grep -q 'unset-environment' "$HOME/systemctl.log" || fail "a refused removal unset the systemd user export"
 
 echo "opencodex proxy tests passed"

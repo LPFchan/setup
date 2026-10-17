@@ -31,6 +31,10 @@ import unicodedata
 import urllib.request
 
 HOME = pathlib.Path.home()
+# Fleet keeps the default Claude profile, the one its nightly run (which has
+# no CLAUDE_CONFIG_DIR) sees; a run from a shell aimed at another profile
+# would otherwise split the settings it writes from the claude CLI's.
+os.environ.pop("CLAUDE_CONFIG_DIR", None)
 SSH_DIR = pathlib.Path(os.path.expanduser(os.environ.get("FLEET_SSH_DIR", "~/.ssh")))
 SSH_CONFIG = SSH_DIR/"config"
 AUTHORIZED_KEYS = SSH_DIR/"authorized_keys"
@@ -479,20 +483,29 @@ class Changed(Exception):
 
 
 def _setup_modules():
-    """The modules setup records as installed here."""
+    """The modules setup records as installed here, None when unread."""
     try:
         rows = SETUP_STATE.read_text().splitlines()
-    except OSError:
+    except FileNotFoundError:
         return set()
+    except OSError:
+        return None
     return {row.split("\t", 1)[0] for row in rows}
 
 
 def config_sync_enabled():
-    return not _setup_modules() & set(PREDECESSOR_MODULES)
+    modules = _setup_modules()
+    # Unread, the old modules may still own ~/.agents: wait.
+    return modules is not None and not modules & set(PREDECESSOR_MODULES)
 
 
 def config_path(rel):
     """Whether `rel` is a path Auth stores, as it checks them."""
+    try:
+        # A name that is not UTF-8 reaches here surrogate-escaped.
+        rel.encode()
+    except UnicodeEncodeError:
+        return False
     if len(rel.encode()) > MAX_PATH_BYTES or re.search(r"[\x00-\x1f\x7f\\]", rel):
         return False
     segments = rel.split("/")
@@ -522,7 +535,11 @@ def scan_local():
     def add(path, rel):
         if path.is_symlink():
             symlinks.append(rel)
-        elif path.is_file() and config_path(rel):
+        elif config_path(rel) and os.path.lexists(path):
+            # A folder or device here cannot be synced; skipped, the file it
+            # replaced would read as deleted on every machine.
+            if not path.is_file():
+                raise ConfigError(f"{path} is not a regular file")
             files[rel] = _digest(path)
 
     for name in ("AGENTS.md", "mcp.json"):
@@ -658,6 +675,8 @@ def fetch_contents(paths, counter, server):
         if len(remaining) >= len(pending):
             raise ConfigError("Auth returned no files for a fetch")
         pending = remaining
+    if set(contents) != set(paths):
+        raise ConfigError("Auth's fetch left out requested files")
     return contents
 
 
@@ -745,6 +764,68 @@ def _load_json(path, default):
     return value if isinstance(value, type(default)) else default
 
 
+def _load_record(path, valid):
+    """A state record; {} only when there is none. A damaged one stops the
+    command: read as empty, it would lose what the record keeps."""
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read {path} ({exc}); move it aside to start afresh") from None
+    if not isinstance(value, dict) or not valid(value):
+        raise ConfigError(f"{path} is damaged; move it aside to start afresh")
+    return value
+
+
+def _sync_record_ok(r):
+    # An empty or wrong-shaped file map would read as "nothing synced yet".
+    files = r.get("files")
+    # An account _context() could never give would move ~/.agents aside as
+    # another account's.
+    return (isinstance(r.get("account"), str) and re.fullmatch(r"[^ ]+ [^ ]+", r["account"])
+            and isinstance(r.get("counter"), int)
+            and isinstance(r.get("version"), int) and isinstance(files, dict)
+            and all(config_path(k) and isinstance(v, list) and len(v) == 2
+                    and isinstance(v[0], str) and re.fullmatch(r"[0-9a-f]{64}", v[0])
+                    and isinstance(v[1], bool) for k, v in files.items()))
+
+
+def _load_sync_record():
+    """The sync record. Read as a first join, a damaged one would take the
+    account's copy over local edits."""
+    return _load_record(CONFIG_STATE, _sync_record_ok)
+
+
+def _load_links():
+    """{link: what it displaced}. Read as empty, a damaged one would forget
+    the user files the links displaced."""
+    return _load_record(LINKS_STATE, lambda r: all(
+        _link_entry_ok(k, v) for k, v in r.items()))
+
+
+def _link_entry_ok(link, moved):
+    """A link fleet makes, mapped to the backup or the old agents module's
+    sidecar beside it: restoring moves `moved` onto `link`, so anything else
+    would move arbitrary files around."""
+    if not isinstance(moved, str):
+        return False
+    link, moved = pathlib.Path(link), pathlib.Path(moved)
+    if not (link in AGENTS_LINKS or link.parent == SKILL_LINK_DIR):
+        return False
+    if moved == _old_backup(link):
+        return True
+    # Only where _link backs up this very link: a run's folder, then
+    # displaced/<the link's path>, with a collision suffix at most.
+    if not (moved.is_absolute() and moved.is_relative_to(BACKUP_DIR) and link.is_relative_to(HOME)):
+        return False
+    parts, rel = moved.relative_to(BACKUP_DIR).parts, link.relative_to(HOME).parts
+    return (len(parts) == len(rel) + 2
+            and re.fullmatch(r"\d{8}-\d{6}(-\d+)?", parts[0]) is not None
+            and parts[1] == "displaced" and parts[2:-1] == rel[:-1]
+            and re.fullmatch(re.escape(rel[-1]) + r"(\.\d+)?", parts[-1]) is not None)
+
+
 def _save_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}")
@@ -770,27 +851,71 @@ def _report(text):
     add_notice(text)
 
 
+def _inside_agents(path):
+    """Whether `path` leads into ~/.agents, through a linked parent too."""
+    return pathlib.Path(os.path.realpath(path)).is_relative_to(os.path.realpath(AGENTS_DIR))
+
+
 def _skill_folders(directory):
-    """The real, non-dot folders holding a SKILL.md in a harness skill folder."""
+    """The real, non-dot folders holding a SKILL.md in a harness skill folder.
+    A linked harness folder is skipped: it may lead into ~/.agents/skills,
+    whose folders would then be moved out from under it."""
+    if directory.is_symlink() or _inside_agents(directory):
+        return []
+    # Only a missing folder holds no skills; an unreadable one fails
+    # onboarding, which would otherwise record the account without them.
     try:
         entries = sorted(directory.iterdir())
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return []
+    except OSError as exc:
+        _unreadable(exc)
     # The old agents module's .pre-agents.bak sidecars go back by name when
     # the links are refreshed; they are not skills of their own.
     return [e for e in entries if not e.name.startswith(".") and not e.is_symlink()
             and not e.name.endswith(".pre-agents.bak")
-            and e.is_dir() and (e/"SKILL.md").is_file()]
+            and _is(e, stat.S_ISDIR) and _is(e/"SKILL.md", stat.S_ISREG)
+            # A linked SKILL.md is not uploaded; the folder would go without it.
+            and not (e/"SKILL.md").is_symlink()]
+
+
+def _is(path, kind):
+    """Path.is_dir and is_file can hide an unreadable folder as "not one",
+    which would leave its skill behind; only a missing path is not one."""
+    try:
+        return kind(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as exc:
+        _unreadable(exc)
 
 
 def _same_tree(a, b):
+    # os.walk, not rglob: rglob skips a folder it cannot read, and the trees
+    # would match without it.
+    # A link counts by where it points, so a tree with an extra one differs.
     def tree(root):
-        return {p.relative_to(root).as_posix(): p.read_bytes()
-                for p in root.rglob("*") if p.is_file() and not p.is_symlink()}
+        files = {}
+        for top, dirs, names in os.walk(root, onerror=_unreadable):
+            for name in names + dirs:
+                p = pathlib.Path(top)/name
+                rel = p.relative_to(root).as_posix()
+                if p.is_symlink():
+                    files[rel] = ("link", os.readlink(p))
+                elif name in names:
+                    files[rel] = p.read_bytes() if p.is_file() else ("special",)
+        return files
     try:
         return tree(a) == tree(b)
-    except OSError:
-        return False
+    except OSError as exc:
+        _unreadable(exc)
+
+
+def _has_links(folder):
+    for root, dirs, names in os.walk(folder):
+        if any(os.path.islink(os.path.join(root, n)) for n in dirs + names):
+            return True
+    return False
 
 
 def _move_harness_skills(backup):
@@ -804,26 +929,41 @@ def _move_harness_skills(backup):
             for folder in _skill_folders(directory):
                 moved.append((folder, backup.move(folder, f"harness-skills/{directory.relative_to(HOME)}/{folder.name}")))
     except BaseException:
-        for folder, saved in reversed(moved):
-            if not os.path.lexists(folder):
-                shutil.move(str(saved), str(folder))
+        _put_harness_back(moved)
         raise
     if moved:
         _report(f"moved skill folders to {backup.root}: " + ", ".join(str(f) for f, _ in moved))
     return moved
 
 
-def _apply_changes(take, remove, contents, server, backup, then=None):
+def _put_harness_back(moved):
+    for folder, saved in reversed(moved):
+        if not os.path.lexists(folder):
+            shutil.move(str(saved), str(folder))
+
+
+def _apply_changes(take, remove, contents, server, backup, then=None, scanned=None):
     """Replaced and deleted local copies, symlinks included, go to the backup.
     If a write fails, or `then` (run once all are written) does, the files
     already written go and the moved ones come back, so ~/.agents stays as it
-    was."""
-    moved, written = [], []
+    was. Returns the paths whose local copy changed since `scanned` was read
+    (an edit saved during the sync, which the merge never saw) and those
+    deleted since, which have no copy in the backup."""
+    moved, written, changed, deleted = [], [], [], []
     try:
         for rel in sorted(remove) + sorted(take):
             target = _safe_target(rel)
             if target.is_symlink() or target.exists():
-                moved.append((target, backup.move(target, f"agents/{rel}")))
+                saved = backup.move(target, f"agents/{rel}")
+                moved.append((target, saved))
+                # A symlink or folder put in its place since the scan is a
+                # change too; the scan holds regular files only.
+                now = _digest(saved) if saved.is_file() and not saved.is_symlink() else None
+                if scanned is not None and now != scanned.get(rel):
+                    changed.append(rel)
+            elif scanned is not None and rel in scanned and rel in take:
+                # So is one deleted since: the account's copy would undo that.
+                deleted.append(rel)
         for rel in remove:
             _remove_file(rel)
         for rel in sorted(take):
@@ -839,12 +979,22 @@ def _apply_changes(take, remove, contents, server, backup, then=None):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(saved), str(target))
         raise
+    return changed, deleted
 
 
 def _move_foreign(backup):
     moved = backup.move(AGENTS_DIR, "agents-other-account")
     _report(f"moved another account's ~/.agents to {backup.root}")
     return moved
+
+
+def _put_foreign_back(moved, backup):
+    if moved:
+        if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
+            backup.move(AGENTS_DIR, "agents-incomplete")
+        shutil.move(str(moved), str(AGENTS_DIR))
+        _report("put the other account's ~/.agents back, since this account's copy "
+                "could not be put in place")
 
 
 def pull(account, settle_old=False):
@@ -856,7 +1006,7 @@ def pull(account, settle_old=False):
         counter, version, server = _listing()
         if _context() != account:
             raise ConfigError("the session changed during the sync")
-        state = _load_json(CONFIG_STATE, {})
+        state = _load_sync_record()
         record = state if state.get("account") == account else None
         backup = Backup()
         # Another account's files: they are not this account's to push. They
@@ -869,15 +1019,26 @@ def pull(account, settle_old=False):
         # the way the merge would read the account's files as already here.
         local = {} if foreign or old else scan_local()[0]
         if record is None and counter == 0:
-            if old or foreign:
-                _settle_pending(old, foreign, backup)
-            if other:
-                # Even with no tree to move, the other account's links go. Its
-                # record stays until they have, so a retry finishes the job.
-                refresh_links()
+            moved = _settle_pending(old, foreign, backup) if old or foreign else None
+            try:
+                # Even with no tree to move, the other account's links go.
+                if other:
+                    refresh_links()
+                ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                ONBOARDING_MARKER.touch()
+                # Its record goes last: until then a failure puts its tree and
+                # links back, and a retry finishes the job.
                 CONFIG_STATE.unlink(missing_ok=True)
-            ONBOARDING_MARKER.parent.mkdir(parents=True, exist_ok=True)
-            ONBOARDING_MARKER.touch()
+            except BaseException as exc:
+                if other:
+                    _put_foreign_back(moved, backup)
+                    try:
+                        refresh_links()
+                    except Exception as again:
+                        # Its links stay down until a sync gets through.
+                        raise ConfigError(f"{exc}; the other account's links could not be put back "
+                                          f"either ({again}), so run fleet sync once that is fixed") from exc
+                raise
             return "pending", None, []
         conflicts = []
         if record is None or old:
@@ -918,21 +1079,17 @@ def pull(account, settle_old=False):
             # The changes are done only once their record is saved.
             _save_json(CONFIG_STATE, new_record)
         try:
-            _apply_changes(take, remove, contents, server, backup, then=finish)
+            # Unscanned, nothing here is a change of this account's to keep.
+            changed, deleted = _apply_changes(take, remove, contents, server, backup, then=finish,
+                                              scanned=None if foreign or old else local)
         except BaseException:
-            for folder, saved in reversed(harness):
-                if not os.path.lexists(folder):
-                    shutil.move(str(saved), str(folder))
+            _put_harness_back(harness)
             # The other account's copy, which its record and links still
             # name, comes back until this account's is fully in place.
-            if moved:
-                if AGENTS_DIR.exists() or AGENTS_DIR.is_symlink():
-                    backup.move(AGENTS_DIR, "agents-incomplete")
-                shutil.move(str(moved), str(AGENTS_DIR))
-                _report("put the other account's ~/.agents back, since this account's copy "
-                        "could not be put in place")
+            _put_foreign_back(moved, backup)
             _restore_displaced(displaced, backup)
             raise
+        conflicts += changed
         if old:
             if displaced:
                 _report_displaced(backup)
@@ -945,9 +1102,11 @@ def pull(account, settle_old=False):
                 raise
         if conflicts:
             _report(f"changed here and in the account, kept the account's copy (yours are in "
-                    f"{backup.root}): " + ", ".join(sorted(conflicts)))
+                    f"{backup.root}): " + ", ".join(sorted(set(conflicts))))
+        if deleted:
+            _report("deleted here during the sync, so the account's copy came back: " + ", ".join(deleted))
         ONBOARDING_MARKER.unlink(missing_ok=True)
-        return "synced", new_record, sorted(conflicts)
+        return "synced", new_record, sorted(set(conflicts + deleted))
     raise ConfigError("the account kept changing during the sync; try again")
 
 
@@ -965,11 +1124,26 @@ def _check_json_objects(payloads):
                 raise ConfigError(f"{rel}: {problem}; fix it before uploading")
 
 
+def _read_regular(rel):
+    """A file's bytes, refusing one turned into a link (or a FIFO, which
+    would block) since it was scanned: its target is not fleet's to send."""
+    try:
+        fd = os.open(AGENTS_DIR/rel, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ConfigError(f"{rel} became a link while syncing; nothing pushed, run fleet sync again")
+        raise
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ConfigError(f"{rel} is no longer a regular file; nothing pushed, run fleet sync again")
+        return f.read()
+
+
 def push(record, local, puts, deletes):
     """Upload the given local changes against `record`; the new record."""
     # Each file is read once, so what is checked, sent, and recorded as sent
     # is the same version even while an editor saves over it.
-    payloads = {rel: (AGENTS_DIR/rel).read_bytes() for rel in sorted(puts)}
+    payloads = {rel: _read_regular(rel) for rel in sorted(puts)}
     _check_json_objects(payloads)
     clashes = _collisions(set(record.get("files") or {}) - set(deletes) | set(puts))
     if clashes:
@@ -1019,6 +1193,10 @@ def upload(account, record):
             backup = Backup()
             for rel, data in replaced.items():
                 backup.save(data, f"account/{rel}")
+            # A file deleted at the scan but saved again since goes up, not
+            # out: scanned again.
+            if any(os.path.lexists(AGENTS_DIR/rel) for rel in deletes):
+                continue
             try:
                 new = push(record, local, puts, deletes)
             except HttpError as exc:
@@ -1099,7 +1277,9 @@ def _skill_link_targets(links):
 
 def _points_into(path, root):
     try:
-        return path.is_symlink() and pathlib.Path(os.readlink(path)).is_relative_to(root)
+        # Resolved as the link would be, .. and all, but not followed further.
+        return path.is_symlink() and pathlib.Path(
+            os.path.normpath(os.path.join(path.parent, os.readlink(path)))).is_relative_to(root)
     except OSError:
         return False
 
@@ -1129,7 +1309,7 @@ def _config_locked():
 def refresh_links():
     """AGENTS.md where each harness reads it, and each skill in claude's
     folder, adding new skills and pruning removed ones."""
-    links = _load_json(LINKS_STATE, {})
+    links = _load_links()
     before = dict(links)
     backup = Backup()
     # Saved however far this gets: a retry finds what it already displaced
@@ -1138,14 +1318,26 @@ def refresh_links():
         agents_md = AGENTS_DIR/"AGENTS.md"
         if agents_md.is_file():
             for target in AGENTS_LINKS:
-                if target == HOME/"AGENTS.md" or target.parent.is_dir():
-                    _link(target, agents_md, links, backup)
+                if target != HOME/"AGENTS.md" and not target.parent.is_dir():
+                    continue
+                # A harness folder that is ~/.agents, or a folder in it, by
+                # another name would have a synced file replaced by a link.
+                if _inside_agents(target.parent):
+                    eprint(f"fleet: {target.parent} is inside {AGENTS_DIR}; not linking AGENTS.md into it")
+                    continue
+                _link(target, agents_md, links, backup)
         else:
             for target in AGENTS_LINKS:
                 _unlink_restoring(target, links)
         skills = AGENTS_DIR/"skills"
         names = {e.name for e in _skill_entries(skills)}
-        if SKILL_LINK_DIR.parent.is_dir():
+        if SKILL_LINK_DIR.is_symlink():
+            # Linking through it would move what it leads to, ~/.agents/skills
+            # included, into the backup.
+            eprint(f"fleet: {SKILL_LINK_DIR} is a link; not linking skills into it")
+        elif _inside_agents(SKILL_LINK_DIR):
+            eprint(f"fleet: {SKILL_LINK_DIR} is inside {AGENTS_DIR}; not linking skills into it")
+        elif SKILL_LINK_DIR.parent.is_dir():
             for name in sorted(names):
                 _link(SKILL_LINK_DIR/name, skills/name, links, backup)
             for entry in _skill_link_targets(links):
@@ -1179,7 +1371,9 @@ def _drop_old_links():
             target.unlink()
         _restore_old_backup(target)
     for directory in OLD_SKILL_LINK_DIRS:
-        if directory.is_dir():
+        # A folder that is itself a link is shared with something else: its
+        # entries aren't this harness's to remove.
+        if directory.is_dir() and not directory.is_symlink():
             for entry in list(directory.iterdir()):
                 if _points_into(entry, skills):
                     entry.unlink()
@@ -1199,11 +1393,25 @@ def _skill_entries(skills):
 def remove_links():
     """Undo refresh_links: drop the links into ~/.agents and put back what
     they displaced."""
-    links = _load_json(LINKS_STATE, {})
-    for path in list(AGENTS_LINKS) + _skill_link_targets(links):
+    links = _load_links()
+    # A linked claude skill folder leads to someone else's: what is in it
+    # is not fleet's to drop or fill.
+    skills_linked = SKILL_LINK_DIR.is_symlink()
+    for path in list(AGENTS_LINKS) + ([] if skills_linked else _skill_link_targets(links)):
         _unlink_restoring(path, links)
     # Also the old agents module's, which a sync may not have taken over yet.
     _drop_old_links()
+    # A target the user has since filled keeps its mapping, so the file it
+    # replaced is not left stranded in a backup.
+    stuck = {t: moved for t, moved in links.items() if os.path.lexists(moved)}
+    if stuck:
+        _save_json(LINKS_STATE, stuck)
+        if skills_linked and any(pathlib.Path(t).parent == SKILL_LINK_DIR for t in stuck):
+            raise ConfigError(f"{SKILL_LINK_DIR} is a link, so the skills fleet moved out of it stay "
+                              "in the backup; make it a folder again and run the uninstall again")
+        target = sorted(stuck)[0]
+        raise ConfigError(f"{target} is no longer fleet's link, so the file it replaced stays at "
+                          f"{stuck[target]}; move one of them aside and run the uninstall again")
     LINKS_STATE.unlink(missing_ok=True)
 
 
@@ -1232,7 +1440,7 @@ def settle_old_agents(operator):
 
 def _settle_pending(old, foreign, backup):
     """For an account never pushed: the old payload and another account's
-    tree both move aside, or neither does."""
+    tree both move aside, or neither does. Returns where the other tree went."""
     displaced = _displace_old_payload(backup) if old else []
     moved = None
     try:
@@ -1247,6 +1455,7 @@ def _settle_pending(old, foreign, backup):
         raise
     if displaced:
         _report_displaced(backup)
+    return moved
 
 
 def _displace_old_payload(backup):
@@ -1344,11 +1553,13 @@ def onboard(account):
         try:
             if path.is_file() and not _points_into(path, AGENTS_DIR):
                 sources.append((path, path.read_bytes()))
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
+        except OSError as exc:
+            _unreadable(exc)
     # What this run copies into ~/.agents comes out again if staging or the
     # upload fails, so a retry gathers the harness files afresh.
-    staged = []
+    staged, relinked = [], []
     try:
         if not agents_md.exists() and sources:
             agents_md.parent.mkdir(parents=True, exist_ok=True)
@@ -1367,9 +1578,21 @@ def onboard(account):
             for folder in _skill_folders(directory):
                 mine = skills/folder.name
                 # lexists: a dangling link there is the user's, not staged.
-                if os.path.lexists(mine):
+                if mine.is_symlink() and not _has_links(folder) and pathlib.Path(
+                        os.path.realpath(mine)).is_relative_to(os.path.realpath(folder)):
+                    # A link to the folder about to move would dangle: it
+                    # becomes a copy, and a link again if the upload fails.
+                    relinked.append((mine, os.readlink(mine)))
+                    mine.unlink()
+                    shutil.copytree(folder, mine, symlinks=True)
+                elif os.path.lexists(mine):
                     if not _same_tree(folder, mine):
                         listed.append(str(folder))
+                elif _has_links(folder):
+                    # A link is not uploaded, and a relative one would lead
+                    # elsewhere once the folder moves: the whole folder stays
+                    # out, kept in the backup the harness folders go to.
+                    listed.append(str(folder))
                 else:
                     # Listed first: a copy that fails partway comes out too.
                     staged.append(mine)
@@ -1387,6 +1610,11 @@ def onboard(account):
                 shutil.rmtree(path)
             else:
                 path.unlink(missing_ok=True)
+        for path, target in reversed(relinked):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            path.unlink(missing_ok=True)
+            os.symlink(target, path)
         if isinstance(exc, HttpError):
             if exc.status == 409:
                 raise ConfigError("another machine set up this account first; run: fleet sync") from None
@@ -1395,9 +1623,14 @@ def onboard(account):
     print(f"fleet: uploaded this machine's agent config ({len(local)} files) as the account's copy")
     # Only now: a refused upload leaves the harness skill folders in use. And
     # before the record: a failed move leaves the next sync to join the
-    # account, which moves them again.
-    _move_harness_skills(backup)
-    _save_json(CONFIG_STATE, record)
+    # account, which moves them again. So does a record that cannot be saved,
+    # once the folders are back where claude reads them.
+    moved = _move_harness_skills(backup)
+    try:
+        _save_json(CONFIG_STATE, record)
+    except BaseException:
+        _put_harness_back(moved)
+        raise
     ONBOARDING_MARKER.unlink(missing_ok=True)
     refresh_links()
 
@@ -1423,6 +1656,10 @@ def config_sync(direct):
         return 0
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: account config: refusing a symlinked {AGENTS_DIR}")
+        return 1
+    # Anything else in its place would scan as empty: every file deleted.
+    if os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir():
+        eprint(f"fleet: account config: {AGENTS_DIR} is not a folder")
         return 1
     state, account = _session()
     try:
@@ -1462,17 +1699,23 @@ def config_sync(direct):
 
 
 def config_outdated():
-    """Whether a pull would change something (for setup's status)."""
+    """Whether a pull would change something (for setup's status); None when
+    Auth gave no answer to tell by."""
     if not config_sync_enabled():
         return False
     account = _context()
     if account is None:
-        return False
+        return None
     try:
         counter, version, _ = _listing()
+    except (ConfigError, Unavailable) as exc:
+        eprint(f"fleet: account config: {exc}")
+        return None
+    # A damaged record is outdated: the sync that follows reports it.
+    try:
+        record = _load_sync_record()
     except ConfigError:
-        return False
-    record = _load_json(CONFIG_STATE, {})
+        return True
     if record.get("account") != account:
         # Another account's config here is outdated even when this account
         # has none: the pull moves it aside.
@@ -1489,11 +1732,11 @@ def config_status():
         return
     try:
         counter, version, server = _listing()
-    except ConfigError as exc:
+        record = _load_sync_record()
+        local, symlinks = scan_local()
+    except (ConfigError, OSError) as exc:
         print(f"fleet: account config: {exc}")
         return
-    record = _load_json(CONFIG_STATE, {})
-    local, symlinks = scan_local()
     if record.get("account") != account:
         print("fleet: account config not set up yet; run: fleet onboard" if counter == 0
               else "fleet: account config not pulled yet; run: fleet sync")
@@ -1547,6 +1790,9 @@ HUB_SUFFIX = ".lost.plus"
 # The marker names harnesses used, so fleet edits the same blocks in place.
 TOKENS_BEGIN, TOKENS_END = "# BEGIN harnesses:mcp-tokens", "# END harnesses:mcp-tokens"
 CODEX_MCP_BEGIN, CODEX_MCP_END = "# BEGIN harnesses:mcp-servers", "# END harnesses:mcp-servers"
+# An mcp_servers entry's head: a plain or simply quoted name, then a comment
+# at most.
+HERMES_HEAD = re.compile(r"""^  (?:([^\s#'"][^:#]*)|"([^"\\]+)"|'([^']+)'):\s*(?:#.*)?$""")
 KIMI_KEEPOUT = re.compile(r"\n*^# BEGIN harnesses:keepout\n.*?^# END harnesses:keepout\n?", re.S | re.M)
 KEEPOUT_MARKER = "today.lost.plus/api/keepout"
 MCP_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -1869,7 +2115,8 @@ def harness_update():
     still does; one it never had (a miniharness fleet installed beside the
     old harnesses module) is fleet's to update."""
     present, failed, unchanged = 0, [], []
-    recorded = _setup_modules()
+    # Unread, both may update a harness: harmless, unlike both owning a config.
+    recorded = _setup_modules() or set()
     for name, spec in harness_specs().items():
         if ("miniharness" if name == "miniharness" else "harnesses") in recorded:
             continue
@@ -2055,10 +2302,20 @@ def local_plugin_servers():
     if sys.platform != "darwin":
         return []
     servers = []
+
+    def keep_prior(spec):
+        prior = ((_load_json(APPLIED, {}).get("mcp") or {}).get(spec["name"]) or {}).get("claude")
+        if isinstance(prior, dict) and prior.get("type") == "stdio":
+            servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"], "stdio": prior})
+
     for spec in manifest().get("localPluginMcpServers", []):
         root = CODEX_DIR/"plugins/cache/openai-bundled"/spec["plugin"]
         versions = [p for p in root.glob("*") if p.is_dir() and re.fullmatch(r"\d+(?:\.\d+)*", p.name)]
         if not versions:
+            # A plugin still there with no version is mid-update: keep its
+            # registration. One gone altogether is gone.
+            if root.is_dir():
+                keep_prior(spec)
             continue
         latest = max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".")))
         try:
@@ -2074,6 +2331,8 @@ def local_plugin_servers():
                 raise ValueError("unsupported plugin launch configuration")
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             eprint(f"  {spec['name']}: cannot import {latest/'.mcp.json'}: {exc}")
+            # A bad cache version keeps the registration the last good one gave.
+            keep_prior(spec)
             continue
         servers.append({"name": spec["name"], "auth": "none", "surfaces": ["claude"],
                         "stdio": {"type": "stdio", "command": command, "args": args, "env": env}})
@@ -2130,6 +2389,18 @@ def mcp_token_value(raw):
     return value
 
 
+def _whole_block(text, begin, end, path):
+    """Whether `text` holds fleet's marked block whole. A lone or repeated
+    marker refuses the edit: a block appended after an orphaned begin would
+    have the next removal take every line between them."""
+    begins, ends = text.count(begin), text.count(end)
+    if begins == ends == 0:
+        return False
+    if begins == ends == 1 and text.index(begin) < text.index(end):
+        return True
+    raise ConfigError(f"{path} has a broken {begin!r} block; fix or remove it by hand")
+
+
 def _existing_block(text):
     match = re.search(re.escape(TOKENS_BEGIN) + r"(.*?)" + re.escape(TOKENS_END), text, re.S)
     return match.group(1) if match else ""
@@ -2180,13 +2451,14 @@ def resolve_tokens(servers, context, warnings):
     environment, which holds it before the first render writes the block."""
     existing = managed_exports()
     drop = set()
-    if _block_context() != context:
-        # Another account: nothing Common Auth gave the old one carries over.
-        drop.update(mcp_env_var(s) for s in servers if s.get("credentialSource") == "common-auth")
+    block_context = _block_context()
+    if block_context != context:
+        # Another account: no token the old one got carries over.
+        drop.update(mcp_env_var(s) for s in servers if s.get("credentialSource") in ("common-auth", "passage"))
         drop.add("PASSAGE_MCP_TOKEN")
         for name in drop:
             existing.pop(name, None)
-    tokens, exports, skipped, missing = {}, {}, set(), set()
+    tokens, exports, skipped, missing, holders = {}, {}, set(), set(), {}
 
     def common(scope):
         if scope not in tokens:
@@ -2197,6 +2469,12 @@ def resolve_tokens(servers, context, warnings):
         if server["auth"] == "none":
             continue
         var, source, value = mcp_env_var(server), server.get("credentialSource"), None
+        # foo-bar and foo_bar share a variable: one value would go to both.
+        holder = (source, server.get("scope") or server.get("vaultItem") or var)
+        if holders.setdefault(var, holder) != holder:
+            eprint(f"fleet: {server['name']}: {var} already holds another server's token; server skipped")
+            skipped.add(server["name"])
+            continue
         try:
             if source == "common-auth":
                 value = common(server["scope"])
@@ -2211,11 +2489,19 @@ def resolve_tokens(servers, context, warnings):
         except TokenError as exc:
             if exc.authoritative:
                 drop.add(var)
+            # The environment holds a Passage token before the first render
+            # writes the block; once one has, it may hold another account's.
             value = None if exc.authoritative else existing.get(var) or (
-                os.environ.get(var) if source == "passage" else None)
+                os.environ.get(var) if source == "passage" and block_context is None else None)
             eprint(f"  {var}: {exc}; " + ("keeping the current value" if value else "no value"))
-            if not value and not exc.authoritative:
-                missing.add(server["name"])
+            if not value:
+                # No credential at all: a connector would only fail. Skipped,
+                # it is looked up again next run; a lookup that failed also
+                # fails the render, so the next sync looks again.
+                skipped.add(server["name"])
+                if not exc.authoritative:
+                    missing.add(server["name"])
+                continue
         value = mcp_token_value(value)
         if value:
             exports[var] = value
@@ -2235,7 +2521,7 @@ def _mirror_zshenv(exports, drop, context, retired):
               if name not in exports and name not in drop and name not in retired]
     context_line = "# common-auth-context " + json.dumps(context, sort_keys=True, separators=(",", ":"))
     block = "\n".join([TOKENS_BEGIN, context_line, *lines, TOKENS_END]) + "\n"
-    if TOKENS_BEGIN in text and TOKENS_END in text:
+    if _whole_block(text, TOKENS_BEGIN, TOKENS_END, ZSHENV):
         new = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                      lambda _: block, text, flags=re.S)
     else:
@@ -2250,6 +2536,8 @@ def _mirror_zshenv(exports, drop, context, retired):
 
 def _remove_zshenv_block():
     text = ZSHENV.read_text() if ZSHENV.exists() else ""
+    if not _whole_block(text, TOKENS_BEGIN, TOKENS_END, ZSHENV):
+        return
     new = re.sub(r"\n*" + re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                  "\n", text, flags=re.S)
     if new != text:
@@ -2268,7 +2556,14 @@ def _mirror_dotenv(path, exports, retired):
     original = path.read_text() if path.exists() else ""
     body = [f"{k}={_dotenv_value(v)}" for k, v in exports.items()]
     block = "\n".join([TOKENS_BEGIN, *body, TOKENS_END]) + "\n"
-    if TOKENS_BEGIN in original and TOKENS_END in original:
+    if not exports:
+        # No tokens, no block: cleanup leaves no markers behind.
+        text = original
+        if _whole_block(original, TOKENS_BEGIN, TOKENS_END, path):
+            text = re.sub(r"\n*" + re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
+                          "\n", original, flags=re.S)
+            text = text.lstrip("\n") if text.strip() else ""
+    elif _whole_block(original, TOKENS_BEGIN, TOKENS_END, path):
         text = re.sub(re.escape(TOKENS_BEGIN) + r".*?" + re.escape(TOKENS_END) + r"\n?",
                       lambda _: block, original, flags=re.S)
     else:
@@ -2362,14 +2657,23 @@ def _drop_path(value, path):
 def render_claude(desired, allow, previous, command):
     """~/.claude/settings.json: the tiers deep-merged in, the allow list
     union-merged, the keepout hook reconciled. What the record says fleet
-    wrote and the tiers no longer set comes off while it holds that value."""
+    wrote and the tiers no longer set comes off while it holds that value.
+    Returns the settings and grants fleet owns."""
     current = load_json(CLAUDE_SETTINGS)
     before = json.dumps(current, sort_keys=True)
     wanted = _leaves(desired)
-    for key, value in (previous.get("claude") or {}).items():
+    recorded_leaves = previous.get("claude") or {}
+    # A run stopped after writing a leaf's new value left that value instead.
+    after = previous.get("claudeAfter") or {}
+    for key, value in recorded_leaves.items():
         path = json.loads(key)
-        if key not in wanted and _get_path(current, path) == value:
+        if key not in wanted and (_get_path(current, path) == value
+                                  or (key in after and _get_path(current, path) == after[key])):
             _drop_path(current, path)
+    # A leaf the user already had at this value stays theirs: left out of
+    # the record, it is never taken off.
+    owned_leaves = {k: v for k, v in wanted.items()
+                    if k in recorded_leaves or _get_path(current, json.loads(k)) != v}
     merged = deep_merge(current, desired)
     if not isinstance(merged.get("permissions", {}), dict):
         merged["permissions"] = {}
@@ -2380,7 +2684,11 @@ def render_claude(desired, allow, previous, command):
     # a connector granted per tool leaves a row per tool.
     retired = tuple(f"mcp__{n}__" for n in (manifest().get("retiredMcpServers") or [])
                     + (manifest().get("retiredMcpGrants") or []))
-    gone = set(previous.get("allow") or []) - set(allow)
+    recorded = previous.get("allow") or []
+    gone = set(recorded) - set(allow)
+    # A grant the user had before fleet named it stays theirs: left out of
+    # the record, it is never taken off.
+    owned = [e for e in allow if e in recorded or e not in existing]
     kept = [e for e in existing
             if e not in gone and not (retired and isinstance(e, str) and e.startswith(retired))]
     kept += [e for e in allow if e not in kept]
@@ -2392,7 +2700,7 @@ def render_claude(desired, allow, previous, command):
     if json.dumps(merged, sort_keys=True) != before:
         save_json_atomic(CLAUDE_SETTINGS, merged)
         print(f"  wrote {CLAUDE_SETTINGS}")
-    return wanted
+    return owned_leaves, owned
 
 
 def _claude_mcp_entry(server):
@@ -2410,6 +2718,10 @@ def _claude_mcp_entry(server):
 
 
 def _self_path():
+    # A staged copy standing in for the installed one renders the installed
+    # path: the staged one is deleted once it has run.
+    if os.environ.get("FLEET_PATH"):
+        return os.environ["FLEET_PATH"]
     return os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else str(HOME/".local/bin/fleet")
 
 
@@ -2428,16 +2740,22 @@ def _claude_mcp_scope(claude, name):
 
 
 def _claude_json():
-    return pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME)/".claude.json"
+    return HOME/".claude.json"
+
+
+UNREADABLE = object()
 
 
 def _claude_user_entry(name):
     """The stored user-scope entry, from the file: `claude mcp get` does not
-    print a headersHelper."""
+    print a headersHelper. UNREADABLE when the file is there but cannot be
+    read, so a cleanup does not take fleet's entries for gone."""
     try:
         return (json.loads(_claude_json().read_text()).get("mcpServers") or {}).get(name)
-    except (OSError, ValueError, AttributeError):
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError, AttributeError):
+        return UNREADABLE
 
 
 def _claude_json_remove(name):
@@ -2460,23 +2778,31 @@ def _rendered_on(record, surface):
 
 
 def render_claude_mcp(claude, servers, previous, retired):
-    """(ok, kept, found): kept holds the previous records of servers claude
-    would not remove, so the applied record keeps owning them and the next run
-    retries; found names the user's own entries that already matched ours,
-    which stay theirs. Without claude (only when taking settings back) the
-    file is edited."""
-    ok, kept, found = True, {}, set()
+    """(ok, kept, found, failed): kept holds the previous records of servers
+    claude would not remove, so the applied record keeps owning them and the
+    next run retries; found names the user's own entries that already matched
+    ours, which stay theirs; failed names the servers claude would not add,
+    which fleet does not claim. Without claude (only when taking settings
+    back) the file is edited."""
+    ok, kept, found, failed, was = True, {}, set(), set(), {}
     for name in sorted(retired):
-        if _claude_mcp_scope(claude, name) is not None:
+        # The old harness wrote these at user scope; one at another scope is
+        # the user's own.
+        if _claude_user_entry(name) is not None:
             print(f"  unregistering retired MCP server {name}")
-            # No -s: the CLI then removes it from whichever scope holds it.
-            ok = _claude_remove([claude, "mcp", "remove", name]) and ok
+            ok = (_claude_remove([claude, "mcp", "remove", name, "-s", "user"]) if claude
+                  else _claude_json_remove(name)) and ok
     for name, record in (previous.get("mcp") or {}).items():
         if name in servers or name in retired or "claude" in (record.get("users") or []):
             continue
         entry = _claude_user_entry(name)
-        if isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
-                                        or (record.get("claude") and entry == record["claude"])):
+        if entry is UNREADABLE:
+            eprint(f"fleet: could not read {_claude_json()}; MCP server {name} stays fleet's to remove")
+            ok, kept[name] = False, record
+        elif isinstance(entry, dict) and ((record.get("url") and entry.get("url") == record["url"])
+                                        or (record.get("claude") and entry == record["claude"])
+                                        or (record.get("claudeWas") and entry == record["claudeWas"])
+                                        or (record.get("urlNext") and entry.get("url") == record["urlNext"])):
             print(f"  unregistering MCP server {name}")
             if not (_claude_remove([claude, "mcp", "remove", name, "-s", "user"]) if claude
                     else _claude_json_remove(name)):
@@ -2486,24 +2812,39 @@ def render_claude_mcp(claude, servers, previous, retired):
         argv = [claude, "mcp", "add-json", "--scope", "user", server["name"], json.dumps(want)]
         scope = _claude_mcp_scope(claude, server["name"])
         if scope is None:
-            ok = _claude_add(argv) and ok
+            if not _claude_add(argv):
+                ok = False
+                failed.add(server["name"])
         elif scope not in ("", "user"):
             # A local or project registration is the user's and shadows ours.
             print(f"  {server['name']} is registered at {scope} scope; leaving it alone")
+            # Unless fleet's own sits at user scope beneath it, one the user
+            # puts there later is theirs too.
+            record = (previous.get("mcp") or {}).get(server["name"])
+            if "claude" in ((record or {}).get("users") or []) or not _rendered_on(record, "claude"):
+                found.add(server["name"])
         elif "claude" in (((previous.get("mcp") or {}).get(server["name"]) or {}).get("users") or []):
             # The user's own entry, which matched ours once, stays theirs
             # when ours changes. Once they delete it, the one fleet adds back
             # is fleet's.
             found.add(server["name"])
-        elif _claude_user_entry(server["name"]) != want:
+        elif (entry := _claude_user_entry(server["name"])) is UNREADABLE:
+            eprint(f"fleet: could not read {_claude_json()}; left MCP server {server['name']} as it is")
+            ok = False
+        elif entry != want:
             print(f"  re-enrolling {server['name']}")
             if _claude_remove([claude, "mcp", "remove", server["name"], "-s", "user"]):
-                ok = _claude_add(argv) and ok
+                if not _claude_add(argv):
+                    ok = False
+                    failed.add(server["name"])
             else:
+                # Fleet's old entry stays: the record names it too, so a
+                # removal before the next re-enroll still finds it.
                 ok = False
+                was[server["name"]] = entry
         elif not _rendered_on((previous.get("mcp") or {}).get(server["name"]), "claude"):
             found.add(server["name"])
-    return ok, kept, found
+    return ok, kept, found, failed, was
 
 
 def _claude_remove(argv):
@@ -2564,19 +2905,26 @@ def render_codex_mcp(servers, previous, retired):
     if original.strip() and _toml(original)[1]:
         eprint(f"  {CODEX_CONFIG} does not parse; refusing to edit it: {_toml(original)[1]}")
         return False
-    region = re.search(re.escape(CODEX_MCP_BEGIN) + r".*?" + re.escape(CODEX_MCP_END) + r"\n?",
-                       original, re.S)
+    try:
+        whole = _whole_block(original, CODEX_MCP_BEGIN, CODEX_MCP_END, CODEX_CONFIG)
+    except ConfigError as exc:
+        eprint(f"  {exc}")
+        return False
+    region = whole and re.search(re.escape(CODEX_MCP_BEGIN) + r".*?" + re.escape(CODEX_MCP_END) + r"\n?",
+                                 original, re.S)
     text = original[:region.start()] + original[region.end():] if region else original
     # Reclaim blocks an older release appended outside the region: a body
     # identical to one of ours, or a retired name. A block carrying
-    # [.tools.*] rules was never ours.
-    ours = {_codex_mcp_block(s).strip().split("\n", 1)[1] for s in servers}
+    # [.tools.*] rules was never ours. Once fleet has rendered here, an
+    # identical block outside it is one the user wrote.
+    legacy = not previous.get("codexReclaimed")
+    ours = {(s["name"], _codex_mcp_block(s).strip().split("\n", 1)[1]) for s in servers}
     for name, body in _codex_sections(text):
         table = ((_toml(text)[0] or {}).get("mcp_servers") or {}).get(name)
         if isinstance(table, dict) and any(isinstance(v, dict) for v in table.values()):
             continue
         rest = body.strip().split("\n", 1)
-        if name in retired or (len(rest) == 2 and rest[1] in ours):
+        if name in retired or (legacy and len(rest) == 2 and (name, rest[1]) in ours):
             text = text.replace(body, "", 1)
     # Declared means given settings of its own, not only [.tools.*] rules
     # hanging off the name, which still need our url.
@@ -2673,14 +3021,15 @@ def _trust_codex_keepout(command):
 def _effort_descriptors():
     """Model slug -> a t3 'effort' option descriptor, from the opencodex
     proxy's catalog: t3 shows a reasoning selector only for a custom model
-    that declares one, and the levels are the provider's to publish."""
+    that declares one, and the levels are the provider's to publish. None
+    when the catalog could not be read."""
     try:
         url = subprocess.run([sys.executable, str(OPENCODEX), "__proxy-url"], capture_output=True,
                              text=True, timeout=30).stdout.strip()
         with urllib.request.urlopen(url + "/v1/models", timeout=T3_CATALOG_TIMEOUT) as response:
             payload = json.load(response)
     except (OSError, ValueError, subprocess.SubprocessError):
-        return {}
+        return None
     out = {}
     for row in (payload.get("data") or []) if isinstance(payload, dict) else []:
         if not isinstance(row, dict) or not isinstance(row.get("id"), str):
@@ -2702,16 +3051,26 @@ def _effort_descriptors():
 
 def render_t3(models, previous):
     """T3's claude custom models: ours appended or refreshed by slug, the
-    user's left alone. Returns the record: slug -> row as written, marked
-    user when the row was there before fleet."""
+    user's left alone. Returns the record (slug -> row as written, marked
+    user when the row was there before fleet) and whether the claude provider
+    is fleet's, made only to hold its models."""
     current = load_json(T3_SETTINGS)
+    if not models and "claudeAgent" not in (current.get("providerInstances") or {}):
+        # Nothing to add and nothing of fleet's there: no provider to create.
+        for path in RETIRED_CLAUDE_LAUNCHERS:
+            path.unlink(missing_ok=True)
+        return {}, False
     before = json.dumps(current, sort_keys=True)
     instances = current.setdefault("providerInstances", {})
+    created = bool(previous.get("t3Provider")) or "claudeAgent" not in instances
     claude = instances.setdefault("claudeAgent", {"driver": "claudeAgent", "enabled": True, "config": {}})
     config = claude.setdefault("config", {})
     if config.get("binaryPath") in {str(p) for p in RETIRED_CLAUDE_LAUNCHERS}:
         config["binaryPath"] = "claude"
-    descriptors = _effort_descriptors() if models and os.access(OPENCODEX, os.X_OK) else {}
+    descriptors = _effort_descriptors() if models and os.access(OPENCODEX, os.X_OK) else None
+    # A catalog that answered without a model's ladder takes back the one
+    # fleet gave it; one that did not answer keeps it.
+    known, descriptors = descriptors is not None, descriptors or {}
     wanted = {}
     for model in models:
         entry = dict(model)
@@ -2731,18 +3090,29 @@ def render_t3(models, previous):
             continue
         if slug in wanted:
             merged = dict(row) if isinstance(row, dict) else {"slug": slug}
-            merged.update(wanted.pop(slug))
+            entry = wanted.pop(slug)
+            merged.update(entry)
             out.append(merged)
             # A row fleet did not add is the user's: refreshed while fleet
             # ships its slug, but never removed.
             mine = recorded.get(slug) if isinstance(recorded.get(slug), dict) else None
             if mine is None or mine.get("user"):
                 record[slug] = {**record[slug], "user": True}
+            elif known and "capabilities" not in entry:
+                merged.pop("capabilities", None)
         elif not (slug in recorded and isinstance(row, dict)
-                  and {k: v for k, v in row.items() if k != "capabilities"} == recorded[slug]):
+                  and {k: v for k, v in row.items() if k != "capabilities"}
+                  in (recorded[slug], (previous.get("t3Next") or {}).get(slug))):
             out.append(row)
     out += wanted.values()
-    config["customModels"] = out
+    if out or "customModels" in config:
+        config["customModels"] = out
+    if created and not out and set(config) <= {"customModels"} and set(claude) <= {"driver", "enabled", "config"}:
+        # Empty again, the provider fleet made for its models goes with them.
+        del instances["claudeAgent"]
+        if not instances:
+            del current["providerInstances"]
+        created = False
     if json.dumps(current, sort_keys=True) != before:
         save_json_atomic(T3_SETTINGS, current)
         print(f"  wrote {T3_SETTINGS} ({len(out)} claude custom models)")
@@ -2750,7 +3120,7 @@ def render_t3(models, previous):
     if config.get("binaryPath", "claude") == "claude":
         for path in RETIRED_CLAUDE_LAUNCHERS:
             path.unlink(missing_ok=True)
-    return record
+    return record, created
 
 
 def _hermes_entry(server):
@@ -2766,12 +3136,14 @@ def _hermes_entry(server):
 def _yaml_block(lines, key):
     """(start, end) of a top-level `key:` block, end exclusive, or (None, None).
     A key written on one line ({...} or [...]) is not edited: a second block
-    after it would replace it in the loader."""
+    after it would replace it in the loader. The key may be quoted: a second,
+    bare one would be the same key twice."""
+    head = rf"""^(?:{key}|"{key}"|'{key}')\s*:"""
     for i, line in enumerate(lines):
-        if re.match(rf"^{key}:\s*[^\s#]", line):
+        if re.match(rf"{head}\s*[^\s#]", line):
             raise ConfigError(f"{HERMES_CONFIG}: {key} is written on one line; "
                               f"write it as an indented block for fleet to edit it")
-        if re.match(rf"^{key}:\s*(#.*)?$", line):
+        if re.match(rf"{head}\s*(#.*)?$", line):
             j = i + 1
             while j < len(lines) and (lines[j].strip() == "" or lines[j][0] in " \t" or lines[j].startswith("#")):
                 j += 1
@@ -2781,31 +3153,59 @@ def _yaml_block(lines, key):
 
 def _hermes_entries(lines, start, end):
     """[(name, first, stop)] of each entry in the mcp_servers block."""
-    heads = [k for k in range(start + 1, end) if re.match(r"^  [^\s#][^:]*:\s*$", lines[k])]
+    # Entries indented otherwise would read as none, and ours would go in
+    # beside them at two spaces.
+    indents = {len(l) - len(l.lstrip()) for l in lines[start + 1:end]
+               if l.strip() and not l.lstrip().startswith("#")}
+    if indents and min(indents) != 2:
+        raise ConfigError(f"{HERMES_CONFIG}: mcp_servers entries are indented by {min(indents)} "
+                          f"spaces; fleet edits only two-space entries")
+    # A name fleet cannot read would go unseen, and ours would go in beside
+    # it as a second key of the same name.
+    heads = []
+    for k in range(start + 1, end):
+        line = lines[k]
+        if len(line) - len(line.lstrip()) != 2 or line.lstrip().startswith("#"):
+            continue
+        match = HERMES_HEAD.match(line)
+        if not match:
+            raise ConfigError(f"{HERMES_CONFIG}: cannot read the mcp_servers entry {line.strip()!r}; "
+                              f"fleet edits only entries headed `name:`")
+        heads.append((k, next(g for g in match.groups() if g is not None).strip()))
     out = []
-    for n, k in enumerate(heads):
-        stop = heads[n + 1] if n + 1 < len(heads) else end
-        while stop > k + 1 and lines[stop - 1].strip() == "":
+    for n, (k, name) in enumerate(heads):
+        stop = heads[n + 1][0] if n + 1 < len(heads) else end
+        # A comment at the margin after an entry is the user's, not the entry's.
+        while stop > k + 1 and (lines[stop - 1].strip() == "" or lines[stop - 1].startswith("#")):
             stop -= 1
-        out.append((lines[k].strip()[:-1], k, stop))
+        out.append((name, k, stop))
     return out
 
 
-def _hermes_skills(lines):
+def _hermes_skills(lines, warn=True):
     """Add ~/.agents/skills to skills.external_dirs, where hermes looks for
-    skills beyond its bundled ones. True when fleet added it."""
+    skills beyond its bundled ones. False when fleet did not add it, else
+    what it added: "skills" the whole block, "dirs" the external_dirs key,
+    "item" only the folder, "item[]" the folder into an `[]`."""
     start, end = _yaml_block(lines, "skills")
     if start is None:
         if lines and lines[-1].strip():
             lines.append("")
         lines += ["skills:", "  external_dirs:", "  - ~/.agents/skills"]
-        return True
+        return "skills"
+    # Keys indented otherwise would read as none, and ours would go in beside
+    # them at two spaces.
+    indents = {len(l) - len(l.lstrip()) for l in lines[start + 1:end]
+               if l.strip() and not l.lstrip().startswith("#")}
+    if indents and min(indents) != 2:
+        if warn:
+            eprint(f"  {HERMES_CONFIG}: skills is indented by {min(indents)} spaces, which fleet does "
+                   "not edit; add ~/.agents/skills to skills.external_dirs by hand")
+        return False
     for k in range(start + 1, end):
         match = re.match(r"^  external_dirs:\s*(\[\s*\])?\s*$", lines[k])
         if not match:
             continue
-        if match.group(1):
-            lines[k] = "  external_dirs:"
         j = k + 1
         items = []
         while j < end and re.match(r"^\s*- ", lines[j]):
@@ -2813,19 +3213,24 @@ def _hermes_skills(lines):
             j += 1
         if {"~/.agents/skills", str(AGENTS_DIR/"skills")} & set(items):
             return False
+        if match.group(1):
+            lines[k] = "  external_dirs:"
         indent = re.match(r"^(\s*)- ", lines[k + 1]).group(1) if items else "  "
         lines.insert(j, f"{indent}- ~/.agents/skills")
-        return True
+        return "item[]" if match.group(1) else "item"
     if any(re.match(r"^  external_dirs:", lines[k]) for k in range(start + 1, end)):
-        eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
-               "add ~/.agents/skills to it by hand")
+        if warn:
+            eprint(f"  {HERMES_CONFIG}: skills.external_dirs has a shape fleet does not edit; "
+                   "add ~/.agents/skills to it by hand")
         return False
     lines[start + 1:start + 1] = ["  external_dirs:", "  - ~/.agents/skills"]
-    return True
+    return "dirs"
 
 
-def _hermes_unskills(lines):
-    """Take back the skills folder fleet added, and the keys left empty."""
+def _hermes_unskills(lines, added):
+    """Take back the skills folder fleet added, and the keys it added that
+    are left empty; the user's own keys stay, an `[]` as it was. A record
+    from before fleet said what it added (True) takes back any left empty."""
     start, end = _yaml_block(lines, "skills")
     if start is None:
         return
@@ -2836,21 +3241,26 @@ def _hermes_unskills(lines):
     start, end = _yaml_block(lines, "skills")
     for k in range(start + 1, end):
         if re.match(r"^  external_dirs:\s*$", lines[k]) and not (k + 1 < end and re.match(r"^\s*- ", lines[k + 1])):
-            del lines[k]
+            if added == "item[]":
+                lines[k] = "  external_dirs: []"
+            elif added in ("skills", "dirs", True):
+                del lines[k]
             break
     start, end = _yaml_block(lines, "skills")
-    if not any(line.strip() for line in lines[start + 1:end]):
+    if added in ("skills", True) and not any(line.strip() for line in lines[start + 1:end]):
         del lines[start:end]
 
 
 def render_hermes(servers, previous, retired, clear=False):
     """hermes's config.yaml: our MCP entries and the skills folder. Returns
-    whether the file changed, whether the skills folder is fleet's, and the
-    user's own entries that already matched ours, which stay theirs."""
+    whether the file changed, whether the skills folder is fleet's, the
+    user's own entries that already matched ours, which stay theirs, and
+    whether the mcp_servers block is fleet's, made only to hold its entries."""
     original = HERMES_CONFIG.read_text()
     lines = original.split("\n")
     start, end = _yaml_block(lines, "mcp_servers")
-    if start is None:
+    created = start is None
+    if created:
         if lines and lines[-1].strip():
             lines.append("")
         lines.append("mcp_servers:")
@@ -2874,36 +3284,60 @@ def render_hermes(servers, previous, retired, clear=False):
                 if not _rendered_on(recorded.get(name), "hermes"):
                     found.add(name)
                 continue
+            # An entry fleet never wrote is the user's, even at our URL: it
+            # can carry their own headers or OAuth settings.
+            if not _rendered_on(recorded.get(name), "hermes"):
+                print(f"  hermes: {name} is your own entry; leaving it alone")
+                found.add(name)
+                continue
             # Fleet's entry still names the URL fleet last wrote, when the
             # account has moved the server since.
-            old = recorded.get(name, {}).get("url")
-            if urls[name] not in body and not (old and _rendered_on(recorded[name], "hermes")
-                                               and f"    url: {old}" in body):
+            # Or, after a render hermes refused, the one before.
+            old = {recorded[name].get(k) for k in ("url", "hermesUrl", "urlNext")} - {None}
+            if urls[name] not in body and not any(f"    url: {u}" in body for u in old):
                 print(f"  hermes: {name} points somewhere else; leaving it alone")
                 continue
             lines[k:stop] = wanted[name]
-        elif (recorded.get(name, {}).get("url") and "hermes" not in (recorded[name].get("users") or [])
-              and f"    url: {recorded[name]['url']}" in body):
+        elif ("hermes" not in (recorded.get(name, {}).get("users") or [])
+              # Or, after a render hermes refused, the one before.
+              and any(f"    url: {recorded[name][k]}" in body for k in ("url", "hermesUrl", "urlNext")
+                      if recorded.get(name, {}).get(k))):
             print(f"  hermes: removing MCP server {name}")
             del lines[k:stop]
     start, end = _yaml_block(lines, "mcp_servers")
     at = end
-    while at > start + 1 and not lines[at - 1].strip():
+    while at > start + 1 and (not lines[at - 1].strip() or lines[at - 1].startswith("#")):
         at -= 1
     lines[at:at] = [line for s in servers if s["name"] not in seen for line in wanted[s["name"]]]
-    skills = bool(previous.get("hermesSkills"))
+    # With nothing to put in it, a block the file did not have stays out.
+    if created and not servers:
+        lines = original.split("\n")
+    owned = bool(previous.get("hermesBlock")) or created
+    start, end = _yaml_block(lines, "mcp_servers")
+    if start is None:
+        owned = False
+    elif owned and not servers and not any(line.strip() for line in lines[start + 1:end]):
+        # Empty again, the block fleet made for its entries goes with them.
+        tail = end == len(lines)
+        del lines[start:end]
+        while tail and lines and not lines[-1].strip():
+            lines.pop()
+        if tail:
+            lines.append("")
+        owned = False
+    skills = previous.get("hermesSkills") or False
     if clear:
         if skills:
-            _hermes_unskills(lines)
+            _hermes_unskills(lines, skills)
         skills = False
     else:
         skills = _hermes_skills(lines) or skills
     text = "\n".join(lines)
     if text == original:
-        return False, skills, found
+        return False, skills, found, owned
     save_text_atomic(HERMES_CONFIG, text)
     print(f"  wrote {HERMES_CONFIG} ({len(servers)} hermes MCP server(s))")
-    return True, skills, found
+    return True, skills, found, owned
 
 
 def render_kimi():
@@ -2938,6 +3372,20 @@ def _retired_env_vars():
             | set(manifest().get("retiredEnvVars") or []))
 
 
+def _applied_record():
+    """fleet's record of what it rendered. One there but unreadable fails
+    the render: read as none, everything fleet wrote would turn the user's."""
+    try:
+        value = json.loads(APPLIED.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read {APPLIED} ({exc}); fix or remove it by hand")
+    if not isinstance(value, dict):
+        raise ConfigError(f"cannot read {APPLIED}: not a JSON object; fix or remove it by hand")
+    return value
+
+
 def _t3_models(tier, opencodex):
     models = {}
     for row in (manifest().get("opencodex", {}).get("t3", {}).get("claudeCustomModels", [])
@@ -2948,6 +3396,7 @@ def _t3_models(tier, opencodex):
     return list(models.values())
 
 
+@_config_locked()
 def harness_render(force=False, clear=False):
     """Render the harnesses' settings, keepout hooks and MCP servers from the
     three tiers. 0 done or unchanged, 1 a part failed, 3 no answer from Auth.
@@ -2957,8 +3406,11 @@ def harness_render(force=False, clear=False):
     nothing renders: the lost.plus servers would read as removed.
 
     With clear, everything fleet rendered is taken back, for uninstalling
-    it: claude's MCP entries call fleet itself for their tokens."""
-    previous = _load_json(APPLIED, {})
+    it: claude's MCP entries call fleet itself for their tokens.
+
+    Under the config lock: a sync running alongside would load the same
+    record and read what the other adds as the user's."""
+    previous = _applied_record()
     if clear:
         # While setup's old modules run, what is rendered is still theirs.
         if not previous or not config_sync_enabled():
@@ -3045,10 +3497,100 @@ def harness_outdated():
     return previous.get("hash") != digest
 
 
+def _prospective_mcp(previous, servers, present):
+    """The previous mcp records, plus fleet's ownership of each entry this run
+    adds where claude or hermes has none of that name."""
+    mcp = {name: dict(r) for name, r in (previous.get("mcp") or {}).items()}
+    hermes = None
+    if present["hermes"]:
+        try:
+            lines = HERMES_CONFIG.read_text().split("\n")
+            start, end = _yaml_block(lines, "mcp_servers")
+            hermes = set() if start is None else {n for n, _, _ in _hermes_entries(lines, start, end)}
+        except (OSError, ConfigError):
+            pass
+    for s in servers.values():
+        surfaces = mcp_surfaces(s)
+        if (r := mcp.get(s["name"])) is not None and s.get("url") and s["url"] != r.get("url"):
+            # A server fleet owns keeps its old URL, and its new one is kept
+            # beside it: a run stopped after the write left the new.
+            r["urlNext"] = s["url"]
+        new = set()
+        if present["claude"] and "claude" in surfaces and _claude_user_entry(s["name"]) is None:
+            new.add("claude")
+        if hermes is not None and "hermes" in surfaces and s["name"] not in hermes:
+            new.add("hermes")
+        if not new:
+            continue
+        r = mcp.setdefault(s["name"], {"url": s.get("url"), "rendered": [],
+                                       "claude": _claude_mcp_entry(s) if "claude" in surfaces else None})
+        # A record without "rendered" already counts on every surface.
+        if "rendered" in r:
+            r["rendered"] = sorted(set(r["rendered"]) | new)
+        users = [u for u in r.get("users") or [] if u not in new]
+        r.pop("users", None)
+        if users:
+            r["users"] = users
+    return mcp
+
+
+def _prospective_settings(previous, desired, allow, t3_models, present):
+    """The previous claude, allow and t3 records, plus what this run adds: a
+    run stopped after writing them still owns them, and the next run does
+    not read them as the user's."""
+    def dig(value, *keys):
+        for key in keys:
+            value = value.get(key) if isinstance(value, dict) else None
+        return value
+    out = {}
+    if present["claude"]:
+        # A leaf fleet already owns keeps its old value, and its new one is
+        # kept beside it: a run stopped before the write leaves the old value
+        # in place, one stopped after it the new. A leaf the user already has
+        # at the wanted value is not fleet's.
+        current = load_json(CLAUDE_SETTINGS)
+        recorded_leaves = previous.get("claude") or {}
+        leaves = _leaves(desired)
+        out["claude"] = {**recorded_leaves, **{
+            k: v for k, v in leaves.items()
+            if k not in recorded_leaves and _get_path(current, json.loads(k)) != v}}
+        out["claudeAfter"] = {**(previous.get("claudeAfter") or {}), **{
+            k: v for k, v in leaves.items() if k in recorded_leaves and recorded_leaves[k] != v}}
+        existing = dig(current, "permissions", "allow")
+        existing = existing if isinstance(existing, list) else []
+        recorded = previous.get("allow") or []
+        out["allow"] = recorded + [e for e in allow if e not in recorded and e not in existing]
+    if present["t3"]:
+        rows = dig(load_json(T3_SETTINGS), "providerInstances", "claudeAgent", "config", "customModels")
+        have = {r.get("slug") if isinstance(r, dict) else r for r in rows if isinstance(r, (dict, str))} \
+            if isinstance(rows, list) else set()
+        out["t3"] = dict(previous.get("t3") or {})
+        out["t3Provider"] = bool(previous.get("t3Provider") or (
+            t3_models and "claudeAgent" not in (load_json(T3_SETTINGS).get("providerInstances") or {})))
+        out["t3Next"] = dict(previous.get("t3Next") or {})
+        for model in t3_models:
+            row = {k: v for k, v in model.items() if k != "effortsFrom"}
+            if model["slug"] not in have and model["slug"] not in out["t3"]:
+                out["t3"][model["slug"]] = row
+            elif (mine := out["t3"].get(model["slug"])) is not None and not mine.get("user") and mine != row:
+                # Like an owned claude leaf: the new row beside the old.
+                out["t3Next"][model["slug"]] = row
+    if present["hermes"] and HERMES_CONFIG.is_file():
+        lines = HERMES_CONFIG.read_text().split("\n")
+        out["hermesSkills"] = previous.get("hermesSkills") or _hermes_skills(lines, warn=False)
+        try:
+            out["hermesBlock"] = bool(previous.get("hermesBlock")) or _yaml_block(lines, "mcp_servers")[0] is None
+        except ConfigError:
+            out["hermesBlock"] = bool(previous.get("hermesBlock"))
+    return out
+
+
 def _harness_apply(account, context, tier, warnings, hub, previous, force, clear):
     m, present, opencodex, servers, digest = _harness_inputs(account, tier, hub, clear)
     retired = set(m.get("retiredMcpServers") or []) - set(servers)
-    if not clear and not force and previous.get("hash") == digest:
+    # A credential Auth had none for may have come since: the inputs hash
+    # does not show it, so such a render is never taken as current.
+    if not clear and not force and previous.get("hash") == digest and not previous.get("absent"):
         return 0
     for warning in warnings:
         eprint(f"fleet: {warning}")
@@ -3066,33 +3608,55 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
         if not clear and _context() != account:
             eprint("fleet: the login changed during the sync; run: fleet sync")
             return 3
+        absent = {n for n in skipped if servers[n].get("credentialSource") in ("common-auth", "passage")}
         for name in skipped:
             servers.pop(name)
+        # What this run adds is fleet's only once a record says so, or the
+        # next run reads it as the user's and never takes it off. So the
+        # record must save before any harness file changes, already owning
+        # what this run will add; marked unrendered, a run stopped partway
+        # renders again.
+        def on(surface):
+            return [s for s in servers.values() if surface in mcp_surfaces(s)]
+        desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {}, tier["claude"])
+        allow = list(tier["allow"])
+        allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
+        t3_models = _t3_models(tier, opencodex)
+        try:
+            _save_json(APPLIED, dict(previous, hash=None,
+                                     mcp=_prospective_mcp(previous, servers, present),
+                                     **({} if clear else _prospective_settings(
+                                         previous, desired, allow, t3_models, present))))
+        except OSError as exc:
+            eprint(f"fleet: harness settings: {exc}")
+            return 1
         rc = 1 if missing else rc
         live = {mcp_env_var(s) for s in servers.values() if s["auth"] != "none"}
         drop |= {r["env"] for r in (previous.get("mcp") or {}).values() if r.get("env")} - live
         retired_env = set() if clear else _retired_env_vars() - live
-        if clear:
-            _remove_zshenv_block()
-        else:
-            _mirror_zshenv(exports, drop, context, retired_env)
+        try:
+            if clear:
+                _remove_zshenv_block()
+            else:
+                _mirror_zshenv(exports, drop, context, retired_env)
+        except ConfigError as exc:
+            eprint(f"fleet: {exc}")
+            return 1
 
-        def on(surface):
-            return [s for s in servers.values() if surface in mcp_surfaces(s)]
         record = {"account": account, "tier": tier, "warnings": warnings,
                   "claude": previous.get("claude") or {}, "allow": previous.get("allow") or [],
-                  "t3": previous.get("t3") or {}, "hermesSkills": previous.get("hermesSkills", False)}
-        kept_mcp, users, rendered = {}, {}, set()
+                  "t3": previous.get("t3") or {}, "t3Provider": previous.get("t3Provider", False),
+                  "t3Next": previous.get("t3Next") or {},
+                  "hermesSkills": previous.get("hermesSkills", False),
+                  "hermesBlock": previous.get("hermesBlock", False),
+                  "codexReclaimed": previous.get("codexReclaimed", False)}
+        kept_mcp, users, rendered, hermes_urls, missed, claude_was = {}, {}, set(), {}, set(), {}
         prev_mcp = previous.get("mcp") or {}
         try:
             # Taking settings back needs no claude: its files are edited.
             if present["claude"] or (clear and (CLAUDE_SETTINGS.exists() or _claude_json().exists())):
-                desired = deep_merge(m.get("opencodex", {}).get("claude", {}) if opencodex else {},
-                                     tier["claude"])
-                allow = list(tier["allow"])
-                allow += [g for g in (f"mcp__{s['name']}__*" for s in on("claude")) if g not in allow]
-                record["claude"], record["allow"] = render_claude(desired, allow, previous, command), allow
-                claude_ok, kept_mcp, found = render_claude_mcp(
+                record["claude"], record["allow"] = render_claude(desired, allow, previous, command)
+                claude_ok, kept_mcp, found, missed, claude_was = render_claude_mcp(
                     present["claude"], {s["name"]: s for s in on("claude")}, previous, retired)
                 rendered.add("claude")
                 for name in found:
@@ -3103,17 +3667,25 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 # put there, so the run that finds claude again (or an
                 # uninstall) still removes them.
                 wanted = {s["name"] for s in on("claude")}
+                # Seeded records carry only the URL, which removal also matches.
                 kept_mcp = {name: r for name, r in (previous.get("mcp") or {}).items()
-                            if r.get("claude") and name not in wanted}
+                            if (r.get("claude") or r.get("url")) and _rendered_on(r, "claude")
+                            and name not in wanted}
+                claude_was = {name: r["claudeWas"] for name, r in prev_mcp.items()
+                              if name in wanted and r.get("claudeWas")}
             if present["codex"]:
-                rc = rc if render_codex_mcp(on("codex"), previous, retired) else 1
+                if render_codex_mcp(on("codex"), previous, retired):
+                    record["codexReclaimed"] = True
+                else:
+                    rc = 1
                 rendered.add("codex")
                 if CODEX_DIR.is_dir():
                     # codex loads ~/.codex/.env however it was started.
                     _mirror_dotenv(CODEX_DIR/".env", exports, retired_env)
                 rc = rc if render_codex_keepout(command) else 1
             if present["t3"]:
-                record["t3"] = render_t3(_t3_models(tier, opencodex), previous)
+                record["t3"], record["t3Provider"] = render_t3(t3_models, previous)
+                record["t3Next"] = {}
             hermes = None
             if present["hermes"]:
                 try:
@@ -3127,9 +3699,13 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                     for name, r in prev_mcp.items():
                         if name not in wanted and r.get("url") and _rendered_on(r, "hermes"):
                             kept_mcp.setdefault(name, r)
+                        elif name in wanted and _rendered_on(r, "hermes"):
+                            # And knows the URL it left there, should the
+                            # account have moved the server meanwhile.
+                            hermes_urls[name] = r.get("hermesUrl") or r.get("url")
             if hermes:
                 rendered.add("hermes")
-                changed, record["hermesSkills"], found = hermes
+                changed, record["hermesSkills"], found, record["hermesBlock"] = hermes
                 for name in found:
                     users.setdefault(name, set()).add("hermes")
                 if _mirror_dotenv(HERMES_ENV, exports, retired_env) or changed:
@@ -3148,7 +3724,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 _mirror_dotenv(HERMES_ENV, exports, retired_env)
             if present["kimi"]:
                 render_kimi()
-        except OSError as exc:
+        except (OSError, ConfigError) as exc:
             eprint(f"fleet: harness settings: {exc}")
             return 1
         record["mcp"] = {s["name"]: {"url": s.get("url"),
@@ -3156,11 +3732,18 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                                      "claude": _claude_mcp_entry(s) if "claude" in mcp_surfaces(s) else None,
                                      # Where fleet put it: this run's surfaces, and
                                      # those a harness absent now got before.
-                                     "rendered": sorted(set(mcp_surfaces(s)) & rendered | {
+                                     "rendered": sorted((set(mcp_surfaces(s)) & rendered
+                                                         - ({"claude"} if s["name"] in missed else set())) | {
                                          x for x in SURFACES if x not in rendered
                                          and _rendered_on(prev_mcp.get(s["name"]), x)})}
                          for s in servers.values()}
         record["mcp"].update(kept_mcp)
+        for name, url in hermes_urls.items():
+            if url and url != record["mcp"][name]["url"]:
+                record["mcp"][name]["hermesUrl"] = url
+        for name, entry in claude_was.items():
+            if isinstance(entry, dict) and name in record["mcp"]:
+                record["mcp"][name]["claudeWas"] = entry
         # An entry the user already had stays theirs while fleet wants it.
         # Where this run rendered, the renderer said whose it still is; on a
         # harness absent now, the last answer stands.
@@ -3171,6 +3754,7 @@ def _harness_apply(account, context, tier, warnings, hub, previous, force, clear
                 entry["users"] = sorted(mine)
         # A failed part renders again on the next run.
         record["hash"] = digest if rc == 0 else None
+        record["absent"] = sorted(absent)
         if clear and rc == 0:
             APPLIED.unlink(missing_ok=True)
         else:
@@ -3240,8 +3824,13 @@ def harness_takeover():
             eprint("fleet: could not take over the harnesses timer; run: fleet schedule")
             return 1
         if sys.platform == "darwin":
-            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.lost.plus.{HARNESSES_TIMER}"],
-                           capture_output=True)
+            target = f"gui/{os.getuid()}/com.lost.plus.{HARNESSES_TIMER}"
+            # bootout also fails on an agent that was never loaded; only one
+            # still loaded keeps its plist, so a later run retries.
+            if subprocess.run(["launchctl", "bootout", target], capture_output=True).returncode != 0 \
+                    and subprocess.run(["launchctl", "print", target], capture_output=True).returncode == 0:
+                eprint("fleet: could not unload the harnesses timer; run: fleet schedule")
+                return 1
             HARNESSES_PLIST.unlink(missing_ok=True)
         elif _run_schedule("uninstall-timer", "user", HARNESSES_TIMER) != 0:
             eprint("fleet: could not remove the harnesses timer")
@@ -3330,9 +3919,12 @@ def cmd_sync(check=False, direct=True, force=False):
         ssh_rc = 3
     else:
         if check:
-            return 0 if (is_current(config_lines, keys_lines) and not config_outdated()
-                         and not (config_sync_enabled() and harnesses_left())
-                         and not harness_outdated()) else 1
+            if not is_current(config_lines, keys_lines):
+                return 1
+            outdated = config_outdated()
+            if outdated or (config_sync_enabled() and harnesses_left()) or harness_outdated():
+                return 1
+            return 3 if outdated is None else 0
         changed = _write(SSH_CONFIG, config_lines) | _write(AUTHORIZED_KEYS, keys_lines)
         try:
             SSH_DIR.chmod(0o700)
@@ -3349,7 +3941,13 @@ def cmd_sync(check=False, direct=True, force=False):
         # Either way this run only pulls: a failed replacement may leave the
         # old timer running plain `fleet sync`.
         direct = False
-        if schedule_enable() != 0:
+        try:
+            rc = schedule_enable()
+        except SystemExit as exc:
+            # A missing helper exits; the pull still runs.
+            eprint(f"fleet: {exc}")
+            rc = 1
+        if rc != 0:
             eprint("fleet: could not replace the nightly timer; run fleet schedule, then fleet sync")
             ssh_rc = 1
         else:
@@ -3371,6 +3969,9 @@ def cmd_onboard():
         return 1
     if AGENTS_DIR.is_symlink():
         eprint(f"fleet: refusing a symlinked {AGENTS_DIR}")
+        return 1
+    if os.path.lexists(AGENTS_DIR) and not AGENTS_DIR.is_dir():
+        eprint(f"fleet: {AGENTS_DIR} is not a folder")
         return 1
     account = _context()
     if account is None:
@@ -3474,14 +4075,20 @@ def schedule_stale():
         if sys.platform == "darwin":
             text = _plist_path().read_text()
             return "<string>run</string>" not in text or f"<integer>{SCHEDULE_HOUR}</integer>" not in text
-        service = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.service").read_text()
-        timer = (SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer").read_text()
+        units = [SYSTEMD_USER_DIR/f"{TIMER_NAME}.service", SYSTEMD_USER_DIR/f"{TIMER_NAME}.timer"]
+        service, timer = (unit.read_text() for unit in units)
+    except FileNotFoundError:
+        # Half a timer is a broken one: only none at all is no timer.
+        return sys.platform != "darwin" and any(os.path.lexists(unit) for unit in units)
     except OSError:
-        return False
+        # One that cannot be read may be the old timer all the same.
+        return True
     return "fleet schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
 
 
 def schedule_enable():
+    # Both run the installed binary, not whichever copy turned the job on: the
+    # uninstall retry runs a temporary one.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -3494,7 +4101,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{os.path.abspath(sys.argv[0])}</string>
+        <string>{HOME/".local/bin/fleet"}</string>
         <string>schedule</string>
         <string>run</string>
     </array>
@@ -3594,7 +4201,11 @@ def dispatch(args):
         return heavy_pass()
     # setup uninstall fleet: drop the harness links, restoring what they replaced.
     if args == ["__unlink"]:
-        remove_links()
+        try:
+            remove_links()
+        except ConfigError as exc:
+            eprint(f"fleet: {exc}")
+            return 1
         return 0
     if args == ["__unrender"]:
         return harness_render(clear=True)

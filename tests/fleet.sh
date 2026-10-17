@@ -137,7 +137,7 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 serve '{}' 4
 rm -f "$FLEET_SSH_DIR/id_ed25519.pub"
 export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet"
-export FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" FLEET_MANIFEST_TARGET="$HOME/.config/fleet/manifest.json"
+export FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json"
 module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }
@@ -169,8 +169,15 @@ grep -qx __unrender "$FAKE/ran" || fail "uninstall skipped __unrender when the b
 module install >/dev/null 2>&1 || fail "reinstall"
 rm -f "$FLEET_BIN"
 FLEET_SOURCE="$TMP/missing" module uninstall >/dev/null 2>&1 && fail "uninstall went on without a CLI"
-printf 'import sys\nsys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)\n' > "$FLEET_BIN"
+cat > "$FLEET_BIN" <<'EOF'
+import os, sys
+open(os.environ["FAKE"] + "/ran", "a").write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["schedule", "status"]:
+    print("fleet: nightly sync on")
+sys.exit(0 if sys.argv[1:] != ["__unlink"] else 1)
+EOF
 cp "$FLEET_BIN" "$TMP/failing.py"
+rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ -e "$FLEET_BIN" ]] || fail "a failed uninstall removed the binary"
 # A failed cleanup leaves fleet installed, so its nightly sync comes back on.
@@ -181,9 +188,11 @@ if sys.argv[1:] == ["schedule", "status"]:
     print("fleet: nightly sync on")
 sys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)
 EOF
-rm -f "$FAKE/ran"
-FLEET_SOURCE="$TMP/failing.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
+rm -f "$FAKE/ran"; cp "$FLEET_BIN" "$TMP/failing-rec.py"
+FLEET_SOURCE="$TMP/failing-rec.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after __unlink failed"
 [[ "$(tail -1 "$FAKE/ran")" == "schedule enable" ]] || fail "a failed uninstall left the nightly sync off"
+# And a sync puts back what the cleanup took before it failed.
+grep -qx "sync --pull" "$FAKE/ran" || fail "a failed uninstall did not put back what it took"
 # An installed binary older than this module, without __unlink, hands the
 # cleanup to the current one.
 printf 'import sys\nsys.exit(2 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$FLEET_BIN"
@@ -191,6 +200,17 @@ rm -f "$FAKE/ran"
 FLEET_SOURCE="$TMP/recorder.py" module uninstall >/dev/null 2>&1 || fail "uninstall with an old binary"
 grep -qx __unlink "$FAKE/ran" || fail "an old binary's failed __unlink was not retried with the current one"
 [[ ! -e "$FLEET_BIN" ]] || fail "uninstall with an old binary left it"
+# When the current CLI stood in for that old one and failed too, it is the
+# one that puts things back: the old one may not render what it removed.
+module install >/dev/null 2>&1 || fail "reinstall"
+printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("old " + " ".join(sys.argv[1:]) + "\\n")\nsys.exit(2 if sys.argv[1:] == ["__unrender"] else 0)\n' > "$FLEET_BIN"
+printf 'import os, sys\nopen(os.environ["FAKE"] + "/ran", "a").write("new " + " ".join(sys.argv[1:]) + "\\n")\nsys.argv[1:2] == ["sync"] and open(os.environ["FAKE"] + "/path", "w").write(os.environ.get("FLEET_PATH", ""))\nsys.exit(1 if sys.argv[1:] == ["__unlink"] else 0)\n' > "$TMP/newfail.py"
+rm -f "$FAKE/ran"
+FLEET_SOURCE="$TMP/newfail.py" module uninstall >/dev/null 2>&1 && fail "uninstall went on after the current CLI's __unlink failed"
+grep -qx "new sync --pull" "$FAKE/ran" && ! grep -q "old sync" "$FAKE/ran" \
+    || fail "a failed stand-in cleanup was put back by the old binary: $(cat "$FAKE/ran")"
+# It renders the installed path, not its own, which is deleted after.
+[[ "$(cat "$FAKE/path")" == "$FLEET_BIN" ]] || fail "the stand-in put back settings pointing at itself"
 # A nightly sync that will not turn off keeps everything.
 module install >/dev/null 2>&1 || fail "reinstall"
 cat > "$FLEET_BIN" <<'EOF'
@@ -227,5 +247,18 @@ touch "$units/fleet-sync.timer"
 SCHEDULE_BIN="$TMP/helper" SCHEDULE_USER_DIR="$units" python3 "$ROOT/files/fleet" schedule disable >/dev/null 2>&1 \
     || fail "turning off an installed timer failed"
 grep -qx 'uninstall-timer user fleet-sync' "$FAKE/helper" || fail "an installed timer was left behind"
+
+# The launchd job runs the installed binary, also when a temporary copy
+# turned it on.
+HOME="$TMP/machome" python3 - "$ROOT/files/fleet" <<'PY' || fail "the launchd job does not run the installed binary"
+import importlib.machinery, importlib.util, subprocess, sys
+loader = importlib.machinery.SourceFileLoader("fleet_launchd", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+m.sys.platform = "darwin"
+m.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
+sys.argv[0] = "/tmp/staged-fleet"
+assert m.schedule_enable() == 0
+assert f"<string>{m.HOME}/.local/bin/fleet</string>" in m._plist_path().read_text()
+PY
 
 echo "fleet tests passed"
