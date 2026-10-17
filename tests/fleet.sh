@@ -29,7 +29,7 @@ fleet() { python3 "$ROOT/files/fleet" "$@"; }
 serve() { printf '%s' "$1" > "$FAKE/fleet.json"; printf '%s' "${2:-0}" > "$FAKE/rc"; printf '%s' "${3:-7}" > "$FAKE/subject"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-FLEET_JSON='{"version":"v1","self":{"key":"ssh-ed25519 AAAASelf","served":true,"key_mismatch":false,"alias":"grimoire"},
+FLEET_JSON='{"version":"v1","self":{"key":"ssh-ed25519 AAAASelf","key_mismatch":false,"alias":"grimoire"},
 "keys":["ssh-ed25519 AAAASelf","ssh-ed25519 AAAAPeer"],
 "hosts":[{"alias":"grimoire","address":"grimoire.ts.net","user":"fox","term_fallback":false},
 {"alias":"bingus","address":"bingus.lan","user":"fox","term_fallback":true},
@@ -105,10 +105,6 @@ grep -qx 'ssh-ed25519 AAAAPeer' "$FLEET_SSH_DIR/authorized_keys" || fail "operat
 [[ -f "$XDG_STATE_HOME/setup/auth.needs-login" ]] && fail "login marker kept after a good answer"
 fleet status 2>&1 | grep -q 'not yet served by Auth as in FLEET: spark1' || fail "status shows no cutover gaps"
 
-# An unconfirmed machine is told why its key is not in other machines' files.
-serve "${FLEET_JSON/\"served\":true/\"served\":false}" 0 7
-fleet sync 2>&1 >/dev/null | grep -q 'waiting for confirmation' || fail "no confirmation notice"
-
 # A file whose text is current but whose mode loosened is put back to 0600.
 serve "$FLEET_JSON"
 fleet sync >/dev/null 2>&1
@@ -124,7 +120,7 @@ cat > "$TMP/auth.switching" <<'SH'
 case "$1" in
     refresh) exit 0 ;;
     context) printf '{"origin":"https://auth.lost.plus","subject":"%s"}\n' "$(cat "$FAKE/subject")" ;;
-    request) printf 1 > "$FAKE/subject"; printf '%s' '{"version":"v1","self":{"served":true,"key_mismatch":false},"keys":["ssh-ed25519 AAAAOther"],"hosts":[]}' ;;
+    request) printf 1 > "$FAKE/subject"; printf '%s' '{"version":"v1","self":{"key_mismatch":false},"keys":["ssh-ed25519 AAAAOther"],"hosts":[]}' ;;
 esac
 SH
 chmod +x "$TMP/auth.switching"
