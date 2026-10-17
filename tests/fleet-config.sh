@@ -565,6 +565,20 @@ m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name,
 assert m.config_outdated() is None
 PY
 rm "$FAKE/no-session"
+# A ~/.agents a pull refuses is not current.
+python3 - "$ROOT/files/fleet" "$TMP" <<'PY' || fail "a refused ~/.agents read as current"
+import importlib.machinery, importlib.util, os, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_root", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+link, plain = pathlib.Path(sys.argv[2])/"agents-link", pathlib.Path(sys.argv[2])/"agents-file"
+os.symlink(m.AGENTS_DIR, link); plain.write_text("x")
+try:
+    for root in (link, plain):
+        m.AGENTS_DIR = root
+        assert m.config_outdated() is True, root
+finally:
+    link.unlink(); plain.unlink()
+PY
 # A fetch that leaves out a file it was asked for is refused.
 prev=$(cat "$HOME/.agents/skills/mine/SKILL.md")
 server_put skills/mine/SKILL.md 'short fetch'
@@ -668,6 +682,23 @@ rc=0; SCHEDULE_BIN="$TMP/no-schedule" fleet sync >"$TMP/out" 2>&1 || rc=$?
 [[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "pulled past the helper" ]] || fail "a missing schedule helper skipped the pull"
 rm -f "$SCHEDULE_USER_DIR"/fleet-sync.*
 server_put skills/mine/SKILL.md "$prev"; fleet sync --pull >/dev/null 2>&1 || fail "pull back after the helper test"
+# Nor do timer files that cannot be written.
+mkdir -p "$SCHEDULE_USER_DIR"
+printf 'ExecStart=%%h/.local/bin/fleet sync\n' > "$SCHEDULE_USER_DIR/fleet-sync.service"
+printf 'OnCalendar=*-*-* 04:00:00\n' > "$SCHEDULE_USER_DIR/fleet-sync.timer"
+server_put skills/mine/SKILL.md 'pulled past the timer'
+rc=0; python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_timer", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)); loader.exec_module(m)
+def boom(): raise OSError("disk full")
+m.schedule_enable = boom
+sys.argv = ["fleet", "sync"]
+sys.exit(m.main())' "$ROOT/files/fleet" >"$TMP/out" 2>&1 || rc=$?
+[[ $rc == 1 ]] && grep -q 'disk full' "$TMP/out" || fail "unwritable timer files exited $rc: $(cat "$TMP/out")"
+[[ "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "pulled past the timer" ]] || fail "unwritable timer files skipped the pull"
+rm -f "$SCHEDULE_USER_DIR"/fleet-sync.*
+server_put skills/mine/SKILL.md "$prev"; fleet sync --pull >/dev/null 2>&1 || fail "pull back after the timer test"
 # One that cannot be read is taken as that old timer too.
 mkdir -p "$SCHEDULE_USER_DIR"
 printf 'ExecStart=%%h/.local/bin/fleet schedule run\n' > "$SCHEDULE_USER_DIR/fleet-sync.service"
