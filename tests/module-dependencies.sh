@@ -203,6 +203,26 @@ printf '%s\tH\n%s\tH\n' "$HOME/u" "$HOME/d" > "$HASH_FILE"
 install_one() { printf '%s ' "$1" >> "$TMP/installed"; return 0; }
 out=$(cmd_update 2>&1) || fail "update with an installed dependency failed: $out"
 [[ "$(<"$TMP/installed")" == "d u " ]] || fail "update sequence was '$(<"$TMP/installed")', expected 'd u '"
+# A filter on u updates d with it, first.
+printf '%s\tH\n%s\tH\n' "$HOME/u" "$HOME/d" > "$HASH_FILE"
+: > "$TMP/installed"
+out=$(cmd_update u 2>&1) || fail "filtered update with an installed dependency failed: $out"
+[[ "$(<"$TMP/installed")" == "d u " ]] || fail "filtered update sequence was '$(<"$TMP/installed")', expected 'd u '"
+# One whose update fails holds u back.
+printf '%s\tH\n%s\tH\n' "$HOME/u" "$HOME/d" > "$HASH_FILE"
+: > "$TMP/installed"
+install_one() { printf '%s ' "$1" >> "$TMP/installed"; [[ "$1" != d ]]; }
+out=$(cmd_update 2>&1) && fail "update past a failed dependency update succeeded: $out"
+[[ "$(<"$TMP/installed")" == "d " ]] || fail "updated past a failed dependency: '$(<"$TMP/installed")'"
+[[ "$out" == *"u waits for d"* ]] || fail "update reported: $out"
+# A loop in the manifest updates nothing.
+write_requires 'u\td\nd\tu\n'
+printf '%s\tH\n%s\tH\n' "$HOME/u" "$HOME/d" > "$HASH_FILE"
+: > "$TMP/installed"
+install_one() { printf '%s ' "$1" >> "$TMP/installed"; return 0; }
+out=$(cmd_update 2>&1) && fail "update through a dependency loop succeeded: $out"
+[[ -z "$(<"$TMP/installed")" ]] || fail "updated through a dependency loop: '$(<"$TMP/installed")'"
+[[ "$out" == *"loop through"* ]] || fail "update reported: $out"
 rm -f "$HASH_FILE" "$HOME/u" "$HOME/d"
 cp "$saved_manifest" "$MANIFEST_FILE"
 
