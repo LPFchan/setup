@@ -32,6 +32,11 @@ source "$ROOT/files/opencodex.sh"
 _live_proxy_version() { print '' }
 # Keep the drop-in writes below from reloading this machine's user manager.
 systemctl() { :; }
+# The launcher runs systemctl itself; keep it off this machine's manager too.
+mkdir -p "$TEST_TMP/bin"
+printf '#!/bin/sh\n[ -e "%s/systemctl-fails" ] && exit 1\nexit 0\n' "$TEST_TMP" > "$TEST_TMP/bin/systemctl"
+chmod +x "$TEST_TMP/bin/systemctl"
+export PATH="$TEST_TMP/bin:$PATH"
 
 OPENCODEX_RELEASE_VERSION=""
 npm() { print '9.8.7'; }
@@ -176,6 +181,25 @@ if [[ "$(uname -s)" == Linux ]]; then
     expect_status 1 outdated
     install_surfaces
     expect_status 0 current
+    # An unwritable drop-in fails the install rather than running without it.
+    mv "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}" "$TEST_TMP/dropin.keep"
+    : > "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
+    _write_stop_timeout 2>/dev/null && fail "an unwritable stop-timeout drop-in went unreported"
+    rm "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
+    mv "$TEST_TMP/dropin.keep" "${OPENCODEX_STOP_TIMEOUT_DROPIN:h}"
+    # So does a drop-in systemd did not reload, and the next install retries.
+    rm "$OPENCODEX_STOP_TIMEOUT_DROPIN"
+    systemctl() { return 1; }
+    _write_stop_timeout 2>/dev/null && fail "a stop-timeout drop-in systemd did not reload went unreported"
+    systemctl() { :; }
+    _stop_timeout_current && fail "a stop-timeout drop-in systemd did not reload read as current"
+    _write_stop_timeout >/dev/null || fail "the stop-timeout drop-in was not retried"
+    # A drop-in already in place is reloaded all the same: the run that wrote
+    # it may have stopped before its reload.
+    systemctl() { [[ "$*" == "--user daemon-reload" ]] && : > "$TEST_TMP/reloaded"; }
+    _write_stop_timeout >/dev/null || fail "a current stop-timeout drop-in failed"
+    [[ -e "$TEST_TMP/reloaded" ]] || fail "a current stop-timeout drop-in was not reloaded"
+    systemctl() { :; }
 fi
 
 rm -f "$OPENCODEX_BIN"
@@ -205,13 +229,47 @@ uninstall 2>/dev/null && fail "opencodex uninstall passed a route it could not r
 printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
 python3 "$BIN" __unexport >/dev/null || fail "unexport with a user gateway"
 grep -q 'gw.example' "$HOME/.claude/settings.json" || fail "unexport removed the user's own base URL"
+# A block missing its end line cannot come off, so unexport fails rather
+# than leave new shells routed to a stopped proxy.
+cp "$HOME/.zshenv" "$TEST_TMP/zshenv.keep"
+printf '# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n' >> "$HOME/.zshenv"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}}\n' > "$HOME/.claude/settings.json"
+python3 "$BIN" __unexport >/dev/null 2>&1 && fail "unexport passed a route block without its end"
+grep -q 'ANTHROPIC_BASE_URL=http://127.0.0.1:1' "$HOME/.zshenv" || fail "unexport cut into a block without its end"
+grep -q '127.0.0.1:1' "$HOME/.claude/settings.json" || fail "a refused unexport still took claude's route"
+# Nor while the service manager keeps the route for the apps it starts.
+cp "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan"
+cp "$TEST_TMP/zshenv.keep" "$HOME/.zshenv"
+printf '# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n# END harnesses:anthropic-base-url\n' >> "$HOME/.zshenv"
+touch "$TEST_TMP/systemctl-fails"
+python3 "$BIN" __unexport >/dev/null 2>&1 && fail "unexport passed a route the service manager kept"
+rm "$TEST_TMP/systemctl-fails"
+grep -q 'ANTHROPIC_BASE_URL=http://127.0.0.1:1' "$HOME/.zshenv" || fail "a refused unexport still took the shell route"
+grep -q '127.0.0.1:1' "$HOME/.claude/settings.json" || fail "a refused unexport still took claude's route (service manager)"
+mv "$TEST_TMP/zshenv.orphan" "$HOME/.zshenv"
+# Nor is a block appended after it, which the next removal would take
+# together with every line between.
+cp "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan"
+HARNESSES_PROXY_PORT=1 python3 -c '
+import sys
+from importlib.machinery import SourceFileLoader
+m = SourceFileLoader("opencodex", sys.argv[1]).load_module()
+try:
+    m.write_base_url_export()
+except m.UserError:
+    sys.exit(0)
+sys.exit(1)' "$BIN" >/dev/null || fail "export appended a block after an orphaned begin"
+cmp -s "$HOME/.zshenv" "$TEST_TMP/zshenv.orphan" || fail "a refused export changed .zshenv"
+mv "$TEST_TMP/zshenv.keep" "$HOME/.zshenv"
+printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:10100"}}\n' > "$HOME/.claude/settings.json"
 # A deleted launcher is fetched again for the route; while it cannot be,
 # nothing is torn down.
 rm "$BIN"
 LAUNCHER_SOURCE="$TEST_TMP/missing" uninstall 2>/dev/null && fail "opencodex uninstall passed a route it had no launcher for"
 [[ -e "$REGISTRY" ]] || fail "a missing launcher still tore down opencodex"
-# Even fetched without its executable bit.
+# So does an installed one too old to know how; the current one, fetched,
+# takes the route off. Even fetched without its executable bit.
+printf 'import sys\nsys.exit(2)\n' > "$BIN"
 cp "$ROOT/files/opencodex" "$TEST_TMP/launcher"; chmod -x "$TEST_TMP/launcher"
 LAUNCHER_SOURCE="$TEST_TMP/launcher" uninstall
 ! grep -q ANTHROPIC_BASE_URL "$HOME/.zshenv" "$HOME/.claude/settings.json" \

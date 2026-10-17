@@ -14,7 +14,8 @@ MODULE="fleet"
 BIN="${FLEET_BIN:-$HOME/.local/bin/fleet}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 BIN_SOURCE="${FLEET_SOURCE:-$SOURCE_BASE/files/fleet}"
-MANIFEST="${FLEET_MANIFEST_TARGET:-$HOME/.config/fleet/manifest.json}"
+# Where fleet itself looks for it.
+MANIFEST="$HOME/.config/fleet/manifest.json"
 MANIFEST_SOURCE="${FLEET_MANIFEST_SOURCE:-$SOURCE_BASE/files/fleet-manifest.json}"
 HARNESSES_BIN="$HOME/.local/bin/harnesses"
 
@@ -175,10 +176,22 @@ uninstall() {
         _stage "$staged" && python3 "$staged/fleet" __unrender && python3 "$staged/fleet" __unlink && ok=1
     fi
     if [[ -z "$ok" ]]; then
-        # fleet stays installed, so its nightly sync comes back.
-        [[ -n "$was_on" && -f "$cli" ]] && python3 "$cli" schedule enable >/dev/null 2>&1
+        # fleet stays installed: a sync puts back whatever the cleanup took
+        # before it failed, and its nightly sync comes back.
+        # The staged CLI whenever there is one: it is the current version, and
+        # an installed one it stood in for may not render what it removed.
+        local again="$BIN" back=""
+        [[ -n "$staged" && -f "$staged/fleet" ]] && again="$staged/fleet"
+        [[ -f "$again" ]] && FLEET_PATH="$BIN" python3 "$again" sync --pull >/dev/null 2>&1 && back=1
+        if [[ -n "$was_on" ]] && ! { [[ -f "$cli" ]] && FLEET_PATH="$BIN" python3 "$cli" schedule enable >/dev/null 2>&1; }; then
+            echo "fleet: could not turn the nightly sync back on; run: fleet schedule on" >&2
+        fi
         [[ -n "$staged" ]] && rm -rf "$staged"
-        echo "fleet: could not take back the rendered settings and links; nothing was removed, try again" >&2
+        if [[ -n "$back" ]]; then
+            echo "fleet: could not take back the rendered settings and links; fleet stays installed, try again" >&2
+        else
+            echo "fleet: could not take back the rendered settings and links, nor put them back; run fleet sync, then try again" >&2
+        fi
         return 1
     fi
     [[ -n "$staged" ]] && rm -rf "$staged"

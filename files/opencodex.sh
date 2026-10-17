@@ -296,11 +296,23 @@ _stop_timeout_current() {
 }
 
 _write_stop_timeout() {
-    _stop_timeout_current && return 0
-    mkdir -p "${STOP_TIMEOUT_DROPIN:h}"
-    print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN"
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
-    echo "opencodex: proxy stop timeout raised to 330s"
+    [[ "$(uname -s)" != Linux ]] && return 0
+    local changed=0
+    if ! _stop_timeout_current; then
+        changed=1
+        mkdir -p "${STOP_TIMEOUT_DROPIN:h}" || return 1
+        print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN" || return 1
+    fi
+    # systemd only takes the drop-in on a reload, so each install reloads: a
+    # run stopped before it left the file in place. Without one, the file goes
+    # again so the next install retries rather than reads it as done.
+    if ! systemctl --user daemon-reload >/dev/null 2>&1; then
+        rm -f "$STOP_TIMEOUT_DROPIN"
+        echo "opencodex: systemd did not reload the proxy stop timeout" >&2
+        return 1
+    fi
+    (( changed )) && echo "opencodex: proxy stop timeout raised to 330s"
+    return 0
 }
 
 _apply() {
@@ -313,7 +325,7 @@ _apply() {
     _install_assets "$staged" || { rm -rf "$staged"; return 1; }
     rm -rf "$staged"
     _apply_all_providers || return 1
-    _write_stop_timeout
+    _write_stop_timeout || return 1
     _activate_runtime || return 1
     record_script_state "$MODULE" "$(_release_ref "$version")" "$hash" "$hash"
     echo "opencodex: $action -> $BIN"
@@ -368,13 +380,16 @@ uninstall() {
     # A route to the stopped proxy would send every Claude request nowhere, so
     # it comes off first; while it cannot, nothing is torn down.
     # Through python3, so a launcher that lost its executable bit still cleans
-    # up; a deleted one is fetched again, since only it knows which route is ours.
-    local cli="$BIN" staged=""
-    if [[ ! -f "$cli" ]]; then
+    # up; a deleted one, or one too old to know how, hands over to the current
+    # one, fetched, since only a launcher knows which route is ours.
+    local staged="" ok=""
+    [[ -f "$BIN" ]] && python3 "$BIN" __unexport >/dev/null 2>&1 && ok=1
+    if [[ -z "$ok" ]]; then
         staged=$(mktemp -d)
-        _fetch_file "$LAUNCHER_SOURCE" "$staged/opencodex" 2>/dev/null && cli="$staged/opencodex"
+        _fetch_file "$LAUNCHER_SOURCE" "$staged/opencodex" 2>/dev/null \
+            && python3 "$staged/opencodex" __unexport >/dev/null && ok=1
     fi
-    if [[ ! -f "$cli" ]] || ! python3 "$cli" __unexport >/dev/null; then
+    if [[ -z "$ok" ]]; then
         [[ -n "$staged" ]] && rm -rf "$staged"
         echo "opencodex: could not remove ANTHROPIC_BASE_URL; check ~/.zshenv and ~/.claude/settings.json; nothing was uninstalled" >&2
         return 1

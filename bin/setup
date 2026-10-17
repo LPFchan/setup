@@ -576,10 +576,14 @@ _swap_dependencies() {
 # installed, since the successor keeps or rewrites the old target. This runs
 # before a command builds its module list.
 swap_retired_modules() {
-    local old successor target mode source failures=0 swapped=""
+    local old successor target mode source recorded failures=0 swapped=""
+    local -a kept
     # A successor whose rerun after the swap failed is still owed one: the old
     # state entry is gone by then, so nothing else would bring it back.
-    [[ -f "$SWAP_PENDING_FILE" ]] && swapped=" $(tr '\n' ' ' < "$SWAP_PENDING_FILE")"
+    if [[ -f "$SWAP_PENDING_FILE" ]] && ! swapped=" $(tr '\n' ' ' 2>/dev/null < "$SWAP_PENDING_FILE")"; then
+        echo "Warning: could not read $SWAP_PENDING_FILE; the takeovers it owes wait for the next run." >&2
+        failures=1
+    fi
     [[ -f "$SUCCESSOR_FILE" && -f "$SCRIPT_STATE_FILE" ]] && while IFS=$'\t' read -r old successor _ <&3; do
         grep -q "^${old}"$'\t' "$SCRIPT_STATE_FILE" || continue
         target=""
@@ -615,7 +619,15 @@ swap_retired_modules() {
             fi
             swapped="$swapped $successor"
         fi
-        remove_script_state "$old"
+        # Its entry still gates the successor's takeover, so the rerun below
+        # must not clear the marker that retries it.
+        if ! remove_script_state "$old"; then
+            echo "Warning: could not drop $old's state entry; keeping $old for now." >&2
+            kept=(${${=swapped}:#$successor})
+            swapped=" ${kept[*]} "
+            failures=$((failures + 1))
+            continue
+        fi
         echo "$old is replaced by $successor."
         # A timer that does not come on is reported by the successor's own
         # status; it does not undo the swap.
@@ -634,21 +646,45 @@ swap_retired_modules() {
         IFS=$'\t' read -r target mode source < <(
             awk -F '\t' -v m="$successor" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
         )
-        # One uninstalled or gone from the catalog since owes nothing.
-        if [[ -n "$target" ]] && grep -q "^${successor}"$'\t' "$SCRIPT_STATE_FILE" 2>/dev/null \
+        # One uninstalled or gone from the catalog since owes nothing; a state
+        # file that cannot be read says nothing, so the takeover stays owed.
+        recorded=1
+        if [[ -e "$SCRIPT_STATE_FILE" ]]; then
+            recorded=0
+            grep -q "^${successor}"$'\t' "$SCRIPT_STATE_FILE" 2>/dev/null || recorded=$?
+        fi
+        if (( recorded > 1 )); then
+            echo "Warning: could not read $SCRIPT_STATE_FILE; $successor's takeover waits for the next run." >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        if [[ -n "$target" ]] && (( recorded == 0 )) \
             && ! _script_update "$successor" "$target" "$source"; then
             echo "Warning: $successor could not finish taking over after the swap; the next run tries again." >&2
             failures=$((failures + 1))
             continue
         fi
-        grep -vx "$successor" "$SWAP_PENDING_FILE" > "$SWAP_PENDING_FILE.tmp" 2>/dev/null || true
-        if [[ -s "$SWAP_PENDING_FILE.tmp" ]]; then
-            mv "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
-        else
-            rm -f "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
+        if ! clear_swap_pending "$successor"; then
+            echo "Warning: could not mark $successor's takeover done; the next run tries again." >&2
+            failures=$((failures + 1))
         fi
     done
     (( failures == 0 ))
+}
+
+# Drops one finished takeover from the retry marker; fails when the marker
+# could not be rewritten, so the swap is not reported done.
+clear_swap_pending() {
+    local rest
+    [[ -e "$SWAP_PENDING_FILE" ]] || return 0
+    rest="$(grep -vx -- "$1" "$SWAP_PENDING_FILE")"
+    (( $? < 2 )) || return 1
+    if [[ -z "$rest" ]]; then
+        rm -f "$SWAP_PENDING_FILE"
+    else
+        print -r -- "$rest" 2>/dev/null > "$SWAP_PENDING_FILE.tmp" \
+            && mv "$SWAP_PENDING_FILE.tmp" "$SWAP_PENDING_FILE"
+    fi
 }
 
 module_selected() {
@@ -1516,9 +1552,12 @@ cmd_update() {
                 if is_service_module "$dep" \
                     && [[ "$(module_service_unit "$dep" 2>/dev/null || true)" != tool ]] \
                     && ! module_service_transition enable "$dep"; then
-                    echo "Warning: $dep installed but its service could not be enabled." >&2
+                    echo "Warning: $dep installed but its service could not be enabled; $dependent waits for it." >&2
                     failure_count=$((failure_count + 1))
                     failure_names+=("$dep")
+                    dep_failed+=("$dep")
+                    blocked+=("$dependent")
+                    break
                 fi
             else
                 echo "Warning: $dep dependency install failed; $dependent waits for it." >&2
