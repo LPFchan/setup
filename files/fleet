@@ -29,6 +29,7 @@ import threading
 import time
 import unicodedata
 import urllib.request
+from xml.sax.saxutils import escape as xml_escape
 
 HOME = pathlib.Path.home()
 # Fleet keeps the default Claude profile, the one its nightly run (which has
@@ -75,6 +76,8 @@ LAUNCHD_DIR = HOME/"Library/LaunchAgents"
 SYSTEMD_USER_DIR = pathlib.Path(os.environ.get("SCHEDULE_USER_DIR") or HOME/".config/systemd/user")
 # After setup's own 06:00 run, as the harnesses timer this replaces ran.
 SCHEDULE_HOUR = 11
+# The node install miniharness.sh offers next to nvm.
+OPT_NODE_BIN = pathlib.Path("/opt/node/bin")
 
 
 class Unavailable(Exception):
@@ -908,7 +911,7 @@ def _same_tree(a, b):
                 if p.is_symlink():
                     files[rel] = ("link", os.readlink(p))
                 elif name in names:
-                    files[rel] = p.read_bytes() if p.is_file() else ("special",)
+                    files[rel] = _digest(p) if p.is_file() else ("special",)
         return files
     try:
         return tree(a) == tree(b)
@@ -1119,7 +1122,8 @@ def pull(account, settle_old=False):
         if record is None:
             # A join: whatever it replaced here, scanned or saved since, is
             # in the backup.
-            replaced = sorted({p for p in set(take) | set(remove) if p in local} | set(conflicts))
+            replaced = sorted(({p for p in set(take) | set(remove) if p in local} | set(conflicts))
+                              - set(deleted))
             if replaced:
                 _report(f"took the account's copy over what was here (yours is in {backup.root}): "
                         + ", ".join(replaced))
@@ -1346,6 +1350,8 @@ def refresh_links():
             # One leading to a harness file would have that file swapped for
             # a link back to it, and neither readable.
             eprint(f"fleet: {agents_md} is a link; not linking it where harnesses read it")
+            for target in AGENTS_LINKS:
+                _unlink_restoring(target, links)
         elif agents_md.is_file():
             for target in AGENTS_LINKS:
                 if target != HOME/"AGENTS.md" and not target.parent.is_dir():
@@ -1414,7 +1420,9 @@ def _drop_old_links():
 
 def _skill_entries(skills):
     try:
-        return [e for e in sorted(skills.iterdir()) if e.is_dir() and not e.name.startswith(".")]
+        # A linked one is not synced, and may lead back to claude's own copy.
+        return [e for e in sorted(skills.iterdir())
+                if e.is_dir() and not e.is_symlink() and not e.name.startswith(".")]
     except OSError:
         return []
 
@@ -1900,11 +1908,12 @@ def _heal_path():
 
     systemd and launchd start fleet with a login-less PATH, where claude,
     codex, npm and ocx are all invisible. nvm's default node leads, as nvm's
-    init puts it ahead of everything in a login shell; the user's own bin
-    directories follow, even ahead of a system copy of a harness; the other
-    node toolchains go on the end, there to be found rather than to win.
+    init puts it ahead of everything in a login shell, then /opt/node, the
+    other install miniharness.sh offers; the user's own bin directories
+    follow, even ahead of a system copy of a harness; the other node
+    toolchains go on the end, there to be found rather than to win.
     """
-    mine = [d for d in [_nvm_default()] if d] + [HOME/".local/bin", HOME/".opencode/bin"]
+    mine = [d for d in [_nvm_default()] if d] + [OPT_NODE_BIN, HOME/".local/bin", HOME/".opencode/bin"]
     toolchains = _nvm_toolchains() + [pathlib.Path("/opt/homebrew/bin"), pathlib.Path("/usr/local/bin")]
     current = os.environ.get("PATH", "").split(os.pathsep)
     owned = [str(d) for d in mine if d.is_dir()]
@@ -2022,8 +2031,8 @@ def _node_bin_dirs():
     nvm = os.environ.get("NVM_BIN")
     if nvm and os.path.isdir(nvm):
         dirs.append(nvm)
-    if os.path.isdir("/opt/node/bin"):
-        dirs.append("/opt/node/bin")
+    if OPT_NODE_BIN.is_dir():
+        dirs.append(str(OPT_NODE_BIN))
     dirs += [str(d) for d in _nvm_toolchains()]
     dirs += [str(d) for d in sorted(pathlib.Path("/opt").glob("*/bin"), key=_version_key, reverse=True)]
     return dirs
@@ -4140,12 +4149,16 @@ def schedule_stale():
     except OSError:
         # One that cannot be read may be the old timer all the same.
         return True
-    return "fleet schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
+    return "schedule run" not in service or f"{SCHEDULE_HOUR:02d}:00:00" not in timer
+
+
+def _fleet_path():
+    # A temporary copy standing in for the installed one (uninstall's retry)
+    # names it in FLEET_PATH: the copy is deleted once it has run.
+    return os.environ.get("FLEET_PATH") or os.path.abspath(sys.argv[0])
 
 
 def schedule_enable():
-    # A temporary copy standing in for the installed one (uninstall's retry)
-    # names it in FLEET_PATH: the copy is deleted once it has run.
     if sys.platform == "darwin":
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
@@ -4158,7 +4171,7 @@ def schedule_enable():
     <string>{PLIST_NAME}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{os.environ.get("FLEET_PATH") or os.path.abspath(sys.argv[0])}</string>
+        <string>{xml_escape(_fleet_path())}</string>
         <string>schedule</string>
         <string>run</string>
     </array>
@@ -4168,9 +4181,9 @@ def schedule_enable():
         <key>Minute</key><integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>{log}</string>
+    <string>{xml_escape(str(log))}</string>
     <key>StandardErrorPath</key>
-    <string>{log}</string>
+    <string>{xml_escape(str(log))}</string>
 </dict>
 </plist>
 """)
@@ -4194,13 +4207,18 @@ def schedule_enable():
         timer_extra = handle.name
     try:
         rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet SSH sync",
-                           "%h/.local/bin/fleet schedule run", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
+                           f"{_systemd_quote(_fleet_path())} schedule run", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
                            "", timer_extra)
     finally:
         os.unlink(timer_extra)
     if rc == 0:
         print(f"fleet: nightly sync scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
     return rc
+
+
+def _systemd_quote(word):
+    # ExecStart reads % as a specifier and splits on spaces.
+    return '"' + word.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
 def schedule_disable():

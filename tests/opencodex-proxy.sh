@@ -79,7 +79,7 @@ assert data["env"] == {"OTHER": "1"}, data
 PY
 
 # fleet's nightly __export writes the route only while the service is up and
-# never removes it.
+# never removes it, but fails while it leads to a stopped proxy.
 touch "$HOME/proxy-down"
 python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export failed with the service down"
 ! grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export wrote a route to a stopped proxy"
@@ -88,7 +88,7 @@ python3 "$ROOT/files/opencodex" __export >/dev/null || fail "__export failed"
 grep -q '^export ANTHROPIC_BASE_URL=http://127.0.0.1:10100$' "$HOME/.zshenv" \
     || fail "__export did not write the route"
 touch "$HOME/proxy-down"
-python3 "$ROOT/files/opencodex" __export >/dev/null
+python3 "$ROOT/files/opencodex" __export >/dev/null 2>&1 && fail "__export passed with a route to a stopped proxy"
 grep -q 'ANTHROPIC_BASE_URL' "$HOME/.zshenv" || fail "__export removed the route"
 # A gateway the user set in Claude's settings is never replaced.
 printf '{"env": {"ANTHROPIC_BASE_URL": "https://gw.example"}}\n' > "$HOME/.claude/settings.json"
