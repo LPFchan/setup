@@ -57,6 +57,8 @@ if path == "/api/fleet/config/fetch":
         os.remove(f"{fake}/edit-on-fetch")
         if os.path.exists(f"{fake}/edit-as-link"):
             os.remove(f"{fake}/edit-as-link"); os.remove(target); os.symlink("/dev/null", target)
+        elif os.path.exists(f"{fake}/edit-as-delete"):
+            os.remove(f"{fake}/edit-as-delete"); os.remove(target)
         else:
             open(target, "w").write("saved later\n")
     if os.path.exists(f"{fake}/switch-on-fetch"):
@@ -342,6 +344,11 @@ out=$(fleet sync --pull 2>&1) || true
 [[ ! -L "$HOME/.agents/skills/mine/SKILL.md" && "$(cat "$HOME/.agents/skills/mine/SKILL.md")" == "from account again" ]] \
     || fail "the account's copy not taken over a late link"
 [[ "$out" == *"changed here and in the account"*"skills/mine/SKILL.md"* ]] || fail "a late link replaced silently: $out"
+# And so is a deletion.
+server_put skills/mine/SKILL.md 'from account once more'
+printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"; touch "$FAKE/edit-as-delete"
+out=$(fleet sync --pull 2>&1) || true
+[[ "$out" == *"changed here and in the account"*"skills/mine/SKILL.md"* ]] || fail "a late deletion undone silently: $out"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"

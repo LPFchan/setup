@@ -917,6 +917,9 @@ def _apply_changes(take, remove, contents, server, backup, then=None, scanned=No
                 now = _digest(saved) if saved.is_file() and not saved.is_symlink() else None
                 if scanned is not None and now != scanned.get(rel):
                     changed.append(rel)
+            elif scanned is not None and rel in scanned and rel in take:
+                # So is one deleted since: the account's copy would undo that.
+                changed.append(rel)
         for rel in remove:
             _remove_file(rel)
         for rel in sorted(take):
