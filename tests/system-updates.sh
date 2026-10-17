@@ -202,9 +202,10 @@ assert_contains "$LOG" 'fleet schedule on'
 # native timer state that disable must eventually restore.
 cmd_enable >/dev/null
 assert_contains "$TIMER_STATE_FILE" $'apt-daily-upgrade.timer\tenabled\tactive'
-# A nightly pass that does not come on fails the enable, so setup retries it.
-enable_err=$(STUB_FLEET_SCHEDULE_RC=1 cmd_enable 2>&1) && fail 'enable passed with fleet schedule off'
-grep -q "nightly pass could not be" <<< "$enable_err" || fail "enable failed for the wrong reason: $enable_err"
+# A nightly pass that does not come on is tried again by the next update run.
+enable_err=$(STUB_FLEET_SCHEDULE_RC=1 cmd_enable 2>&1) || fail "enable failed on fleet schedule: $enable_err"
+grep -q "next update run tries again" <<< "$enable_err" || fail "fleet schedule failure went unreported: $enable_err"
+[[ -e "$STATE_DIR/fleet-schedule-pending" ]] || fail 'a failed fleet schedule was not kept for a retry'
 # A failed refresh restores the already-enabled module state, while keeping the
 # displaced native timer disabled rather than accidentally re-enabling it.
 rm -f "$STUB_STATE/enable-failed-once"
@@ -220,6 +221,8 @@ assert_file "$ROOT_COPY"; assert_file "$UPDATE_TIMER"; assert_file "$REBOOT_TIME
     || fail 'failed re-enable restored the displaced native timer too early'
 assert_contains "$TIMER_STATE_FILE" $'apt-daily-upgrade.timer\tenabled\tactive'
 : > "$LOG"; cmd_run
+assert_contains "$LOG" 'fleet schedule on'
+[[ ! -e "$STATE_DIR/fleet-schedule-pending" ]] || fail 'the update run did not retry fleet schedule'
 assert_contains "$LOG" 'apt-get update'
 assert_contains "$LOG" 'full-upgrade'
 assert_contains "$LAST_RUN_FILE" $'result\tsuccess'
