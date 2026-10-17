@@ -92,6 +92,20 @@ _retire_harnesses() {
     echo "fleet: removed the retired harnesses client"
 }
 
+# The retired agents module linked instruction and skill files fleet does not
+# manage. Its source clone marks a host that has not been cleaned up yet.
+_retire_agents_links() {
+    local clone="${STATE_DIR:-$HOME/.local/state/setup}/agents-src" link
+    [[ -d "$clone" ]] || return 0
+    for link in "$HOME/.gemini/GEMINI.md" "$HOME/.config/muse/AGENTS.md" \
+                "$HOME"/.codex/skills/*(N@) "$HOME"/.gemini/config/skills/*(N@) "$HOME"/.config/muse/skills/*(N@); do
+        [[ -L "$link" && "$(readlink "$link")" == "$HOME/.agents"* ]] || continue
+        rm -f "$link"
+        [[ -e "$link.pre-agents.bak" ]] && mv "$link.pre-agents.bak" "$link"
+    done
+    rm -rf "$clone"
+}
+
 _apply() {
     local action="$1" staged hash
     mkdir -p "${BIN:h}" "${MANIFEST:h}"
@@ -104,6 +118,7 @@ _apply() {
     record_script_state "$MODULE" "fleet" "$hash" "$hash"
     echo "fleet: $action -> $BIN"
     _retire_harnesses
+    _retire_agents_links
     [[ "$action" == installed ]] && _login_if_needed
     # A pull: local edits in ~/.agents go up only when the operator syncs.
     # Exit 3 means Auth gave no authoritative answer: what is on disk stays,
