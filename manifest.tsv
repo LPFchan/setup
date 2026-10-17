@@ -8,18 +8,18 @@ gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
 auth	~/.local/bin/auth	script	files/auth.sh
 providers	~/.local/bin/providers	script	files/providers.sh				auth
-harnesses	~/.local/bin/harnesses	script	files/harnesses.sh
-miniharness	-	script	files/miniharness.sh
+harnesses	~/.local/bin/harnesses	script	files/harnesses.sh			retired		fleet
+miniharness	-	script	files/miniharness.sh			retired		fleet
 schedule	~/.local/bin/schedule	0755	bin/schedule		linux
 browser-use-chrome	~/.config/systemd/user/browser-use-chrome.service	script	files/browser-use-chrome.sh	fleet	linux
 backup	~/.local/bin/backup	0755	bin/backup	fleet	linux		schedule
-system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux		schedule,miniharness
+system-updates	~/.local/bin/system-updates	0755	bin/system-updates		linux		schedule,fleet
 zsh-omnibar	~/.zsh/zsh-omnibar	script	files/zsh-omnibar.sh
 zsh-syntax-highlighting	~/.zsh/zsh-syntax-highlighting	script	files/zsh-syntax-highlighting.sh
 starship	~/.local/bin/starship	script	files/starship.sh
 fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
-agents	~/.agents/AGENTS.md	script	files/agents.sh
+agents	~/.agents/AGENTS.md	script	files/agents.sh			retired		fleet
 ssh-aliases	~/.ssh/config	script	files/ssh-aliases.sh	fleet		retired		fleet
 fleet	~/.local/bin/fleet	script	files/fleet.sh				auth
 mac-boot	/usr/local/bin/mac-boot	script	files/mac-boot.sh	fleet	darwin

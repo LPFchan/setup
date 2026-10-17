@@ -14,7 +14,7 @@ id() { print 501; }
 launchctl() {
     [[ "$1" == print && "$test_gui" == yes ]] || return 1
     [[ "$2" == gui/501 ]] && return 0
-    [[ "$2" == gui/501/com.lost.plus.harnesses-update && "$test_loaded" == yes ]]
+    [[ "$2" == gui/501/com.lost.plus.fleet-sync && "$test_loaded" == yes ]]
 }
 systemctl() {
     [[ "$test_platform" == Linux ]] || { print 'systemctl called on macOS' >&2; return 1; }
@@ -22,10 +22,10 @@ systemctl() {
 }
 fail() { print -u2 -- "FAIL: $*"; exit 1; }
 
-module_is_active harnesses || fail 'loaded macOS harnesses timer reported inactive'
+module_is_active fleet || fail 'loaded macOS fleet agent reported inactive'
 test_loaded=no
-if module_is_active harnesses; then
-    fail 'missing macOS harnesses timer reported active'
+if module_is_active fleet; then
+    fail 'missing macOS fleet agent reported active'
 fi
 # Over SSH there is no GUI domain; an installed plist waiting for the next
 # login counts as enabled.
@@ -44,9 +44,9 @@ if module_is_active fleet; then
 fi
 test_platform=Linux
 test_systemd=active
-module_is_active harnesses || fail 'active Linux harnesses timer reported inactive'
+module_is_active fleet || fail 'active Linux fleet timer reported inactive'
 test_systemd=inactive
-if module_is_active harnesses; then
-    fail 'inactive Linux harnesses timer reported active'
+if module_is_active fleet; then
+    fail 'inactive Linux fleet timer reported active'
 fi
-print 'macOS/Linux harnesses service checks passed'
+print 'macOS/Linux fleet service checks passed'

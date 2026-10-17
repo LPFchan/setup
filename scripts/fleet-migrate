@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# One-off move from the harnesses, agents and miniharness modules to fleet.
+# Delete this script once every host has run it.
+#
+#   fleet-migrate --seed   on the operator's first machine: write the personal
+#                          settings into ~/.agents and push the tree to Auth
+#   fleet-migrate          on every other machine, after the seed
+#
+# Run over SSH: ssh host 'bash -s' < scripts/fleet-migrate [--seed]
+set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+seed=0
+[[ "${1:-}" == --seed ]] && seed=1
+old_manifest="$HOME/.config/harnesses/manifest.json"
+
+if (( seed )); then
+    [[ -f "$old_manifest" ]] || { echo "fleet-migrate: $old_manifest is missing; nothing to seed from" >&2; exit 1; }
+    python3 - "$old_manifest" "$HOME/.agents" <<'EOF'
+import json, pathlib, sys
+old = json.loads(pathlib.Path(sys.argv[1]).read_text())
+agents = pathlib.Path(sys.argv[2])
+claude = old["settings"]["claude"]
+claude_json = json.loads(json.dumps(claude["json"]))
+claude_json.pop("attribution", None)  # common: lives in fleet-manifest.json
+claude_json.setdefault("permissions", {})["allow"] = claude["permissionsAllowAdd"]
+files = {
+    "settings/claude.json": claude_json,
+    "settings/keepout.json": old["keepout"],
+    "settings/t3.json": {"claudeCustomModels": old["settings"]["t3"]["claudeCustomModels"]},
+    "mcp.json": {"mcpServers": old["mcpServers"]},
+}
+for rel, data in files.items():
+    path = agents/rel
+    if path.exists():
+        print(f"fleet-migrate: {path} already exists; left alone")
+        continue
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"fleet-migrate: wrote {path}")
+EOF
+fi
+
+# Stop the old daily timer while its binary is still here to do it.
+if [[ -x "$HOME/.local/bin/harnesses" ]]; then
+    "$HOME/.local/bin/harnesses" schedule disable || true
+fi
+
+# Swaps harnesses, agents and miniharness for fleet and installs it.
+setup update
+
+if (( seed )); then
+    fleet sync
+else
+    fleet sync --pull
+fi
+fleet schedule
+
+# system-updates' reboot advisor needs miniharness, which fleet now installs.
+if command -v system-updates >/dev/null && ! command -v miniharness >/dev/null; then
+    fleet install miniharness
+fi
+
+rm -f "$HOME/.local/bin/harnesses" "$old_manifest"
+rmdir "$HOME/.config/harnesses" 2>/dev/null || true
+
+# Links the agents module made that fleet does not.
+shopt -s nullglob
+for link in "$HOME/.gemini/GEMINI.md" "$HOME/.config/muse/AGENTS.md" \
+            "$HOME"/.codex/skills/* "$HOME"/.gemini/config/skills/* "$HOME"/.config/muse/skills/*; do
+    if [[ -L "$link" && "$(readlink "$link")" == "$HOME/.agents"* ]]; then
+        rm -f "$link"
+        echo "fleet-migrate: removed $link"
+    fi
+done
+
+echo "fleet-migrate: done on $(hostname)"
