@@ -17,7 +17,7 @@ uname() { echo Linux; }
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/systemctl" <<'STUB'
 #!/usr/bin/env zsh
-if [[ "$*" == *'disable --now'* ]]; then exit "${SYSTEMCTL_DISABLE_RC:-0}"; fi
+if [[ "$*" == *' disable '* ]]; then exit "${SYSTEMCTL_DISABLE_RC:-0}"; fi
 if [[ "$*" == *'is-active'* ]]; then
     printf '%s\n' "${SYSTEMCTL_ACTIVE_STATE:-inactive}"
     exit "${SYSTEMCTL_ACTIVE_RC:-0}"

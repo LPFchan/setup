@@ -1722,13 +1722,14 @@ def schedule_enable():
             return 1
         print(f"fleet: nightly pass scheduled at {SCHEDULE_HOUR:02d}:00 (launchd)")
         return 0
-    # Persistent=true replays a run missed while the machine was off.
+    # Persistent=true replays a run missed while the machine was off. The path
+    # is absolute: systemd 219 (Synology DSM 7) does not expand %h in ExecStart.
     with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:
         handle.write("Persistent=true\n")
         timer_extra = handle.name
     try:
         rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet sync and harness update",
-                           "%h/.local/bin/fleet nightly", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
+                           f"{os.path.abspath(sys.argv[0])} nightly", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
                            "", timer_extra)
     finally:
         os.unlink(timer_extra)

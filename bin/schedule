@@ -38,7 +38,9 @@ _scope_dir() {
 _systemctl() {
     local scope="$1"; shift
     if [[ "$scope" == "user" ]]; then
-        systemctl --user "$@"
+        # sshd without pam_systemd (Synology DSM) leaves this unset, and
+        # systemctl --user then cannot find the lingering user manager.
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" systemctl --user "$@"
     else
         systemctl "$@"
     fi
@@ -113,12 +115,14 @@ cmd_install_timer() {
     _render_service "$desc" "$exec" "$svc_extra" "$unit_extra" > "$dir/$name.service" || return 1
     _render_timer "$desc" "$oncal" "$timer_extra" > "$dir/$name.timer" || return 1
     _systemctl "$scope" daemon-reload || fail "daemon-reload failed"
-    _systemctl "$scope" enable --now "$name.timer" || fail "enable --now $name.timer failed"
+    # enable + start rather than enable --now: systemd 219 (DSM 7) lacks --now.
+    _systemctl "$scope" enable "$name.timer" || fail "enable $name.timer failed"
+    _systemctl "$scope" start "$name.timer" || fail "start $name.timer failed"
     echo "$prog: installed + enabled $name.timer ($scope, $oncal)"
 }
 
 # uninstall-timer SCOPE NAME
-# A failed disable --now is only safe to proceed past when follow-up queries
+# A failed disable + stop is only safe to proceed past when follow-up queries
 # explicitly report the desired terminal state (inactive + disabled). Error
 # text like "Failed to connect to bus" is never accepted, so indeterminate
 # failures retain the unit files for recovery instead of deleting them.
@@ -136,7 +140,7 @@ _disabled_state() {
 cmd_uninstall_timer() {
     local scope="$1" name="$2"
     local dir; dir=$(_scope_dir "$scope") || fail "bad scope: $scope"
-    if ! _systemctl "$scope" disable --now "$name.timer" >/dev/null 2>&1; then
+    if ! { _systemctl "$scope" disable "$name.timer" && _systemctl "$scope" stop "$name.timer"; } >/dev/null 2>&1; then
         local active_state enabled_state active_rc enabled_rc
         if active_state=$(_systemctl "$scope" is-active "$name.timer" 2>/dev/null); then active_rc=0; else active_rc=$?; fi
         if enabled_state=$(_systemctl "$scope" is-enabled "$name.timer" 2>/dev/null); then enabled_rc=0; else enabled_rc=$?; fi
