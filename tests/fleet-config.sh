@@ -394,6 +394,15 @@ rm -f "$TMP/record.keep"
 [[ "$out" == *"took the account's copy"*"skills/mine/joined.md"* ]] || fail "a join replaced a late save silently: $out"
 server_del skills/mine/joined.md; fleet sync --pull >/dev/null 2>&1 || fail "pull after the join test"
 grep -rlx 'mine before joining' "$XDG_STATE_HOME/fleet/backup" | grep -q 'skills/mine/SKILL.md' || fail "a join's replaced copy not in the backup"
+# One deleted during the join is not reported as in the backup.
+mv "$XDG_STATE_HOME/fleet/config.json" "$TMP/record.keep"
+printf 'mine before a deleted join\n' > "$HOME/.agents/skills/mine/SKILL.md"
+printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"; touch "$FAKE/edit-as-delete"
+out=$(fleet sync --pull 2>&1) || true
+rm -f "$TMP/record.keep"
+[[ "$out" == *"deleted here during the sync"*"skills/mine/SKILL.md"* ]] || fail "a deletion during a join undone silently: $out"
+[[ "$out" != *"took the account's copy"*"skills/mine/SKILL.md"* ]] || fail "a deletion during a join reported as backed up: $out"
+fleet sync --pull >/dev/null 2>&1 || fail "pull after the deleted join"
 # A file saved again during the sync is recorded as the version it sent.
 printf 'scanned\n' > "$HOME/.agents/skills/mine/SKILL.md"
 printf '%s' "$HOME/.agents/skills/mine/SKILL.md" > "$FAKE/edit-on-fetch"
@@ -473,6 +482,22 @@ ln -s "$HOME/.claude/CLAUDE.md" "$HOME/.agents/AGENTS.md"
 fleet sync --pull >/dev/null 2>&1 || fail "pull with a linked AGENTS.md"
 [[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
     || fail "a linked AGENTS.md had the harness file it leads to linked back to it"
+# Nor are the links already there left leading back to it.
+rm "$HOME/.agents/AGENTS.md"; server_put AGENTS.md 'my instructions'
+fleet sync --pull >/dev/null 2>&1 || fail "pull relinking AGENTS.md"
+[[ -L "$HOME/.claude/CLAUDE.md" ]] || fail "AGENTS.md not linked back"
+rm "$HOME/.agents/AGENTS.md"; ln -s "$HOME/.claude/CLAUDE.md" "$HOME/.agents/AGENTS.md"
+fleet sync --pull >/dev/null 2>&1 || fail "pull with AGENTS.md made a link"
+[[ ! -L "$HOME/.claude/CLAUDE.md" && "$(cat "$HOME/.claude/CLAUDE.md")" == "my instructions" ]] \
+    || fail "an AGENTS.md made a link left the harness links leading back to it"
+server_del AGENTS.md; fleet sync --pull >/dev/null 2>&1 || fail "pull removing AGENTS.md again"
+# A skill that is a link to claude's own copy is not linked back to either.
+mkdir -p "$HOME/.claude/skills/clauderoot"; printf 'claude own\n' > "$HOME/.claude/skills/clauderoot/SKILL.md"
+ln -s "$HOME/.claude/skills/clauderoot" "$HOME/.agents/skills/clauderoot"
+fleet sync --pull >/dev/null 2>&1 || fail "pull with a skill linked to claude's copy"
+[[ ! -L "$HOME/.claude/skills/clauderoot" && "$(cat "$HOME/.claude/skills/clauderoot/SKILL.md")" == "claude own" ]] \
+    || fail "a linked skill had claude's copy it leads to linked back to it"
+rm "$HOME/.agents/skills/clauderoot"; rm -r "$HOME/.claude/skills/clauderoot"
 rm "$HOME/.agents/AGENTS.md"
 # A user's link that only passes through ~/.agents by name is not fleet's.
 mv "$HOME/.claude/CLAUDE.md" "$TMP/claude.keep"; printf 'theirs\n' > "$HOME/instructions"
@@ -1029,5 +1054,13 @@ assert not fleet._same_tree(a, b), "an extra folder link"
 os.symlink("/etc", b/"extra-dir")
 assert fleet._same_tree(a, b), "the same links"' "$ROOT/files/fleet" "$TMP/tree-a" "$TMP/tree-b" \
     || fail "onboarding read skill trees with different links as the same"
+chmod +x "$TMP/tree-a/SKILL.md"
+python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("fleet_tree", sys.argv[1])
+fleet = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(fleet)
+assert not fleet._same_tree(*map(fleet.pathlib.Path, sys.argv[2:]))' "$ROOT/files/fleet" "$TMP/tree-a" "$TMP/tree-b" \
+    || fail "onboarding read skill trees with different modes as the same"
 
 echo "fleet config tests passed"
