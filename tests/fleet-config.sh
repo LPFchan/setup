@@ -1102,6 +1102,11 @@ m.INSTALLED.write_text(json.dumps({"\u1ead": {}}))
 for spelling in ("a\u0323\u0302", "a\u0302\u0323"):
     (m.AGENTS_DIR/"skills"/spelling).mkdir(parents=True); (m.AGENTS_DIR/"skills"/spelling/"SKILL.md").write_text("z")
 assert len(m.scan_local()[0]) == 2, m.scan_local()
+# A pull then writes the install beside them and moves neither aside.
+m.INSTALLED.write_text(json.dumps({"\u1ead": {"id": "i", "server": {}, "local": {}}}))
+m._apply_installs({"\u1ead": {"id": "i", "server": {"SKILL.md": ["h", False]}}}, ["\u1ead"], [],
+                  {"\u1ead": {"SKILL.md": b"---\nname: x\n---\n"}}, m.Backup())
+assert all((m.AGENTS_DIR/"skills"/s/"SKILL.md").read_text() == "z" for s in ("a\u0323\u0302", "a\u0302\u0323"))
 PY
 rm -rf "$TMP/nfd"
 

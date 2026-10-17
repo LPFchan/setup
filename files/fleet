@@ -781,8 +781,8 @@ def _scan_folder(folder):
 
 def _install_folder(name):
     """An installed skill's folder as the disk spells it: gone under its
-    recorded name, another spelling of that name is it (as scan_local reads
-    it), so an edit there is found and a pull replaces it."""
+    recorded name, the one other spelling of that name is it (as scan_local
+    reads it), so an edit there is found and a pull replaces it."""
     path = AGENTS_DIR/"skills"/name
     if os.path.lexists(path):
         return path
@@ -791,7 +791,8 @@ def _install_folder(name):
         others = sorted(e.name for e in path.parent.iterdir() if unicodedata.normalize("NFC", e.name) == want)
     except OSError:
         others = []
-    return path.parent/others[0] if others else path
+    # Two others: neither is known to be it (scan_local keeps both).
+    return path.parent/others[0] if len(others) == 1 else path
 
 
 def _edited_installs():
