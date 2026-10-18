@@ -69,10 +69,10 @@ New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -Value $shell -
 $config = "$env:ProgramData\ssh\sshd_config"
 $original = Get-Content $config
 $inBlock = $false
+# A Match block runs to the next Match or the end of the file, indented or not.
 $edited = foreach ($line in $original) {
-    if ($line -match '^\s*Match\s+Group\s+administrators\b') { $inBlock = $true; "#$line"; continue }
-    if ($inBlock -and $line -match '^\s+\S') { "#$line"; continue }
-    $inBlock = $false
+    if ($line -match '^\s*Match\s') { $inBlock = $line -match '^\s*Match\s+Group\s+administrators\b' }
+    if ($inBlock -and $line -match '^\s*[^#\s]') { "#$line"; continue }
     $line
 }
 if (($edited -join "`n") -ne ($original -join "`n")) {
