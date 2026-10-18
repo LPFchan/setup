@@ -56,6 +56,7 @@ snapshot=(
   "ok"$'\t''~/ok'$'\t''0755'$'\t''x'$'\t''uninstalled'$'\t''0'$'\t''0'$'\t''0'$'\t''x'
 )
 selected_modules=(fail ok)
+printf 'fail\t~/fail\t0755\tx\nok\t~/ok\t0755\tx\n' >> "$MANIFEST_FILE"
 install_one() { [[ "$1" == ok ]]; }
 assert_summary install 'Install: attempted=2 succeeded=1 failed=1 skipped=0'
 

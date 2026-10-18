@@ -1354,8 +1354,8 @@ shell_status_one() {
 
 cmd_install() {
     fetch_manifest || return 1
-    local -a requested order pulled
-    local module target mode source requires failures=0 found=0 successor
+    local -a requested
+    local module target mode source failures=0 successor
     swap_retired_modules || failures=$((failures + 1))
     # A retired module's name still works and installs its successor, so
     # onboarding scripts written before the swap keep working.
@@ -1381,6 +1381,18 @@ cmd_install() {
         done
     fi
     (( ${#requested[@]} > 0 )) || { echo "No matching modules." >&2; return 1; }
+    install_modules "${requested[@]}" || failures=$((failures + 1))
+    (( failures == 0 ))
+}
+
+# Install the named catalog modules the same way from the CLI and the picker:
+# dependencies first, then every installed service enabled. Modules that did
+# not end up installed and enabled are left in install_failed.
+install_modules() {
+    local -a requested=("$@") order pulled
+    local module target mode source failures=0 found=0
+    typeset -ga install_failed
+    install_failed=()
 
     # Dependencies first, and anything pulled in that the operator did not ask
     # for is announced and remembered so uninstall can offer to take it back.
@@ -1409,6 +1421,7 @@ cmd_install() {
             fi
         else
             failures=$((failures + 1))
+            install_failed+=("$module")
             echo "Failed: install $module" >&2
         fi
     done
@@ -1419,7 +1432,10 @@ cmd_install() {
     for module in "${order[@]}"; do
         is_service_module "$module" || continue
         [[ "$(module_service_unit "$module")" != tool ]] || continue
-        module_service_transition enable "$module" || failures=$((failures + 1))
+        _list_contains "$module" ${install_failed[@]+"${install_failed[@]}"} && continue
+        module_service_transition enable "$module" && continue
+        failures=$((failures + 1))
+        install_failed+=("$module")
     done
 
     normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
@@ -2376,12 +2392,30 @@ cmd_reconfigure() {
             confirm_action "$(capitalize "$action") eligible selected modules?" || return 0
         fi
         module_action_ran=1
+        if [[ "$action" == install ]]; then
+            local -a wanted=()
+            for row in "${snapshot[@]}"; do
+                IFS=$'\t' read -r m t mo s state installed _ <<< "$row"
+                selection_has "$m" || continue
+                if [[ "$installed" == 0 ]]; then wanted+=("$m"); else skipped=$((skipped + 1)); fi
+            done
+            attempted=${#wanted[@]}
+            install_modules "${wanted[@]}" || true
+            for m in "${wanted[@]}"; do
+                if _list_contains "$m" ${install_failed[@]+"${install_failed[@]}"}; then
+                    failed=$((failed + 1))
+                else
+                    succeeded=$((succeeded + 1))
+                fi
+            done
+            action_summary "$action" "$attempted" "$succeeded" "$failed" "$skipped"
+            return
+        fi
         [[ "$action" == reinstall ]] && FORCE=1
         for row in "${snapshot[@]}"; do
             IFS=$'\t' read -r m t mo s state installed svc active _ <<< "$row"
             selection_has "$m" || continue
             case "$action" in
-                install) [[ "$installed" == 0 ]] || { skipped=$((skipped + 1)); continue; } ;;
                 update)
                     [[ "$installed" == 1 ]] \
                         && { [[ "$allow_current_update" == 1 ]] || _setup_state_needs_update "$state"; } \
@@ -2399,7 +2433,7 @@ cmd_reconfigure() {
                 disk_hash_before=$(sha256 "$target_path" 2>/dev/null || true)
             fi
             case "$action" in
-                install|reinstall) install_one "$m" "$t" "$mo" "$s" && ok=1 ;;
+                reinstall) install_one "$m" "$t" "$mo" "$s" && ok=1 ;;
                 update)
                     if [[ "$mo" == script ]]; then _script_update "$m" "$t" "$s" && ok=1
                     else install_one "$m" "$t" "$mo" "$s" && ok=1
@@ -2463,8 +2497,6 @@ cmd_reconfigure() {
                 printf 'action%supdate%sUpdate%s\n' "$delim" "$delim" "$delim"
                 printf 'action%sreinstall%sReinstall%s\n' "$delim" "$delim" "$delim"
                 [[ "$m" == fzf-multicolumn ]] || printf 'action%suninstall%sUninstall%s\n' "$delim" "$delim" "$delim"
-            elif [[ "$svc" == 1 ]]; then
-                printf 'action%sinstall-enable%sInstall + enable%s\n' "$delim" "$delim" "$delim"
             else
                 printf 'action%sinstall%sInstall%s\n' "$delim" "$delim" "$delim"
             fi
@@ -2478,13 +2510,6 @@ cmd_reconfigure() {
         selected_modules=("$module")
         case "$action" in
             enable|disable) run_service_action "$action" || rc=$? ;;
-            install-enable)
-                if run_module_action install 0 1; then
-                    module_service_transition enable "$module" || rc=$?
-                else
-                    rc=$?
-                fi
-                ;;
             install|update|reinstall|uninstall)
                 run_module_action "$action" 0 1 || rc=$?
                 ;;
