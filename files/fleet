@@ -534,6 +534,11 @@ def _sync_agents_once(push):
     for rel in builtin:
         del server[rel]
     installs = config.get("installs", [])
+    # skills/fleet is the built-in skill's; an install there would take references/ with it.
+    for i in installs:
+        if i["name"].lower() == "fleet":
+            eprint(f"fleet: install {i['id']} is named fleet, the built-in skill; reinstall it under another name")
+    installs = [i for i in installs if i["name"].lower() != "fleet"]
     # An install's folder, or one Auth just uninstalled, is not account content.
     local = scan_local({i["name"] for i in installs} | {i["name"] for i in state.get("installs", {}).values()})
     local_sha = {rel: _sha(path.read_bytes()) for rel, path in local.items()}

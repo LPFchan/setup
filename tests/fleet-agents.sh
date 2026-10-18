@@ -166,12 +166,15 @@ python3 - "$FAKE/server.json" <<'PY'
 import base64, json, sys
 s = json.load(open(sys.argv[1]))
 s["skills"]["s1"] = {"SKILL.md": base64.b64encode(b"---\nname: tool\n---\nhi\n").decode()}
-s["installs"] = [{"id": "s1", "name": "kit", "skill": "tool", "author": "fox"}]
+s["installs"] = [{"id": "s1", "name": "kit", "skill": "tool", "author": "fox"},
+                {"id": "s1", "name": "fleet", "skill": "tool", "author": "fox"}]
 json.dump(s, open(sys.argv[1], "w"))
 PY
 fleet sync >/dev/null 2>&1 || fail "sync with an install"
 grep -qx "name: kit" "$HOME/.agents/skills/kit/SKILL.md" || fail "install not renamed"
 [[ "$(server skills/kit/SKILL.md)" == "<none>" ]] || fail "install pushed as account files"
+grep -qx "name: fleet" "$skill/SKILL.md" && [[ "$(server skills/fleet/references/hosts.md)" == "my hosts" ]] \
+  || fail "an install named fleet replaced the built-in skill"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); s["installs"]=[]; json.dump(s,open(sys.argv[1],"w"))' "$FAKE/server.json"
 fleet sync >/dev/null 2>&1
 [[ ! -e "$HOME/.agents/skills/kit" ]] || fail "uninstalled skill kept"
