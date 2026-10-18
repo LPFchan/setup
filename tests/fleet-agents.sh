@@ -66,7 +66,7 @@ chmod +x "$FLEET_AUTH_BIN"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 on() { export HOME="$TMP/$1"; mkdir -p "$HOME"; export XDG_STATE_HOME="$HOME/.state"; }
-fleet() { python3 "$ROOT/files/fleet" "$@" 2>>"$TMP/err"; }
+fleet() { "${FLEET_PYTHON:-python3}" "$ROOT/files/fleet" "$@" 2>>"$TMP/err"; }
 server() { python3 -c 'import json,sys,base64; f=json.load(open(sys.argv[1]))["files"]; print(base64.b64decode(f[sys.argv[2]]["content"]).decode() if sys.argv[2] in f else "<none>", end="")' "$FAKE/server.json" "$1"; }
 
 # A first machine seeds an empty account; a pull alone never does.
@@ -129,17 +129,52 @@ on one
 rc=0; fleet sync >/dev/null 2>&1 || rc=$?
 [[ $rc == 1 && "$(cat "$HOME/.agents/AGENTS.md")" == "two's" ]] || fail "conflict ($rc)"
 
+# The built-in fleet skill: written on every sync, never pushed; its
+# references/ is the account's and syncs; an account copy of it is dropped.
+skill="$HOME/.agents/skills/fleet"
+grep -qx "name: fleet" "$skill/SKILL.md" || fail "built-in skill not written"
+[[ "$(ls -l "$skill/SKILL.md")" == -r--r--r--* ]] || fail "built-in skill writable"
+[[ "$(readlink "$HOME/.claude/skills/fleet")" == "$skill" ]] || fail "built-in skill not linked"
+[[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "built-in skill pushed"
+mkdir -p "$skill/references" && echo "my hosts" > "$skill/references/hosts.md"
+rm -f "$skill/SKILL.md"
+fleet sync >/dev/null 2>&1 || fail "sync with references"
+[[ "$(server skills/fleet/references/hosts.md)" == "my hosts" ]] || fail "references not pushed"
+grep -qx "name: fleet" "$skill/SKILL.md" || fail "deleted built-in skill not restored"
+python3 - "$FAKE/server.json" <<'PY2'
+import base64, json, sys
+s = json.load(open(sys.argv[1]))
+s["files"]["skills/fleet/SKILL.md"] = {"content": base64.b64encode(b"old\n").decode(), "executable": False}
+s["counter"] += 1
+json.dump(s, open(sys.argv[1], "w"))
+PY2
+fleet sync --check >/dev/null 2>&1 && fail "check missed an account copy of the skill"
+fleet sync >/dev/null 2>&1 || fail "sync over an account copy of the skill"
+[[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "account copy of the skill kept"
+grep -qx "name: fleet" "$skill/SKILL.md" || fail "account copy pulled over the built-in skill"
+fleet sync --check >/dev/null 2>&1 || fail "check after dropping the account copy"
+chmod u+w "$skill/SKILL.md"
+fleet sync --check >/dev/null 2>&1 && fail "check missed a writable built-in skill"
+fleet sync >/dev/null 2>&1 && [[ "$(ls -l "$skill/SKILL.md")" == -r--r--r--* ]] || fail "built-in skill left writable"
+mv "$skill" "$HOME/elsewhere" && ln -s "$HOME/elsewhere" "$skill" && rm "$HOME/elsewhere/SKILL.md"
+fleet sync >/dev/null 2>&1 || fail "sync with a linked skills/fleet"
+[[ ! -e "$HOME/elsewhere/SKILL.md" ]] || fail "built-in skill written through a link"
+rm "$skill" && mv "$HOME/elsewhere" "$skill" && fleet sync >/dev/null 2>&1 || fail "sync after unlinking skills/fleet"
+
 # A marketplace install lands under its local name and is never pushed back.
 python3 - "$FAKE/server.json" <<'PY'
 import base64, json, sys
 s = json.load(open(sys.argv[1]))
 s["skills"]["s1"] = {"SKILL.md": base64.b64encode(b"---\nname: tool\n---\nhi\n").decode()}
-s["installs"] = [{"id": "s1", "name": "kit", "skill": "tool", "author": "fox"}]
+s["installs"] = [{"id": "s1", "name": "kit", "skill": "tool", "author": "fox"},
+                {"id": "s1", "name": "fleet", "skill": "tool", "author": "fox"}]
 json.dump(s, open(sys.argv[1], "w"))
 PY
 fleet sync >/dev/null 2>&1 || fail "sync with an install"
 grep -qx "name: kit" "$HOME/.agents/skills/kit/SKILL.md" || fail "install not renamed"
 [[ "$(server skills/kit/SKILL.md)" == "<none>" ]] || fail "install pushed as account files"
+grep -qx "name: fleet" "$skill/SKILL.md" && [[ "$(server skills/fleet/references/hosts.md)" == "my hosts" ]] \
+  || fail "an install named fleet replaced the built-in skill"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); s["installs"]=[]; json.dump(s,open(sys.argv[1],"w"))' "$FAKE/server.json"
 fleet sync >/dev/null 2>&1
 [[ ! -e "$HOME/.agents/skills/kit" ]] || fail "uninstalled skill kept"
@@ -163,7 +198,7 @@ python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))["providerInstances"]
 
 # Codex: our region next to the operator's own servers; keepout in both hook files.
 mkdir -p "$HOME/.codex"
-printf 'model = "x"\n\n[mcp_servers.okdam]\ncommand = "own"\n\n[mcp_servers.mine]\nurl = "https://mine"\n' > "$HOME/.codex/config.toml"
+printf 'model = "x"\n\n[mcp_servers.\x27okdam\x27]\ncommand = "own"\n\n[mcp_servers.mine]\nurl = "https://mine"\n' > "$HOME/.codex/config.toml"
 echo '{"enabled":true,"command":"curl -s https://today.lost.plus/api/keepout"}' > "$HOME/.agents/settings/keepout.json"
 fleet sync >/dev/null 2>&1 || fail "sync with codex"
 grep -q "BEGIN harnesses:mcp-servers" "$HOME/.codex/config.toml" && fail "codex region written over the operator's okdam"

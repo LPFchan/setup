@@ -448,6 +448,12 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _builtin(rel):
+    """Paths fleet writes itself: the fleet skill, bar the account's references/."""
+    rel = rel.lower()
+    return rel.startswith("skills/fleet/") and not rel.startswith("skills/fleet/references/")
+
+
 def _synced(rel):
     return rel in ("AGENTS.md", "mcp.json") or rel.split("/", 1)[0] in ("settings", "skills") and "/" in rel
 
@@ -465,7 +471,7 @@ def scan_local(installed):
         for name in files:
             path = here/name
             rel = path.relative_to(AGENTS).as_posix()
-            if name.lower() not in SKIP and not path.is_symlink() and _synced(rel):
+            if name.lower() not in SKIP and not path.is_symlink() and _synced(rel) and not _builtin(rel):
                 found[rel] = path
     return found
 
@@ -523,7 +529,16 @@ def _sync_agents_once(push):
     joining = first and config["counter"] > 0
     base = state.get("files", {})
     server = {f["path"]: f for f in config["files"]}
+    # An account copy of the built-in skill predates it: it goes on the next push.
+    builtin = sorted(rel for rel in server if _builtin(rel))
+    for rel in builtin:
+        del server[rel]
     installs = config.get("installs", [])
+    # skills/fleet is the built-in skill's; an install there would take references/ with it.
+    for i in installs:
+        if i["name"].lower() == "fleet":
+            eprint(f"fleet: install {i['id']} is named fleet, the built-in skill; reinstall it under another name")
+    installs = [i for i in installs if i["name"].lower() != "fleet"]
     # An install's folder, or one Auth just uninstalled, is not account content.
     local = scan_local({i["name"] for i in installs} | {i["name"] for i in state.get("installs", {}).values()})
     local_sha = {rel: _sha(path.read_bytes()) for rel, path in local.items()}
@@ -542,6 +557,8 @@ def _sync_agents_once(push):
                 (put if l is not None else drop).append(rel)
         else:
             take.append(rel)
+    if push:
+        drop += builtin
 
     if conflicts:
         backup = FLEET_STATE/"backup"/time.strftime("%Y%m%d-%H%M%S")
@@ -654,6 +671,126 @@ def _install_tree(install, target):
         staging.rename(target)
     finally:
         _remove_tree(staging)
+
+
+# --- built-in skill --------------------------------------------------------
+# Every account gets skills/fleet: how fleet works, for the agents on it.
+# fleet rewrites SKILL.md on each sync and never pushes it, so it cannot be
+# edited or deleted for good; skills/fleet/references/ is the account's own
+# and syncs like any other skill file.
+
+FLEET_SKILL = """---
+name: fleet
+description: "How fleet keeps this account's machines in step: SSH between them, the synced ~/.agents tree (instructions, skills, MCP servers, harness settings), and this account's own notes about its machines in references/. Load when the user asks about the fleet or one of their machines, onboards a machine, or needs SSH or remote work."
+---
+
+# fleet
+
+This file is written by `fleet` on every sync. Do not edit or delete it; your
+changes are overwritten. Notes about this account's own machines live in
+`references/` next to it: read every file there before acting on a machine.
+
+## What fleet is
+
+`fleet` (`~/.local/bin/fleet`, from the LPFchan/setup `fleet` module) keeps
+each of the account's machines in step with the account in Common Auth
+(auth.lost.plus). A machine joins by signing in with `auth login` and being
+approved in the dashboard's Fleet tab. On every sync, fleet:
+
+- writes the SSH aliases, `authorized_keys` and vouched host keys, so every
+  machine reaches every other over SSH without a password: `ssh <alias>`.
+  `ssh -G <alias> | grep -i '^hostname'` shows the address an alias resolves
+  to. Aliases, addresses and users are set in the Fleet tab, not locally.
+- syncs `~/.agents/`: `AGENTS.md`, `mcp.json`, `skills/` and `settings/`. The
+  same files land on every machine of the account.
+- renders harness settings from that tree: Claude Code, Codex, OpenCode,
+  Hermes and T3 Code get the account's instructions, skills, MCP servers and
+  settings. MCP tokens go to a marked block in `~/.zshenv`.
+
+The nightly pass (`fleet nightly`, 04:00) pulls the account tree and updates
+each harness. A change made on one machine reaches the others then, or right
+away with `fleet sync` on them.
+
+## Where to make a change
+
+Edit the source in `~/.agents`, then run `fleet sync`:
+
+| To change | Edit |
+| --- | --- |
+| Instructions for every agent | `~/.agents/AGENTS.md` |
+| A skill | `~/.agents/skills/<name>/` |
+| This account's machine notes | `~/.agents/skills/fleet/references/*.md` |
+| MCP servers | `~/.agents/mcp.json` |
+| Harness settings | `~/.agents/settings/<harness>.json` |
+| SSH aliases, users, keys | the Fleet tab at auth.lost.plus (not a file) |
+
+`~/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and
+`~/.claude/skills/*` are links into `~/.agents`. The keys
+fleet writes into a harness's settings file, and the SSH blocks between its
+markers, are overwritten on the next sync; anything else in those files is
+left alone.
+
+## Commands
+
+    fleet sync              pull the account tree, push local edits, render settings
+    fleet sync --pull       pull only; local edits stay local for now
+    fleet sync --check      exit 1 when anything would change
+    fleet status            SSH blocks, pending local edits, last sync, nightly pass
+    fleet install [name]    install a harness with its own installer
+    fleet update [name]     run each installed harness's self-updater
+    fleet skills            list published skills
+    fleet skills install <author/skill|id> [--as NAME]
+    fleet skills uninstall <name|id>
+    fleet skills publish <folder>  /  unpublish <folder|id>
+    fleet schedule [enable|disable|status]
+
+Exit 3 means Auth gave no answer and what is on disk stays as it is.
+
+## Rules of the sync
+
+- A file changed on one side moves to the other. A file changed on both
+  sides takes Auth's copy; the local one is kept under
+  `~/.local/state/fleet/backup/<time>/`, and fleet names it.
+- A skill installed from the marketplace is the author's copy: local edits
+  are overwritten. Copy it to a new folder to make it your own.
+- Not synced: anything outside `AGENTS.md`, `mcp.json`, `skills/` and
+  `settings/`, symlinks, and `.git/`, `node_modules/`, `__pycache__/`.
+- Limits: 1.9 MB a file, 10 MB and 2000 files an account, 30 pushes an hour.
+
+## When something is wrong
+
+- "not signed in" or "this machine's key changed": run `auth login`, then
+  have the owner approve it in the Fleet tab.
+- An alias is missing or points at the wrong address: fix it in the Fleet
+  tab, then `fleet sync`.
+- A harness lost a setting or an MCP server: run `fleet sync` and read its
+  output; it names every file it writes and every step that failed.
+"""
+
+
+def _builtin_skill_path():
+    """skills/fleet/SKILL.md, or None when a link on the way leads outside ~/.agents:
+    linked folders are the user's own, and sync skips them."""
+    path = AGENTS/"skills/fleet/SKILL.md"
+    if os.path.realpath(path.parent) != os.path.join(os.path.realpath(AGENTS), "skills", "fleet"):
+        return None
+    return path
+
+
+def sync_builtin_skill(check=False):
+    """Write the built-in skill unless it is already in place; with check, only say
+    whether it is. False means a sync would write it."""
+    path = _builtin_skill_path()
+    if path is None:
+        eprint("fleet: skills/fleet is reached through a symlink; the built-in fleet skill is not written")
+        return True
+    if (not path.is_symlink() and path.is_file() and path.stat().st_mode & 0o777 == 0o444
+            and path.read_text() == FLEET_SKILL):
+        return True
+    if not check:
+        path.unlink(missing_ok=True)
+        save_text(path, FLEET_SKILL, 0o444)
+    return False
 
 
 # --- links ---------------------------------------------------------------
@@ -1133,8 +1270,20 @@ CODEX_REGION = ("# BEGIN harnesses:mcp-servers", "# END harnesses:mcp-servers") 
 
 
 def _toml(text):
-    import tomllib
+    """The parsed file, or None when this Python has no TOML parser: tomllib
+    is 3.11+, and macOS's own python3 is 3.9."""
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return None
     return tomllib.loads(text)
+
+
+# Without a parser, a server's own [mcp_servers.<name>] header declares it.
+MCP_HEADER = re.compile(r"""^\s*\[\s*mcp_servers\s*\.\s*(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]""", re.M)
 
 
 def render_codex_mcp(servers):
@@ -1149,8 +1298,12 @@ def render_codex_mcp(servers):
     text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", "", original, flags=re.S)
     # A server the operator declares outside the region is theirs; a table of
     # only [.tools.*] rules still needs our url, so it does not count.
-    declared = {name for name, table in (_toml(text).get("mcp_servers") or {}).items()
-                if not isinstance(table, dict) or any(not isinstance(v, dict) for v in table.values())}
+    parsed = _toml(text)
+    if parsed is None:
+        declared = {next(g for g in m.groups() if g is not None) for m in MCP_HEADER.finditer(text)}
+    else:
+        declared = {name for name, table in (parsed.get("mcp_servers") or {}).items()
+                    if not isinstance(table, dict) or any(not isinstance(v, dict) for v in table.values())}
     blocks = []
     for server in servers:
         if server["name"] in declared:
@@ -1596,7 +1749,9 @@ def cmd_sync(check=False, pull=False):
             except ApiError:
                 return 3
             state = _load_json_quiet(AGENTS_STATE)
-            if rc == 0 and (config["counter"] != state.get("counter") or pending_local()):
+            if rc == 0 and (config["counter"] != state.get("counter") or pending_local()
+                            or not sync_builtin_skill(check=True)
+                            or any(_builtin(f["path"]) for f in config["files"])):
                 rc = 1
             return rc
         try:
@@ -1605,6 +1760,7 @@ def cmd_sync(check=False, pull=False):
         except ApiError as exc:
             eprint(f"fleet: account tree not synced: {exc}")
             rc = 3
+        sync_builtin_skill()
         sync_links()
         if not render_harnesses() and rc == 0:
             rc = 3
