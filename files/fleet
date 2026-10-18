@@ -313,7 +313,9 @@ def _write(path, lines, mode=0o600):
             return False
     except FileNotFoundError:
         pass
-    SSH_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # On Windows Python turns 0o700 into an OWNER RIGHTS entry, which OpenSSH
+    # rejects; without a mode the directory takes the profile's ACL.
+    SSH_DIR.mkdir(**({} if WINDOWS else {"mode": 0o700}), parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", newline="\n") as handle:

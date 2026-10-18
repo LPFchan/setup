@@ -25,6 +25,9 @@ function Find-Python {
     # Each candidate is asked for its own path; python.exe on PATH may be the
     # Store's stub, which only opens the Store. No double quotes in the -c code:
     # Windows PowerShell drops them on the way to a native program.
+    # Windows PowerShell turns a native program's redirected stderr into an
+    # error, which 'Stop' makes fatal; the stub writes to stderr.
+    $ErrorActionPreference = 'Continue'
     $probe = 'import sys; sys.version_info >= (3, 9) and print(sys.executable)'
     $candidates = @('py', 'python') + @(Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" `
         -ErrorAction SilentlyContinue | ForEach-Object FullName)
@@ -107,7 +110,20 @@ if (Test-SshReady) {
 $Python = Find-Python
 if (-not $Python) {
     Step 'installing Python'
-    winget install --id Python.Python.3.13 -e --scope user --silent --accept-package-agreements --accept-source-agreements
+    # python.org's own installer, per user: winget is missing on a fresh Windows 10.
+    # The OS's architecture, not this PowerShell's: 32-bit PowerShell on 64-bit
+    # Windows reports x86 and keeps the real one in PROCESSOR_ARCHITEW6432.
+    $os = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    $file = switch ($os) { 'ARM64' { 'python-3.14.8-arm64.exe' } 'x86' { 'python-3.14.8.exe' } default { 'python-3.14.8-amd64.exe' } }
+    $installer = Join-Path $env:TEMP $file
+    Invoke-WebRequest -UseBasicParsing -Uri "https://www.python.org/ftp/python/3.14.8/$file" -OutFile $installer
+    try {
+        $run = Start-Process $installer -Wait -PassThru -ArgumentList @(
+            '/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=0', 'Include_test=0')
+        if ($run.ExitCode) { throw "Python installer failed (exit $($run.ExitCode))" }
+    } finally {
+        Remove-Item $installer -ErrorAction SilentlyContinue
+    }
     $Python = Find-Python
     if (-not $Python) { throw 'Python 3.9 or newer not found after install; install it from python.org and run this again' }
 }
@@ -134,7 +150,11 @@ if (($env:Path -split ';') -notcontains $Bin) { $env:Path = "$Bin;$env:Path" }
 Step "auth and fleet installed in $Bin"
 
 # --- sign in, sync, schedule ------------------------------------------------
-& auth status *> $null
+# Windows fetches some root certificates only when its own TLS stack meets
+# them; Python reads the store as it is. One request here brings Auth's root in.
+$origin = if ($env:LOST_AUTH_ORIGIN) { $env:LOST_AUTH_ORIGIN } else { 'https://auth.lost.plus' }
+try { Invoke-WebRequest -UseBasicParsing -Uri $origin | Out-Null } catch {}
+& { $ErrorActionPreference = 'Continue'; & auth status *> $null }
 if ($LASTEXITCODE) {
     & auth login
     if ($LASTEXITCODE) { throw 'auth login failed' }
