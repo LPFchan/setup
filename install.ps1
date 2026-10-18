@@ -31,9 +31,13 @@ function Find-Python {
 function Test-SshReady {
     $service = Get-Service sshd -ErrorAction SilentlyContinue
     if (-not $service -or $service.StartType -ne 'Automatic' -or $service.Status -ne 'Running') { return $false }
-    if (-not (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue)) { return $false }
+    $shell = (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
+    if (-not $shell -or -not (Test-Path $shell)) { return $false }
     $rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    if (-not $rule -or "$($rule.Enabled)" -ne 'True' -or "$($rule.Profile)" -ne 'Any') { return $false }
+    if (-not $rule -or "$($rule.Enabled)" -ne 'True' -or "$($rule.Profile)" -ne 'Any' -or
+        "$($rule.Direction)" -ne 'Inbound' -or "$($rule.Action)" -ne 'Allow') { return $false }
+    $port = $rule | Get-NetFirewallPortFilter
+    if ("$($port.Protocol)" -ne 'TCP' -or "$($port.LocalPort)" -ne '22') { return $false }
     try { $config = Get-Content "$env:ProgramData\ssh\sshd_config" -ErrorAction Stop } catch { return $false }
     return -not ($config -match '^\s*Match\s+Group\s+administrators')
 }
@@ -70,13 +74,10 @@ if (($edited -join "`n") -ne ($original -join "`n")) {
     if ($LASTEXITCODE) { Copy-Item "$config.pre-fleet.bak" $config -Force; throw 'sshd_config failed its check; restored' }
 }
 Restart-Service sshd
-$rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-if (-not $rule) {
-    New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Direction Inbound `
-        -Protocol TCP -LocalPort 22 -Action Allow -Profile Any | Out-Null
-} else {
-    Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Any
-}
+# Recreated every time, so an edited rule (blocked, another port) cannot linger.
+Remove-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Direction Inbound `
+    -Protocol TCP -LocalPort 22 -Action Allow -Profile Any | Out-Null
 '@
 
 if (Test-SshReady) {
