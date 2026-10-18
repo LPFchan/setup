@@ -243,7 +243,7 @@ def desired():
     self_alias = (fleet.get("self") or {}).get("alias") or ""
     hosts = auth_hosts(fleet)
     return config_body(hosts, [self_alias, short_hostname()]), "\n".join(keys), {
-        "fleet": fleet, "hosts": len(hosts), "keys": len(keys), "aliases": sorted(h["alias"] for h in hosts),
+        "fleet": fleet, "hosts": len(hosts), "keys": len(keys),
         "known_hosts": auth_known_hosts(fleet)}
 
 
@@ -335,8 +335,7 @@ def is_current(files):
 def _save_state(info):
     fleet = info.get("fleet") or {}
     record = {"synced_at": int(time.time()),
-              "version": fleet.get("version", ""), "self": fleet.get("self") or {},
-              "hosts": info.get("aliases") or []}
+              "version": fleet.get("version", ""), "self": fleet.get("self") or {}}
     try:
         STATE.parent.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps(record) + "\n")
@@ -677,7 +676,7 @@ def _install_tree(install, target):
 
 FLEET_SKILL = """---
 name: fleet
-description: __DESCRIPTION__
+description: "How fleet keeps this account's machines in step: SSH between them, the synced ~/.agents tree (instructions, skills, MCP servers, harness settings), and this account's own notes about its machines in references/. Load when the user asks about the fleet or one of their machines, onboards a machine, or needs SSH or remote work."
 ---
 
 # fleet
@@ -764,19 +763,12 @@ Exit 3 means Auth gave no answer and what is on disk stays as it is.
 """
 
 
-def _skill_description(hosts):
-    what = ("How fleet keeps this account's machines in step: SSH between them, "
-            "the synced ~/.agents tree (instructions, skills, MCP servers, harness settings), "
-            "and this account's notes about its machines.")
-    when = "Load when the user asks about the fleet, onboards a machine, needs SSH or remote work"
-    if hosts:
-        when += ", or names one of the machines: " + ", ".join(hosts)
-    return json.dumps(what + " " + when + ".")
-
-
 def sync_builtin_skill():
-    text = FLEET_SKILL.replace("__DESCRIPTION__", _skill_description(_load_state().get("hosts") or []))
-    path = AGENTS/"skills/fleet/SKILL.md"
+    text, path = FLEET_SKILL, AGENTS/"skills/fleet/SKILL.md"
+    # A linked skills/fleet is the user's own and sync skips it; writing would land in its target.
+    if path.parent.is_symlink():
+        eprint("fleet: skills/fleet is a symlink; the built-in fleet skill is not written")
+        return
     if path.is_symlink() or not path.is_file() or path.read_text() != text:
         path.unlink(missing_ok=True)
         save_text(path, text, 0o444)
@@ -1272,7 +1264,7 @@ def _toml(text):
 
 
 # Without a parser, a server's own [mcp_servers.<name>] header declares it.
-MCP_HEADER = re.compile(r'^\s*\[\s*mcp_servers\s*\.\s*("?)([A-Za-z0-9_-]+)\1\s*\]', re.M)
+MCP_HEADER = re.compile(r"""^\s*\[\s*mcp_servers\s*\.\s*(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]""", re.M)
 
 
 def render_codex_mcp(servers):
@@ -1289,7 +1281,7 @@ def render_codex_mcp(servers):
     # only [.tools.*] rules still needs our url, so it does not count.
     parsed = _toml(text)
     if parsed is None:
-        declared = {m.group(2) for m in MCP_HEADER.finditer(text)}
+        declared = {next(g for g in m.groups() if g is not None) for m in MCP_HEADER.finditer(text)}
     else:
         declared = {name for name, table in (parsed.get("mcp_servers") or {}).items()
                     if not isinstance(table, dict) or any(not isinstance(v, dict) for v in table.values())}

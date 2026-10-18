@@ -133,7 +133,7 @@ rc=0; fleet sync >/dev/null 2>&1 || rc=$?
 # references/ is the account's and syncs; an account copy of it is dropped.
 skill="$HOME/.agents/skills/fleet"
 grep -qx "name: fleet" "$skill/SKILL.md" || fail "built-in skill not written"
-[[ ! -w "$skill/SKILL.md" ]] || fail "built-in skill writable"
+[[ "$(ls -l "$skill/SKILL.md")" == -r--r--r--* ]] || fail "built-in skill writable"
 [[ "$(readlink "$HOME/.claude/skills/fleet")" == "$skill" ]] || fail "built-in skill not linked"
 [[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "built-in skill pushed"
 mkdir -p "$skill/references" && echo "my hosts" > "$skill/references/hosts.md"
@@ -152,6 +152,10 @@ fleet sync >/dev/null 2>&1 || fail "sync over an account copy of the skill"
 [[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "account copy of the skill kept"
 grep -qx "name: fleet" "$skill/SKILL.md" || fail "account copy pulled over the built-in skill"
 fleet sync --check >/dev/null 2>&1 || fail "check after dropping the account copy"
+mv "$skill" "$HOME/elsewhere" && ln -s "$HOME/elsewhere" "$skill" && rm "$HOME/elsewhere/SKILL.md"
+fleet sync >/dev/null 2>&1 || fail "sync with a linked skills/fleet"
+[[ ! -e "$HOME/elsewhere/SKILL.md" ]] || fail "built-in skill written through a link"
+rm "$skill" && mv "$HOME/elsewhere" "$skill" && fleet sync >/dev/null 2>&1 || fail "sync after unlinking skills/fleet"
 
 # A marketplace install lands under its local name and is never pushed back.
 python3 - "$FAKE/server.json" <<'PY'
@@ -187,7 +191,7 @@ python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))["providerInstances"]
 
 # Codex: our region next to the operator's own servers; keepout in both hook files.
 mkdir -p "$HOME/.codex"
-printf 'model = "x"\n\n[mcp_servers.okdam]\ncommand = "own"\n\n[mcp_servers.mine]\nurl = "https://mine"\n' > "$HOME/.codex/config.toml"
+printf 'model = "x"\n\n[mcp_servers.\x27okdam\x27]\ncommand = "own"\n\n[mcp_servers.mine]\nurl = "https://mine"\n' > "$HOME/.codex/config.toml"
 echo '{"enabled":true,"command":"curl -s https://today.lost.plus/api/keepout"}' > "$HOME/.agents/settings/keepout.json"
 fleet sync >/dev/null 2>&1 || fail "sync with codex"
 grep -q "BEGIN harnesses:mcp-servers" "$HOME/.codex/config.toml" && fail "codex region written over the operator's okdam"
