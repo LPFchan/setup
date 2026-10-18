@@ -105,7 +105,9 @@ def _machine_key():
 def _read_machine_key():
     public = SSH_KEY.with_name(SSH_KEY.name + ".pub")
     if not SSH_KEY.exists():
-        SSH_KEY.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # On Windows Python turns 0o700 into an OWNER RIGHTS entry, which
+        # OpenSSH rejects; without a mode the directory takes the profile's ACL.
+        SSH_KEY.parent.mkdir(**({} if WINDOWS else {"mode": 0o700}), parents=True, exist_ok=True)
         if _output(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(SSH_KEY)]) is None:
             return ""
     if not public.exists():
