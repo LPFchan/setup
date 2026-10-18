@@ -66,7 +66,7 @@ chmod +x "$FLEET_AUTH_BIN"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 on() { export HOME="$TMP/$1"; mkdir -p "$HOME"; export XDG_STATE_HOME="$HOME/.state"; }
-fleet() { python3 "$ROOT/files/fleet" "$@" 2>>"$TMP/err"; }
+fleet() { "${FLEET_PYTHON:-python3}" "$ROOT/files/fleet" "$@" 2>>"$TMP/err"; }
 server() { python3 -c 'import json,sys,base64; f=json.load(open(sys.argv[1]))["files"]; print(base64.b64decode(f[sys.argv[2]]["content"]).decode() if sys.argv[2] in f else "<none>", end="")' "$FAKE/server.json" "$1"; }
 
 # A first machine seeds an empty account; a pull alone never does.
@@ -128,6 +128,30 @@ fleet sync >/dev/null 2>&1
 on one
 rc=0; fleet sync >/dev/null 2>&1 || rc=$?
 [[ $rc == 1 && "$(cat "$HOME/.agents/AGENTS.md")" == "two's" ]] || fail "conflict ($rc)"
+
+# The built-in fleet skill: written on every sync, never pushed; its
+# references/ is the account's and syncs; an account copy of it is dropped.
+skill="$HOME/.agents/skills/fleet"
+grep -qx "name: fleet" "$skill/SKILL.md" || fail "built-in skill not written"
+[[ ! -w "$skill/SKILL.md" ]] || fail "built-in skill writable"
+[[ "$(readlink "$HOME/.claude/skills/fleet")" == "$skill" ]] || fail "built-in skill not linked"
+[[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "built-in skill pushed"
+mkdir -p "$skill/references" && echo "my hosts" > "$skill/references/hosts.md"
+rm -f "$skill/SKILL.md"
+fleet sync >/dev/null 2>&1 || fail "sync with references"
+[[ "$(server skills/fleet/references/hosts.md)" == "my hosts" ]] || fail "references not pushed"
+grep -qx "name: fleet" "$skill/SKILL.md" || fail "deleted built-in skill not restored"
+python3 - "$FAKE/server.json" <<'PY2'
+import base64, json, sys
+s = json.load(open(sys.argv[1]))
+s["files"]["skills/fleet/SKILL.md"] = {"content": base64.b64encode(b"old\n").decode(), "executable": False}
+s["counter"] += 1
+json.dump(s, open(sys.argv[1], "w"))
+PY2
+fleet sync >/dev/null 2>&1 || fail "sync over an account copy of the skill"
+[[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "account copy of the skill kept"
+grep -qx "name: fleet" "$skill/SKILL.md" || fail "account copy pulled over the built-in skill"
+fleet sync --check >/dev/null 2>&1 || fail "check after dropping the account copy"
 
 # A marketplace install lands under its local name and is never pushed back.
 python3 - "$FAKE/server.json" <<'PY'

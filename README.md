@@ -163,6 +163,10 @@ After syncing, fleet renders harness settings line by line: it only touches the 
 
 `fleet nightly` (04:00) runs the sync, then each harness's own updater.
 
+Every account gets a built-in `fleet` skill, a manual for the agents on its machines. fleet writes `~/.agents/skills/fleet/SKILL.md` read-only on every sync and never pushes it, so it cannot be edited or deleted for good; its description names the account's machines. `skills/fleet/references/` belongs to the account and syncs like any skill file: that is where an account keeps notes about its own machines, and the manual tells agents to read them.
+
+fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Codex's `config.toml` is checked with `tomllib` (3.11+) or `tomli` when either is there; without one, fleet finds the operator's own servers by their `[mcp_servers.<name>]` headers.
+
 ## Detailed Feature Overview
 
 ### AI Tools Integration
