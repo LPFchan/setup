@@ -1398,6 +1398,10 @@ install_modules() {
     # for is announced and remembered so uninstall can offer to take it back.
     order=(${(f)"$(resolve_install_order "${requested[@]}")"}) || return 1
     (( ${#order[@]} > 0 )) || { echo "No matching modules." >&2; return 1; }
+    # setup goes last: installing it execs the new CLI and ends this process.
+    if _list_contains setup "${order[@]}"; then
+        order=(${order[@]:#setup} setup)
+    fi
     pulled=()
     for module in "${order[@]}"; do
         _list_contains "$module" ${requested[@]+"${requested[@]}"} && continue
@@ -2400,13 +2404,19 @@ cmd_reconfigure() {
                 if [[ "$installed" == 0 ]]; then wanted+=("$m"); else skipped=$((skipped + 1)); fi
             done
             attempted=${#wanted[@]}
-            install_modules "${wanted[@]}" || true
+            (( ${#wanted[@]} > 0 )) && { install_modules "${wanted[@]}" || true; }
             for m in "${wanted[@]}"; do
                 if _list_contains "$m" ${install_failed[@]+"${install_failed[@]}"}; then
                     failed=$((failed + 1))
                 else
                     succeeded=$((succeeded + 1))
                 fi
+            done
+            # A dependency that failed is a failure of this action too.
+            for m in ${install_failed[@]+"${install_failed[@]}"}; do
+                _list_contains "$m" "${wanted[@]}" && continue
+                attempted=$((attempted + 1))
+                failed=$((failed + 1))
             done
             action_summary "$action" "$attempted" "$succeeded" "$failed" "$skipped"
             return
