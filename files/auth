@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import pathlib
+import pwd
 import socket
 import subprocess
 import sys
@@ -150,7 +151,7 @@ def _machine_report():
         "key": _machine_key(),
         "hostname": _short_hostname(),
         "tailnet": _tailnet_name(),
-        "user": os.environ.get("USER", ""),
+        "user": pwd.getpwuid(os.getuid()).pw_name,
         "needs_term": _output(["infocmp", "tmux-256color"]) is None,
     }
 
