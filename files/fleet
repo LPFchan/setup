@@ -2024,7 +2024,9 @@ def _windows_schedule():
 
 def schedule_installed():
     if WINDOWS:
-        return _schtasks("/Query", "/TN", TIMER_NAME) == 0
+        # A task that exists but is disabled never runs; schtasks /Query cannot tell.
+        script = f"if ((Get-ScheduledTask -TaskName {_ps_quote(TIMER_NAME)}).State -eq 'Disabled') {{ exit 1 }}"
+        return subprocess.run(_shell(script), env=_shell_env(), capture_output=True).returncode == 0
     if sys.platform == "darwin":
         return _plist_path().exists()
     try:
@@ -2095,7 +2097,7 @@ def schedule_enable():
 
 def schedule_disable():
     if WINDOWS:
-        if schedule_installed() and _schtasks("/Delete", "/TN", TIMER_NAME, "/F"):
+        if _schtasks("/Query", "/TN", TIMER_NAME) == 0 and _schtasks("/Delete", "/TN", TIMER_NAME, "/F"):
             eprint("fleet: Task Scheduler disable failed")
             return 1
     elif sys.platform == "darwin":
