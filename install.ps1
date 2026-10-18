@@ -25,6 +25,9 @@ function Find-Python {
     # Each candidate is asked for its own path; python.exe on PATH may be the
     # Store's stub, which only opens the Store. No double quotes in the -c code:
     # Windows PowerShell drops them on the way to a native program.
+    # Windows PowerShell turns a native program's redirected stderr into an
+    # error, which 'Stop' makes fatal; the stub writes to stderr.
+    $ErrorActionPreference = 'Continue'
     $probe = 'import sys; sys.version_info >= (3, 9) and print(sys.executable)'
     $candidates = @('py', 'python') + @(Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" `
         -ErrorAction SilentlyContinue | ForEach-Object FullName)
@@ -134,7 +137,7 @@ if (($env:Path -split ';') -notcontains $Bin) { $env:Path = "$Bin;$env:Path" }
 Step "auth and fleet installed in $Bin"
 
 # --- sign in, sync, schedule ------------------------------------------------
-& auth status *> $null
+& { $ErrorActionPreference = 'Continue'; & auth status *> $null }
 if ($LASTEXITCODE) {
     & auth login
     if ($LASTEXITCODE) { throw 'auth login failed' }
