@@ -18,6 +18,12 @@ curl -fsSL https://setup.lost.plus/install.sh | zsh
 
 > **Note:** `zsh` is required. The installer places the `setup` CLI tool in `~/.local/bin/`.
 
+On Windows there is no `setup`; this PowerShell command enrolls the machine in the fleet (see [fleet on Windows](#fleet-on-windows)):
+
+```powershell
+irm https://raw.githubusercontent.com/LPFchan/setup/main/install.ps1 | iex
+```
+
 Running `setup` without arguments opens an interactive terminal menu (powered by `fzf`) where you can pick, install, update, or configure modules.
 
 ---
@@ -164,6 +170,12 @@ After syncing, fleet renders harness settings line by line: it only touches the 
 `fleet nightly` (04:00) runs the sync, then each harness's own updater.
 
 Every account gets a built-in `fleet` skill, a manual for the agents on its machines. fleet writes `~/.agents/skills/fleet/SKILL.md` read-only on every sync and never pushes it, so it cannot be edited or deleted for good, and its text is the same on every account. `skills/fleet/references/` belongs to the account and syncs like any skill file: that is where an account keeps notes about its own machines, and the manual tells agents to read them.
+
+#### fleet on Windows
+
+`install.ps1` sets the machine up natively, without WSL. It installs Python if there is none, puts `auth` and `fleet` in `~\.local\bin` with `.cmd` shims, signs in, syncs, and schedules `fleet nightly` in Task Scheduler at 04:00. One UAC prompt turns on the OpenSSH server: PowerShell 7 (or Windows PowerShell) as the login shell, the `Match Group administrators` block in `sshd_config` commented out so an admin's own `~\.ssh\authorized_keys` (which fleet writes) is the one sshd reads, password logins left on, and the firewall rule open on every network.
+
+On Windows fleet syncs `AGENTS.md`, `mcp.json` and `settings/`, but no skills, and there is no keepout. `AGENTS.md` is copied to each harness rather than linked (symlinks need Developer Mode); a copy whose content fleet did not write is moved aside as `.pre-agents.bak` first. MCP tokens go to `~\.local\state\fleet\mcp-tokens` instead of `.zshenv`. Harnesses install through the `windows` block of their manifest entry, run by Windows PowerShell; a harness without one (t3) is not offered. With no `setup` to update it, `fleet nightly` fetches the current `fleet`, `auth` and manifest first. `tests/fleet-windows.py` runs on a Windows runner in CI.
 
 fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Codex's `config.toml` is checked with `tomllib` (3.11+) or `tomli` when either is there; without one, fleet finds the operator's own servers by their `[mcp_servers.<name>]` headers.
 
