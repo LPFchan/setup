@@ -190,6 +190,13 @@ if [[ "${SETUP_INSTALL_SOURCE_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
 fi
 
+# The shell that piped this script in cannot pick up the PATH change, so say
+# so at the end instead of leaving `setup: command not found` for later.
+case ":$PATH:" in
+    *":$BIN_DIR:"*) path_ready=1 ;;
+    *) path_ready=0 ;;
+esac
+
 mkdir -p "$BIN_DIR"
 
 tmp=$(mktemp)
@@ -231,3 +238,8 @@ fi
 # remaining .zshrc blocks), enforce the canonical ordering so a fresh
 # curl-install ends up ordered even without relying on the installed CLI.
 normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+
+if ((path_ready == 0)); then
+    echo
+    echo "Open a new terminal, or run 'exec zsh', to use setup from this one."
+fi

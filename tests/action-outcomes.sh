@@ -56,8 +56,39 @@ snapshot=(
   "ok"$'\t''~/ok'$'\t''0755'$'\t''x'$'\t''uninstalled'$'\t''0'$'\t''0'$'\t''0'$'\t''x'
 )
 selected_modules=(fail ok)
+printf 'fail\t~/fail\t0755\tx\nok\t~/ok\t0755\tx\n' >> "$MANIFEST_FILE"
 install_one() { [[ "$1" == ok ]]; }
 assert_summary install 'Install: attempted=2 succeeded=1 failed=1 skipped=0'
+
+# A failed dependency fails the picker install, and setup always installs last
+# because installing it execs the new CLI.
+snapshot=(
+  "setup"$'\t''~/setup'$'\t''0755'$'\t''x'$'\t''uninstalled'$'\t''0'$'\t''0'$'\t''0'$'\t''x'
+  "app"$'\t''~/app'$'\t''0755'$'\t''x'$'\t''uninstalled'$'\t''0'$'\t''0'$'\t''0'$'\t''x'
+)
+selected_modules=(setup app)
+printf 'setup\t~/setup\t0755\tx\napp\t~/app\t0755\tx\n' >> "$MANIFEST_FILE"
+printf 'app\tfail\n' > "$REQUIRES_FILE"
+install_one() { echo "installing $1"; [[ "$1" != fail ]]; }
+if output=$(
+    is_service_module() { [[ "$1" == app ]]; }
+    module_service_unit() { echo app.service; }
+    module_service_transition() { echo "enabling $2"; }
+    run_module_action install 2>&1
+); then rc=0; else rc=$?; fi
+[[ $rc -ne 0 ]] || fail "dependency failure returned success: $output"
+[[ "$output" == *'enabling app'*'installing setup'* ]] || fail "setup was installed before services were enabled: $output"
+[[ "$output" == *'Install: attempted=3 succeeded=2 failed=1 skipped=0'* ]] || fail "dependency summary mismatch: $output"
+[[ "${output##*installing }" == setup* ]] || fail "setup was not installed last: $output"
+rm -f "$REQUIRES_FILE"
+
+# A dependency that cannot be resolved fails the whole picker install.
+snapshot=("app"$'\t''~/app'$'\t''0755'$'\t''x'$'\t''uninstalled'$'\t''0'$'\t''0'$'\t''0'$'\t''x')
+selected_modules=(app)
+printf 'app\tghost\n' > "$REQUIRES_FILE"
+if output=$(run_module_action install 2>&1); then rc=0; else rc=$?; fi
+[[ $rc -ne 0 && "$output" == *'failed=1'* ]] || fail "unresolvable dependency reported success: $output"
+rm -f "$REQUIRES_FILE"
 
 # update and reinstall report actual command failures and continue.
 snapshot=(

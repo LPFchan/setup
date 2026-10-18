@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import pathlib
+import pwd
 import socket
 import subprocess
 import sys
@@ -142,6 +143,14 @@ def _tailnet_name():
     return ""
 
 
+def _login_user():
+    # $USER is missing in some shells, and a container UID may have no passwd entry.
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return os.environ.get("USER", "")
+
+
 def _machine_report():
     """What this machine tells Auth about itself at login and on refresh, for
     the Fleet tab (DEC-20261015-001). A field that cannot be read is left
@@ -150,7 +159,7 @@ def _machine_report():
         "key": _machine_key(),
         "hostname": _short_hostname(),
         "tailnet": _tailnet_name(),
-        "user": os.environ.get("USER", ""),
+        "user": _login_user(),
         "needs_term": _output(["infocmp", "tmux-256color"]) is None,
     }
 
@@ -377,7 +386,7 @@ def cmd_login():
     uri = device.get("verification_uri_complete") or device.get("verification_uri")
     if not all(isinstance(value, str) and value for value in (device_code, user_code, uri)):
         raise AuthError("Auth returned an invalid device authorization response")
-    print("Waiting for approval… Open :")
+    print("Approve this machine in your browser:")
     print(uri)
     _open_browser(uri)
     previous = _previous_session()

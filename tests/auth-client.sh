@@ -82,7 +82,7 @@ login_output = io.StringIO()
 with contextlib.redirect_stdout(login_output):
     m["cmd_login"]()
 assert login_output.getvalue().splitlines()[:2] == [
-    "Waiting for approval… Open :",
+    "Approve this machine in your browser:",
     "https://auth.lost.plus/device?code=FOX-1234",
 ]
 saved = json.load(open(os.environ["LOST_AUTH_STORE"]))

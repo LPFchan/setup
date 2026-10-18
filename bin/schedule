@@ -116,7 +116,7 @@ cmd_install_timer() {
     _render_timer "$desc" "$oncal" "$timer_extra" > "$dir/$name.timer" || return 1
     _systemctl "$scope" daemon-reload || fail "daemon-reload failed"
     # enable + start rather than enable --now: systemd 219 (DSM 7) lacks --now.
-    _systemctl "$scope" enable "$name.timer" || fail "enable $name.timer failed"
+    _systemctl "$scope" enable --quiet "$name.timer" || fail "enable $name.timer failed"
     _systemctl "$scope" start "$name.timer" || fail "start $name.timer failed"
     echo "$prog: installed + enabled $name.timer ($scope, $oncal)"
 }
