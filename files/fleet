@@ -891,11 +891,13 @@ def _copy_agents_md(source):
             continue
         if not target.parent.is_dir():
             continue
-        if current is not None and not ours and current != _sha(data):
+        if current is not None and not ours:
+            # Kept even when it matches the source: it is still the user's file.
             if _backup_of(target).exists():
                 eprint(f"fleet: {target} is not ours and {_backup_of(target).name} exists; left alone")
                 continue
             target.rename(_backup_of(target))
+            current = None
         if current != _sha(data):
             save_text(target, data, 0o644)
         owned[key] = _sha(data)

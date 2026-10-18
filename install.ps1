@@ -33,7 +33,7 @@ function Test-SshReady {
     if (-not $service -or $service.StartType -ne 'Automatic' -or $service.Status -ne 'Running') { return $false }
     if (-not (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue)) { return $false }
     $rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    if (-not $rule -or "$($rule.Enabled)" -ne 'True') { return $false }
+    if (-not $rule -or "$($rule.Enabled)" -ne 'True' -or "$($rule.Profile)" -ne 'Any') { return $false }
     try { $config = Get-Content "$env:ProgramData\ssh\sshd_config" -ErrorAction Stop } catch { return $false }
     return -not ($config -match '^\s*Match\s+Group\s+administrators')
 }

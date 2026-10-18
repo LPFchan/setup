@@ -97,6 +97,7 @@ def check(ok, what):
 AGENTS = HOME/".agents"
 CLAUDE_MD, HOME_MD = HOME/".claude/CLAUDE.md", HOME/"AGENTS.md"
 CLAUDE_MD.write_bytes(b"mine\n")
+HOME_MD.write_bytes("be kind — always\n".encode())  # already the same as Auth's
 server({"AGENTS.md": ("be kind — always\n", 0), "settings/tool.sh": ("echo hi\n", 1),
         "skills/notes/SKILL.md": ("notes\n", 0)}, 1)
 
@@ -106,6 +107,7 @@ check(not (AGENTS/"skills").exists(), "skills pulled on Windows")
 check(CLAUDE_MD.read_bytes() == (AGENTS/"AGENTS.md").read_bytes() and not CLAUDE_MD.is_symlink(), "CLAUDE.md copy")
 check((HOME/".claude/CLAUDE.md.pre-agents.bak").read_bytes() == b"mine\n", "own CLAUDE.md kept as a backup")
 check(HOME_MD.read_bytes() == (AGENTS/"AGENTS.md").read_bytes(), "~/AGENTS.md copy")
+check((HOME/"AGENTS.md.pre-agents.bak").exists(), "an identical ~/AGENTS.md kept as a backup")
 check(not (HOME/".codex/AGENTS.md").exists(), "a copy into a harness dir that is not there")
 tokens = STATE/"fleet/mcp-tokens"
 check(b"OKDAM_MCP_TOKEN=tok-okdam-mcp" in tokens.read_bytes() and b"\r" not in tokens.read_bytes(), "token file")
@@ -141,7 +143,8 @@ check(all(r.wait(timeout=120) == 0 for r in runs), "concurrent syncs")
 server({p: (base64.b64decode(f["content"]).decode(), f["executable"]) for p, f in server_files().items()
         if p != "AGENTS.md"}, 9)
 fleet("sync")
-check(CLAUDE_MD.read_bytes() == b"mine\n" and not HOME_MD.exists(), "copies removed, backup restored")
+check(CLAUDE_MD.read_bytes() == b"mine\n" and HOME_MD.read_bytes() == "be kind — always\n".encode(),
+      "copies removed, backups restored")
 
 # The nightly task runs pythonw: no console, so output lands in sync.log.
 pythonw = pathlib.Path(sys.executable).with_name("pythonw.exe")
