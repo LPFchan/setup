@@ -1745,7 +1745,8 @@ def cmd_sync(check=False, pull=False):
                 return 3
             state = _load_json_quiet(AGENTS_STATE)
             if rc == 0 and (config["counter"] != state.get("counter") or pending_local()
-                            or not sync_builtin_skill(check=True)):
+                            or not sync_builtin_skill(check=True)
+                            or any(_builtin(f["path"]) for f in config["files"])):
                 rc = 1
             return rc
         try:

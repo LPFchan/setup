@@ -148,6 +148,7 @@ s["files"]["skills/fleet/SKILL.md"] = {"content": base64.b64encode(b"old\n").dec
 s["counter"] += 1
 json.dump(s, open(sys.argv[1], "w"))
 PY2
+fleet sync --check >/dev/null 2>&1 && fail "check missed an account copy of the skill"
 fleet sync >/dev/null 2>&1 || fail "sync over an account copy of the skill"
 [[ "$(server skills/fleet/SKILL.md)" == "<none>" ]] || fail "account copy of the skill kept"
 grep -qx "name: fleet" "$skill/SKILL.md" || fail "account copy pulled over the built-in skill"
