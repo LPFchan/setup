@@ -76,6 +76,14 @@ if output=$(run_module_action install 2>&1); then rc=0; else rc=$?; fi
 [[ "${output##*installing }" == setup* ]] || fail "setup was not installed last: $output"
 rm -f "$REQUIRES_FILE"
 
+# A dependency that cannot be resolved fails the whole picker install.
+snapshot=("app"$'\t''~/app'$'\t''0755'$'\t''x'$'\t''uninstalled'$'\t''0'$'\t''0'$'\t''0'$'\t''x')
+selected_modules=(app)
+printf 'app\tghost\n' > "$REQUIRES_FILE"
+if output=$(run_module_action install 2>&1); then rc=0; else rc=$?; fi
+[[ $rc -ne 0 && "$output" == *'failed=1'* ]] || fail "unresolvable dependency reported success: $output"
+rm -f "$REQUIRES_FILE"
+
 # update and reinstall report actual command failures and continue.
 snapshot=(
   "fail"$'\t''~/fail'$'\t''script'$'\t''x'$'\t''outdated'$'\t''1'$'\t''0'$'\t''0'$'\t''x'

@@ -1392,16 +1392,18 @@ install_modules() {
     local -a requested=("$@") order pulled
     local module target mode source failures=0 found=0
     typeset -ga install_failed
-    install_failed=()
 
-    # Dependencies first, and anything pulled in that the operator did not ask
-    # for is announced and remembered so uninstall can offer to take it back.
+    # Nothing installs when the order cannot be worked out, so all of it failed.
+    install_failed=("${requested[@]}")
     order=(${(f)"$(resolve_install_order "${requested[@]}")"}) || return 1
     (( ${#order[@]} > 0 )) || { echo "No matching modules." >&2; return 1; }
+    install_failed=()
     # setup goes last: installing it execs the new CLI and ends this process.
     if _list_contains setup "${order[@]}"; then
         order=(${order[@]:#setup} setup)
     fi
+    # Dependencies first, and anything pulled in that the operator did not ask
+    # for is announced and remembered so uninstall can offer to take it back.
     pulled=()
     for module in "${order[@]}"; do
         _list_contains "$module" ${requested[@]+"${requested[@]}"} && continue
