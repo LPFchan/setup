@@ -763,15 +763,29 @@ Exit 3 means Auth gave no answer and what is on disk stays as it is.
 """
 
 
-def sync_builtin_skill():
-    text, path = FLEET_SKILL, AGENTS/"skills/fleet/SKILL.md"
-    # A linked skills/fleet is the user's own and sync skips it; writing would land in its target.
-    if path.parent.is_symlink():
-        eprint("fleet: skills/fleet is a symlink; the built-in fleet skill is not written")
-        return
-    if path.is_symlink() or not path.is_file() or path.read_text() != text:
+def _builtin_skill_path():
+    """skills/fleet/SKILL.md, or None when a link on the way leads outside ~/.agents:
+    linked folders are the user's own, and sync skips them."""
+    path = AGENTS/"skills/fleet/SKILL.md"
+    if os.path.realpath(path.parent) != os.path.join(os.path.realpath(AGENTS), "skills", "fleet"):
+        return None
+    return path
+
+
+def sync_builtin_skill(check=False):
+    """Write the built-in skill unless it is already in place; with check, only say
+    whether it is. False means a sync would write it."""
+    path = _builtin_skill_path()
+    if path is None:
+        eprint("fleet: skills/fleet is reached through a symlink; the built-in fleet skill is not written")
+        return True
+    if (not path.is_symlink() and path.is_file() and path.stat().st_mode & 0o777 == 0o444
+            and path.read_text() == FLEET_SKILL):
+        return True
+    if not check:
         path.unlink(missing_ok=True)
-        save_text(path, text, 0o444)
+        save_text(path, FLEET_SKILL, 0o444)
+    return False
 
 
 # --- links ---------------------------------------------------------------
@@ -1730,7 +1744,8 @@ def cmd_sync(check=False, pull=False):
             except ApiError:
                 return 3
             state = _load_json_quiet(AGENTS_STATE)
-            if rc == 0 and (config["counter"] != state.get("counter") or pending_local()):
+            if rc == 0 and (config["counter"] != state.get("counter") or pending_local()
+                            or not sync_builtin_skill(check=True)):
                 rc = 1
             return rc
         try:
