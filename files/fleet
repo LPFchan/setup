@@ -59,7 +59,6 @@ TIMER_NAME = "fleet-sync"
 PLIST_NAME = "com.lost.plus.fleet-sync"
 LAUNCHD_DIR = HOME/"Library/LaunchAgents"
 SCHEDULE_HOUR = 4
-SOURCE_BASE = os.environ.get("SOURCE_URL", "https://raw.githubusercontent.com/LPFchan/setup/main")
 
 
 class Unavailable(Exception):
@@ -1921,21 +1920,39 @@ def cmd_status():
     return 0
 
 
+def _source_base():
+    """Like bin/setup: resolve main once, so every file comes from one commit."""
+    if os.environ.get("SOURCE_URL"):
+        return os.environ["SOURCE_URL"]
+    try:
+        with urllib.request.urlopen("https://api.github.com/repos/LPFchan/setup/git/ref/heads/main",
+                                    timeout=30) as response:
+            sha = json.load(response)["object"]["sha"]
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            return f"https://raw.githubusercontent.com/LPFchan/setup/{sha}"
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return "https://raw.githubusercontent.com/LPFchan/setup/main"
+
+
 def _self_update():
     """Windows has no setup module to refresh fleet: it fetches itself, auth and
-    the manifest. A file that fails to parse is left as it was."""
+    the manifest. All three must download and parse, or none is replaced."""
     bin_dir = HOME/".local/bin"
+    base, fetched = _source_base(), []
     for name, target, check in (("fleet", bin_dir/"fleet", ast.parse), ("auth", bin_dir/"auth", ast.parse),
                                 ("fleet-manifest.json", MANIFEST_PATH, json.loads)):
         if not target.exists():
             continue
         try:
-            with urllib.request.urlopen(f"{SOURCE_BASE}/files/{name}", timeout=30) as response:
+            with urllib.request.urlopen(f"{base}/files/{name}", timeout=30) as response:
                 data = response.read()
             check(data.decode())
         except (OSError, ValueError, SyntaxError) as exc:
-            eprint(f"fleet: {name} not updated: {exc}")
-            continue
+            eprint(f"fleet: not updated, {name}: {exc}")
+            return
+        fetched.append((target, data))
+    for target, data in fetched:
         if target.read_bytes() != data:
             save_text(target, data)
             print(f"fleet: updated {target}")

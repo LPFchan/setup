@@ -7,7 +7,15 @@
 & {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$Source = if ($env:SOURCE_URL) { $env:SOURCE_URL } else { 'https://raw.githubusercontent.com/LPFchan/setup/main' }
+# Resolve main once, as bin/setup does, so every file comes from one commit.
+$Source = $env:SOURCE_URL
+if (-not $Source) {
+    $Source = 'https://raw.githubusercontent.com/LPFchan/setup/main'
+    try {
+        $sha = (Invoke-RestMethod -UseBasicParsing 'https://api.github.com/repos/LPFchan/setup/git/ref/heads/main').object.sha
+        if ($sha -match '^[0-9a-f]{40}$') { $Source = "https://raw.githubusercontent.com/LPFchan/setup/$sha" }
+    } catch {}
+}
 $Bin = Join-Path $HOME '.local\bin'
 $Manifest = Join-Path $HOME '.config\fleet\manifest.json'
 
@@ -107,12 +115,13 @@ Step "Python: $Python"
 
 # --- auth and fleet ---------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $Bin, (Split-Path $Manifest) | Out-Null
-foreach ($file in @(@('auth', (Join-Path $Bin 'auth')), @('fleet', (Join-Path $Bin 'fleet')),
-                    @('fleet-manifest.json', $Manifest))) {
-    $staged = "$($file[1]).download"
-    Invoke-WebRequest -UseBasicParsing -Uri "$Source/files/$($file[0])" -OutFile $staged
-    Move-Item -Force $staged $file[1]
+# All three download first; only then does any of them replace the installed copy.
+$files = @(@('auth', (Join-Path $Bin 'auth')), @('fleet', (Join-Path $Bin 'fleet')),
+           @('fleet-manifest.json', $Manifest))
+foreach ($file in $files) {
+    Invoke-WebRequest -UseBasicParsing -Uri "$Source/files/$($file[0])" -OutFile "$($file[1]).download"
 }
+foreach ($file in $files) { Move-Item -Force "$($file[1]).download" $file[1] }
 foreach ($name in 'auth', 'fleet') {
     # cmd shims so both run from any shell; the Python path is baked in.
     Set-Content -Path (Join-Path $Bin "$name.cmd") -Encoding ascii -Value "@`"$Python`" -X utf8 `"%~dp0$name`" %*"
