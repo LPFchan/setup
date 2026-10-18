@@ -37,7 +37,7 @@ grep -q 'scheduled daily at 06:00 (systemd)' "$TMP/linux-out" \
     || fail "Linux schedule output has the wrong time"
 grep -qx -- '--user daemon-reload' "$SYSTEMCTL_CALLS" \
     || fail "Linux timer did not reload systemd"
-grep -qx -- '--user enable setup-update.timer' "$SYSTEMCTL_CALLS" \
+grep -qx -- '--user enable --quiet setup-update.timer' "$SYSTEMCTL_CALLS" \
     || fail "Linux timer was not enabled"
 
 # With the helper absent, cmd_schedule must say how to install it rather than
