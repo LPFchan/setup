@@ -110,7 +110,17 @@ if (Test-SshReady) {
 $Python = Find-Python
 if (-not $Python) {
     Step 'installing Python'
-    winget install --id Python.Python.3.13 -e --scope user --silent --accept-package-agreements --accept-source-agreements
+    # python.org's own installer, per user: winget is missing on a fresh Windows 10.
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+    $installer = Join-Path $env:TEMP "python-3.14.8-$arch.exe"
+    Invoke-WebRequest -UseBasicParsing -Uri "https://www.python.org/ftp/python/3.14.8/python-3.14.8-$arch.exe" -OutFile $installer
+    try {
+        $run = Start-Process $installer -Wait -PassThru -ArgumentList @(
+            '/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=0', 'Include_test=0')
+        if ($run.ExitCode) { throw "Python installer failed (exit $($run.ExitCode))" }
+    } finally {
+        Remove-Item $installer -ErrorAction SilentlyContinue
+    }
     $Python = Find-Python
     if (-not $Python) { throw 'Python 3.9 or newer not found after install; install it from python.org and run this again' }
 }
