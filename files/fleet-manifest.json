@@ -1,5 +1,5 @@
 {
-  "comment": "What every machine on every account gets from fleet. Personal settings live in the account's ~/.agents tree (settings/*.json, mcp.json); lost.plus MCPs come from Auth's /api/services. The retired* lists are removed wherever fleet finds them.",
+  "comment": "What every machine on every account gets from fleet. Personal settings live in the account's ~/.agents tree (settings/*.json, mcp.json); lost.plus MCPs come from Auth's /api/services. The retired* lists are removed wherever fleet finds them. A harness's windows block replaces its other keys on Windows; one without it is not offered there.",
   "harnesses": [
     {
       "name": "claude",
@@ -8,12 +8,26 @@
       "candidates": [
         "~/.local/bin/claude",
         "~/.claude/local/claude"
-      ]
+      ],
+      "windows": {
+        "install": "irm https://claude.ai/install.ps1 | iex",
+        "updateArgs": "update",
+        "candidates": [
+          "~/.local/bin/claude.exe"
+        ]
+      }
     },
     {
       "name": "codex",
       "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
-      "updateArgs": "update"
+      "updateArgs": "update",
+      "windows": {
+        "install": "$env:CODEX_NON_INTERACTIVE = '1'; irm https://chatgpt.com/codex/install.ps1 | iex",
+        "update": "$env:CODEX_NON_INTERACTIVE = '1'; irm https://chatgpt.com/codex/install.ps1 | iex",
+        "candidates": [
+          "~/AppData/Local/Programs/OpenAI/Codex/bin/codex.exe"
+        ]
+      }
     },
     {
       "name": "opencode",
@@ -21,7 +35,11 @@
       "updateArgs": "upgrade",
       "candidates": [
         "~/.opencode/bin/opencode"
-      ]
+      ],
+      "windows": {
+        "install": "npm install -g opencode-ai",
+        "updateArgs": "upgrade"
+      }
     },
     {
       "name": "hermes",
@@ -29,7 +47,14 @@
       "updateArgs": "update --yes",
       "candidates": [
         "~/.local/bin/hermes"
-      ]
+      ],
+      "windows": {
+        "install": "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1).TrimStart([char]0xFEFF))) -NonInteractive",
+        "updateArgs": "update --yes",
+        "candidates": [
+          "~/AppData/Local/hermes/bin/hermes.exe"
+        ]
+      }
     },
     {
       "name": "t3",
@@ -44,7 +69,11 @@
     {
       "name": "miniharness",
       "install": "npm install -g miniharness",
-      "update": "npm install -g miniharness@latest"
+      "update": "npm install -g miniharness@latest",
+      "windows": {
+        "install": "npm install -g miniharness",
+        "update": "npm install -g miniharness@latest"
+      }
     }
   ],
   "claude": {
