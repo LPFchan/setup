@@ -70,8 +70,14 @@ selected_modules=(setup app)
 printf 'setup\t~/setup\t0755\tx\napp\t~/app\t0755\tx\n' >> "$MANIFEST_FILE"
 printf 'app\tfail\n' > "$REQUIRES_FILE"
 install_one() { echo "installing $1"; [[ "$1" != fail ]]; }
-if output=$(run_module_action install 2>&1); then rc=0; else rc=$?; fi
+if output=$(
+    is_service_module() { [[ "$1" == app ]]; }
+    module_service_unit() { echo app.service; }
+    module_service_transition() { echo "enabling $2"; }
+    run_module_action install 2>&1
+); then rc=0; else rc=$?; fi
 [[ $rc -ne 0 ]] || fail "dependency failure returned success: $output"
+[[ "$output" == *'enabling app'*'installing setup'* ]] || fail "setup was installed before services were enabled: $output"
 [[ "$output" == *'Install: attempted=3 succeeded=2 failed=1 skipped=0'* ]] || fail "dependency summary mismatch: $output"
 [[ "${output##*installing }" == setup* ]] || fail "setup was not installed last: $output"
 rm -f "$REQUIRES_FILE"

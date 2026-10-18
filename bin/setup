@@ -1390,7 +1390,7 @@ cmd_install() {
 # not end up installed and enabled are left in install_failed.
 install_modules() {
     local -a requested=("$@") order pulled
-    local module target mode source failures=0 found=0
+    local module failures=0 found=0 self=0
     typeset -ga install_failed
 
     # Nothing installs when the order cannot be worked out, so all of it failed.
@@ -1398,14 +1398,16 @@ install_modules() {
     order=(${(f)"$(resolve_install_order "${requested[@]}")"}) || return 1
     (( ${#order[@]} > 0 )) || { echo "No matching modules." >&2; return 1; }
     install_failed=()
-    # setup goes last: installing it execs the new CLI and ends this process.
+    # setup goes after everything else, enabling included: installing it execs
+    # the new CLI and ends this process.
     if _list_contains setup "${order[@]}"; then
-        order=(${order[@]:#setup} setup)
+        order=(${order[@]:#setup})
+        self=1
     fi
     # Dependencies first, and anything pulled in that the operator did not ask
     # for is announced and remembered so uninstall can offer to take it back.
     pulled=()
-    for module in "${order[@]}"; do
+    for module in ${order[@]+"${order[@]}"}; do
         _list_contains "$module" ${requested[@]+"${requested[@]}"} && continue
         pulled+=("$module")
     done
@@ -1413,29 +1415,14 @@ install_modules() {
         echo "Also installing required by your selection: ${pulled[*]}"
     fi
 
-    for module in "${order[@]}"; do
-        IFS=$'\t' read -r target mode source < <(
-            awk -F '\t' -v m="$module" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
-        )
-        [[ -n "${target:-}" ]] || continue
-        found=1
-        if install_one "$module" "$target" "$mode" "$source"; then
-            if _list_contains "$module" ${pulled[@]+"${pulled[@]}"}; then
-                dep_mark "$module"
-            else
-                dep_unmark "$module"
-            fi
-        else
-            failures=$((failures + 1))
-            install_failed+=("$module")
-            echo "Failed: install $module" >&2
-        fi
+    for module in ${order[@]+"${order[@]}"}; do
+        install_listed "$module"
     done
-    ((found == 1)) || { echo "No matching modules." >&2; return 1; }
+    ((found == 1 || self == 1)) || { echo "No matching modules." >&2; return 1; }
 
     # Every installed service module is enabled, whether it was named or
     # reached through the catalog.
-    for module in "${order[@]}"; do
+    for module in ${order[@]+"${order[@]}"}; do
         is_service_module "$module" || continue
         [[ "$(module_service_unit "$module")" != tool ]] || continue
         _list_contains "$module" ${install_failed[@]+"${install_failed[@]}"} && continue
@@ -1445,7 +1432,30 @@ install_modules() {
     done
 
     normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
+    ((self == 0)) || install_listed setup
     (( failures == 0 ))
+}
+
+# One module of install_modules, counted in its found, failures, pulled and
+# install_failed.
+install_listed() {
+    local module="$1" target mode source
+    IFS=$'\t' read -r target mode source < <(
+        awk -F '\t' -v m="$module" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+    )
+    [[ -n "${target:-}" ]] || return 0
+    found=1
+    if install_one "$module" "$target" "$mode" "$source"; then
+        if _list_contains "$module" ${pulled[@]+"${pulled[@]}"}; then
+            dep_mark "$module"
+        else
+            dep_unmark "$module"
+        fi
+    else
+        failures=$((failures + 1))
+        install_failed+=("$module")
+        echo "Failed: install $module" >&2
+    fi
 }
 
 cmd_update() {

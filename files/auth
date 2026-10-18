@@ -143,6 +143,14 @@ def _tailnet_name():
     return ""
 
 
+def _login_user():
+    # $USER is missing in some shells, and a container UID may have no passwd entry.
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return os.environ.get("USER", "")
+
+
 def _machine_report():
     """What this machine tells Auth about itself at login and on refresh, for
     the Fleet tab (DEC-20261015-001). A field that cannot be read is left
@@ -151,7 +159,7 @@ def _machine_report():
         "key": _machine_key(),
         "hostname": _short_hostname(),
         "tailnet": _tailnet_name(),
-        "user": pwd.getpwuid(os.getuid()).pw_name,
+        "user": _login_user(),
         "needs_term": _output(["infocmp", "tmux-256color"]) is None,
     }
 
