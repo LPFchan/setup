@@ -30,7 +30,7 @@ function Find-Python {
 
 function Test-SshReady {
     $service = Get-Service sshd -ErrorAction SilentlyContinue
-    if (-not $service -or $service.StartType -ne 'Automatic') { return $false }
+    if (-not $service -or $service.StartType -ne 'Automatic' -or $service.Status -ne 'Running') { return $false }
     if (-not (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue)) { return $false }
     $rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
     if (-not $rule -or "$($rule.Enabled)" -ne 'True') { return $false }
@@ -130,7 +130,10 @@ if ($LASTEXITCODE) {
     if ($LASTEXITCODE) { throw 'auth login failed' }
 }
 & fleet sync
+$synced = $LASTEXITCODE
 & fleet schedule enable
 if ($LASTEXITCODE) { throw 'fleet schedule enable failed' }
+# 1: a conflict, local copies backed up; 3: Auth gave no answer. The nightly pass retries.
+if ($synced) { throw "fleet sync did not finish (exit $synced); run fleet sync again" }
 Step 'done. Install harnesses with: fleet install claude codex'
 }
