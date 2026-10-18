@@ -147,6 +147,10 @@ if (($env:Path -split ';') -notcontains $Bin) { $env:Path = "$Bin;$env:Path" }
 Step "auth and fleet installed in $Bin"
 
 # --- sign in, sync, schedule ------------------------------------------------
+# Windows fetches some root certificates only when its own TLS stack meets
+# them; Python reads the store as it is. One request here brings Auth's root in.
+$origin = if ($env:LOST_AUTH_ORIGIN) { $env:LOST_AUTH_ORIGIN } else { 'https://auth.lost.plus' }
+try { Invoke-WebRequest -UseBasicParsing -Uri $origin | Out-Null } catch {}
 & { $ErrorActionPreference = 'Continue'; & auth status *> $null }
 if ($LASTEXITCODE) {
     & auth login
