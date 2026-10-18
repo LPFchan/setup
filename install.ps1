@@ -111,9 +111,12 @@ $Python = Find-Python
 if (-not $Python) {
     Step 'installing Python'
     # python.org's own installer, per user: winget is missing on a fresh Windows 10.
-    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-    $installer = Join-Path $env:TEMP "python-3.14.8-$arch.exe"
-    Invoke-WebRequest -UseBasicParsing -Uri "https://www.python.org/ftp/python/3.14.8/python-3.14.8-$arch.exe" -OutFile $installer
+    # The OS's architecture, not this PowerShell's: 32-bit PowerShell on 64-bit
+    # Windows reports x86 and keeps the real one in PROCESSOR_ARCHITEW6432.
+    $os = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    $file = switch ($os) { 'ARM64' { 'python-3.14.8-arm64.exe' } 'x86' { 'python-3.14.8.exe' } default { 'python-3.14.8-amd64.exe' } }
+    $installer = Join-Path $env:TEMP $file
+    Invoke-WebRequest -UseBasicParsing -Uri "https://www.python.org/ftp/python/3.14.8/$file" -OutFile $installer
     try {
         $run = Start-Process $installer -Wait -PassThru -ArgumentList @(
             '/quiet', 'InstallAllUsers=0', 'PrependPath=0', 'Include_launcher=0', 'Include_test=0')
