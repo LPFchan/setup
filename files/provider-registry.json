@@ -17,70 +17,17 @@
         "provider": "anthropic"
       }
     },
-    "grimoire": {
+    "alibaba": {
       "provider_type": "OpenAICompatible",
-      "base_url": "https://chat.lost.plus/v1",
-      "api_format": "grimoire",
-      "npm": "@ai-sdk/openai-compatible",
-      "auth": {
-        "type": "common-auth",
-        "scope": "chat-v1",
-        "key": "grimoire"
-      },
-      "enabled": true,
-      "model_exclude_prefixes": [
-        "eastself-"
-      ]
-    },
-    "commandcode": {
-      "provider_type": "OpenAICompatible",
-      "base_url": "https://api.commandcode.ai/provider/v1",
+      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       "api_format": "openai",
       "npm": "@ai-sdk/openai-compatible",
       "auth": {
         "type": "api-key",
         "store": "opencode",
-        "key": "commandcode"
+        "key": "alibaba"
       },
       "enabled": false
-    },
-    "deepseek": {
-      "provider_type": "OpenAICompatible",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_format": "openai",
-      "npm": "@ai-sdk/openai-compatible",
-      "auth": {
-        "type": "api-key",
-        "store": "opencode",
-        "key": "deepseek"
-      },
-      "enabled": false,
-      "models_dev": "deepseek"
-    },
-    "kimicode": {
-      "provider_type": "OpenAICompatible",
-      "base_url": "https://api.kimi.com/coding/v1",
-      "api_format": "openai",
-      "npm": "@ai-sdk/openai-compatible",
-      "auth": {
-        "type": "api-key",
-        "store": "opencode",
-        "key": "kimicode"
-      },
-      "enabled": false
-    },
-    "meta": {
-      "provider_type": "OpenAICompatible",
-      "base_url": "https://api.meta.ai/v1",
-      "api_format": "openai",
-      "npm": "@ai-sdk/openai-compatible",
-      "auth": {
-        "type": "api-key",
-        "store": "opencode",
-        "key": "meta"
-      },
-      "enabled": false,
-      "models_dev": "meta"
     },
     "cloudflare": {
       "provider_type": "OpenAICompatible",
@@ -125,15 +72,80 @@
       ],
       "models_dev": "cloudflare-workers-ai"
     },
-    "openrouter": {
+    "commandcode": {
       "provider_type": "OpenAICompatible",
-      "base_url": "https://openrouter.ai/api/v1",
+      "base_url": "https://api.commandcode.ai/provider/v1",
       "api_format": "openai",
       "npm": "@ai-sdk/openai-compatible",
       "auth": {
         "type": "api-key",
         "store": "opencode",
-        "key": "openrouter"
+        "key": "commandcode"
+      },
+      "enabled": false
+    },
+    "deepseek": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "deepseek"
+      },
+      "enabled": false,
+      "models_dev": "deepseek"
+    },
+    "grimoire": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://chat.lost.plus/v1",
+      "api_format": "grimoire",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "common-auth",
+        "scope": "chat-v1",
+        "key": "grimoire"
+      },
+      "enabled": true,
+      "model_exclude_prefixes": [
+        "eastself-"
+      ]
+    },
+    "kimicode": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "kimicode"
+      },
+      "enabled": false
+    },
+    "meta": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://api.meta.ai/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "meta"
+      },
+      "enabled": false,
+      "models_dev": "meta"
+    },
+    "ollama-cloud": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://ollama.com/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "ollama-cloud"
       },
       "enabled": false
     },
@@ -152,6 +164,18 @@
       },
       "enabled": true,
       "models_dev": "opencode-go"
+    },
+    "openrouter": {
+      "provider_type": "OpenAICompatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_format": "openai",
+      "npm": "@ai-sdk/openai-compatible",
+      "auth": {
+        "type": "api-key",
+        "store": "opencode",
+        "key": "openrouter"
+      },
+      "enabled": false
     },
     "zai": {
       "provider_type": "OpenAICompatible",

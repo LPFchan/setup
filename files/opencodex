@@ -44,7 +44,7 @@ AUTH_JSON = Path(
 PROVIDERS_BIN = Path(
     os.environ.get(
         "OPENCODEX_PROVIDERS_BIN",
-        os.environ.get("PROVIDERS_BIN", HOME / ".local/bin/providers"),
+        os.environ.get("FLEET_BIN", HOME / ".local/bin/fleet"),
     )
 ).expanduser()
 PROVIDER_STATE_VERSION = 1
@@ -117,8 +117,8 @@ def validate_registry(data: Any) -> dict[str, Any]:
     if not set(data) <= known or not {"version", "providers"} <= set(data):
         raise UserError("registry must contain only version, providers, and retired_providers")
     providers = data.get("providers")
-    if not isinstance(providers, dict) or not providers:
-        raise UserError("registry providers must be a non-empty object")
+    if not isinstance(providers, dict):
+        raise UserError("registry providers must be an object")
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise UserError(f"invalid provider: {provider_name}")
@@ -172,6 +172,9 @@ def validate_registry(data: Any) -> dict[str, Any]:
 
 
 def load_registry(path: Path = REGISTRY) -> dict[str, Any]:
+    account = HOME / ".config/providers/registry.json"
+    if path == REGISTRY and "OPENCODEX_REGISTRY" not in os.environ and account.exists():
+        path = account
     try:
         return validate_registry(json.loads(path.read_text()))
     except (OSError, json.JSONDecodeError) as exc:
@@ -959,11 +962,11 @@ def provider_capability_view(timeout: float = 1.5) -> dict[str, Any]:
     This is deliberately a cache-only operation. The provider module owns
     credentials and network refreshes; OpenCodex must never reconstruct either
     concern by calling an enrolled provider itself. A missing or broken
-    providers executable simply leaves the catalog/proxy fallback available.
+    fleet executable simply leaves the catalog/proxy fallback available.
     """
     try:
         result = subprocess.run(
-            [str(PROVIDERS_BIN), "capabilities", "--json"],
+            [str(PROVIDERS_BIN), "providers", "capabilities", "--json"],
             capture_output=True,
             text=True,
             timeout=timeout,

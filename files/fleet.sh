@@ -15,6 +15,10 @@ SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubuserconte
 BIN_SOURCE="${FLEET_SOURCE:-$SOURCE_BASE/files/fleet}"
 MANIFEST="${FLEET_MANIFEST:-$HOME/.config/fleet/manifest.json}"
 MANIFEST_SOURCE="${FLEET_MANIFEST_SOURCE:-$SOURCE_BASE/files/fleet-manifest.json}"
+ENGINE="${FLEET_PROVIDER_ENGINE:-${BIN:h}/fleet-providers.py}"
+ENGINE_SOURCE="${FLEET_PROVIDER_SOURCE:-$SOURCE_BASE/files/fleet-providers.py}"
+DEFAULTS="${FLEET_PROVIDER_DEFAULTS:-$HOME/.config/fleet/provider-defaults.json}"
+DEFAULTS_SOURCE="${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}"
 
 _fetch() {
     local source="$1" destination="$2"
@@ -27,21 +31,23 @@ _fetch() {
     fi
 }
 
-# Both files into a temporary directory, checked: fleet and manifest.json.
+# Stage and validate the complete fleet payload before replacing installed files.
 _stage() {
     local dir="$1"
     _fetch "$BIN_SOURCE" "$dir/fleet" && _fetch "$MANIFEST_SOURCE" "$dir/manifest.json" || return 1
+    _fetch "$ENGINE_SOURCE" "$dir/fleet-providers.py" && _fetch "$DEFAULTS_SOURCE" "$dir/provider-registry.json" || return 1
     chmod +x "$dir/fleet"
+    python3 "$dir/fleet-providers.py" __validate "$dir/provider-registry.json" || return 1
     python3 -c 'import ast,json,sys; ast.parse(open(sys.argv[1]).read()); json.load(open(sys.argv[2]))' \
         "$dir/fleet" "$dir/manifest.json"
 }
 
-_hash() { cat "$1" "$2" 2>/dev/null | setup_sha256_string; }
+_hash() { cat "$@" 2>/dev/null | setup_sha256_string; }
 
 _desired_hash() {
     local staged; staged=$(mktemp -d)
     _stage "$staged" || { rm -rf "$staged"; return 1; }
-    _hash "$staged/fleet" "$staged/manifest.json"
+    _hash "$staged/fleet" "$staged/manifest.json" "$staged/fleet-providers.py" "$staged/provider-registry.json"
     rm -rf "$staged"
 }
 
@@ -82,11 +88,13 @@ _login_if_needed() {
 
 _apply() {
     local action="$1" staged hash
-    mkdir -p "${BIN:h}" "${MANIFEST:h}"
+    mkdir -p "${BIN:h}" "${MANIFEST:h}" "${ENGINE:h}" "${DEFAULTS:h}"
     staged=$(mktemp -d "${BIN:h}/.fleet.XXXXXX")
     _stage "$staged" || { rm -rf "$staged"; return 1; }
-    hash=$(_hash "$staged/fleet" "$staged/manifest.json")
+    hash=$(_hash "$staged/fleet" "$staged/manifest.json" "$staged/fleet-providers.py" "$staged/provider-registry.json")
     mv "$staged/manifest.json" "$MANIFEST"
+    mv "$staged/fleet-providers.py" "$ENGINE"
+    mv "$staged/provider-registry.json" "$DEFAULTS"
     mv "$staged/fleet" "$BIN"
     rm -rf "$staged"
     record_script_state "$MODULE" "fleet" "$hash" "$hash"
@@ -95,7 +103,12 @@ _apply() {
     # A pull: local edits in ~/.agents go up only when the operator syncs.
     # Exit 3 means Auth gave no authoritative answer: what is on disk stays,
     # and status says so rather than failing every run.
-    "$BIN" sync --pull || (( $? == 3 ))
+    "$BIN" sync --pull || (( $? == 3 )) || return 1
+    if [[ -x "$HOME/.local/bin/providers" ]]; then
+        "$HOME/.local/bin/providers" schedule disable >/dev/null 2>&1 || return 1
+        "$BIN" schedule enable || return 1
+        rm -f "$HOME/.local/bin/providers"
+    fi
 }
 
 install() { _apply installed; }
@@ -108,7 +121,7 @@ status() {
     fi
     local desired actual rc
     desired=$(_desired_hash) || return 1
-    actual=$([[ -f "$BIN" ]] && _hash "$BIN" "$MANIFEST")
+    actual=$([[ -f "$BIN" ]] && _hash "$BIN" "$MANIFEST" "$ENGINE" "$DEFAULTS")
     if [[ ! -x "$BIN" || "$actual" != "$desired" ]]; then
         printf '%-25s %-12s local=%s remote=%s target=%s\n' \
             "$MODULE" "outdated" "${actual:0:7}" "${desired:0:7}" "$BIN"
@@ -130,7 +143,7 @@ uninstall() {
     [[ -x "$BIN" ]] && "$BIN" schedule disable >/dev/null 2>&1
     manage_block "$HOME/.ssh/config" "fleet" "" "remove"
     manage_block "$HOME/.ssh/authorized_keys" "fleet-keys" "" "remove"
-    rm -f "$BIN" "$MANIFEST"
+    rm -f "$BIN" "$MANIFEST" "$ENGINE" "$DEFAULTS"
     remove_script_state "$MODULE"
     echo "fleet: uninstalled. This machine stays in its fleet until it is revoked in the Fleet tab."
 }

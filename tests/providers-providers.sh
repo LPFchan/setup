@@ -50,7 +50,7 @@ printf '{"version":1,"providers":{"demo":{"enabled":true},"unused":{"enabled":fa
 
 python3 - <<PY
 import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, time
-path = '$ROOT/files/providers'
+path = '$ROOT/files/fleet-providers.py'
 loader = importlib.machinery.SourceFileLoader('providers_test', path)
 spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
@@ -87,14 +87,13 @@ fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-go', 'zai'
+    'cloudflare', 'openrouter', 'opencode-go', 'zai', 'alibaba', 'ollama-cloud'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
     with open(executable, 'w') as handle:
         handle.write('#!/bin/sh\n')
     os.chmod(executable, 0o700)
-assert m._provider_consumer_modules() == ['opencodex', 'providers']
 m.REGISTRY_PATH = fixture_registry
 servers = m._load_servers()
 assert set(servers) == {'demo', 'unused'}
@@ -133,7 +132,7 @@ m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-go', 'zai'
+    'cloudflare', 'openrouter', 'opencode-go', 'zai', 'alibaba', 'ollama-cloud'
 }
 m.REGISTRY_PATH = original_registry
 
@@ -784,7 +783,7 @@ assert m.load_json(m.OPENCODE_PATH)['provider']['openrouter']['models'] == {
 
 # The registry is fetched unverified, so validation is the only gate: missing
 # providers and legacy profile-only shapes must be refused.
-for empty in ({'version': 1}, {'version': 1, 'providers': {}}, {'version': 1, 'profiles': []},
+for empty in ({'version': 1}, {'version': 1, 'profiles': []},
               {'version': 1, 'profiles': [{'name': 'demo'}]}):
     try:
         m._validate_registry(copy.deepcopy(empty))
@@ -1083,6 +1082,9 @@ assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
 assert m._set_provider_enabled('demo', True)
 assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is True
 
+m.vault_available = lambda: True
+m.vault_list_items = lambda: []
+m.vault_add = lambda *args: None
 m._set_key(m._auth_provider('unused', servers['unused']), 'unused-key')
 m._set_provider_enabled('unused', True)
 assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
@@ -1102,75 +1104,20 @@ else:
     raise AssertionError('provider add allowed an endpoint override on a registry provider')
 
 m.REGISTRY_PATH = fixture_registry
-m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
-captured = {}
-m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
-m._add_provider('added', 'https://added.invalid/v1', 'secret-token')
-assert captured['provider']['name'] == 'added'
-assert set(captured['provider']) == {
-    'name', 'provider_type', 'base_url', 'auth', 'enabled', 'api_format', 'npm'
-}
-assert captured['token'] == 'secret-token'
+try:
+    m._add_provider('added', 'https://added.invalid/v1', 'secret-token')
+except ValueError as exc:
+    assert 'administrator' in str(exc)
+else:
+    raise AssertionError('CLI registered a provider outside the shared catalog')
 
-# Agents can add a provider directly without any prompts. The endpoint is
-# normalized before it is published, and the token is never printed.
-m.fetch_models = lambda base, auth: None
-captured = {}
-m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
-m._add_provider('static', 'https://static.invalid/v1', 'secret-token', '@vendor/static')
-assert captured['provider']['models'] == [{'id': '@vendor/static'}]
-assert captured['token'] == 'secret-token'
-
-import contextlib, io
-builtins.input = lambda prompt='': (_ for _ in ()).throw(AssertionError(f'unexpected prompt: {prompt}'))
-m.getpass.getpass = builtins.input
-m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
-captured.clear()
-sys.argv = [path, 'add', 'agent-added', 'https://agent-added.invalid/v1/', 'agent-token']
-add_output = io.StringIO()
-with contextlib.redirect_stdout(add_output):
-    m.main()
-assert captured['provider']['name'] == 'agent-added'
-assert captured['provider']['base_url'] == 'https://agent-added.invalid/v1'
-assert captured['token'] == 'agent-token'
-assert 'agent-token' not in add_output.getvalue()
-
-m.fetch_models = lambda base, auth: None
-captured.clear()
-sys.argv = [
-    path,
-    'add',
-    'agent-static',
-    'https://agent-static.invalid/v1',
-    'agent-token',
-    '@vendor/static',
-]
-with contextlib.redirect_stdout(add_output):
-    m.main()
-assert captured['provider']['models'] == [{'id': '@vendor/static'}]
-
-schedule_output = io.StringIO()
-m._is_macos = lambda: True
-with contextlib.redirect_stdout(schedule_output):
-    m.cmd_schedule_status()
-assert schedule_output.getvalue().strip() == 'schedule: not installed'
-
-# The command tree is explicit: provider state and schedule control are
-# separate branches, and removed or malformed forms are rejected.
+# Fleet owns scheduling; the engine dispatches only provider operations.
 dispatch = []
 m._set_provider_enabled = lambda name, enabled: dispatch.append((name, enabled)) or True
-m.cmd_schedule_enable = lambda: dispatch.append(('schedule', 'enable'))
-m.cmd_schedule_disable = lambda: dispatch.append(('schedule', 'disable'))
-m.cmd_schedule_status = lambda: dispatch.append(('schedule', 'status'))
-for argv in ([path, 'enable', 'demo'], [path, 'disable', 'demo'],
-             [path, 'schedule'], [path, 'schedule', 'disable'],
-             [path, 'schedule', 'status']):
+for argv in ([path, 'enable', 'demo'], [path, 'disable', 'demo']):
     sys.argv = argv
     m.main()
-assert dispatch == [
-    ('demo', True), ('demo', False), ('schedule', 'enable'),
-    ('schedule', 'disable'), ('schedule', 'status')
-]
+assert dispatch == [('demo', True), ('demo', False)]
 for argv in ([path, 'timer'], [path, 'auth'], [path, 'sync'], [path, 'audit'],
              [path, 'rename'], [path, 'ls'], [path, 'list'], [path, '--list'],
              [path, 'add', 'only-name'], [path, 'enable'], [path, 'disable'],

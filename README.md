@@ -70,14 +70,14 @@ A module names what it needs in the manifest's `requires` column (comma-separate
 - A module installed only as a dependency is remembered, so removing the last thing that needed it offers to take it away too.
 - A dependency cycle is a hard error naming the module it runs through.
 
-A module declares a dependency when the two are always installed together — not only when it would crash without it. `opencodex` keeps running if `providers` is missing, but it loses model filtering for every provider bar one, which is never a state worth shipping, so the edge is declared.
+A module declares a dependency when the two are always installed together — not only when it would crash without it. `opencodex` depends on `fleet`, which supplies account provider settings, credential mirrors and model capabilities.
 
 The current edges:
 
 | Module | Requires | Why |
 |--------|----------|-----|
-| `providers` | `auth` | `auth` is the only door to the passage vault, and the vault is where 10 of 12 providers' credentials live |
-| `opencodex` | `providers` | Without it, 11 of 12 registry providers lose model filtering |
+| `fleet` | `auth` | Account sync and Passage credentials use the machine's Common Auth login |
+| `opencodex` | `fleet` | Fleet supplies provider connections and the shared model capability cache |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
 | `system-updates` | `schedule`, `fleet` | `schedule` for the timer; `fleet` because `fleet install miniharness` provides the model summon its 07:00 reboot check asks, and `system-updates enable` refuses to run without it |
@@ -87,7 +87,7 @@ The current edges:
 
 `setup` bootstraps `fzf-multicolumn` straight from the manifest on first interactive run, so a fresh `curl | zsh` install still lands a working picker — the declared edge only makes that hand-wired behavior explicit and blocks an uninstall that would immediately be undone.
 
-The one thing the column cannot express is a platform-conditional need: `providers` needs `schedule` on Linux but uses launchd on macOS, so it keeps its own runtime check instead; `fleet` gets the same edge from `bin/setup` itself.
+The column cannot express a platform-conditional dependency: fleet uses `schedule` on Linux, launchd on macOS and Task Scheduler on Windows. `bin/setup` adds the Linux dependency.
 
 #### External requirements
 
@@ -113,7 +113,7 @@ Simple modules that copy a managed script or executable to your machine.
 | `kernel-simmer` | `~/.local/bin/kernel-simmer` | Fleet-only kernel performance tuning tool |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | GPU fan speed control script |
 | `monitoring` | `~/.local/bin/monitoring` | System monitoring utility |
-| `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `providers`, `backup`, `system-updates`, and `kernel-simmer` all render their timers through it |
+| `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `fleet`, `backup`, `system-updates`, and `kernel-simmer` all render their timers through it |
 | `backup` | `~/.local/bin/backup` | Restic-based incremental backup script to `bingus` |
 | `system-updates` | `~/.local/bin/system-updates` | Safe daily package updater (Linux only, runs between 03:00–03:30). At 07:00, when a reboot is required, a model with a shell inspects what the machine is actually doing and decides whether rebooting is safe; anything short of a clear yes holds, and every decision goes to Telegram. `system-updates advise` asks without rebooting |
 
@@ -134,8 +134,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
 | `auth` | Public Common Auth client: one browser-approved login, a local `0600` global/per-service credential store, and service-token resolution for other modules (`~/.local/bin/auth`) | `files/auth.sh` |
-| `fleet` | SSH aliases, the account's `~/.agents` tree (instructions, skills, settings, MCP list) synced through Common Auth, harness settings rendered from it, the skill marketplace, and harness install/update (`~/.local/bin/fleet`) | `files/fleet.sh` |
-| `providers` | Provider enrollment, credential mirrors, and model refresh; Grimoire uses `auth`, while third-party provider keys remain in the passage MCP (`~/.local/bin/providers`). A provider dropped from the registry is named in `retired_providers` so every machine sweeps its credential and catalogue instead of keeping them forever (`~/.local/bin/providers`) | `files/providers.sh` |
+| `fleet` | SSH aliases, the account's `~/.agents` tree (instructions, skills, settings, MCP list) synced through Common Auth, harness settings rendered from it, the skill marketplace, provider credentials and models, and harness install/update (`~/.local/bin/fleet`) | `files/fleet.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 The `fleet` module also sets an outbound default of
@@ -157,7 +156,7 @@ normal setup updates, including their enabled nightly schedule.
 
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
 
-`auth login` performs one browser-approved onboarding for the machine and stores a renewable setup session plus the account's active global or per-service bearer set locally with mode `0600`. It reports the machine hostname during login and later refreshes so Auth can identify each setup device without exposing its network address in the console. `auth status`, `auth refresh`, and `auth token` sync through `/api/setup/session/token`, so bearer rotations, revocations, token-mode changes, and admission changes arrive without another browser login. The local bundle and setup-managed consumer copies are bound to the Auth origin and immutable account subject. A confirmed session rejection is remembered and fails closed; temporary Auth unavailability may use the last-known-good bearer while that session remains active. Setup sessions and bearer tokens are separately revokable in Auth. `auth token` uses distinct exit statuses for authoritative absence, rejected setup sessions, and temporary failures, allowing `providers` and `fleet` to remove only confirmed revoked managed mirrors while preserving same-account copies during outages or temporary unreadability. During MCP reconciliation, each declared credential source is authoritative; an existing environment or `.zshenv` value is used only as a last-known-good fallback when its source is unavailable. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
+`auth login` performs one browser-approved onboarding for the machine and stores a renewable setup session plus the account's active global or per-service bearer set locally with mode `0600`. It reports the machine hostname during login and later refreshes so Auth can identify each setup device without exposing its network address in the console. `auth status`, `auth refresh`, and `auth token` sync through `/api/setup/session/token`, so bearer rotations, revocations, token-mode changes, and admission changes arrive without another browser login. The local bundle and setup-managed consumer copies are bound to the Auth origin and immutable account subject. A confirmed session rejection is remembered and fails closed; temporary Auth unavailability may use the last-known-good bearer while that session remains active. Setup sessions and bearer tokens are separately revokable in Auth. `auth token` uses distinct exit statuses for authoritative absence, rejected setup sessions, and temporary failures, allowing fleet to remove only confirmed revoked managed mirrors while preserving same-account copies during outages or temporary unreadability. During MCP reconciliation, each declared credential source is authoritative; an existing environment or `.zshenv` value is used only as a last-known-good fallback when its source is unavailable. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
 
 ---
 
@@ -171,11 +170,38 @@ After syncing, fleet renders harness settings line by line: it only touches the 
 
 Every account gets a built-in `fleet` skill, a manual for the agents on its machines. fleet writes `~/.agents/skills/fleet/SKILL.md` read-only on every sync and never pushes it, so it cannot be edited or deleted for good, and its text is the same on every account. `skills/fleet/references/` belongs to the account and syncs like any skill file: that is where an account keeps notes about its own machines, and the manual tells agents to read them.
 
+#### Provider connections
+
+The Auth dashboard's Providers tab shows the shared provider catalog. Administrators
+manage provider URLs and model descriptors for every account. Each account keeps
+its enabled choices in `~/.agents/settings/providers.json` (version 2, `enabled`
+map), using the same three-way sync and stale-save protection as other fleet
+files. API keys stay in the account's Passage `llm` folder as `*_API_KEY`.
+Native Codex and Anthropic OAuth sessions stay on each machine.
+
+The dashboard and `fleet providers` list connections alphabetically. `fleet providers add <name> <url> [key]`
+saves a key for an existing catalog provider; administrators add new providers
+in the dashboard. `enable <name>` and `disable <name>` update account choices;
+`refresh [name]` refreshes the model catalogs; `capabilities --json` reads the
+last good capability cache without a network call. Fleet caches the shared Auth
+catalog and projects its definitions plus account choices into the local
+`~/.config/providers/registry.json` used by OpenCode, Hermes, Pi and OpenCodex.
+Normal sync refreshes credentials and settings; model discovery runs hourly
+through fleet's schedule and preserves the last good list during an outage.
+Neither path restarts the proxy.
+
+The retired `providers` setup module points to fleet. Migration preserves the
+current account's local provider choices and backs up its old registry under
+`~/.local/state/fleet/backup/`; fleet removes the old executable and schedule.
+Keys and cached models are bound to the Auth origin and account subject, and
+confirmed key removal clears managed copies. New accounts start with optional
+API-key providers disabled.
+
 #### fleet on Windows
 
 `install.ps1` sets the machine up natively, without WSL. It installs Python if there is none, puts `auth` and `fleet` in `~\.local\bin` with `.cmd` shims, signs in, syncs, and schedules `fleet nightly` in Task Scheduler at 04:00. One UAC prompt turns on the OpenSSH server: PowerShell 7 (or Windows PowerShell) as the login shell, the `Match Group administrators` block in `sshd_config` commented out so an admin's own `~\.ssh\authorized_keys` (which fleet writes) is the one sshd reads, password logins left on, and the firewall rule open on every network.
 
-On Windows fleet syncs `AGENTS.md`, `mcp.json` and `settings/`, but no skills, and there is no keepout. `AGENTS.md` is copied to each harness rather than linked (symlinks need Developer Mode); a copy whose content fleet did not write is moved aside as `.pre-agents.bak` first. MCP tokens go to `~\.local\state\fleet\mcp-tokens` instead of `.zshenv`. Harnesses install through the `windows` block of their manifest entry, run by Windows PowerShell; a harness without one (t3) is not offered. With no `setup` to update it, `fleet nightly` fetches the current `fleet`, `auth` and manifest first. `tests/fleet-windows.py` runs on a Windows runner in CI.
+On Windows fleet syncs `AGENTS.md`, `mcp.json` and `settings/`, but no skills, and there is no keepout. `AGENTS.md` is copied to each harness rather than linked (symlinks need Developer Mode); a copy whose content fleet did not write is moved aside as `.pre-agents.bak` first. MCP tokens go to `~\.local\state\fleet\mcp-tokens` instead of `.zshenv`. Harnesses install through the `windows` block of their manifest entry, run by Windows PowerShell; a harness without one (t3) is not offered. With no `setup` to update it, `fleet nightly` fetches the current `fleet`, `auth`, provider engine, provider defaults and manifest first. `tests/fleet-windows.py` runs on a Windows runner in CI.
 
 fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Codex's `config.toml` is checked with `tomllib` (3.11+) or `tomli` when either is there; without one, fleet finds the operator's own servers by their `[mcp_servers.<name>]` headers.
 

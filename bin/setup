@@ -38,8 +38,8 @@ DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring providers fleet backup system-updates"
-USER_SERVICE_MODULES="providers fleet"
+SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring fleet backup system-updates"
+USER_SERVICE_MODULES="fleet"
 BATCH=0
 
 # Cache revalidation remains useful for custom HTTP sources. The default GitHub
@@ -114,7 +114,6 @@ module_enable_cmd() {
         kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin enable" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin "$1"); echo "$bin enable" ;;
-        providers)     bin=$(_resolve_bin providers); echo "$bin schedule" ;;
         fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
@@ -127,7 +126,6 @@ module_disable_cmd() {
         kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin disable" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin "$1"); echo "$bin disable" ;;
-        providers)     bin=$(_resolve_bin providers); echo "$bin schedule disable" ;;
         fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
@@ -139,7 +137,6 @@ module_service_unit() {
         kernel-simmer)  echo "kernel-simmer.timer" ;;
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;
-        providers)     echo "providers.timer" ;;
         fleet)          echo "fleet-sync.timer" ;;
         backup)         echo "backup.timer" ;;
         system-updates) echo "system-updates.timer" ;;
@@ -173,7 +170,6 @@ module_is_active() {
     # macOS user timers live in launchd, not systemd.
     if [[ "$(uname -s)" == "Darwin" ]]; then
         case "$1" in
-            providers) launchd_agent_active com.lost.plus.providers; return $? ;;
             fleet) launchd_agent_active com.lost.plus.fleet-sync; return $? ;;
         esac
     fi
@@ -2714,30 +2710,6 @@ _post_auth_setup() {
     return 1
 }
 
-_post_providers_setup() {
-    local marker="$STATE_DIR/providers.needs-provider-setup"
-    [[ -f "$marker" ]] || return 0
-
-    local providers_bin="$HOME/.local/bin/providers"
-    [[ -x "$providers_bin" ]] || providers_bin=$(command -v providers 2>/dev/null || true)
-    if [[ ! -x "$providers_bin" ]]; then
-        echo "Warning: providers provider setup is pending, but its executable is unavailable." >&2
-        return 1
-    fi
-    if [[ -t 1 && -r /dev/tty ]]; then
-        echo
-        echo "Choose which providers to configure; blank keys stay disabled."
-        if "$providers_bin" add </dev/tty >/dev/tty 2>&1; then
-            rm -f "$marker"
-            return 0
-        fi
-        echo "Warning: providers provider setup failed; it will be offered again." >&2
-        return 1
-    fi
-    echo "Warning: providers provider setup is pending. Run '$providers_bin add' to enroll providers." >&2
-    return 1
-}
-
 if [[ "${SETUP_SOURCE_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
 fi
@@ -2777,7 +2749,6 @@ if [[ -z "$cmd" ]]; then
         cmd_update || main_rc=$?
     fi
     _post_auth_setup || true
-    _post_providers_setup || true
     exit "$main_rc"
 fi
 
@@ -2788,14 +2759,12 @@ case "$cmd" in
         command_rc=0
         cmd_install "$@" || command_rc=$?
         _post_auth_setup || true
-        _post_providers_setup || true
         exit "$command_rc"
         ;;
     update)
         command_rc=0
         cmd_update "$@" || command_rc=$?
         _post_auth_setup || true
-        _post_providers_setup || true
         exit "$command_rc"
         ;;
     uninstall) cmd_uninstall "$@" ;;

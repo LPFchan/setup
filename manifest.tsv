@@ -2,12 +2,12 @@
 setup	~/.local/bin/setup	0755	bin/setup				fzf-multicolumn
 resume	~/.local/bin/resume	0755	files/resume
 ai-menu	~/.bashrc.d/ai-menu	script	files/ai-menu.sh				fzf-multicolumn
-opencodex	~/.local/bin/opencodex	script	files/opencodex.sh				providers
+opencodex	~/.local/bin/opencodex	script	files/opencodex.sh				fleet
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux		schedule
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
 auth	~/.local/bin/auth	script	files/auth.sh
-providers	~/.local/bin/providers	script	files/providers.sh				auth
+providers	~/.local/bin/providers	script	-			retired		fleet
 harnesses	~/.local/bin/harnesses	script	-			retired		fleet
 miniharness	-	script	-			retired		fleet
 schedule	~/.local/bin/schedule	0755	bin/schedule		linux
