@@ -25,8 +25,8 @@ SELF  = 'yeowoolair'
 SSH_HOSTS = [                       # mirrors the fleet's SSH aliases
     ('mangchi',    'mangchi.tailaa113.ts.net', 'yeowool', None),
     ('yeowoolmac', 'mac.lost.plus',   'yeowool', None),
-    ('grimoire',   'grimoire.lost.plus', 'yeowool', None),
-    ('oci-ubuntu', 'oci.lost.plus',   'ubuntu',  None),
+    ('grimoire',   'grimoire.tailaa113.ts.net', 'yeowool', None),
+    ('oci-ubuntu', 'oci-ubuntu.tailaa113.ts.net',   'ubuntu',  None),
     ('bingus',     'bingus.lost.plus', 'yeowool', 'xterm-256color'),
 ]
 
