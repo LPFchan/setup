@@ -26,7 +26,7 @@ export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
 # Point the live proxy view at a dead port: the catalog fixture must be the
 # only model source, otherwise the real ocx on this machine injects extras.
 export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
-export OPENCODEX_PROVIDERS_BIN="$TEST_TMP/providers"
+export PROVIDERS_CAPABILITIES_PATH="$TEST_TMP/capabilities.json"
 mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
 # The test drives commandcode, openrouter and kimicode; keep them enabled here whatever the live registry says.
 jq '.providers.commandcode.enabled = true | .providers.openrouter.enabled = true | .providers.kimicode.enabled = true' "$ROOT/files/provider-registry.json" > "$OPENCODEX_REGISTRY"
@@ -135,12 +135,9 @@ echo "$n" > "$TEST_TMP/fzf-call"
 sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
 chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/kimi" "$TEST_TMP/fzf"
-cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' 'capabilities --json' >> "$TEST_TMP/providers-calls"
-printf '%s\n' '{"version":1,"providers":{}}'
+cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
+{"version":1,"providers":{}}
 EOF
-chmod +x "$OPENCODEX_PROVIDERS_BIN"
 PATH="$TEST_TMP:$PATH"
 export PATH
 
@@ -219,11 +216,9 @@ override_model="$cc_opus"
 # Native provider effort labels flow from the shared capability view through
 # argument parsing and into Codex unchanged. Arbitrary labels remain rejected
 # once the selected model's capability record is consulted.
-cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' '{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}'
+cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
+{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}
 EOF
-chmod +x "$OPENCODEX_PROVIDERS_BIN"
 "$ROOT/files/opencodex" run commandcode --effort native-balanced --model "$cc_model" codex
 grep -Fqx 'model_reasoning_effort="native-balanced"' "$TEST_TMP/codex-args" \
     || fail "native provider effort was not forwarded to Codex unchanged"
@@ -232,12 +227,9 @@ grep -Fqx 'model_reasoning_effort="native-balanced"' "$TEST_TMP/codex-args" \
     || fail "unsupported native effort was accepted"
 grep -q 'unknown reasoning effort: native-unsupported' "$TEST_TMP/native-effort-error" \
     || fail "unsupported native effort did not produce a clear error"
-cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' 'capabilities --json' >> "$TEST_TMP/providers-calls"
-printf '%s\n' '{"version":1,"providers":{}}'
+cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
+{"version":1,"providers":{}}
 EOF
-chmod +x "$OPENCODEX_PROVIDERS_BIN"
 
 "$ROOT/files/opencodex" run commandcode --model "$cc_model" codex --model kept --effort low
 grep -Fqx -- '--model' "$TEST_TMP/codex-args" && grep -Fqx 'kept' "$TEST_TMP/codex-args" \
@@ -471,11 +463,9 @@ grep -q 'pass --model to launch commandcode' "$TEST_TMP/foreign-resume-error" \
 # Provider capability records also carry each model's real context window,
 # and apply mirrors them into the proxy's per-model context map so the
 # harness compacts against that window instead of its fallback constant.
-cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' '{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"context":400000,"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}'
+cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
+{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"context":400000,"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}
 EOF
-chmod +x "$OPENCODEX_PROVIDERS_BIN"
 
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
 # Codex Desktop resume-history sync is a macOS behaviour, so the rendered flag
@@ -498,11 +488,9 @@ jq -e --arg model "$cc_model" '
 
 # When the shared cache later reports no windows at all, the apply pops the
 # map instead of leaving a stale one behind beside live effort ladders.
-cat > "$OPENCODEX_PROVIDERS_BIN" <<'EOF'
-#!/usr/bin/env bash
-printf "%s\n" '{"version":1,"providers":{"commandcode":{"models":{}}}}'
+cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
+{"version":1,"providers":{"commandcode":{"models":{}}}}
 EOF
-chmod +x "$OPENCODEX_PROVIDERS_BIN"
 "$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY" --no-restart
 jq -e "(.providers.commandcode | has(\"modelContextWindows\")) | not" "$OPENCODEX_CONFIG" >/dev/null \
     || fail "an empty capability cache kept a stale modelContextWindows map"
@@ -683,12 +671,11 @@ provider_state_path.write_text(json.dumps({
     "version": 1,
     "providers": {"commandcode": {"enabled": False}},
 }))
-# Capability metadata is read from the providers machine interface. No
+# Capability metadata is read from fleet's local snapshot. No
 # provider-network probe is part of the OpenCodex process.
-capability_bin = provider_state_path.parent / "providers"
-capability_bin.write_text("#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"providers\":{}}'\n")
-capability_bin.chmod(0o700)
-module_globals["PROVIDERS_BIN"] = capability_bin
+capability_path = provider_state_path.parent / "capabilities.json"
+capability_path.write_text(json.dumps({"version":1,"providers":{}}))
+module_globals["PROVIDER_CAPABILITIES"] = capability_path
 original_urlopen = namespace["urllib"].request.urlopen
 try:
     namespace["urllib"].request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -1095,7 +1082,7 @@ assert model_efforts({"efforts": ["native-low", "native-high"]}) == [
     "native-low", "native-high", "default"
 ]
 
-# The providers CLI is the only enrolled-provider capability source. Its
+# Fleet's snapshot is the enrolled-provider capability source. Its
 # records are authoritative over catalogued effort lists, including explicit
 # none/unknown states; OAuth/Codex fallback remains catalog-owned.
 import json as _json
@@ -1129,10 +1116,7 @@ capability_payload = {
         },
     },
 }
-capability_bin.write_text(
-    "#!/bin/sh\nprintf '%s\\n' '" + _json.dumps(capability_payload) + "'\n"
-)
-capability_bin.chmod(0o700)
+capability_path.write_text(_json.dumps(capability_payload))
 capability_index = namespace["provider_capability_index"](registry)
 assert capability_index["openrouter/openai/gpt-5"]["efforts"] == ["low", "medium", "high"]
 assert capability_index["openrouter/openai/gpt-5"]["support"] == "full"
@@ -1146,6 +1130,16 @@ assert namespace["model_efforts"](merged["openrouter/openai/gpt-5"]) == [
     "low", "medium", "high", "default"
 ]
 module_globals["live_model_index"] = real_live_model_index
+
+# Readers keep missing or malformed snapshots untouched for fleet to repair.
+capability_path.write_text('{truncated')
+assert namespace["provider_capability_view"]() == {}
+assert capability_path.read_text() == '{truncated'
+capability_path.unlink()
+assert namespace["provider_capability_view"]() == {}
+capability_path.write_text(_json.dumps({"version":99,"providers":{}}))
+assert namespace["provider_capability_view"]() == {}
+capability_path.write_text(_json.dumps(capability_payload))
 
 split = namespace["split_launch_args"]
 assert split(["--model", "m", "--effort", "high", "codex", "-x"]) == ("m", "high", ["codex", "-x"])

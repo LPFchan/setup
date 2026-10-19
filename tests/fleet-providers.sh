@@ -41,9 +41,6 @@ shared['registry']['providers']['demo']['base_url']='https://updated.test/v1'
 m.materialize_catalog(ctx,shared)
 assert json.loads(pathlib.Path(m.REGISTRY_PATH).read_text())['providers']['demo']['base_url']=='https://updated.test/v1'
 assert 'base_url' not in target.read_text()
-try:m._add_provider('unregistered','https://example.test/v1','private-key')
-except ValueError as exc:assert 'administrator' in str(exc)
-else:raise AssertionError('CLI enrolled a provider outside the shared catalog')
 # A malformed account file cannot smuggle routing or keys into fleet.
 save(target,registry)
 try:m.materialize_catalog(ctx,shared)
@@ -106,10 +103,27 @@ f.provider_engine=lambda:object();f._run_schedule=lambda *args,**kw:calls.append
 f.sys.argv=[str(root/'files/fleet')]
 assert f.schedule_enable()==0
 assert any(c[:3]==('uninstall-timer','user','providers') for c in calls)
-assert any(c[:3]==('install-timer','user','fleet-providers') and 'providers refresh' in c[4] for c in calls)
+assert any(c[:3]==('install-timer','user','fleet-providers') and '__refresh-providers' in c[4] for c in calls)
 assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
 calls.clear();assert f.schedule_disable()==0
 assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
 assert any(c[:3]==('uninstall-timer','user','fleet-sync') for c in calls)
+# The timer pulls the account before refreshing; operator CLI management is absent.
+from types import SimpleNamespace
+calls.clear()
+engine=SimpleNamespace(common_auth_context=lambda:ctx,
+    refresh_models=lambda:calls.append('models'), CommonAuthContextChanged=m.CommonAuthContextChanged,
+    VaultError=m.VaultError, CommonAuthError=m.CommonAuthError, bind_account=lambda _:None)
+f.provider_engine=lambda:engine
+f.cmd_sync=lambda **kw:calls.append(('sync',kw)) or 0
+f._auth=lambda *args:(0,json.dumps(ctx))
+f._heal_path=lambda:None
+f.sys.argv=[str(root/'files/fleet'),'__refresh-providers']
+assert f.main()==0 and calls==[('sync',{'pull':True}),'models']
+import contextlib,io
+for args in (['providers'],['providers','add'],['providers','capabilities']):
+    f.sys.argv=[str(root/'files/fleet'),*args]
+    with contextlib.redirect_stderr(io.StringIO()):assert f.main()==2
+assert 'fleet providers' not in f.USAGE
 print('fleet provider migration, account isolation, vault and schedule tests passed')
 PY

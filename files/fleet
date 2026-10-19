@@ -1711,58 +1711,37 @@ def sync_provider_credentials():
     engine.sync_credentials(context, lambda: _api("GET", "/api/fleet/providers/catalog"))
 
 
-def cmd_providers(args):
+def refresh_provider_models():
+    """The hourly job: pull account choices and credentials, then refresh models."""
+    rc = cmd_sync(pull=True)
+    if rc:
+        return rc
     engine = provider_engine()
     if engine is None:
         eprint("fleet: provider support is missing; run: setup update fleet")
         return 1
-    if args and args[0] == "capabilities":
-        try:
-            engine.cmd_capabilities(args[1:])
-            return 0
-        except (OSError, ValueError, LookupError) as exc:
-            eprint(f"fleet providers: {exc}")
-            return 1
-    if args in (["help"], ["--help"], ["-h"]):
-        engine._usage()
-        return 0
-    if args and args[0] not in ("add", "enable", "disable", "refresh"):
-        eprint("Usage: fleet providers [add|enable|disable|refresh|capabilities]")
-        return 2
-    rc = cmd_sync(pull=True)
+    rc, raw = _auth("context")
     if rc:
-        return rc
-    if not PROVIDER_SETTINGS.exists():
-        engine.bootstrap(str(PROVIDER_SETTINGS), str(PROVIDER_DEFAULTS))
-    before = PROVIDER_SETTINGS.read_bytes()
-    context_rc, context_raw = _auth("context")
-    if context_rc:
         return 3
-    expected_context = json.loads(context_raw)
+    expected_context = json.loads(raw)
     read_context = engine.common_auth_context
     def bound_context():
         context = read_context()
         if context != expected_context:
-            raise engine.CommonAuthContextChanged("account changed during provider command")
+            raise engine.CommonAuthContextChanged("account changed during model refresh")
         return context
     engine.common_auth_context = bound_context
-    old = sys.argv
     try:
-        sys.argv = [old[0], *args]
-        engine.main()
-    except SystemExit as exc:
-        return exc.code or 0
-    except (OSError, ValueError, engine.VaultError) as exc:
-        eprint(f"fleet providers: {exc}")
+        bound_context()
+        engine.refresh_models()
+        bound_context()
+    except engine.CommonAuthContextChanged as exc:
+        engine.bind_account(None)
+        eprint(f"fleet: provider models not refreshed: {exc}")
         return 1
-    finally:
-        sys.argv = old
-    context_rc, context_raw = _auth("context")
-    if context_rc or json.loads(context_raw) != expected_context:
-        eprint("fleet: account changed during provider command; settings were not uploaded")
+    except (OSError, ValueError, engine.VaultError, engine.CommonAuthError) as exc:
+        eprint(f"fleet: provider models not refreshed: {exc}")
         return 1
-    if PROVIDER_SETTINGS.read_bytes() != before:
-        return cmd_sync()
     return 0
 
 
@@ -2157,7 +2136,7 @@ def provider_schedule(enable):
             return 0
         pythonw = pathlib.Path(sys.executable).with_name("pythonw.exe")
         return _schtasks("/Create", "/TN", name, "/SC", "HOURLY", "/MO", "1", "/F",
-                         "/TR", f'"{pythonw}" -X utf8 "{script}" providers refresh')
+                         "/TR", f'"{pythonw}" -X utf8 "{script}" __refresh-providers')
     if sys.platform == "darwin":
         import plistlib
         uid = os.getuid()
@@ -2172,7 +2151,7 @@ def provider_schedule(enable):
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = FLEET_STATE/"providers.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        save_text(path, plistlib.dumps({"Label": label, "ProgramArguments": [script, "providers", "refresh"],
+        save_text(path, plistlib.dumps({"Label": label, "ProgramArguments": [script, "__refresh-providers"],
             "StartCalendarInterval": {"Minute": 0}, "StandardOutPath": str(log), "StandardErrorPath": str(log)}).decode())
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], capture_output=True)
         return 0 if result.returncode == 125 else result.returncode
@@ -2184,7 +2163,7 @@ def provider_schedule(enable):
         extra = handle.name
     try:
         return _run_schedule("install-timer", "user", name, "Refresh fleet provider models",
-                             f"{script} providers refresh", "hourly", "", extra)
+                             f"{script} __refresh-providers", "hourly", "", extra)
     finally:
         os.unlink(extra)
 
@@ -2288,7 +2267,6 @@ def schedule_disable():
 
 
 USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, credentials and settings
-       fleet providers [add|enable|disable|refresh|capabilities]
        fleet status
        fleet install [harness...]          asks which when none named
        fleet update [harness...]           every installed harness when none named
@@ -2300,7 +2278,7 @@ USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, cred
 def main():
     args = sys.argv[1:]
     command, rest = (args[0], args[1:]) if args else (None, [])
-    if command in ("install", "update", "nightly", "sync"):
+    if command in ("install", "update", "nightly", "sync", "__refresh-providers"):
         _heal_path()
     if command == "sync" and rest in ([], ["--check"], ["--pull"]):
         return cmd_sync(check=rest == ["--check"], pull=rest == ["--pull"])
@@ -2310,8 +2288,8 @@ def main():
         return cmd_install(rest)
     if command == "update":
         return cmd_update(rest)
-    if command == "providers":
-        return cmd_providers(rest)
+    if args == ["__refresh-providers"]:
+        return refresh_provider_models()
     if command == "skills":
         return cmd_skills(rest)
     if command == "mcp-headers":

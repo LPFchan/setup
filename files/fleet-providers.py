@@ -1,36 +1,15 @@
 #!/usr/bin/env python3
 # setup-module: fleet
 # setup-source: files/fleet-providers.py
-"""fleet providers — credential and model registry for AI providers.
+"""Fleet's private provider credential and model engine.
 
-Grimoire resolves through the shared auth module. Third-party credentials live
-in the passage MCP (folder llm, items named {PROVIDER}_API_KEY). A local 0600 cache
-serves offline/headless contexts. This tool maintains the OpenCode and shell
-credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi tools.
-Provider descriptors may restrict a live catalog with model_allow_suffixes and
-model_allow_ids, which keep a mixed free/paid endpoint's paid models out of every
-consumer while still admitting newly published *-free IDs and time-limited IDs
-ending in alpha. model_no_reasoning_suffixes opts those time-limited IDs out of
-the generic reasoning ladder until the provider advertises per-model efforts.
-OpenCode Zen was the only provider to use all three; no live provider sets them
-since it was retired, and they are kept for the next mixed-tier endpoint.
-
-Commands:
-  (no args)                    List providers and key status (never the key)
-  add <name> <url> [key]
-                               Save your key for an existing provider;
-                               key goes to Passage; admins add providers
-                               in the Auth dashboard
-  enable <name>                Enable a provider that has an API key
-  disable <name>               Disable a provider without deleting its key
-  refresh [name]               Sync keys, then refresh model lists
-                               (all enabled fleet providers if name is omitted)
-  capabilities [--provider P] [--model M] [--json]
-                               Read the last-known-good capability cache
-  help                         Show usage
+The Auth dashboard owns provider management. Fleet reconciles the shared catalog
+with account enablement, reads keys from Passage, and maintains credential and
+model mirrors for OpenCode, Hermes, Pi and OpenCodex. Its hourly job refreshes
+model inventories and capability snapshots while preserving the proxy process.
 """
 
-import contextlib, datetime, getpass, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, datetime, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
 if sys.platform == "win32":
     import msvcrt
@@ -364,28 +343,6 @@ def vault_available():
     return bool(VAULT_TOKEN)
 
 
-def _ensure_vault_token(interactive):
-    """Resolve passage access through the current, context-bound Common Auth login."""
-    global VAULT_TOKEN
-    VAULT_TOKEN = ""
-    for attempt in range(2):
-        try:
-            context = common_auth_context()
-            VAULT_TOKEN = common_auth_token("passage", context)
-            return VAULT_TOKEN
-        except CommonAuthContextChanged:
-            if not attempt:
-                continue
-            error = "setup login kept changing"
-        except CommonAuthError as exc:
-            error = str(exc)
-        if interactive:
-            print(f"providers needs Common Auth access to passage ({error}).", file=sys.stderr)
-            print("Run: auth login", file=sys.stderr)
-        return ""
-    return ""
-
-
 def _vault_call(tool, arguments):
     """Call a passage MCP tool over direct HTTP. Raises VaultError on
     transport/protocol failure; returns the tool's text payload on success."""
@@ -455,24 +412,6 @@ def vault_get(item_name):
     except json.JSONDecodeError:
         pass
     return text
-
-
-def vault_add(item_name, value):
-    _vault_call("add_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
-
-
-def vault_rename(old_name, new_name, item_id=None):
-    args = {"folder": VAULT_FOLDER, "item_name": old_name, "new_name": new_name}
-    if item_id:
-        args["item_id"] = item_id
-    _vault_call("rename_secret", args)
-
-
-def vault_delete(item_name, item_id=None):
-    args = {"folder": VAULT_FOLDER, "item_name": item_name}
-    if item_id:
-        args["item_id"] = item_id
-    _vault_call("delete_secret", args)
 
 
 # --- local cache (offline source of truth) ------------------------------
@@ -996,27 +935,6 @@ def _sync_cache_from_vault_once(servers):
 
 
 # --- .zshenv api-keys block --------------------------------------------
-
-
-def _source_zsenv():
-    """Export .zshenv api-keys block into os.environ (for launchd/cron contexts)."""
-    if not os.path.exists(ZSENV_PATH):
-        return
-    in_block = False
-    with open(ZSENV_PATH) as f:
-        for line in f:
-            s = line.strip()
-            if s == AUTH_BLOCK_BEGIN:
-                in_block = True
-                continue
-            if s == AUTH_BLOCK_END:
-                in_block = False
-                continue
-            if in_block and s.startswith("export ") and "=" in s:
-                kv = s[len("export "):]
-                name, _, val = kv.partition("=")
-                if name and val:
-                    os.environ[name] = val
 
 
 def _read_env_block():
@@ -2261,75 +2179,6 @@ def _sync_opencodex_provider_statuses(restart=True):
         print("  Codex model catalog unchanged; run: ocx sync", file=sys.stderr)
 
 
-def _set_provider_enabled(provider, enabled):
-    servers = _load_servers()
-    if servers is None:
-        return False
-    if provider not in servers:
-        print(f"Unknown provider: {provider}", file=sys.stderr)
-        print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
-        return False
-    if enabled and servers[provider].get("auth", {}).get("type") == "common_auth":
-        _sync_common_auth(servers)
-    auth_provider = _auth_provider(provider, servers[provider])
-    if enabled and not _get_key(auth_provider):
-        action = "auth login" if servers[provider].get("auth", {}).get("type") == "common_auth"\
-            else f"fleet providers add {provider} <url> <key>"
-        print(f"Cannot enable {provider}: no credential. Run: {action}", file=sys.stderr)
-        return False
-    state = _load_provider_state()
-    if state is None:
-        return False
-    registry = _validate_registry(load_json(REGISTRY_PATH))
-    settings = _provider_settings()
-    settings["enabled"][provider] = enabled
-    save_json_atomic(SETTINGS_PATH, settings)
-    registry["providers"][provider]["enabled"] = enabled
-    save_json_atomic(REGISTRY_PATH, registry)
-    state.setdefault("providers", {}).setdefault(provider, {})["enabled"] = enabled
-    save_json_atomic(STATE_PATH, state)
-    servers = _load_servers()
-    _sync_opencode_provider_statuses(servers)
-    _sync_opencodex_provider_statuses(restart=False)
-    print(f"{provider}: {'enabled' if enabled else 'disabled'}")
-    return True
-
-
-def _set_key(provider, key):
-    with _consumer_sync_lock():
-        if not vault_available():
-            raise ValueError("Passage is unavailable; run: auth login")
-        items = {item["name"] for item in vault_list_items()}
-        if _env_name(provider) in items:
-            vault_call_edit(_env_name(provider), key)
-        else:
-            vault_add(_env_name(provider), key)
-        cache_set(provider, key)
-        _sync_mirrors()
-    print(f"Saved {_env_name(provider)} to Passage and local mirrors")
-
-
-def vault_call_edit(item_name, value):
-    _vault_call("edit_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
-
-
-def cmd_ls():
-    servers = _load_servers()
-    if servers is None:
-        sys.exit(1)
-    with _consumer_sync_lock():
-        _sync_common_auth(servers)
-        _sync_mirrors()
-        _sync_hermes_mirror(servers, {})
-        cache = _load_cache()
-    print(f"fleet providers configured: {len(servers)}")
-    for name, provider in sorted(servers.items()):
-        auth_provider = _auth_provider(name, provider)
-        state = "enabled" if _provider_enabled(name, provider) else "disabled"
-        key_status = "key: ✓" if _get_key(auth_provider) else "key: ✗"
-        print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
-
-
 def _valid_base_url(value):
     parsed = urllib.parse.urlsplit(value)
     return (
@@ -2439,123 +2288,6 @@ def _validate_registry(data):
     return data
 
 
-def _add_interactive():
-    servers = _load_servers()
-    if servers is None:
-        raise ValueError("cannot read provider settings")
-    _sync_common_auth(servers)
-    _sync_cache_from_vault(servers)
-    for name, cfg in servers.items():
-        if cfg.get("auth", {}).get("type") == "common_auth" or _get_key(_auth_provider(name, cfg)):
-            continue
-        try:
-            key = getpass.getpass(f"{name} API key (blank to skip): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if key:
-            _set_key(_auth_provider(name, cfg), key)
-            _set_provider_enabled(name, True)
-
-
-def _add_provider(name, base_url=None, token=None):
-    """Enroll an account's key for a provider from the shared Auth catalog."""
-    servers = _load_servers()
-    if servers is None:
-        raise ValueError("cannot read provider registry")
-    if name in servers:
-        if base_url is not None and base_url.strip().rstrip("/") != servers[name]["baseURL"].rstrip("/"):
-            raise ValueError(
-                f"{name} is already registered with endpoint {servers[name]['baseURL']}"
-            )
-        if servers[name].get("auth", {}).get("type") == "common_auth":
-            if token is not None:
-                raise ValueError(f"{name} is managed by Common Auth; run: auth login")
-            _sync_common_auth(servers)
-            if not _set_provider_enabled(name, True):
-                raise ValueError(f"could not enable {name}; run: auth login")
-            print(f"fleet providers: enrolled {name} through Common Auth")
-            return
-        if token is None:
-            token = getpass.getpass(f"{name} API key: ").strip()
-        if not token:
-            raise ValueError("the API key cannot be empty")
-        auth_provider = _auth_provider(name, servers[name])
-        _set_key(auth_provider, token)
-        if not _set_provider_enabled(name, True):
-            raise ValueError(f"could not enable {name}")
-        print(f"fleet providers: enrolled key for {name}")
-        return
-    raise ValueError(f"unknown provider {name}: an administrator must add it at auth.lost.plus/#providers")
-
-def _parse_capability_command(args):
-    provider = None
-    model = None
-    json_requested = False
-    index = 0
-    while index < len(args):
-        argument = args[index]
-        if argument == "--json":
-            if json_requested:
-                raise ValueError("--json may be supplied only once")
-            json_requested = True
-        elif argument in ("--provider", "--model"):
-            if index + 1 >= len(args) or args[index + 1].startswith("-"):
-                raise ValueError(f"{argument} requires a value")
-            value = args[index + 1]
-            if argument == "--provider":
-                if provider is not None:
-                    raise ValueError("--provider may be supplied only once")
-                provider = value
-            else:
-                if model is not None:
-                    raise ValueError("--model may be supplied only once")
-                model = value
-            index += 1
-        else:
-            raise ValueError(
-                "Usage: fleet providers capabilities [--provider NAME] [--model ID] [--json]"
-            )
-        index += 1
-    if provider == "" or model == "":
-        raise ValueError("capability filters cannot be empty")
-    return provider, model, json_requested
-
-
-def _capability_view(cache, provider=None, model=None):
-    providers = cache.get("providers", {}) if isinstance(cache, dict) else {}
-    if not isinstance(providers, dict):
-        raise ValueError("invalid capability cache providers")
-    if provider is not None:
-        if provider not in providers:
-            raise LookupError(f"no capability snapshot for provider: {provider}")
-        selected = {provider: providers[provider]}
-    else:
-        selected = dict(providers)
-    if model is not None:
-        matches = []
-        for name, snapshot in selected.items():
-            models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
-            if isinstance(models, dict) and model in models:
-                matches.append((name, snapshot))
-        if len(matches) != 1:
-            if not matches:
-                raise LookupError(f"no capability record for model: {model}")
-            raise LookupError(f"model ID is ambiguous; pass --provider: {model}")
-        name, snapshot = matches[0]
-        snapshot = dict(snapshot)
-        snapshot["models"] = {model: snapshot["models"][model]}
-        selected = {name: snapshot}
-    return {"version": CAPABILITIES_VERSION, "providers": selected}
-
-
-def cmd_capabilities(args):
-    provider, model, _json_requested = _parse_capability_command(args)
-    cache = _load_capabilities()
-    view = _capability_view(cache, provider, model)
-    print(json.dumps(view, indent=2, sort_keys=True, ensure_ascii=False))
-
-
 def _conforming_item_name(name):
     """C1 convention: {PROVIDER}_API_KEY, where PROVIDER is a lowercase
     alphanumeric/hyphen provider name uppercased with '-' -> '_' (so the item
@@ -2566,151 +2298,21 @@ def _conforming_item_name(name):
     return bool(re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*", stem))
 
 
-USAGE = """fleet providers — provider credentials and model refresh
-
-Usage:
-  fleet providers                     List providers and key status (never the key)
-  fleet providers add <name> <url> [key]
-                                Save your key for an existing provider
-                                (admins add providers in the Auth dashboard)
-  fleet providers enable <name>       Enable a provider that has an API key
-  fleet providers disable <name>      Disable a provider without deleting its key
-  fleet providers refresh [name]      Sync keys, then refresh models (all enabled if omitted)
-  fleet providers capabilities [--provider P] [--model M] [--json]
-                                Read the last-known-good capability cache
-  fleet providers help                Show this message
-"""
-
-
-def _usage(stream=sys.stdout):
-    print(USAGE, file=stream)
-
-
-def _refresh_all(servers):
-    refreshed = {}
-    for name, srv_cfg in servers.items():
-        if not _provider_enabled(name, srv_cfg):
-            continue
-        models = refresh_server(name, srv_cfg)
-        if isinstance(models, dict):
-            refreshed[name] = models
-    return refreshed
-
-
-def _refresh_one(servers, name):
-    if name not in servers:
-        print(f"Unknown provider: {name}", file=sys.stderr)
-        print(f"Known: {', '.join(servers)}", file=sys.stderr)
-        sys.exit(1)
-    if not _provider_enabled(name, servers[name]):
-        print(
-            f"{name} is disabled. Run: fleet providers enable {name}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    models = refresh_server(name, servers[name])
-    return {name: models} if isinstance(models, dict) else {}
-
-
-def main():
-    args = sys.argv[1:]
-
-    if args and args[0] == "__validate":
-        try:
-            _validate_registry(load_json(args[1]))
-        except (IndexError, OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"fleet providers: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    if args and args[0] == "__migrate-state":
-        if _load_provider_state() is None:
-            sys.exit(1)
-        return
-
-    if not args:
-        cmd_ls()
-        return
-
-    cmd = args[0]
-
-    if cmd == "add":
-        if not sys.stdin.isatty() and len(args) not in (3, 4):
-            print("Usage: fleet providers add <name> <base-url> [key]", file=sys.stderr)
-            sys.exit(1)
-        if len(args) > 4:
-            print("Usage: fleet providers add <name> <base-url> [key]", file=sys.stderr)
-            sys.exit(1)
-        _ensure_vault_token(interactive=sys.stdin.isatty())
-        if len(args) == 1:
-            # interactive: walk through each provider missing a key
-            _add_interactive()
-            return
-        try:
-            _add_provider(*args[1:])
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"fleet providers: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    if cmd in ("enable", "disable"):
-        if len(args) != 2:
-            print(f"Usage: fleet providers {cmd} <name>", file=sys.stderr)
-            sys.exit(1)
-        if not _set_provider_enabled(args[1], cmd == "enable"):
-            sys.exit(1)
-        return
-
-    if cmd == "refresh":
-        if len(args) > 2:
-            print("Usage: fleet providers refresh [name]", file=sys.stderr)
-            sys.exit(1)
-        _source_zsenv()
-        servers = _load_servers()
-        if servers is None:
-            sys.exit(1)
-        # Keep one cache snapshot and its mirrors together. Vault reads may be
-        # slow; without this outer lock another refresh can revoke a key while
-        # the first process later saves an older snapshot and revives it.
-        with _consumer_sync_lock():
-            _sync_common_auth(servers)
-            _sync_cache_from_vault(servers)
-            # After the two reads that populate the cache, both of which skip
-            # retired names, so there is nothing left to revive. Sweeping
-            # earlier would blank the .zshenv block before the read above --
-            # and that block is the recovery source when the cache is lost.
-            _prune_retired(_load_retired())
-            _sync_mirrors()
-            _sync_opencode_provider_statuses(servers)
-            if len(args) == 2:
-                refreshed = _refresh_one(servers, args[1])
-            else:
-                refreshed = _refresh_all(servers)
-            _sync_hermes_mirror(servers, refreshed)
+def refresh_models():
+    """Refresh enabled model inventories after fleet has synced credentials."""
+    servers = _load_servers()
+    if servers is None:
+        raise ValueError("cannot read provider registry")
+    with _consumer_sync_lock():
+        refreshed = {}
+        for name, cfg in servers.items():
+            if _provider_enabled(name, cfg):
+                models = refresh_server(name, cfg)
+                if isinstance(models, dict):
+                    refreshed[name] = models
+        _sync_hermes_mirror(servers, refreshed)
         _sync_pi_models_mirror(servers, refreshed)
-        # A refresh is the moment the capability cache changes, so it is the
-        # moment OpenCodex's derived config goes stale. Push it to disk here
-        # rather than waiting for a module reinstall, which is keyed on the
-        # module's own payload changing and never fires when only data moves.
         _sync_opencodex_provider_statuses(restart=False)
-        return
-
-    if cmd == "capabilities":
-        try:
-            cmd_capabilities(args[1:])
-        except (OSError, json.JSONDecodeError, ValueError, LookupError, RuntimeError) as exc:
-            print(f"providers capabilities: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    if cmd in ("help", "--help", "-h"):
-        _usage()
-        return
-
-    print(f"Unknown command: {cmd}", file=sys.stderr)
-    print(file=sys.stderr)
-    _usage(sys.stderr)
-    sys.exit(1)
 
 
 def _provider_settings(path=None):
@@ -2829,4 +2431,9 @@ def sync_credentials(context, fetch_catalog):
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 3 or sys.argv[1] != "__validate":
+        raise SystemExit("Private provider engine; managed by fleet")
+    try:
+        _validate_registry(load_json(sys.argv[2]))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc))

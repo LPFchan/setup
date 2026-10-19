@@ -179,16 +179,13 @@ map), using the same three-way sync and stale-save protection as other fleet
 files. API keys stay in the account's Passage `llm` folder as `*_API_KEY`.
 Native Codex and Anthropic OAuth sessions stay on each machine.
 
-The dashboard and `fleet providers` list connections alphabetically. `fleet providers add <name> <url> [key]`
-saves a key for an existing catalog provider; administrators add new providers
-in the dashboard. `enable <name>` and `disable <name>` update account choices;
-`refresh [name]` refreshes the model catalogs; `capabilities --json` reads the
-last good capability cache without a network call. Fleet caches the shared Auth
-catalog and projects its definitions plus account choices into the local
-`~/.config/providers/registry.json` used by OpenCode, Hermes, Pi and OpenCodex.
-Normal sync refreshes credentials and settings; model discovery runs hourly
-through fleet's schedule and preserves the last good list during an outage.
-Neither path restarts the proxy.
+The dashboard lists connections alphabetically and manages API-key enrollment
+and enabled choices. Fleet caches the shared Auth catalog and projects its
+definitions plus account choices into the local `~/.config/providers/registry.json`
+used by OpenCode, Hermes, Pi and OpenCodex. Normal sync refreshes credentials and
+settings. Model discovery runs hourly through fleet's schedule and preserves the
+last good list during an outage. OpenCodex reads the resulting capability cache
+directly. Neither sync nor model refresh restarts the proxy.
 
 The retired `providers` setup module points to fleet. Migration preserves the
 current account's local provider choices and backs up its old registry under

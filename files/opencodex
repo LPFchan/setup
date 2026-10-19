@@ -41,11 +41,9 @@ REGISTRY = Path(
 AUTH_JSON = Path(
     os.environ.get("OPENCODEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json")
 )
-PROVIDERS_BIN = Path(
-    os.environ.get(
-        "OPENCODEX_PROVIDERS_BIN",
-        os.environ.get("FLEET_BIN", HOME / ".local/bin/fleet"),
-    )
+PROVIDER_CAPABILITIES = Path(
+    os.environ.get("PROVIDERS_CAPABILITIES_PATH",
+        os.environ.get("PROVIDER_CAPABILITIES_PATH", HOME / ".config/providers/capabilities.json"))
 ).expanduser()
 PROVIDER_STATE_VERSION = 1
 PROVIDER_STATE = Path(
@@ -956,28 +954,11 @@ OCX_MODELS_URL = os.environ.get(
 )
 
 
-def provider_capability_view(timeout: float = 1.5) -> dict[str, Any]:
-    """Read the shared provider capability cache through its CLI boundary.
-
-    This is deliberately a cache-only operation. The provider module owns
-    credentials and network refreshes; OpenCodex must never reconstruct either
-    concern by calling an enrolled provider itself. A missing or broken
-    fleet executable simply leaves the catalog/proxy fallback available.
-    """
+def provider_capability_view() -> dict[str, Any]:
+    """Read fleet's capability snapshot without credentials or network access."""
     try:
-        result = subprocess.run(
-            [str(PROVIDERS_BIN), "providers", "capabilities", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if result.returncode != 0:
-        return {}
-    try:
-        payload = json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError):
+        payload = json.loads(PROVIDER_CAPABILITIES.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     if (
         not isinstance(payload, dict)
@@ -992,7 +973,7 @@ def _catalog_selected_models(provider: str) -> list[str] | None:
     """Sorted model ids a provider's last successful refresh kept.
 
     The ocx proxy runs its own live /models discovery and would happily
-    re-list models the providers module filtered out of every other mirror
+    re-list models fleet filtered out of every other mirror
     (the grimoire eastself checkpoints). Feeding the providers-owned,
     already-filtered inventory back as the proxy's selectedModels allowlist
     narrows what ships to Codex's catalog and /v1/models to the same set.
@@ -1013,7 +994,7 @@ def _registry_selected_models(descriptor: dict[str, Any]) -> list[str] | None:
 
     A live provider without a refreshed capability cache would otherwise make
     OpenCodex expose its entire upstream catalog. The registry list is only a
-    bootstrap floor; a successful providers refresh replaces it with the
+    bootstrap floor; a successful fleet model refresh replaces it with the
     current filtered inventory.
     """
     models = descriptor.get("model_allow_ids")
