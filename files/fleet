@@ -580,11 +580,6 @@ def _sync_agents_once(push):
     joining = first and config["counter"] > 0
     base = state.get("files", {})
     server = {f["path"]: f for f in config["files"] if _synced(f["path"])}
-    if "settings/providers.json" not in server and not PROVIDER_SETTINGS.exists() and (push and not joining or
-            previous_subject == subject and (HOME/".config/providers/registry.json").exists()):
-        engine = provider_engine()
-        if engine is not None:
-            engine.bootstrap(str(PROVIDER_SETTINGS), str(PROVIDER_DEFAULTS), import_legacy=previous_subject == subject)
     # An account copy of the built-in skill predates it: it goes on the next push.
     builtin = sorted(rel for rel in server if _builtin(rel))
     for rel in builtin:
@@ -2037,16 +2032,13 @@ def _source_base():
 
 
 def _self_update():
-    """Windows has no setup module to refresh fleet: it fetches itself, auth and
-    the manifest. All three must download and parse, or none is replaced."""
+    """Fetch the complete Windows fleet payload before replacing any files."""
     bin_dir = HOME/".local/bin"
     base, fetched = _source_base(), []
     for name, target, check in (("fleet", bin_dir/"fleet", ast.parse), ("auth", bin_dir/"auth", ast.parse),
                                 ("fleet-manifest.json", MANIFEST_PATH, json.loads),
                                 ("fleet-providers.py", PROVIDER_ENGINE, ast.parse),
                                 ("provider-registry.json", PROVIDER_DEFAULTS, json.loads)):
-        if not target.exists():
-            continue
         try:
             with urllib.request.urlopen(f"{base}/files/{name}", timeout=30) as response:
                 data = response.read()
@@ -2056,15 +2048,18 @@ def _self_update():
             return
         fetched.append((target, data))
     for target, data in fetched:
-        if target.read_bytes() != data:
+        if not target.exists() or target.read_bytes() != data:
             save_text(target, data)
             print(f"fleet: updated {target}")
 
 
 def cmd_nightly():
     """The scheduled pass: proxy, pull sync, harness updates, proxy route."""
+    schedule_rc = 0
     if WINDOWS:
         _self_update()
+        if provider_engine() is not None:
+            schedule_rc = provider_schedule(True)
     opencodex = HOME/".local/bin/opencodex"
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__apply"])
@@ -2072,7 +2067,7 @@ def cmd_nightly():
     rc = cmd_update([]) or rc
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__export"])
-    return 0 if rc == 3 else rc
+    return schedule_rc or (0 if rc == 3 else rc)
 
 
 # --- schedule ------------------------------------------------------------

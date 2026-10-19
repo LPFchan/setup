@@ -2326,12 +2326,23 @@ def _provider_settings(path=None):
     return value
 
 
+def _backup_legacy_registry():
+    if os.path.exists(CATALOG_PATH) or not os.path.exists(REGISTRY_PATH):
+        return
+    folder = pathlib.Path(os.path.expanduser("~/.local/state/fleet/backup"))
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for source, name in ((REGISTRY_PATH, "provider-registry.json"), (STATE_PATH, "provider-state.json")):
+        target = folder/name
+        if os.path.exists(source) and not target.exists():
+            shutil.copyfile(source, target)
+
+
 def bootstrap(path, defaults, import_legacy=False):
     """Seed account choices once, importing only a proven same-account legacy copy."""
     if os.path.exists(path):
         _provider_settings(path)
         return
-    source = os.path.expanduser("~/.config/providers/registry.json")
+    source = REGISTRY_PATH
     enabled = {}
     if import_legacy and os.path.exists(source):
         registry = _validate_registry(load_json(source))
@@ -2340,9 +2351,7 @@ def bootstrap(path, defaults, import_legacy=False):
             raise ValueError("cannot migrate unreadable provider state")
         enabled = {n: state["providers"].get(n, {}).get("enabled", p["enabled"])
                    for n, p in registry["providers"].items() if p["provider_type"] == "OpenAICompatible"}
-        backup = os.path.expanduser("~/.local/state/fleet/backup/provider-registry.json")
-        pathlib.Path(backup).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, backup)
+        _backup_legacy_registry()
     save_json_atomic(path, {"version": 2, "enabled": enabled})
 
 
@@ -2367,6 +2376,7 @@ def materialize_catalog(context, shared):
 def bind_account(context):
     """Bind every cached provider key and model list to the active Auth account."""
     with _consumer_sync_lock():
+        _backup_legacy_registry()
         cache = _load_cache()
         previous = cache.get("_fleet_account")
         if context is not None and previous == context:
@@ -2386,8 +2396,11 @@ def bind_account(context):
 
 def sync_credentials(context, fetch_catalog):
     bind_account(context)
-    if not os.path.exists(SETTINGS_PATH):
-        return
+    # A pre-fleet registry may be imported only under its original Auth binding.
+    # Once Auth has supplied a catalog, this registry is a derived local mirror.
+    if (not os.path.exists(SETTINGS_PATH) and not os.path.exists(CATALOG_PATH)
+            and os.path.exists(REGISTRY_PATH) and _load_cache().get("_common_auth_context") == context):
+        bootstrap(SETTINGS_PATH, DEFAULTS_PATH, import_legacy=True)
     try:
         shared = fetch_catalog()
         if common_auth_context() != context:

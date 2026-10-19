@@ -188,8 +188,10 @@ last good list during an outage. OpenCodex reads the resulting capability cache
 directly. Neither sync nor model refresh restarts the proxy.
 
 The retired `providers` setup module points to fleet. Migration preserves the
-current account's local provider choices and backs up its old registry under
-`~/.local/state/fleet/backup/`; fleet removes the old executable and schedule.
+current account's local provider choices and backs up its old registry and state under
+`~/.local/state/fleet/backup/`. Fleet removes the old executable and schedule
+after a successful sync has produced account-bound provider settings; an offline
+upgrade keeps the existing installation until setup can finish the migration.
 Keys and cached models are bound to the Auth origin and account subject, and
 confirmed key removal clears managed copies. New accounts start with optional
 API-key providers disabled.

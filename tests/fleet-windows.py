@@ -174,4 +174,7 @@ assert not pathlib.Path(m["ZSENV_PATH"]).exists()
 result = subprocess.run([sys.executable, "-c", provider_check, str(ROOT/"files/fleet-providers.py")],
                         env=env, capture_output=True, text=True)
 check(result.returncode == 0, "provider Windows lock and account isolation: " + result.stderr)
+result = subprocess.run([sys.executable, str(ROOT/"tests/fleet-self-update.py")],
+                        env=env, capture_output=True, text=True)
+check(result.returncode == 0, "fleet self-update migration: " + result.stdout + result.stderr)
 print("fleet-windows: ok")

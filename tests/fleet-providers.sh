@@ -24,6 +24,7 @@ m.bootstrap(str(target),str(root/'files/provider-registry.json'),import_legacy=T
 assert not json.loads(target.read_text())['enabled']['demo']
 assert legacy.exists()
 assert json.loads((home/'.local/state/fleet/backup/provider-registry.json').read_text())==registry
+assert json.loads((home/'.local/state/fleet/backup/provider-state.json').read_text())['providers']['demo']['enabled'] is False
 m.bootstrap(str(target),str(root/'files/provider-registry.json'))
 assert not json.loads(target.read_text())['enabled']['demo']
 new=home/'new-account/providers.json';m.bootstrap(str(new),str(root/'files/provider-registry.json'))
@@ -125,5 +126,101 @@ for args in (['providers'],['providers','add'],['providers','capabilities']):
     f.sys.argv=[str(root/'files/fleet'),*args]
     with contextlib.redirect_stderr(io.StringIO()):assert f.main()==2
 assert 'fleet providers' not in f.USAGE
+
+# Pull-only first syncs reconcile catalog/credentials without a settings file.
+# Legacy choices require the registry's original origin and subject, and an
+# Auth-derived registry must never be re-imported as legacy on the next sync.
+def isolated_engine(label):
+    n=module('provider_first_sync_'+label,root/'files/fleet-providers.py')
+    folder=home/label
+    for attr,filename in [('SETTINGS_PATH','settings.json'),('REGISTRY_PATH','registry.json'),
+                          ('STATE_PATH','state.json'),('CACHE_PATH','credentials.json'),
+                          ('CATALOG_PATH','catalog.json'),('CAPABILITIES_PATH','capabilities.json')]:
+        setattr(n,attr,str(folder/filename))
+    n.DEFAULTS_PATH=str(root/'files/provider-registry.json')
+    n.common_auth_context=lambda:n.context
+    def common(_):
+        cache=n._load_cache();cache['_common_auth_context']=n.context;n._save_cache(cache)
+    n._sync_common_auth=common
+    n._sync_cache_from_vault=lambda _:None
+    n._sync_mirrors=lambda **kw:None
+    n._prune_retired=lambda _:None
+    n._sync_opencode_provider_statuses=lambda _:None
+    n._sync_hermes_mirror=lambda *args,**kw:None
+    n._sync_pi_models_mirror=lambda *args:None
+    n._sync_opencodex_provider_statuses=lambda **kw:None
+    return n
+catalog=copy.deepcopy(shared);catalog['registry']['providers']['demo']['enabled']=False
+n=isolated_engine('fresh');n.context=ctx
+for _ in range(2):
+    n.sync_credentials(ctx,lambda:copy.deepcopy(catalog))
+    assert pathlib.Path(n.REGISTRY_PATH).exists()
+    assert not pathlib.Path(n.SETTINGS_PATH).exists()
+    assert not n._load_provider_state()['providers']['demo']['enabled']
+n=isolated_engine('legacy');n.context=ctx
+save(n.REGISTRY_PATH,registry);save(n.STATE_PATH,{'version':1,'providers':{'demo':{'enabled':True}}})
+n._save_cache({'demo':'own-key','_common_auth_context':ctx})
+n.sync_credentials(ctx,lambda:copy.deepcopy(catalog))
+assert n._provider_settings()['enabled']['demo'] is True
+for label,new_context in [('other-subject',other),('other-origin',{'origin':'https://other.test','subject':ctx['subject']})]:
+    n=isolated_engine(label);n.context=new_context
+    save(n.REGISTRY_PATH,registry);save(n.STATE_PATH,{'version':1,'providers':{'demo':{'enabled':True}}})
+    n._save_cache({'demo':'old-account-key','_common_auth_context':ctx,'_fleet_account':ctx})
+    for _ in range(2):
+        n.sync_credentials(new_context,lambda:copy.deepcopy(catalog))
+        assert not pathlib.Path(n.SETTINGS_PATH).exists()
+        assert not n._load_provider_state()['providers']['demo']['enabled']
+        assert not n.cache_get('demo')
 print('fleet provider migration, account isolation, vault and schedule tests passed')
 PY
+
+zsh <<'ZSH'
+set -euo pipefail
+source "$TEST_ROOT/lib/script-helpers.sh"
+FLEET_BIN="$HOME/.local/bin/fleet"
+FLEET_MANIFEST="$HOME/.config/fleet/manifest.json"
+FLEET_PROVIDER_ENGINE="$HOME/.local/bin/fleet-providers.py"
+FLEET_PROVIDER_DEFAULTS="$HOME/.config/fleet/provider-defaults.json"
+FLEET_SOURCE="$HOME/migration-fleet.py"
+FLEET_MANIFEST_SOURCE="$TEST_ROOT/files/fleet-manifest.json"
+FLEET_PROVIDER_SOURCE="$TEST_ROOT/files/fleet-providers.py"
+PROVIDER_REGISTRY_SOURCE="$TEST_ROOT/files/provider-registry.json"
+source "$TEST_ROOT/files/fleet.sh"
+_login_if_needed() { :; }
+mkdir -p "$HOME/.local/bin" "$HOME/.agents/settings" "$HOME/.config/providers" "$XDG_STATE_HOME/fleet"
+cat > "$FLEET_SOURCE" <<'PY'
+#!/usr/bin/env python3
+import os, pathlib, sys
+root = pathlib.Path.home()
+if sys.argv[1:2] == ['sync']:
+    sys.exit(int((root/'migration-sync-status').read_text()))
+if sys.argv[1:] == ['schedule', 'enable']:
+    (root/'migration-new-schedule').touch()
+PY
+cat > "$HOME/.local/bin/providers" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/migration-legacy-schedule"
+SH
+chmod +x "$HOME/.local/bin/providers"
+rm -f "$HOME/.agents/settings/providers.json" "$XDG_STATE_HOME/fleet/agents.json" "$HOME/.config/providers/catalog.json"
+printf '3' > "$HOME/migration-sync-status"
+_apply updated >/dev/null
+[[ -x "$HOME/.local/bin/providers" && ! -e "$HOME/migration-legacy-schedule" ]]
+[[ "$(status)" == *unknown* ]]
+# An online sync without migrated settings also preserves the working command.
+printf '0' > "$HOME/migration-sync-status"
+_apply updated >/dev/null
+[[ -x "$HOME/.local/bin/providers" && ! -e "$HOME/migration-legacy-schedule" ]]
+if status >/dev/null; then echo 'migration was reported current too early' >&2; exit 1; fi
+printf '%s\n' '{"subject":"account-a"}' > "$XDG_STATE_HOME/fleet/agents.json"
+printf '%s\n' '{"version":2,"enabled":{"demo":false}}' > "$HOME/.agents/settings/providers.json"
+printf '%s\n' '{"account":{"subject":"account-b"}}' > "$HOME/.config/providers/catalog.json"
+_apply updated >/dev/null
+[[ -x "$HOME/.local/bin/providers" && ! -e "$HOME/migration-legacy-schedule" ]]
+printf '%s\n' '{"account":{"subject":"account-a"}}' > "$HOME/.config/providers/catalog.json"
+_apply updated >/dev/null
+[[ ! -e "$HOME/.local/bin/providers" && -e "$HOME/migration-new-schedule" ]]
+[[ "$(cat "$HOME/migration-legacy-schedule")" == 'schedule disable' ]]
+[[ "$(status)" == *current* ]]
+echo 'offline and account-bound provider retirement tests passed'
+ZSH
