@@ -6,7 +6,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" TEST_ROOT="$ROOT"
 mkdir -p "$HOME"
 python3 - <<'PY'
-import copy, importlib.machinery, importlib.util, json, os, pathlib, sys
+import base64, copy, hashlib, importlib.machinery, importlib.util, json, os, pathlib, sys
 root=pathlib.Path(os.environ['TEST_ROOT']); home=pathlib.Path.home()
 def module(name,path):
     loader=importlib.machinery.SourceFileLoader(name,str(path))
@@ -20,15 +20,14 @@ ctx={'origin':'https://auth.test','subject':'1'}
 legacy=home/'.config/providers/registry.json'; target=home/'.agents/settings/providers.json'
 registry={'version':1,'providers':{'demo':{'provider_type':'OpenAICompatible','base_url':'https://example.test/v1','api_format':'openai','npm':'@ai-sdk/openai-compatible','auth':{'type':'api-key','store':'opencode','key':'demo'},'enabled':True}}}
 save(legacy,registry);save(m.STATE_PATH,{'version':1,'providers':{'demo':{'enabled':False}}})
-m.bootstrap(str(target),str(root/'files/provider-registry.json'),import_legacy=True)
-assert not json.loads(target.read_text())['enabled']['demo']
+m._save_cache({'_common_auth_context':ctx})
+imported=m.legacy_settings(ctx)
+assert not imported['enabled']['demo'] and not target.exists()
 assert legacy.exists()
 assert json.loads((home/'.local/state/fleet/backup/provider-registry.json').read_text())==registry
 assert json.loads((home/'.local/state/fleet/backup/provider-state.json').read_text())['providers']['demo']['enabled'] is False
-m.bootstrap(str(target),str(root/'files/provider-registry.json'))
-assert not json.loads(target.read_text())['enabled']['demo']
-new=home/'new-account/providers.json';m.bootstrap(str(new),str(root/'files/provider-registry.json'))
-assert json.loads(new.read_text())=={'version':2,'enabled':{}}
+save(target,imported)
+assert m.legacy_settings(ctx) is None
 m.SETTINGS_PATH=str(target)
 m.DEFAULTS_PATH=str(root/'files/provider-registry.json')
 m.REGISTRY_PATH=str(home/'.config/providers/registry.json')
@@ -160,17 +159,74 @@ for _ in range(2):
 n=isolated_engine('legacy');n.context=ctx
 save(n.REGISTRY_PATH,registry);save(n.STATE_PATH,{'version':1,'providers':{'demo':{'enabled':True}}})
 n._save_cache({'demo':'own-key','_common_auth_context':ctx})
+save(n.SETTINGS_PATH,n.legacy_settings(ctx))
 n.sync_credentials(ctx,lambda:copy.deepcopy(catalog))
 assert n._provider_settings()['enabled']['demo'] is True
 for label,new_context in [('other-subject',other),('other-origin',{'origin':'https://other.test','subject':ctx['subject']})]:
     n=isolated_engine(label);n.context=new_context
     save(n.REGISTRY_PATH,registry);save(n.STATE_PATH,{'version':1,'providers':{'demo':{'enabled':True}}})
     n._save_cache({'demo':'old-account-key','_common_auth_context':ctx,'_fleet_account':ctx})
+    assert n.legacy_settings(new_context) is None
     for _ in range(2):
         n.sync_credentials(new_context,lambda:copy.deepcopy(catalog))
         assert not pathlib.Path(n.SETTINGS_PATH).exists()
         assert not n._load_provider_state()['providers']['demo']['enabled']
         assert not n.cache_get('demo')
+# Migration publishes just the enabled map before the normal pull records it.
+# Failed pushes leave no local import, while a concurrent dashboard save wins.
+for scenario in ('retry','stale'):
+    n=isolated_engine('upload-'+scenario);n.context=ctx
+    save(n.REGISTRY_PATH,registry);save(n.STATE_PATH,{'version':1,'providers':{'demo':{'enabled':True}}})
+    n._save_cache({'_common_auth_context':ctx})
+    fleet=module('fleet_migration_'+scenario,root/'files/fleet')
+    fleet.AGENTS=pathlib.Path(n.SETTINGS_PATH).parent/'agents'
+    fleet.PROVIDER_SETTINGS=fleet.AGENTS/'settings/providers.json'
+    n.SETTINGS_PATH=str(fleet.PROVIDER_SETTINGS)
+    fleet.FLEET_STATE=pathlib.Path(n.SETTINGS_PATH).parents[2]/'fleet-state'
+    fleet.AGENTS_STATE=fleet.FLEET_STATE/'agents.json'
+    fleet.provider_engine=lambda:n
+    fleet._subject=lambda:ctx['subject']
+    save(fleet.AGENTS/'settings/local-only.json',{'local':'keep private'})
+    remote={};counter=0;attempts=[];fail=True
+    def metadata(path):
+        return {'path':path,'sha256':hashlib.sha256(base64.b64decode(remote[path]['content'])).hexdigest(),
+                'executable':False}
+    def api(method,path,body=None):
+        global counter,fail
+        if path=='/api/fleet/config':
+            return {'counter':counter,'files':[metadata(p) for p in remote],'installs':[]}
+        if path=='/api/fleet/config/push':
+            attempts.append(copy.deepcopy(body))
+            assert body['subject']==ctx['subject'] and body['base']==counter
+            assert body['delete']==[] and [p['path'] for p in body['put']]==['settings/providers.json']
+            if fail:
+                fail=False
+                if scenario=='stale':
+                    remote['settings/providers.json']={'content':base64.b64encode(json.dumps({'version':2,'enabled':{'demo':False}}).encode()).decode()}
+                    counter+=1
+                    raise fleet.ApiError('stale',409)
+                raise fleet.ApiError('offline')
+            remote.update({p['path']:{'content':p['content']} for p in body['put']});counter+=1
+            return {'counter':counter}
+        if path=='/api/fleet/config/fetch':
+            return {'files':[{**metadata(p),**remote[p]} for p in body['paths']]}
+        raise AssertionError((method,path))
+    fleet._api=api
+    if scenario=='retry':
+        try:fleet.sync_agents(push=False)
+        except fleet.ApiError:pass
+        else:raise AssertionError('offline import succeeded')
+        assert not fleet.PROVIDER_SETTINGS.exists() and not pathlib.Path(n.CATALOG_PATH).exists()
+    fleet.sync_agents(push=False)
+    expected=scenario=='retry'
+    assert json.loads(base64.b64decode(remote['settings/providers.json']['content']))['enabled']['demo'] is expected
+    assert json.loads(fleet.PROVIDER_SETTINGS.read_text())['enabled']['demo'] is expected
+    assert 'settings/local-only.json' not in remote
+    assert json.loads(fleet.AGENTS_STATE.read_text())['files']['settings/providers.json']==hashlib.sha256(fleet.PROVIDER_SETTINGS.read_bytes()).hexdigest()
+    count=len(attempts);fleet.sync_agents(push=False)
+    assert len(attempts)==count
+    if scenario=='retry':
+        assert (fleet.AGENTS/'settings/local-only.json').exists()
 print('fleet provider migration, account isolation, vault and schedule tests passed')
 PY
 
@@ -220,6 +276,16 @@ printf '%s\n' '{"account":{"subject":"account-b"}}' > "$HOME/.config/providers/c
 _apply updated >/dev/null
 [[ -x "$HOME/.local/bin/providers" && ! -e "$HOME/migration-legacy-schedule" ]]
 printf '%s\n' '{"account":{"subject":"account-a"}}' > "$HOME/.config/providers/catalog.json"
+_apply updated >/dev/null
+[[ -x "$HOME/.local/bin/providers" && ! -e "$HOME/migration-legacy-schedule" ]]
+# Only a settings hash acknowledged by Auth permits retirement.
+python3 - <<'PY'
+import hashlib,json,os,pathlib
+home=pathlib.Path.home();state=pathlib.Path(os.environ['XDG_STATE_HOME'])/'fleet/agents.json'
+value=json.loads(state.read_text())
+value['files']={'settings/providers.json':hashlib.sha256((home/'.agents/settings/providers.json').read_bytes()).hexdigest()}
+state.write_text(json.dumps(value))
+PY
 _apply updated >/dev/null
 [[ ! -e "$HOME/.local/bin/providers" && -e "$HOME/migration-new-schedule" ]]
 [[ "$(cat "$HOME/migration-legacy-schedule")" == 'schedule disable' ]]

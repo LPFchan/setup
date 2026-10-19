@@ -112,13 +112,15 @@ _apply() {
         if (( sync_rc == 3 )) || ! python3 - \
             "${XDG_STATE_HOME:-$HOME/.local/state}/fleet/agents.json" \
             "${FLEET_AGENTS_DIR:-$HOME/.agents}/settings/providers.json" "$HOME/.config/providers/catalog.json" <<'PY'
-import json, os, sys
+import hashlib, json, os, sys
 try:
     state, settings, catalog = [json.load(open(os.path.expanduser(path))) for path in sys.argv[1:]]
     if not all(isinstance(value, dict) for value in (state, settings, catalog)):
         sys.exit(1)
     if (not state.get('subject') or catalog['account']['subject'] != state['subject'] or
-            settings['version'] != 2 or not isinstance(settings['enabled'], dict)):
+            settings['version'] != 2 or not isinstance(settings['enabled'], dict) or
+            state.get('files', {}).get('settings/providers.json') !=
+            hashlib.sha256(open(os.path.expanduser(sys.argv[2]), 'rb').read()).hexdigest()):
         sys.exit(1)
 except (OSError, ValueError, KeyError, TypeError):
     sys.exit(1)
