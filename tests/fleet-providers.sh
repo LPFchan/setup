@@ -196,6 +196,8 @@ if sys.argv[1:2] == ['sync']:
     sys.exit(int((root/'migration-sync-status').read_text()))
 if sys.argv[1:] == ['schedule', 'enable']:
     (root/'migration-new-schedule').touch()
+if sys.argv[1:] == ['schedule', 'status']:
+    print('fleet: nightly pass ' + ('on' if (root/'migration-schedule-active').exists() else 'off'))
 PY
 cat > "$HOME/.local/bin/providers" <<'SH'
 #!/bin/sh
@@ -223,4 +225,14 @@ _apply updated >/dev/null
 [[ "$(cat "$HOME/migration-legacy-schedule")" == 'schedule disable' ]]
 [[ "$(status)" == *current* ]]
 echo 'offline and account-bound provider retirement tests passed'
+# Existing Unix fleet schedules acquire the hourly timer even without a legacy module.
+rm "$HOME/migration-new-schedule"
+touch "$HOME/migration-schedule-active"
+_apply updated >/dev/null
+[[ -e "$HOME/migration-new-schedule" ]]
+# Updating fleet preserves a deliberately disabled schedule.
+rm "$HOME/migration-new-schedule" "$HOME/migration-schedule-active"
+_apply updated >/dev/null
+[[ ! -e "$HOME/migration-new-schedule" ]]
+echo 'Unix fleet schedule upgrade and opt-out tests passed'
 ZSH
