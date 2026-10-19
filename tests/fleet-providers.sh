@@ -97,19 +97,32 @@ assert m.cache_get('demo')=='current-key'
 # The current Passage list shape is a list of folder groups.
 m._vault_call=lambda *args:json.dumps([{'folder':'llm','items':[{'name':'DEMO_API_KEY'}]}])
 assert read_items()==[{'name':'DEMO_API_KEY'}]
-# Both schedules belong to fleet, including teardown of the retired timer.
+# Fleet manages its own two schedules; setup owns legacy retirement.
 f=module('fleet_test',root/'files/fleet');calls=[]
 f.provider_engine=lambda:object();f._run_schedule=lambda *args,**kw:calls.append(args) or 0
 f.sys.argv=[str(root/'files/fleet')]
 assert f.schedule_enable()==0
-assert any(c[:3]==('uninstall-timer','user','providers') for c in calls)
+assert not any(c[:3]==('uninstall-timer','user','providers') for c in calls)
 assert any(c[:3]==('install-timer','user','fleet-providers') and '__refresh-providers' in c[4] for c in calls)
 assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
 calls.clear();assert f.schedule_disable()==0
 assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
 assert any(c[:3]==('uninstall-timer','user','fleet-sync') for c in calls)
-# The timer pulls the account before refreshing; operator CLI management is absent.
+# Failed Linux and macOS schedule installation cannot retire the working legacy job.
+from unittest.mock import patch
 from types import SimpleNamespace
+calls.clear()
+with patch.object(f,'_run_schedule',side_effect=lambda *args,**kw:calls.append(args) or 1):
+    assert f.provider_schedule(True)==1
+assert not any(c[:3]==('uninstall-timer','user','providers') for c in calls)
+legacy_plist=f.LAUNCHD_DIR/'com.lost.plus.providers.plist'
+legacy_plist.parent.mkdir(parents=True,exist_ok=True);legacy_plist.write_text('legacy')
+calls.clear()
+with patch.object(sys,'platform','darwin'), patch.object(f.subprocess,'run',side_effect=lambda args,**kw:calls.append(args) or SimpleNamespace(returncode=1)):
+    assert f.provider_schedule(True)==1
+assert legacy_plist.read_text()=='legacy'
+assert not any('com.lost.plus.providers' in arg for call in calls for arg in call)
+# The timer pulls the account before refreshing; operator CLI management is absent.
 calls.clear()
 engine=SimpleNamespace(common_auth_context=lambda:ctx,
     refresh_models=lambda:calls.append('models'), CommonAuthContextChanged=m.CommonAuthContextChanged,
@@ -251,12 +264,15 @@ root = pathlib.Path.home()
 if sys.argv[1:2] == ['sync']:
     sys.exit(int((root/'migration-sync-status').read_text()))
 if sys.argv[1:] == ['schedule', 'enable']:
+    if (root/'migration-schedule-fail').exists():
+        sys.exit(1)
     (root/'migration-new-schedule').touch()
 if sys.argv[1:] == ['schedule', 'status']:
     print('fleet: nightly pass ' + ('on' if (root/'migration-schedule-active').exists() else 'off'))
 PY
 cat > "$HOME/.local/bin/providers" <<'SH'
 #!/bin/sh
+[ -f "$HOME/migration-new-schedule" ] || exit 1
 printf '%s\n' "$*" >> "$HOME/migration-legacy-schedule"
 SH
 chmod +x "$HOME/.local/bin/providers"
@@ -286,6 +302,10 @@ value=json.loads(state.read_text())
 value['files']={'settings/providers.json':hashlib.sha256((home/'.agents/settings/providers.json').read_bytes()).hexdigest()}
 state.write_text(json.dumps(value))
 PY
+touch "$HOME/migration-schedule-fail"
+if _apply updated >/dev/null; then echo 'failed scheduler was accepted' >&2; exit 1; fi
+[[ -x "$HOME/.local/bin/providers" && ! -e "$HOME/migration-legacy-schedule" ]]
+rm "$HOME/migration-schedule-fail"
 _apply updated >/dev/null
 [[ ! -e "$HOME/.local/bin/providers" && -e "$HOME/migration-new-schedule" ]]
 [[ "$(cat "$HOME/migration-legacy-schedule")" == 'schedule disable' ]]

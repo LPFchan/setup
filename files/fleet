@@ -2151,7 +2151,7 @@ def _windows_schedule():
 
 
 def provider_schedule(enable):
-    """Fleet owns the hourly model refresh and retires the old providers job."""
+    """Fleet owns the hourly model refresh; setup retires the legacy job."""
     script = os.path.abspath(sys.argv[0])
     name, label = "fleet-providers", "com.lost.plus.fleet-providers"
     if WINDOWS:
@@ -2165,9 +2165,6 @@ def provider_schedule(enable):
     if sys.platform == "darwin":
         import plistlib
         uid = os.getuid()
-        # The old launch agent otherwise keeps invoking a removed executable.
-        subprocess.run(["launchctl", "bootout", f"gui/{uid}/com.lost.plus.providers"], capture_output=True)
-        (LAUNCHD_DIR/"com.lost.plus.providers.plist").unlink(missing_ok=True)
         path = LAUNCHD_DIR/(label + ".plist")
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True)
         if not enable:
@@ -2180,7 +2177,6 @@ def provider_schedule(enable):
             "StartCalendarInterval": {"Minute": 0}, "StandardOutPath": str(log), "StandardErrorPath": str(log)}).decode())
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], capture_output=True)
         return 0 if result.returncode == 125 else result.returncode
-    _run_schedule("uninstall-timer", "user", "providers", quiet=True)
     if not enable:
         return _run_schedule("uninstall-timer", "user", name)
     with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:

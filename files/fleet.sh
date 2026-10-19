@@ -129,8 +129,8 @@ PY
             echo "fleet: provider migration deferred; keeping the existing command and schedule"
             return 0
         fi
-        "$HOME/.local/bin/providers" schedule disable >/dev/null 2>&1 || return 1
         "$BIN" schedule enable || return 1
+        "$HOME/.local/bin/providers" schedule disable >/dev/null 2>&1 || return 1
         rm -f "$HOME/.local/bin/providers"
     elif [[ "$("$BIN" schedule status 2>/dev/null)" == 'fleet: nightly pass on' ]]; then
         "$BIN" schedule enable || return 1
