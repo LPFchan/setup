@@ -123,8 +123,7 @@ printf '%s\\n' "$@" >/dev/null
 exec sleep 900
 ''', 0o755)
     # the real tools from this repo
-    for src, dst in (('bin/setup', 'setup'), ('files/resume', 'resume'),
-                     ('files/providers', 'providers')):
+    for src, dst in (('bin/setup', 'setup'), ('files/resume', 'resume')):
         shutil.copy2(os.path.join(REPO, src), os.path.join(binp, dst))
         os.chmod(os.path.join(binp, dst), 0o755)
     # the status helper, straight out of the module

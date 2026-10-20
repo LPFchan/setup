@@ -182,17 +182,6 @@ rm -f "$OPENCODEX_BIN"
 expect_status 1 outdated
 install_surfaces
 
-providers_registry="$HOME/.config/providers/registry.json"
-mkdir -p "${providers_registry:h}"
-cp "$ROOT/files/provider-registry.json" "$providers_registry"
-(
-    export PROVIDERS_REGISTRY="$providers_registry"
-    source "$ROOT/files/providers.sh"
-    uninstall >/dev/null
-)
-[[ -f "$REGISTRY" ]] || fail "providers uninstall removed opencodex's independent snapshot"
-[[ ! -e "$providers_registry" ]] || fail "providers uninstall left its own snapshot"
-
 # Uninstalling takes down the route to the proxy it stops.
 mkdir -p "$HOME/.claude"
 printf 'export KEEP=1\n# BEGIN harnesses:anthropic-base-url\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:1\n# END harnesses:anthropic-base-url\n' >> "$HOME/.zshenv"

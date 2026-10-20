@@ -63,7 +63,7 @@ print(json.dumps({"status": 404, "error": "no route " + path})); sys.exit(6)
 env = {**os.environ, "HOME": str(HOME), "USERPROFILE": str(HOME), "XDG_STATE_HOME": str(STATE),
        "LOCALAPPDATA": str(HOME/"AppData/Local"), "APPDATA": str(HOME/"AppData/Roaming"),
        "FAKE": str(FAKE), "FLEET_AUTH_BIN": str(TMP/"auth.py"), "FLEET_SSH_DIR": str(TMP/"ssh"),
-       "FLEET_MANIFEST": str(ROOT/"files/fleet-manifest.json"), "FLEET_SELF": "winbox",
+       "FLEET_MANIFEST": str(ROOT/"files/fleet-manifest.json"), "FLEET_PROVIDER_ENGINE": str(TMP/"not-installed.py"), "FLEET_SELF": "winbox",
        "PATH": os.pathsep.join([os.path.dirname(sys.executable), os.environ.get("SystemRoot", "C:/Windows") + "/System32"])}
 
 
@@ -156,4 +156,28 @@ if pythonw.exists():
 check(fleet("skills", expect=2).returncode == 2, "skills command refused")
 unknown = fleet("install", "t3", expect=None)
 check(unknown.returncode != 0 and "unknown harness" in unknown.stderr, "t3 offered on Windows")
+# Provider caches use the Windows lock and native auth.json, without .zshenv.
+provider_check = r'''
+import pathlib, runpy, sys
+m = runpy.run_path(sys.argv[1], run_name="provider_windows_test")
+context = {"origin": "https://auth.test", "subject": "7"}
+m["_save_cache"]({"demo": "fixture-key", "_fleet_account": context})
+m["bind_account"](context)
+m["_sync_mirrors"]()
+assert m["cache_get"]("demo") == "fixture-key"
+assert not pathlib.Path(m["ZSENV_PATH"]).exists()
+m["bind_account"]({"origin": "https://auth.test", "subject": "8"})
+assert not m["cache_get"]("demo")
+assert "fixture-key" not in pathlib.Path(m["OLD_AUTH_PATH"]).read_text()
+assert not pathlib.Path(m["ZSENV_PATH"]).exists()
+'''
+result = subprocess.run([sys.executable, "-c", provider_check, str(ROOT/"files/fleet-providers.py")],
+                        env=env, capture_output=True, text=True)
+check(result.returncode == 0, "provider Windows lock and account isolation: " + result.stderr)
+result = subprocess.run([sys.executable, str(ROOT/"tests/fleet-self-update.py")],
+                        env=env, capture_output=True, text=True)
+check(result.returncode == 0, "fleet self-update: " + result.stdout + result.stderr)
+result = subprocess.run([sys.executable, str(ROOT/"tests/provider-migration.py")],
+                        env=env, capture_output=True, text=True)
+check(result.returncode == 0, "one-off provider migration: " + result.stdout + result.stderr)
 print("fleet-windows: ok")

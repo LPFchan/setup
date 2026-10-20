@@ -4,8 +4,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# A failed setup command remains failed even if optional provider onboarding
-# also fails afterward.
+# A failed setup command remains failed through the auth follow-up.
 make_source() {
     local dir="$1" body="$2"
     mkdir -p "$dir/lib"
@@ -22,12 +21,9 @@ status() { printf "%-25s %-12s\n" fail uninstalled; return 2; }
 update() { return 8; }'
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state"
 mkdir -p "$HOME/.local/bin" "$XDG_STATE_HOME/setup"
-cp "$ROOT/files/providers" "$HOME/.local/bin/providers"
-chmod +x "$HOME/.local/bin/providers"
-printf x > "$XDG_STATE_HOME/setup/providers.needs-provider-setup"
 if output=$(LINUX_SETUP_SOURCE_URL="file://$source_dir" zsh "$ROOT/bin/setup" install fail 2>&1); then rc=0; else rc=$?; fi
 [[ $rc -ne 0 ]] || { echo "install status was masked by provider setup" >&2; exit 1; }
-[[ "$output" == *'provider setup is pending'* ]] || { echo "provider setup did not run after failed install" >&2; exit 1; }
+[[ "$output" != *'provider setup is pending'* ]] || { echo "retired provider onboarding still ran" >&2; exit 1; }
 
 # Fresh offline no-TTY fallback must fail at manifest fetch and never claim
 # current/up-to-date or create a stale manifest.

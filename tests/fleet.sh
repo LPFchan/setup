@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
+export FLEET_PROVIDER_ENGINE="$TMP/provider-engine-not-installed.py"
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/home/.ssh"
 export FLEET_AUTH_BIN="$TMP/auth" FLEET_SELF=grimoire FAKE="$TMP/fake"
@@ -120,12 +121,13 @@ cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written
 # outdated, so setup does not fail every run on a machine waiting to log in.
 serve '{}' 4
 export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet" \
+    FLEET_PROVIDER_SOURCE="$ROOT/files/fleet-providers.py" PROVIDER_REGISTRY_SOURCE="$ROOT/files/provider-registry.json" \
     FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" STATE_DIR="$XDG_STATE_HOME/setup"
 module() {
     zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
 }
 module status >/dev/null && fail "status before install"
-module install >/dev/null 2>&1 || fail "install without an answer from Auth"
+module install >"$TMP/module.log" 2>&1 || { cat "$TMP/module.log"; fail "install without an answer from Auth"; }
 [[ "$(module status)" == "fleet"*"unknown"* ]] || fail "status without an answer: $(module status)"
 serve "${FLEET_JSON/AAAAPeer\"/AAAAPeer\",\"ssh-ed25519 AAAANew\"}"
 [[ "$(module status)" == *outdated* ]] || fail "status missed a pending write"

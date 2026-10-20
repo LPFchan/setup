@@ -41,11 +41,9 @@ REGISTRY = Path(
 AUTH_JSON = Path(
     os.environ.get("OPENCODEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json")
 )
-PROVIDERS_BIN = Path(
-    os.environ.get(
-        "OPENCODEX_PROVIDERS_BIN",
-        os.environ.get("PROVIDERS_BIN", HOME / ".local/bin/providers"),
-    )
+PROVIDER_CAPABILITIES = Path(
+    os.environ.get("PROVIDERS_CAPABILITIES_PATH",
+        os.environ.get("PROVIDER_CAPABILITIES_PATH", HOME / ".config/providers/capabilities.json"))
 ).expanduser()
 PROVIDER_STATE_VERSION = 1
 PROVIDER_STATE = Path(
@@ -117,8 +115,8 @@ def validate_registry(data: Any) -> dict[str, Any]:
     if not set(data) <= known or not {"version", "providers"} <= set(data):
         raise UserError("registry must contain only version, providers, and retired_providers")
     providers = data.get("providers")
-    if not isinstance(providers, dict) or not providers:
-        raise UserError("registry providers must be a non-empty object")
+    if not isinstance(providers, dict):
+        raise UserError("registry providers must be an object")
     for provider_name, provider in providers.items():
         if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
             raise UserError(f"invalid provider: {provider_name}")
@@ -172,6 +170,9 @@ def validate_registry(data: Any) -> dict[str, Any]:
 
 
 def load_registry(path: Path = REGISTRY) -> dict[str, Any]:
+    account = HOME / ".config/providers/registry.json"
+    if path == REGISTRY and "OPENCODEX_REGISTRY" not in os.environ and account.exists():
+        path = account
     try:
         return validate_registry(json.loads(path.read_text()))
     except (OSError, json.JSONDecodeError) as exc:
@@ -953,28 +954,11 @@ OCX_MODELS_URL = os.environ.get(
 )
 
 
-def provider_capability_view(timeout: float = 1.5) -> dict[str, Any]:
-    """Read the shared provider capability cache through its CLI boundary.
-
-    This is deliberately a cache-only operation. The provider module owns
-    credentials and network refreshes; OpenCodex must never reconstruct either
-    concern by calling an enrolled provider itself. A missing or broken
-    providers executable simply leaves the catalog/proxy fallback available.
-    """
+def provider_capability_view() -> dict[str, Any]:
+    """Read fleet's capability snapshot without credentials or network access."""
     try:
-        result = subprocess.run(
-            [str(PROVIDERS_BIN), "capabilities", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if result.returncode != 0:
-        return {}
-    try:
-        payload = json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError):
+        payload = json.loads(PROVIDER_CAPABILITIES.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     if (
         not isinstance(payload, dict)
@@ -989,7 +973,7 @@ def _catalog_selected_models(provider: str) -> list[str] | None:
     """Sorted model ids a provider's last successful refresh kept.
 
     The ocx proxy runs its own live /models discovery and would happily
-    re-list models the providers module filtered out of every other mirror
+    re-list models fleet filtered out of every other mirror
     (the grimoire eastself checkpoints). Feeding the providers-owned,
     already-filtered inventory back as the proxy's selectedModels allowlist
     narrows what ships to Codex's catalog and /v1/models to the same set.
@@ -1010,7 +994,7 @@ def _registry_selected_models(descriptor: dict[str, Any]) -> list[str] | None:
 
     A live provider without a refreshed capability cache would otherwise make
     OpenCodex expose its entire upstream catalog. The registry list is only a
-    bootstrap floor; a successful providers refresh replaces it with the
+    bootstrap floor; a successful fleet model refresh replaces it with the
     current filtered inventory.
     """
     models = descriptor.get("model_allow_ids")

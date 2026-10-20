@@ -131,9 +131,10 @@ Step "Python: $Python"
 
 # --- auth and fleet ---------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $Bin, (Split-Path $Manifest) | Out-Null
-# All three download first; only then does any of them replace the installed copy.
+# All assets download first; only then does any of them replace the installed copy.
 $files = @(@('auth', (Join-Path $Bin 'auth')), @('fleet', (Join-Path $Bin 'fleet')),
-           @('fleet-manifest.json', $Manifest))
+           @('fleet-manifest.json', $Manifest), @('fleet-providers.py', (Join-Path $Bin 'fleet-providers.py')),
+           @('provider-registry.json', (Join-Path $HOME '.config\fleet\provider-defaults.json')))
 foreach ($file in $files) {
     Invoke-WebRequest -UseBasicParsing -Uri "$Source/files/$($file[0])" -OutFile "$($file[1]).download"
 }

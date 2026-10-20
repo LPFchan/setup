@@ -112,10 +112,9 @@ state_path.write_text(json.dumps({
     "version": 1,
     "providers": {"commandcode": {"enabled": False}},
 }))
-capability_bin = state_path.parent / "providers"
-capability_bin.write_text("#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"providers\":{}}'\n")
-capability_bin.chmod(0o700)
-globals_["PROVIDERS_BIN"] = capability_bin
+capability_path = state_path.parent / "capabilities.json"
+capability_path.write_text(json.dumps({"version":1,"providers":{}}))
+globals_["PROVIDER_CAPABILITIES"] = capability_path
 original_urlopen = namespace["urllib"].request.urlopen
 try:
     namespace["urllib"].request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(

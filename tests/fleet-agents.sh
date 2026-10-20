@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
+export FLEET_PROVIDER_ENGINE="$TMP/provider-engine-not-installed.py"
 trap '[[ -n "${KEEP:-}" ]] && cat "$TMP/err"; rm -rf "$TMP"' EXIT
 export FAKE="$TMP/fake" XDG_STATE_HOME="$TMP/state" FLEET_SSH_DIR="$TMP/ssh" FLEET_SELF=grimoire
 export FLEET_AUTH_BIN="$TMP/bin/auth" FLEET_MANIFEST="$ROOT/files/fleet-manifest.json"

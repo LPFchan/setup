@@ -13,6 +13,7 @@ import base64
 import contextlib
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -568,6 +569,11 @@ def _sync_agents_once(push):
         raise ApiError("the signed-in account changed during the sync")
     _set_login_marker(False)
     state = _load_json_quiet(AGENTS_STATE)
+    previous_subject = state.get("subject")
+    if previous_subject and previous_subject != subject and PROVIDER_SETTINGS.exists():
+        backup = FLEET_STATE/"backup"/time.strftime("%Y%m%d-%H%M%S")/"providers.json"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(PROVIDER_SETTINGS), str(backup))
     if state.get("subject") != subject:
         state = {"subject": subject}
     first = "files" not in state
@@ -1665,6 +1671,75 @@ def render_harnesses():
     return ok
 
 
+# --- providers -----------------------------------------------------------
+
+PROVIDER_SETTINGS = AGENTS/"settings/providers.json"
+_PROVIDER_SOURCE = pathlib.Path(__file__).resolve().parent
+PROVIDER_DEFAULTS = pathlib.Path(os.environ.get("FLEET_PROVIDER_DEFAULTS",
+    _PROVIDER_SOURCE/"provider-registry.json" if (_PROVIDER_SOURCE/"provider-registry.json").exists()
+    else HOME/".config/fleet/provider-defaults.json"))
+PROVIDER_ENGINE = pathlib.Path(os.environ.get("FLEET_PROVIDER_ENGINE", _PROVIDER_SOURCE/"fleet-providers.py"))
+
+
+def provider_engine():
+    if not PROVIDER_ENGINE.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("fleet_providers", PROVIDER_ENGINE)
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    engine.SETTINGS_PATH = str(PROVIDER_SETTINGS)
+    engine.DEFAULTS_PATH = str(PROVIDER_DEFAULTS)
+    engine.AUTH_BIN = _auth_bin() or str(HOME/".local/bin/auth")
+    return engine
+
+
+def sync_provider_credentials():
+    engine = provider_engine()
+    if engine is None:
+        return
+    rc, raw = _auth("context")
+    if rc:
+        return
+    context = json.loads(raw)
+    if not context.get("origin") or not context.get("subject"):
+        raise ValueError("invalid provider account context")
+    engine.sync_credentials(context, lambda: _api("GET", "/api/fleet/providers/catalog"))
+
+
+def refresh_provider_models():
+    """The hourly job: pull account choices and credentials, then refresh models."""
+    rc = cmd_sync(pull=True)
+    if rc:
+        return rc
+    engine = provider_engine()
+    if engine is None:
+        eprint("fleet: provider support is missing; run: setup update fleet")
+        return 1
+    rc, raw = _auth("context")
+    if rc:
+        return 3
+    expected_context = json.loads(raw)
+    read_context = engine.common_auth_context
+    def bound_context():
+        context = read_context()
+        if context != expected_context:
+            raise engine.CommonAuthContextChanged("account changed during model refresh")
+        return context
+    engine.common_auth_context = bound_context
+    try:
+        bound_context()
+        engine.refresh_models()
+        bound_context()
+    except engine.CommonAuthContextChanged as exc:
+        engine.bind_account(None)
+        eprint(f"fleet: provider models not refreshed: {exc}")
+        return 1
+    except (OSError, ValueError, engine.VaultError, engine.CommonAuthError) as exc:
+        eprint(f"fleet: provider models not refreshed: {exc}")
+        return 1
+    return 0
+
+
 # --- harnesses -----------------------------------------------------------
 
 def _heal_path():
@@ -1882,16 +1957,35 @@ def cmd_sync(check=False, pull=False):
                             or not WINDOWS and any(_builtin(f["path"]) for f in config["files"])):
                 rc = 1
             return rc
+        engine = provider_engine()
+        if engine is not None:
+            context_rc, raw = _auth("context")
+            if context_rc == 0:
+                context = json.loads(raw)
+                if context.get("origin") and context.get("subject"):
+                    engine.bind_account(context)
+            elif context_rc == 4:
+                engine.bind_account(None)
         try:
             if sync_agents(push=not pull):
                 rc = rc or 1
         except ApiError as exc:
+            if exc.status == 401:
+                engine = provider_engine()
+                if engine is not None:
+                    engine.bind_account(None)
             eprint(f"fleet: account tree not synced: {exc}")
             rc = 3
         sync_builtin_skill()
         sync_links()
         if not render_harnesses() and rc == 0:
             rc = 3
+        if rc != 3:
+            try:
+                sync_provider_credentials()
+            except (ApiError, OSError, ValueError, RuntimeError) as exc:
+                eprint(f"fleet: provider credentials not synced: {exc}")
+                rc = 3
         return rc
 
 
@@ -1938,14 +2032,13 @@ def _source_base():
 
 
 def _self_update():
-    """Windows has no setup module to refresh fleet: it fetches itself, auth and
-    the manifest. All three must download and parse, or none is replaced."""
+    """Fetch the complete Windows fleet payload before replacing any files."""
     bin_dir = HOME/".local/bin"
     base, fetched = _source_base(), []
     for name, target, check in (("fleet", bin_dir/"fleet", ast.parse), ("auth", bin_dir/"auth", ast.parse),
-                                ("fleet-manifest.json", MANIFEST_PATH, json.loads)):
-        if not target.exists():
-            continue
+                                ("fleet-manifest.json", MANIFEST_PATH, json.loads),
+                                ("fleet-providers.py", PROVIDER_ENGINE, ast.parse),
+                                ("provider-registry.json", PROVIDER_DEFAULTS, json.loads)):
         try:
             with urllib.request.urlopen(f"{base}/files/{name}", timeout=30) as response:
                 data = response.read()
@@ -1955,7 +2048,7 @@ def _self_update():
             return
         fetched.append((target, data))
     for target, data in fetched:
-        if target.read_bytes() != data:
+        if not target.exists() or target.read_bytes() != data:
             save_text(target, data)
             print(f"fleet: updated {target}")
 
@@ -2024,6 +2117,45 @@ def _windows_schedule():
     return 0
 
 
+def provider_schedule(enable):
+    """Manage the hourly provider model refresh."""
+    script = os.path.abspath(sys.argv[0])
+    name, label = "fleet-providers", "com.lost.plus.fleet-providers"
+    if WINDOWS:
+        if not enable:
+            if _schtasks("/Query", "/TN", name) == 0:
+                return _schtasks("/Delete", "/TN", name, "/F")
+            return 0
+        pythonw = pathlib.Path(sys.executable).with_name("pythonw.exe")
+        return _schtasks("/Create", "/TN", name, "/SC", "HOURLY", "/MO", "1", "/F",
+                         "/TR", f'"{pythonw}" -X utf8 "{script}" __refresh-providers')
+    if sys.platform == "darwin":
+        import plistlib
+        uid = os.getuid()
+        path = LAUNCHD_DIR/(label + ".plist")
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True)
+        if not enable:
+            path.unlink(missing_ok=True)
+            return 0
+        LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
+        log = FLEET_STATE/"providers.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        save_text(path, plistlib.dumps({"Label": label, "ProgramArguments": [script, "__refresh-providers"],
+            "StartCalendarInterval": {"Minute": 0}, "StandardOutPath": str(log), "StandardErrorPath": str(log)}).decode())
+        result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], capture_output=True)
+        return 0 if result.returncode == 125 else result.returncode
+    if not enable:
+        return _run_schedule("uninstall-timer", "user", name)
+    with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:
+        handle.write("Persistent=true\n")
+        extra = handle.name
+    try:
+        return _run_schedule("install-timer", "user", name, "Refresh fleet provider models",
+                             f"{script} __refresh-providers", "hourly", "", extra)
+    finally:
+        os.unlink(extra)
+
+
 def schedule_installed():
     if WINDOWS:
         # A task that exists but is disabled never runs; schtasks /Query cannot tell.
@@ -2038,6 +2170,11 @@ def schedule_installed():
 
 
 def schedule_enable():
+    if provider_engine() is not None:
+        rc = provider_schedule(True)
+        if rc:
+            eprint("fleet: hourly provider schedule failed")
+            return rc
     if WINDOWS:
         return _windows_schedule()
     if sys.platform == "darwin":
@@ -2098,6 +2235,10 @@ def schedule_enable():
 
 
 def schedule_disable():
+    if provider_engine() is not None:
+        rc = provider_schedule(False)
+        if rc:
+            return rc
     if WINDOWS:
         if _schtasks("/Query", "/TN", TIMER_NAME) == 0 and _schtasks("/Delete", "/TN", TIMER_NAME, "/F"):
             eprint("fleet: Task Scheduler disable failed")
@@ -2113,7 +2254,7 @@ def schedule_disable():
     return 0
 
 
-USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, harness settings
+USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, credentials and settings
        fleet status
        fleet install [harness...]          asks which when none named
        fleet update [harness...]           every installed harness when none named
@@ -2125,7 +2266,7 @@ USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, harn
 def main():
     args = sys.argv[1:]
     command, rest = (args[0], args[1:]) if args else (None, [])
-    if command in ("install", "update", "nightly", "sync"):
+    if command in ("install", "update", "nightly", "sync", "__refresh-providers"):
         _heal_path()
     if command == "sync" and rest in ([], ["--check"], ["--pull"]):
         return cmd_sync(check=rest == ["--check"], pull=rest == ["--pull"])
@@ -2135,6 +2276,8 @@ def main():
         return cmd_install(rest)
     if command == "update":
         return cmd_update(rest)
+    if args == ["__refresh-providers"]:
+        return refresh_provider_models()
     if command == "skills":
         return cmd_skills(rest)
     if command == "mcp-headers":

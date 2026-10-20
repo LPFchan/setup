@@ -1,38 +1,20 @@
 #!/usr/bin/env python3
-# setup-module: providers
-# setup-source: files/providers
-"""providers — credential and model registry for AI providers.
+# setup-module: fleet
+# setup-source: files/fleet-providers.py
+"""Fleet's private provider credential and model engine.
 
-Grimoire resolves through the shared auth module. Third-party credentials live
-in the passage MCP (folder llm, items named {PROVIDER}_API_KEY). A local 0600 cache
-serves offline/headless contexts. This tool maintains the OpenCode and shell
-credential mirrors plus live model catalogs for OpenCode, Hermes, and Pi tools.
-Provider descriptors may restrict a live catalog with model_allow_suffixes and
-model_allow_ids, which keep a mixed free/paid endpoint's paid models out of every
-consumer while still admitting newly published *-free IDs and time-limited IDs
-ending in alpha. model_no_reasoning_suffixes opts those time-limited IDs out of
-the generic reasoning ladder until the provider advertises per-model efforts.
-OpenCode Zen was the only provider to use all three; no live provider sets them
-since it was retired, and they are kept for the next mixed-tier endpoint.
-
-Commands:
-  (no args)                    List providers and key status (never the key)
-  add <name> <url> [key] [model]
-                               Enroll a provider and its API key in one step;
-                               key goes to the vault; model is required when
-                               the endpoint does not expose /models
-  enable <name>                Enable a provider that has an API key
-  disable <name>               Disable a provider without deleting its key
-  refresh [name]               Sync keys, then refresh model lists
-                               (all enabled providers if name is omitted)
-  capabilities [--provider P] [--model M] [--json]
-                               Read the last-known-good capability cache
-  schedule [disable|status]    Hourly background refresh (bare: install it)
-  help                         Show usage
+The Auth dashboard owns provider management. Fleet reconciles the shared catalog
+with account enablement, reads keys from Passage, and maintains credential and
+model mirrors for OpenCode, Hermes, Pi and OpenCodex. Its hourly job refreshes
+model inventories and capability snapshots while preserving the proxy process.
 """
 
-import contextlib, datetime, fcntl, getpass, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
+import contextlib, datetime, hashlib, json, math, os, pathlib, re, shutil, subprocess, sys, tempfile
 import urllib.error, urllib.parse, urllib.request
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 PROVIDER_STATE_VERSION = 1
 STATE_PATH = os.path.expanduser(
@@ -54,17 +36,15 @@ REGISTRY_PATH = os.environ.get(
     "PROVIDERS_REGISTRY",
     os.path.expanduser("~/.config/providers/registry.json"),
 )
+SETTINGS_PATH = os.path.expanduser("~/.agents/settings/providers.json")
+DEFAULTS_PATH = str(pathlib.Path(__file__).with_name("provider-registry.json"))
+CATALOG_PATH = os.path.expanduser("~/.config/providers/catalog.json")
 OPENCODEX_BIN = os.environ.get(
     "OPENCODEX_LAUNCHER", os.path.expanduser("~/.local/bin/opencodex")
 )
-AUTH_BIN = os.environ.get("AUTH_BIN", os.path.expanduser("~/.local/bin/auth"))
+AUTH_BIN = os.environ.get("FLEET_AUTH_BIN", os.environ.get("AUTH_BIN", os.path.expanduser("~/.local/bin/auth")))
 CONSUMER_SYNC_LOCK = os.path.expanduser("~/.config/auth/consumer-sync.lock")
 _SYNC_LOCK_DEPTH = 0
-SETUP_REPO = os.environ.get("PROVIDER_SETUP_REPO", "git@github.com:LPFchan/setup.git")
-SETUP_BIN = os.environ.get("PROVIDER_SETUP_BIN", "setup")
-RAW_REPO = os.environ.get(
-    "PROVIDER_RAW_REPO", "https://raw.githubusercontent.com/LPFchan/setup"
-)
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 OPENCODE_PATH = os.path.expanduser("~/.config/opencode/opencode.json")
 HERMES_CONFIG = os.path.expanduser(
@@ -83,28 +63,6 @@ VAULT_TOKEN = os.environ.get("PASSAGE_MCP_TOKEN", "")
 
 AUTH_BLOCK_BEGIN = "# BEGIN setup:api-keys"
 AUTH_BLOCK_END = "# END setup:api-keys"
-
-def _schedule_bin():
-    """Locate the shared schedule helper (sourced tree or installed)."""
-    env = os.environ.get("SCHEDULE_BIN")
-    if env:
-        return env
-    here = pathlib.Path(__file__).resolve()
-    candidate = here.parent.parent / "bin" / "schedule"
-    if candidate.exists():
-        return str(candidate)
-    return os.path.expanduser("~/.local/bin/schedule")
-
-
-def _run_schedule(*args):
-    """Run the shared schedule helper, or explain how to install it."""
-    path = _schedule_bin()
-    if not os.access(path, os.X_OK):
-        raise SystemExit(
-            f"schedule helper not found at {path}; run: setup install schedule"
-        )
-    return os.spawnl(os.P_WAIT, path, "schedule", *args)
-
 
 def load_json(path):
     with open(path) as f:
@@ -207,13 +165,27 @@ def _consumer_sync_lock():
     pathlib.Path(CONSUMER_SYNC_LOCK).parent.mkdir(parents=True, exist_ok=True)
     with open(CONSUMER_SYNC_LOCK, "a+") as handle:
         os.chmod(CONSUMER_SYNC_LOCK, 0o600)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if sys.platform == "win32":
+            if not handle.tell():
+                handle.write(" "); handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         _SYNC_LOCK_DEPTH = 1
         try:
             yield
         finally:
             _SYNC_LOCK_DEPTH = 0
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if sys.platform == "win32":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _auth_command(*args):
+    return ([sys.executable, "-X", "utf8", AUTH_BIN] if sys.platform == "win32" else [AUTH_BIN]) + list(args)
 
 
 def common_auth_token(scope, context=None):
@@ -221,7 +193,7 @@ def common_auth_token(scope, context=None):
     if not os.access(AUTH_BIN, os.X_OK):
         raise CommonAuthError(f"auth module not installed at {AUTH_BIN}; run: setup install auth")
     try:
-        command = [AUTH_BIN, "token", scope]
+        command = _auth_command("token", scope)
         if context is not None:
             command.extend([
                 "--expect-context",
@@ -247,7 +219,7 @@ def common_auth_context():
         raise CommonAuthError(f"auth module not installed at {AUTH_BIN}; run: setup install auth")
     try:
         result = subprocess.run(
-            [AUTH_BIN, "context"], capture_output=True, text=True, timeout=10
+            _auth_command("context"), capture_output=True, text=True, timeout=10
         )
     except subprocess.TimeoutExpired as exc:
         raise CommonAuthError("Auth context lookup timed out") from exc
@@ -305,6 +277,8 @@ def _sync_common_auth_once(servers):
         # account-bound cache, but do not perform any Auth or vault reads.
         return
     cache = _load_cache()
+    if cache.get("_fleet_account") is not None and cache["_fleet_account"] != context:
+        raise CommonAuthContextChanged("account changed during provider sync")
     previous_context = cache.get("_common_auth_context")
     context_changed = context is not None and previous_context != context
     if context_changed:
@@ -330,7 +304,13 @@ def _sync_common_auth_once(servers):
         if exc.authoritative:
             VAULT_TOKEN = ""
             os.environ.pop("PASSAGE_MCP_TOKEN", None)
-            cache_remove("_vault_token")
+            cache.pop("_vault_token", None)
+            third_party = {p for p in cache if not p.startswith("_") and p not in managed}
+            for provider in third_party:
+                cache.pop(provider, None)
+                os.environ.pop(_env_name(provider), None)
+            rejected.update(third_party)
+            _save_cache(cache)
             authoritative_removed = True
         elif not VAULT_TOKEN:
             print(f"  Common Auth unavailable ({exc}); vault sync skipped", file=sys.stderr)
@@ -361,28 +341,6 @@ def _sync_common_auth_once(servers):
 
 def vault_available():
     return bool(VAULT_TOKEN)
-
-
-def _ensure_vault_token(interactive):
-    """Resolve passage access through the current, context-bound Common Auth login."""
-    global VAULT_TOKEN
-    VAULT_TOKEN = ""
-    for attempt in range(2):
-        try:
-            context = common_auth_context()
-            VAULT_TOKEN = common_auth_token("passage", context)
-            return VAULT_TOKEN
-        except CommonAuthContextChanged:
-            if not attempt:
-                continue
-            error = "setup login kept changing"
-        except CommonAuthError as exc:
-            error = str(exc)
-        if interactive:
-            print(f"providers needs Common Auth access to passage ({error}).", file=sys.stderr)
-            print("Run: auth login", file=sys.stderr)
-        return ""
-    return ""
 
 
 def _vault_call(tool, arguments):
@@ -433,7 +391,11 @@ def vault_list_items():
         data = json.loads(text)
     except json.JSONDecodeError:
         data = {}
-    items = data.get("items") if isinstance(data, dict) else None
+    if isinstance(data, list):
+        items = [i for group in data if isinstance(group, dict) and group.get("folder") == VAULT_FOLDER
+                 for i in group.get("items", [])]
+    else:
+        items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(items, list):
         raise VaultError("vault list_secrets returned an unexpected shape")
     return [item for item in items if isinstance(item, dict) and item.get("name")]
@@ -450,24 +412,6 @@ def vault_get(item_name):
     except json.JSONDecodeError:
         pass
     return text
-
-
-def vault_add(item_name, value):
-    _vault_call("add_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
-
-
-def vault_rename(old_name, new_name, item_id=None):
-    args = {"folder": VAULT_FOLDER, "item_name": old_name, "new_name": new_name}
-    if item_id:
-        args["item_id"] = item_id
-    _vault_call("rename_secret", args)
-
-
-def vault_delete(item_name, item_id=None):
-    args = {"folder": VAULT_FOLDER, "item_name": item_name}
-    if item_id:
-        args["item_id"] = item_id
-    _vault_call("delete_secret", args)
 
 
 # --- local cache (offline source of truth) ------------------------------
@@ -978,33 +922,19 @@ def _sync_cache_from_vault_once(servers):
         if cache.get(provider) != value:
             cache[provider] = value
             changed = True
-    if changed:
+    listed = {_provider_from_env(i["name"]) for i in items.values() if not i.get("deleted") and _conforming_item_name(i.get("name", ""))}
+    removed = {name for name in cache if not name.startswith("_") and name not in common_auth_providers and name not in listed}
+    for name in removed:
+        cache.pop(name, None)
+    if changed or removed:
         _save_cache(cache)
+    if removed:
+        _sync_mirrors(managed_absent=removed)
+        _sync_hermes_mirror(servers, {}, authoritative_missing=removed)
     return True
 
 
 # --- .zshenv api-keys block --------------------------------------------
-
-
-def _source_zsenv():
-    """Export .zshenv api-keys block into os.environ (for launchd/cron contexts)."""
-    if not os.path.exists(ZSENV_PATH):
-        return
-    in_block = False
-    with open(ZSENV_PATH) as f:
-        for line in f:
-            s = line.strip()
-            if s == AUTH_BLOCK_BEGIN:
-                in_block = True
-                continue
-            if s == AUTH_BLOCK_END:
-                in_block = False
-                continue
-            if in_block and s.startswith("export ") and "=" in s:
-                kv = s[len("export "):]
-                name, _, val = kv.partition("=")
-                if name and val:
-                    os.environ[name] = val
 
 
 def _read_env_block():
@@ -1109,7 +1039,7 @@ def _sync_zsenv_to_cache_once(servers=None):
 def _write_auth_mirror(cache, managed_absent=None):
     """Write opencode's native auth.json from the cache (api-type entries only).
 
-    Mirrors only providers that appear in the cache; never deletes OAuth or
+    Mirrors only fleet providers that appear in the cache; never deletes OAuth or
     unrelated entries that exist only in auth.json.
     """
     existing = {}
@@ -1140,7 +1070,7 @@ def _write_env_mirror(cache):
     """Write the .zshenv api-keys block from the cache, preserving OAuth
     token lines from auth.json.
 
-    api-type providers come from the cache (vault-authoritative); OAuth tokens
+    api-type fleet providers come from the cache (vault-authoritative); OAuth tokens
     (*_OAUTH_TOKEN) are owned by their harnesses and carried through from
     auth.json unchanged, never written from the cache.
     """
@@ -1157,7 +1087,8 @@ def _write_env_mirror(cache):
                     access = entry.get("access", "")
                     if access:
                         lines.append(f"export {_oauth_env_name(provider)}={access}")
-    _write_env_block(lines)
+    if sys.platform != "win32":
+        _write_env_block(lines)
 
 
 def _sync_mirrors(managed_absent=None):
@@ -1263,7 +1194,7 @@ def _sync_hermes_credentials_without_yaml(servers, authoritative_missing=None):
             changed = True
             continue
         key = (
-            _get_common_auth_key(auth_provider)
+            _get_key(auth_provider)
             if cfg.get("auth", {}).get("type") == "common_auth"
             else _get_key(auth_provider)
         )
@@ -1310,10 +1241,10 @@ def _sync_hermes_mirror_once(servers, refreshed, authoritative_missing=None):
     """Reconcile Hermes config (~/.hermes/config.yaml) custom_providers[]
     against provider enablement.
 
-    Enabled providers with a refreshed model list get an entry upserted.
+    Enabled fleet providers with a refreshed model list get an entry upserted.
     Existing entries receive current credentials and base URLs even when the
     model request fails; their last-known-good model list remains untouched.
-    Disabled providers get their entry removed. Unknown providers
+    Disabled fleet providers get their entry removed. Unknown providers
     (not in the registry) are never touched. The registry stays the
     source of provider routing while live /v1/models fetches stay the
     source of model availability. Network-optional: missing PyYAML or an
@@ -1354,7 +1285,7 @@ def _sync_hermes_mirror_once(servers, refreshed, authoritative_missing=None):
             continue
         if _provider_enabled(name, cfg) and auth_provider not in authoritative_missing:
             key = (
-                _get_common_auth_key(auth_provider)
+                _get_key(auth_provider)
                 if cfg.get("auth", {}).get("type") == "common_auth"
                 else _get_key(auth_provider)
             )
@@ -1524,7 +1455,7 @@ def _pi_model_entry(model_id, config, capability=None):
 def _sync_pi_models_mirror(servers, refreshed):
     """Upsert successful live refreshes into Miniharness/Pi models.json.
 
-    Existing defaults, tiers, and unrelated providers are preserved. A failed
+    Existing defaults, tiers, and unrelated fleet providers are preserved. A failed
     or empty refresh never replaces the last known model inventory.
     """
     config = load_json_or_quarantine(PI_MODELS_PATH)
@@ -1593,46 +1524,9 @@ def _sync_pi_models_mirror(servers, refreshed):
             )
 
 
-def _fallback_auth_json(provider, api_only=False):
-    """Last-resort read of opencode's old auth.json for providers the vault
-    does not (yet) manage. Kept for backward compatibility with OAuth entries."""
-    if not os.path.exists(OLD_AUTH_PATH):
-        return ""
-    try:
-        data = load_json(OLD_AUTH_PATH)
-    except Exception:
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    entry = data.get(provider, {})
-    if not isinstance(entry, dict):
-        return ""
-    etype = entry.get("type", "")
-    if etype == "api":
-        return entry.get("key", "")
-    if etype == "oauth" and not api_only:
-        return entry.get("access", "")
-    return ""
-
-
 def _get_key(provider):
-    """Resolve a provider's api key: cache (canonical local) first, then env,
-    then legacy auth.json."""
-    key = cache_get(provider)
-    if key:
-        return key
-    key = os.environ.get(_env_name(provider), "")
-    if key:
-        return key
-    key = _read_env_block().get(_env_name(provider), "")
-    if key:
-        return key
-    return _fallback_auth_json(provider)
-
-
-def _get_common_auth_key(provider):
-    """Resolve only from stores reconciled under the persisted Auth context."""
-    return cache_get(provider) or _fallback_auth_json(provider, api_only=True)
+    """Read the credential reconciled for the current Auth account."""
+    return cache_get(provider)
 
 
 # --- registry / servers ------------------------------------------------
@@ -1649,7 +1543,7 @@ def get_auth(auth_cfg):
             return "api_key", key
     elif atype == "common_auth":
         provider = auth_cfg.get("provider", "")
-        key = _get_common_auth_key(provider)
+        key = _get_key(provider)
         if key:
             return "api_key", key
     elif atype == "api_key":
@@ -1945,17 +1839,6 @@ def refresh_server(name, cfg):
     return models
 
 
-# --- systemd / launchd management --------------------------------------
-
-
-LAUNCHD_DIR = os.path.expanduser("~/Library/LaunchAgents")
-PLIST_NAME = "com.lost.plus.providers"
-
-
-def _is_macos():
-    return sys.platform == "darwin"
-
-
 PROVIDER_URLS = {
     "grimoire": "http://localhost:9001 (self-hosted)",
     "commandcode": "https://commandcode.ai/studio → Settings → API Keys",
@@ -1966,14 +1849,14 @@ PROVIDER_URLS = {
 
 
 def _load_servers():
-    """Load OpenAI-compatible providers from the canonical provider registry."""
+    """Load OpenAI-compatible fleet providers from the canonical provider registry."""
     try:
         registry = _validate_registry(load_json(REGISTRY_PATH))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"Cannot read provider registry {REGISTRY_PATH}: {exc}", file=sys.stderr)
         return None
     servers = _servers_from_registry(registry)
-    return servers or None
+    return servers
 
 
 def _load_retired():
@@ -2257,174 +2140,6 @@ def _sync_opencodex_provider_statuses(restart=True):
         print("  Codex model catalog unchanged; run: ocx sync", file=sys.stderr)
 
 
-def _set_provider_enabled(provider, enabled):
-    servers = _load_servers()
-    if servers is None:
-        return False
-    if provider not in servers:
-        print(f"Unknown provider: {provider}", file=sys.stderr)
-        print(f"Known: {', '.join(servers.keys())}", file=sys.stderr)
-        return False
-    if enabled and servers[provider].get("auth", {}).get("type") == "common_auth":
-        _sync_common_auth(servers)
-    auth_provider = _auth_provider(provider, servers[provider])
-    if enabled and not _get_key(auth_provider):
-        action = "auth login" if servers[provider].get("auth", {}).get("type") == "common_auth" \
-            else f"providers add {provider} <url> <key>"
-        print(f"Cannot enable {provider}: no credential. Run: {action}", file=sys.stderr)
-        return False
-    state = _load_provider_state()
-    if state is None:
-        return False
-    state.setdefault("providers", {}).setdefault(provider, {})["enabled"] = enabled
-    save_json_atomic(STATE_PATH, state)
-    _sync_opencode_provider_statuses(servers)
-    _sync_opencodex_provider_statuses()
-    print(f"{provider}: {'enabled' if enabled else 'disabled'}")
-    return True
-
-
-def _set_key(provider, key):
-    """Enroll a key: write to vault (canonical), refresh cache, then mirrors."""
-    with _consumer_sync_lock():
-        cache_set(provider, key)
-        if vault_available():
-            try:
-                items = {item["name"] for item in vault_list_items()}
-                env_name = _env_name(provider)
-                if env_name not in items:
-                    vault_add(env_name, key)
-                else:
-                    vault_call_edit(env_name, key)
-            except VaultError as exc:
-                print(f"  vault write failed ({exc}); key cached locally", file=sys.stderr)
-        _sync_mirrors()
-    print(f"Saved {_env_name(provider)} to vault (llm/) and mirrors")
-
-
-def vault_call_edit(item_name, value):
-    _vault_call("edit_secret", {"folder": VAULT_FOLDER, "item_name": item_name, "value": value})
-
-
-def cmd_ls():
-    servers = _load_servers()
-    if servers is None:
-        sys.exit(1)
-    with _consumer_sync_lock():
-        _sync_common_auth(servers)
-        _sync_mirrors()
-        _sync_hermes_mirror(servers, {})
-        cache = _load_cache()
-    print(f"providers configured: {len(servers)}")
-    for name, provider in servers.items():
-        auth_provider = _auth_provider(name, provider)
-        state = "enabled" if _provider_enabled(name, provider) else "disabled"
-        key_status = "key: ✓" if _get_key(auth_provider) else "key: ✗"
-        print(f"  {name}: {state}  {provider.get('baseURL')}  {key_status}")
-
-
-def cmd_schedule_enable():
-    servers = _load_servers() or {}
-    with _consumer_sync_lock():
-        _sync_common_auth(servers)
-        _sync_cache_from_vault(servers)
-        _sync_mirrors()
-        _sync_hermes_mirror(servers, {})
-
-    script_path = os.path.abspath(sys.argv[0])
-    cfg_dir = os.path.dirname(STATE_PATH)
-    pathlib.Path(cfg_dir).mkdir(parents=True, exist_ok=True)
-
-    if _is_macos():
-        pathlib.Path(LAUNCHD_DIR).mkdir(parents=True, exist_ok=True)
-        plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
-        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{PLIST_NAME}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{script_path}</string>
-        <string>refresh</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Minute</key><integer>0</integer>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>/tmp/providers.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/providers.log</string>
-</dict>
-</plist>"""
-        with open(plist_path, "w") as f:
-            f.write(plist)
-        _uid = os.getuid()
-        subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
-                       capture_output=True)
-        r = subprocess.run(["launchctl", "bootstrap", f"gui/{_uid}", plist_path],
-                           capture_output=True)
-        if r.returncode == 0:
-            print("providers launchd agent enabled (hourly)")
-        else:
-            if r.returncode == 125:
-                print("no GUI session — log in on the Mac's screen first", file=sys.stderr)
-            else:
-                print(f"providers installed but launchd enable failed (rc={r.returncode})", file=sys.stderr)
-            if r.stderr:
-                print(r.stderr.decode().rstrip(), file=sys.stderr)
-    else:
-        # Delegate unit render + enable to the shared schedule helper.
-        import tempfile
-        with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as tf:
-            tf.write("Persistent=true\n")
-            timer_extra = tf.name
-        try:
-            rc = _run_schedule(
-                "install-timer", "user", "providers",
-                "Refresh provider model list from configured providers",
-                f"{script_path} refresh", "hourly", "", timer_extra,
-            )
-        finally:
-            os.unlink(timer_extra)
-        if rc:
-            raise SystemExit(rc)
-        print("providers schedule enabled (hourly)")
-
-    # --- provider onboarding ---
-
-    servers = _load_servers()
-    if servers is None:
-        raise SystemExit(1)
-    _load_provider_state()
-    _sync_opencode_provider_statuses(servers)
-    enabled = [
-        name for name, provider in servers.items()
-        if _provider_enabled(name, provider)
-    ]
-    print(f"  Enabled providers: {', '.join(enabled) if enabled else 'none'}")
-    available = [
-        name for name, provider in servers.items()
-        if not _get_key(_auth_provider(name, provider))
-    ]
-    if available:
-        if sys.stdin.isatty():
-            print("\n  Configure optional providers; leave a key blank to keep it disabled.\n")
-            cmd_auth()
-        else:
-            state_home = os.environ.get(
-                "XDG_STATE_HOME", os.path.expanduser("~/.local/state")
-            )
-            marker = os.path.join(
-                state_home, "setup", "providers.needs-provider-setup"
-            )
-            pathlib.Path(os.path.dirname(marker)).mkdir(parents=True, exist_ok=True)
-            with open(marker, "w") as f:
-                f.write("\n".join(available) + "\n")
-
-
 def _valid_base_url(value):
     parsed = urllib.parse.urlsplit(value)
     return (
@@ -2445,8 +2160,8 @@ def _validate_registry(data):
     if not set(data) <= known or not {"version", "providers"} <= set(data):
         raise ValueError("registry must contain only version, providers, and retired_providers")
     providers = data.get("providers")
-    if not isinstance(providers, dict) or not providers:
-        raise ValueError("registry providers must be a non-empty object")
+    if not isinstance(providers, dict):
+        raise ValueError("registry providers must be an object")
     retired = data.get("retired_providers", [])
     if not isinstance(retired, list):
         raise ValueError("retired_providers must be a list")
@@ -2534,380 +2249,6 @@ def _validate_registry(data):
     return data
 
 
-def _run_git(args, cwd=None, capture=False):
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode:
-        raise ValueError(proc.stderr.strip() if proc.stderr else "git command failed")
-    return proc.stdout.rstrip("\r\n") if capture and proc.stdout else ""
-
-
-def _load_auth_strict():
-    if not os.path.exists(OLD_AUTH_PATH):
-        return {}
-    try:
-        data = load_json(OLD_AUTH_PATH)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read local auth store {OLD_AUTH_PATH}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"local auth store {OLD_AUTH_PATH} must contain a JSON object")
-    return data
-
-
-def _store_token(name, token):
-    """Legacy helper kept for parity: writes an api entry into opencode's
-    auth.json. The canonical write for providers is the vault; this remains
-    so the `provider add` flow can still store the new provider's token."""
-    data = _load_auth_strict()
-    if name in data:
-        raise ValueError(f"the local auth store already contains an entry named {name}")
-    data[name] = {"type": "api", "key": token}
-    pathlib.Path(os.path.dirname(OLD_AUTH_PATH)).mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".auth.", dir=os.path.dirname(OLD_AUTH_PATH))
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(tmp_name, OLD_AUTH_PATH)
-    finally:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-
-
-def _provider_consumer_modules():
-    modules = ["providers"]
-    if os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK):
-        modules.insert(0, "opencodex")
-    return modules
-
-
-def _provision_provider(provider, token):
-    auth_data = _load_auth_strict()
-    if provider["name"] in auth_data:
-        raise ValueError(
-            f"the local auth store already contains an entry named {provider['name']}"
-        )
-    with tempfile.TemporaryDirectory(prefix="providers-provider-") as temp:
-        clone = pathlib.Path(temp) / "setup"
-        _run_git(["clone", "--quiet", "--branch", "main", "--single-branch", SETUP_REPO, str(clone)])
-        registry_path = clone / "files/provider-registry.json"
-        data = _validate_registry(load_json(registry_path))
-        if provider["name"] in data["providers"]:
-            raise ValueError(f"provider {provider['name']} already exists in the setup repository")
-        data["providers"][provider["name"]] = {
-            "provider_type": provider["provider_type"],
-            "base_url": provider["base_url"],
-            "api_format": "openai",
-            "npm": "@ai-sdk/openai-compatible",
-            "auth": provider["auth"],
-            "enabled": True,
-        }
-        if provider.get("models"):
-            data["providers"][provider["name"]]["models"] = provider["models"]
-        _validate_registry(data)
-        registry_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        changed = _run_git(["status", "--porcelain"], cwd=clone, capture=True).splitlines()
-        if not changed or any(line[3:] != "files/provider-registry.json" for line in changed):
-            raise ValueError("temporary clone contains changes outside the provider registry")
-        _run_git(["diff", "--check"], cwd=clone)
-        _run_git(["add", "--", "files/provider-registry.json"], cwd=clone)
-        _run_git(
-            [
-                "-c", "user.name=providers",
-                "-c", "user.email=providers@localhost",
-                "commit", "--quiet", "-m", f"Add provider {provider['name']}",
-            ],
-            cwd=clone,
-        )
-        _run_git(["push", "--quiet", "origin", "HEAD:main"], cwd=clone)
-        commit = _run_git(["rev-parse", "HEAD"], cwd=clone, capture=True)
-    _set_key(provider["name"], token)
-    # setup update converges the machine to the pushed commit, but a failed or
-    # unavailable setup run must not leave the provider invisible locally:
-    # merge the new descriptor into the local registry as well.
-    local_registry = _validate_registry(load_json(REGISTRY_PATH))
-    local_registry["providers"][provider["name"]] = {
-        key: value for key, value in provider.items() if key != "name"
-    }
-    _validate_registry(local_registry)
-    save_json_atomic(REGISTRY_PATH, local_registry)
-    state = _load_provider_state()
-    if state is not None:
-        state.setdefault("providers", {}).setdefault(provider["name"], {})["enabled"] = True
-        save_json_atomic(STATE_PATH, state)
-    env = os.environ.copy()
-    env["LINUX_SETUP_SOURCE_URL"] = RAW_REPO.rstrip("/") + "/" + commit
-    modules = _provider_consumer_modules()
-    proc = subprocess.run([SETUP_BIN, "update", *modules], env=env)
-    if proc.returncode:
-        print(
-            "providers: pushed and enrolled locally, but setup provisioning failed; rerun setup update",
-            file=sys.stderr,
-        )
-
-
-def _validate_new_provider_name(name):
-    registry = _validate_registry(load_json(REGISTRY_PATH))
-    existing = set(registry["providers"])
-    if not NAME_RE.fullmatch(name) or name in existing:
-        raise ValueError("provider names must be unique lowercase letters, digits, or hyphens")
-    if name in _load_auth_strict():
-        raise ValueError("the local auth store already uses that name")
-
-
-def _prepare_provider(name, base_url, token, fallback_model=None):
-    base_url = base_url.strip().rstrip("/")
-    if not _valid_base_url(base_url):
-        raise ValueError("the API base URL must be an HTTP(S) URL")
-    if not token:
-        raise ValueError("the API token cannot be empty")
-    payload = fetch_models(base_url, {"type": "bearer", "key": token})
-    rows = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
-    models = sorted({row.get("id") for row in rows if isinstance(row, dict) and row.get("id")})
-    static_models = []
-    if not models:
-        model_id = (fallback_model or "").strip()
-        if not model_id or any(ord(character) < 32 for character in model_id):
-            raise ValueError("the endpoint returned no model IDs; supply an explicit model ID")
-        static_models = [{"id": model_id}]
-        models = [model_id]
-    provider = {
-        "name": name,
-        "provider_type": "OpenAICompatible",
-        "base_url": base_url,
-        "auth": {"type": "api-key", "store": "opencode", "key": name},
-        "enabled": True,
-    }
-    provider["api_format"] = "openai"
-    provider["npm"] = "@ai-sdk/openai-compatible"
-    if static_models:
-        provider["models"] = static_models
-    _validate_registry({"version": 1, "providers": {name: provider}})
-    return provider, len(models)
-
-
-def _add_interactive():
-    """Prompt for the API key of each registry provider that does not have
-    one yet; blank answers stay disabled. This is the onboarding path that
-    `setup` drives after install."""
-    servers = _load_servers()
-    if servers is None:
-        sys.exit(1)
-    _sync_common_auth(servers)
-    _sync_cache_from_vault(servers)
-    cache = _load_cache()
-    missing = [s for s, cfg in servers.items()
-               if cfg.get("auth", {}).get("type") != "common_auth"
-               and not cache_get(_auth_provider(s, cfg))]
-    configured = [s for s, cfg in servers.items() if cache_get(_auth_provider(s, cfg))]
-    if configured:
-        print("Configured:")
-        for s in configured:
-            print(f"  {s}: key on file")
-        print()
-    if not missing:
-        _sync_opencode_provider_statuses(servers)
-        print("All provider API keys are already stored in the vault.")
-        return
-    print("Providers available to enable (blank key stays disabled):")
-    for s in missing:
-        url = PROVIDER_URLS.get(s, "")
-        print(f"  {s}" + (f"  - {url}" if url else ""))
-    print()
-    enabled = []
-    for s in missing:
-        url = PROVIDER_URLS.get(s, "")
-        prompt = f"  {s} API key" + (f" ({url})" if url else "") + ": "
-        try:
-            key = getpass.getpass(prompt)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if key.strip():
-            cache_set(_auth_provider(s, servers[s]), key.strip())
-            enabled.append(s)
-    if enabled:
-        _sync_mirrors()
-        state = _load_provider_state()
-        if state is None:
-            print("Provider state is invalid; keys were saved but enablement was not changed.", file=sys.stderr)
-            return
-        for name in enabled:
-            state.setdefault("providers", {}).setdefault(name, {})["enabled"] = True
-        save_json_atomic(STATE_PATH, state)
-        _sync_opencode_provider_statuses(servers)
-        print()
-        print("Saved to vault (llm/) and mirrors")
-    else:
-        print()
-        print("No keys entered.")
-
-
-def _add_provider(name, base_url=None, token=None, fallback_model=None):
-    """One-step enrollment: `add <name> <url> [key] [model]`.
-
-    If the provider already exists in the registry, this enrolls (or rotates)
-    its API key in the vault and enables it. The URL must match the
-    registered endpoint so a typo cannot silently redirect a provider. If the
-    provider is new, it is registered (published to the setup repo) and its
-    key enrolled in the same step.
-    """
-    servers = _load_servers()
-    if servers is None:
-        raise ValueError("cannot read provider registry")
-    if name in servers:
-        if base_url is not None and base_url.strip().rstrip("/") != servers[name]["baseURL"].rstrip("/"):
-            raise ValueError(
-                f"{name} is already registered with endpoint {servers[name]['baseURL']}"
-            )
-        if servers[name].get("auth", {}).get("type") == "common_auth":
-            if token is not None:
-                raise ValueError(f"{name} is managed by Common Auth; run: auth login")
-            _sync_common_auth(servers)
-            if not _set_provider_enabled(name, True):
-                raise ValueError(f"could not enable {name}; run: auth login")
-            print(f"providers: enrolled {name} through Common Auth")
-            return
-        if token is None:
-            token = getpass.getpass(f"{name} API key: ").strip()
-        if not token:
-            raise ValueError("the API key cannot be empty")
-        auth_provider = _auth_provider(name, servers[name])
-        _set_key(auth_provider, token)
-        if not _set_provider_enabled(name, True):
-            raise ValueError(f"could not enable {name}")
-        print(f"providers: enrolled key for {name}")
-        return
-    if base_url is None:
-        raise ValueError(f"unknown provider {name}: pass a base URL to register it")
-    if token is None:
-        token = getpass.getpass("API token: ")
-    try:
-        provider, model_count = _prepare_provider(name, base_url, token, fallback_model)
-    except ValueError as exc:
-        if "supply an explicit model ID" not in str(exc) or fallback_model is not None:
-            raise
-        if not sys.stdin.isatty():
-            raise
-        fallback_model = input("Model ID (the endpoint does not expose /models): ")
-        provider, model_count = _prepare_provider(name, base_url, token, fallback_model)
-    print()
-    print("Provider to publish:")
-    print(f"  name: {name}")
-    print(f"  endpoint: {provider['base_url']}")
-    print(f"  models: {model_count} available")
-    print("  key: [stored in vault]")
-    _provision_provider(provider, token)
-    print(f"providers: added {name}")
-
-def cmd_schedule_disable():
-    if _is_macos():
-        plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
-        if os.path.exists(plist_path):
-            _uid = os.getuid()
-            subprocess.run(["launchctl", "bootout", f"gui/{_uid}/{PLIST_NAME}"],
-                           capture_output=True)
-            os.remove(plist_path)
-        print("providers launchd schedule disabled")
-    else:
-        rc = _run_schedule("uninstall-timer", "user", "providers")
-        if rc:
-            raise SystemExit(rc)
-        print("providers schedule disabled")
-
-
-def cmd_schedule_status():
-    if _is_macos():
-        plist_path = os.path.join(LAUNCHD_DIR, f"{PLIST_NAME}.plist")
-        if os.path.exists(plist_path):
-            result = subprocess.run(
-                ["launchctl", "print", f"gui/{os.getuid()}/{PLIST_NAME}"],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                print("schedule: active (launchd hourly)")
-            else:
-                print("schedule: not loaded")
-        else:
-            print("schedule: not installed")
-    else:
-        _run_schedule("status", "user", "providers")
-def _parse_capability_command(args):
-    provider = None
-    model = None
-    json_requested = False
-    index = 0
-    while index < len(args):
-        argument = args[index]
-        if argument == "--json":
-            if json_requested:
-                raise ValueError("--json may be supplied only once")
-            json_requested = True
-        elif argument in ("--provider", "--model"):
-            if index + 1 >= len(args) or args[index + 1].startswith("-"):
-                raise ValueError(f"{argument} requires a value")
-            value = args[index + 1]
-            if argument == "--provider":
-                if provider is not None:
-                    raise ValueError("--provider may be supplied only once")
-                provider = value
-            else:
-                if model is not None:
-                    raise ValueError("--model may be supplied only once")
-                model = value
-            index += 1
-        else:
-            raise ValueError(
-                "Usage: providers capabilities [--provider NAME] [--model ID] [--json]"
-            )
-        index += 1
-    if provider == "" or model == "":
-        raise ValueError("capability filters cannot be empty")
-    return provider, model, json_requested
-
-
-def _capability_view(cache, provider=None, model=None):
-    providers = cache.get("providers", {}) if isinstance(cache, dict) else {}
-    if not isinstance(providers, dict):
-        raise ValueError("invalid capability cache providers")
-    if provider is not None:
-        if provider not in providers:
-            raise LookupError(f"no capability snapshot for provider: {provider}")
-        selected = {provider: providers[provider]}
-    else:
-        selected = dict(providers)
-    if model is not None:
-        matches = []
-        for name, snapshot in selected.items():
-            models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
-            if isinstance(models, dict) and model in models:
-                matches.append((name, snapshot))
-        if len(matches) != 1:
-            if not matches:
-                raise LookupError(f"no capability record for model: {model}")
-            raise LookupError(f"model ID is ambiguous; pass --provider: {model}")
-        name, snapshot = matches[0]
-        snapshot = dict(snapshot)
-        snapshot["models"] = {model: snapshot["models"][model]}
-        selected = {name: snapshot}
-    return {"version": CAPABILITIES_VERSION, "providers": selected}
-
-
-def cmd_capabilities(args):
-    provider, model, _json_requested = _parse_capability_command(args)
-    cache = _load_capabilities()
-    view = _capability_view(cache, provider, model)
-    print(json.dumps(view, indent=2, sort_keys=True, ensure_ascii=False))
-
-
 def _conforming_item_name(name):
     """C1 convention: {PROVIDER}_API_KEY, where PROVIDER is a lowercase
     alphanumeric/hyphen provider name uppercased with '-' -> '_' (so the item
@@ -2918,179 +2259,114 @@ def _conforming_item_name(name):
     return bool(re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*", stem))
 
 
-def main():
-    args = sys.argv[1:]
-
-    if args and args[0] == "__validate":
-        try:
-            _validate_registry(load_json(args[1]))
-        except (IndexError, OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"providers: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    if args and args[0] == "__migrate-state":
-        if _load_provider_state() is None:
-            sys.exit(1)
-        return
-
-USAGE = """providers — provider credentials and model refresh
-
-Usage:
-  providers                     List providers and key status (never the key)
-  providers add <name> <url> [key] [model]
-                                Enroll a provider and its API key in one step
-                                (model is required when the endpoint has no /models)
-  providers enable <name>       Enable a provider that has an API key
-  providers disable <name>      Disable a provider without deleting its key
-  providers refresh [name]      Sync keys, then refresh models (all enabled if omitted)
-  providers capabilities [--provider P] [--model M] [--json]
-                                Read the last-known-good capability cache
-  providers schedule [disable|status]
-                                Hourly background refresh (bare: install it)
-  providers help                Show this message
-"""
-
-
-def _usage(stream=sys.stdout):
-    print(USAGE, file=stream)
-
-
-def _refresh_all(servers):
-    refreshed = {}
-    for name, srv_cfg in servers.items():
-        if not _provider_enabled(name, srv_cfg):
-            continue
-        models = refresh_server(name, srv_cfg)
-        if isinstance(models, dict):
-            refreshed[name] = models
-    return refreshed
-
-
-def _refresh_one(servers, name):
-    if name not in servers:
-        print(f"Unknown provider: {name}", file=sys.stderr)
-        print(f"Known: {', '.join(servers)}", file=sys.stderr)
-        sys.exit(1)
-    if not _provider_enabled(name, servers[name]):
-        print(
-            f"{name} is disabled. Run: providers enable {name}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    models = refresh_server(name, servers[name])
-    return {name: models} if isinstance(models, dict) else {}
-
-
-def main():
-    args = sys.argv[1:]
-
-    if args and args[0] == "__validate":
-        try:
-            _validate_registry(load_json(args[1]))
-        except (IndexError, OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"providers: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    if args and args[0] == "__migrate-state":
-        if _load_provider_state() is None:
-            sys.exit(1)
-        return
-
-    if not args:
-        cmd_ls()
-        return
-
-    cmd = args[0]
-
-    if cmd == "add":
-        if not sys.stdin.isatty() and len(args) not in (3, 4, 5):
-            print("Usage: providers add <name> <base-url> [key] [model]", file=sys.stderr)
-            sys.exit(1)
-        if len(args) > 5:
-            print("Usage: providers add <name> <base-url> [key] [model]", file=sys.stderr)
-            sys.exit(1)
-        _ensure_vault_token(interactive=sys.stdin.isatty())
-        if len(args) == 1:
-            # interactive: walk through each provider missing a key
-            _add_interactive()
-            return
-        try:
-            _add_provider(*args[1:])
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            print(f"providers: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    if cmd in ("enable", "disable"):
-        if len(args) != 2:
-            print(f"Usage: providers {cmd} <name>", file=sys.stderr)
-            sys.exit(1)
-        if not _set_provider_enabled(args[1], cmd == "enable"):
-            sys.exit(1)
-        return
-
-    if cmd == "refresh":
-        if len(args) > 2:
-            print("Usage: providers refresh [name]", file=sys.stderr)
-            sys.exit(1)
-        _source_zsenv()
-        servers = _load_servers()
-        if servers is None:
-            sys.exit(1)
-        # Keep one cache snapshot and its mirrors together. Vault reads may be
-        # slow; without this outer lock another refresh can revoke a key while
-        # the first process later saves an older snapshot and revives it.
-        with _consumer_sync_lock():
-            _sync_zsenv_to_cache(servers)
-            _sync_common_auth(servers)
-            _sync_cache_from_vault(servers)
-            # After the two reads that populate the cache, both of which skip
-            # retired names, so there is nothing left to revive. Sweeping
-            # earlier would blank the .zshenv block before the read above --
-            # and that block is the recovery source when the cache is lost.
-            _prune_retired(_load_retired())
-            _sync_mirrors()
-            _sync_opencode_provider_statuses(servers)
-            if len(args) == 2:
-                refreshed = _refresh_one(servers, args[1])
-            else:
-                refreshed = _refresh_all(servers)
-            _sync_hermes_mirror(servers, refreshed)
+def refresh_models():
+    """Refresh enabled model inventories after fleet has synced credentials."""
+    servers = _load_servers()
+    if servers is None:
+        raise ValueError("cannot read provider registry")
+    with _consumer_sync_lock():
+        refreshed = {}
+        for name, cfg in servers.items():
+            if _provider_enabled(name, cfg):
+                models = refresh_server(name, cfg)
+                if isinstance(models, dict):
+                    refreshed[name] = models
+        _sync_hermes_mirror(servers, refreshed)
         _sync_pi_models_mirror(servers, refreshed)
-        # A refresh is the moment the capability cache changes, so it is the
-        # moment OpenCodex's derived config goes stale. Push it to disk here
-        # rather than waiting for a module reinstall, which is keyed on the
-        # module's own payload changing and never fires when only data moves.
         _sync_opencodex_provider_statuses(restart=False)
-        return
 
-    if cmd == "capabilities":
-        try:
-            cmd_capabilities(args[1:])
-        except (OSError, json.JSONDecodeError, ValueError, LookupError, RuntimeError) as exc:
-            print(f"providers capabilities: {exc}", file=sys.stderr)
-            sys.exit(1)
-        return
 
-    if cmd == "schedule":
-        sub = args[1] if len(args) > 1 else "enable"
-        if len(args) > 2 or sub not in ("enable", "disable", "status"):
-            print("Usage: providers schedule [disable|status]", file=sys.stderr)
-            sys.exit(1)
-        {"enable": cmd_schedule_enable, "disable": cmd_schedule_disable, "status": cmd_schedule_status}[sub]()
-        return
+def _provider_settings(path=None):
+    path = path or SETTINGS_PATH
+    value = load_json(path) if os.path.exists(path) else {"version": 2, "enabled": {}}
+    if (not isinstance(value, dict) or set(value) != {"version", "enabled"} or value["version"] != 2
+            or not isinstance(value["enabled"], dict) or len(value["enabled"]) > 128
+            or any(not NAME_RE.fullmatch(n) or n in ("codex", "anthropic") or not isinstance(v, bool)
+                   for n, v in value["enabled"].items())):
+        raise ValueError("provider settings must contain only account enabled choices")
+    return value
 
-    if cmd in ("help", "--help", "-h"):
-        _usage()
-        return
 
-    print(f"Unknown command: {cmd}", file=sys.stderr)
-    print(file=sys.stderr)
-    _usage(sys.stderr)
-    sys.exit(1)
+def materialize_catalog(context, shared):
+    """Join shared definitions with account choices and machine-local native OAuth entries."""
+    registry = _validate_registry(shared["registry"])
+    if any(n in ("codex", "anthropic") or p["provider_type"] != "OpenAICompatible"
+           for n, p in registry["providers"].items()):
+        raise ValueError("shared provider catalog contains a native OAuth provider")
+    settings = _provider_settings()
+    native = _validate_registry(load_json(DEFAULTS_PATH))
+    providers = {n: p for n, p in native["providers"].items() if p["provider_type"] != "OpenAICompatible"}
+    for name, cfg in registry["providers"].items():
+        cfg = dict(cfg)
+        cfg["enabled"] = settings["enabled"].get(name, cfg["enabled"])
+        providers[name] = cfg
+    result = {"version": 1, "providers": providers, "retired_providers": registry.get("retired_providers", [])}
+    _validate_registry(result)
+    save_json_atomic(REGISTRY_PATH, result)
+
+
+def bind_account(context):
+    """Bind every cached provider key and model list to the active Auth account."""
+    with _consumer_sync_lock():
+        cache = _load_cache()
+        previous = cache.get("_fleet_account")
+        if context is not None and previous == context:
+            return
+        removed = {name for name in cache if not name.startswith("_")}
+        _save_cache({"_fleet_account": context})
+        _sync_mirrors(managed_absent=removed)
+        _prune_retired(sorted(removed))
+        _save_capabilities({"version": CAPABILITIES_VERSION, "providers": {}})
+
+
+def sync_credentials(context, fetch_catalog):
+    bind_account(context)
+    try:
+        shared = fetch_catalog()
+        if common_auth_context() != context:
+            raise CommonAuthContextChanged("account changed during catalog sync")
+        # Validate before replacing the last good cache.
+        materialize_catalog(context, shared)
+        save_json_atomic(CATALOG_PATH, {"account": context, "catalog": shared})
+    except CommonAuthContextChanged:
+        bind_account(None)
+        raise
+    except Exception as exc:
+        if getattr(exc, "status", None) == 401:
+            bind_account(None)
+            raise
+        cached = load_json(CATALOG_PATH) if os.path.exists(CATALOG_PATH) else {}
+        if cached.get("account") != context:
+            raise
+        if common_auth_context() != context:
+            bind_account(None)
+            raise CommonAuthContextChanged("account changed during catalog sync")
+        materialize_catalog(context, cached["catalog"])
+    registry = _validate_registry(load_json(REGISTRY_PATH))
+    servers = _servers_from_registry(registry)
+    with _consumer_sync_lock():
+        _sync_common_auth(servers)
+        if common_auth_context() != context:
+            raise ValueError("account changed during provider sync")
+        _sync_cache_from_vault(servers)
+        if common_auth_context() != context:
+            bind_account(None)
+            raise ValueError("account changed during provider sync")
+        _prune_retired(_load_retired())
+        save_json_atomic(STATE_PATH, {"version": 1, "providers": {
+            n: {"enabled": p["enabled"] and bool(_get_key(p["auth"]["key"]))}
+            for n, p in registry["providers"].items() if p.get("provider_type") == "OpenAICompatible"}})
+        _sync_mirrors()
+        _sync_opencode_provider_statuses(servers)
+        _sync_hermes_mirror(servers, {})
+    _sync_pi_models_mirror(servers, {})
+    _sync_opencodex_provider_statuses(restart=False)
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 3 or sys.argv[1] != "__validate":
+        raise SystemExit("Private provider engine; managed by fleet")
+    try:
+        _validate_registry(load_json(sys.argv[2]))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc))

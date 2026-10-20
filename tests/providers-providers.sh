@@ -49,8 +49,8 @@ mkdir -p "$HOME/.config/providers"
 printf '{"version":1,"providers":{"demo":{"enabled":true},"unused":{"enabled":false}}}\n' > "$PROVIDER_STATE_PATH"
 
 python3 - <<PY
-import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, time
-path = '$ROOT/files/providers'
+import contextlib, copy, importlib.machinery, importlib.util, io, json, os, subprocess, sys, time
+path = '$ROOT/files/fleet-providers.py'
 loader = importlib.machinery.SourceFileLoader('providers_test', path)
 spec = importlib.util.spec_from_loader(loader.name, loader)
 m = importlib.util.module_from_spec(spec); loader.exec_module(m)
@@ -87,14 +87,13 @@ fixture_registry = m.REGISTRY_PATH
 m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-go', 'zai'
+    'cloudflare', 'openrouter', 'opencode-go', 'zai', 'alibaba', 'ollama-cloud'
 }
 m.OPENCODEX_BIN = os.path.join('$TMP', 'opencodex')
 for executable in (m.OPENCODEX_BIN,):
     with open(executable, 'w') as handle:
         handle.write('#!/bin/sh\n')
     os.chmod(executable, 0o700)
-assert m._provider_consumer_modules() == ['opencodex', 'providers']
 m.REGISTRY_PATH = fixture_registry
 servers = m._load_servers()
 assert set(servers) == {'demo', 'unused'}
@@ -133,7 +132,7 @@ m.save_json(m.REGISTRY_PATH + '.canonical', canonical)
 original_registry, m.REGISTRY_PATH = m.REGISTRY_PATH, m.REGISTRY_PATH + '.canonical'
 assert set(m._load_servers()) == {
     'grimoire', 'commandcode', 'deepseek', 'kimicode', 'meta',
-    'cloudflare', 'openrouter', 'opencode-go', 'zai'
+    'cloudflare', 'openrouter', 'opencode-go', 'zai', 'alibaba', 'ollama-cloud'
 }
 m.REGISTRY_PATH = original_registry
 
@@ -152,24 +151,6 @@ m._sync_common_auth(canonical_servers)
 assert m.cache_get('grimoire') == 'common-chat-v1'
 assert m.VAULT_TOKEN == 'common-passage'
 
-# The hourly timer invokes the bare/list command. A successful Common Auth
-# rotation must therefore flow from cache into every credential mirror there.
-real_load_servers = m._load_servers
-real_sync_common_auth = m._sync_common_auth
-real_sync_mirrors = m._sync_mirrors
-real_sync_hermes_mirror = m._sync_hermes_mirror
-published = []
-m._load_servers = lambda: canonical_servers
-m._sync_common_auth = lambda current: published.append('auth')
-m._sync_mirrors = lambda: published.append('mirrors')
-m._sync_hermes_mirror = lambda current, refreshed: published.append('hermes')
-m.cmd_ls()
-assert published == ['auth', 'mirrors', 'hermes']
-m._load_servers = real_load_servers
-m._sync_common_auth = real_sync_common_auth
-m._sync_mirrors = real_sync_mirrors
-m._sync_hermes_mirror = real_sync_hermes_mirror
-
 # A separately managed OpenCode OAuth session is not a Common Auth API bearer.
 # Preserve the OAuth record, but never use its access token as a fallback.
 m.cache_remove('grimoire')
@@ -181,7 +162,7 @@ assert 'grimoire' not in m.load_json(m.OLD_AUTH_PATH)
 m.save_json_atomic(m.OLD_AUTH_PATH, {
     'grimoire': {'type': 'oauth', 'access': 'separate-oauth-session'},
 })
-assert m._get_common_auth_key('grimoire') == ''
+assert m._get_key('grimoire') == ''
 assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
 assert m.load_json(m.OLD_AUTH_PATH)['grimoire']['access'] == 'separate-oauth-session'
 m.cache_set('grimoire', 'common-chat-v1')
@@ -358,15 +339,11 @@ m._sync_common_auth(canonical_servers)
 assert m.cache_get('grimoire') == 'account-b-chat-v1'
 assert m._load_cache()['_common_auth_context']['subject'] == 'account-b'
 
-# Provider commands never trust a passage token inherited from an old
-# shell; they resolve a current context-bound token before using the vault.
-os.environ['PASSAGE_MCP_TOKEN'] = 'old-shell-vault'
+# Automatic reconciliation refreshes context-bound Passage access.
 m.VAULT_TOKEN = 'old-shell-vault'
-m.common_auth_context = lambda: {
-    'origin': 'https://auth.lost.plus', 'subject': 'account-b',
-}
+m.common_auth_context = lambda: {'origin': 'https://auth.lost.plus', 'subject': 'account-b'}
 m.common_auth_token = lambda scope, context=None: 'fresh-bound-vault'
-assert m._ensure_vault_token(interactive=False) == 'fresh-bound-vault'
+m._sync_common_auth(canonical_servers)
 assert m.VAULT_TOKEN == 'fresh-bound-vault'
 
 # Importing the old .zshenv mirror cannot put Common Auth-owned keys back into
@@ -628,30 +605,11 @@ fp_b = m.normalize_model_row('demo', row_b['id'], row_b,
     'https://demo.invalid/models', '2026-08-28T00:00:00Z', 'f' * 64)['metadata_fingerprint']
 assert fp_a == fp_b
 
-# The read-only machine interface emits JSON only on stdout and filters an
-# exact model view.  It does not refresh or inspect credentials.
-import contextlib, io
-cap_output = io.StringIO()
-with contextlib.redirect_stdout(cap_output):
-    m.cmd_capabilities(['--provider', 'openrouter',
-                        '--model', 'openrouter/native-reasoning', '--json'])
-view = json.loads(cap_output.getvalue())
-assert list(view['providers']) == ['openrouter']
-assert list(view['providers']['openrouter']['models']) == ['openrouter/native-reasoning']
-assert 'secret' not in cap_output.getvalue()
-subprocess_result = __import__('subprocess').run(
-    [sys.executable, path, 'capabilities', '--provider', 'openrouter',
-     '--model', 'openrouter/native-reasoning', '--json'],
-    text=True, capture_output=True, check=True,
-)
-assert set(json.loads(subprocess_result.stdout)['providers']['openrouter']['models']) == {
-    'openrouter/native-reasoning'
-}
-assert subprocess_result.stderr == ''
+# Model refresh owns the credential-free capability snapshot consumed by harnesses.
+assert 'secret' not in json.dumps(m._load_capabilities())
 
-# A real subprocess refresh uses one fixture HTTP response, emits only the
-# selected normalized view on stdout, and never prints the credential. A later
-# failed refresh leaves that provider's snapshot byte-for-byte unchanged.
+# A fixture HTTP response reaches the automatic refresh and capability cache.
+# Failed refreshes preserve the last-known-good snapshot.
 import http.server, threading
 class CapabilityHandler(http.server.BaseHTTPRequestHandler):
     calls = 0
@@ -693,15 +651,12 @@ with open(refresh_registry, 'w') as handle:
 m.cache_set('demo', 'refresh-secret-token')
 refresh_env = os.environ.copy()
 refresh_env['PROVIDERS_REGISTRY'] = refresh_registry
-refresh_command = [sys.executable, path, 'refresh', 'demo']
-show_command = [sys.executable, path, 'capabilities',
-                '--provider', 'demo', '--model', 'refresh-model', '--json']
+refresh_command = [sys.executable, '-c',
+    'import runpy,sys; runpy.run_path(sys.argv[1])["refresh_models"]()', path]
 first_refresh = __import__('subprocess').run(
     refresh_command, env=refresh_env, text=True, capture_output=True, check=True)
 assert CapabilityHandler.calls == 1, CapabilityHandler.calls
-first_show = __import__('subprocess').run(
-    show_command, env=refresh_env, text=True, capture_output=True, check=True)
-refresh_view = json.loads(first_show.stdout)
+refresh_view = m._load_capabilities()
 refresh_record = refresh_view['providers']['demo']['models']['refresh-model']
 assert refresh_record['reasoning']['supported_efforts'] == ['native-low', 'native-high']
 assert refresh_record['context'] == 64000 and refresh_record['output'] == 4000
@@ -784,7 +739,7 @@ assert m.load_json(m.OPENCODE_PATH)['provider']['openrouter']['models'] == {
 
 # The registry is fetched unverified, so validation is the only gate: missing
 # providers and legacy profile-only shapes must be refused.
-for empty in ({'version': 1}, {'version': 1, 'providers': {}}, {'version': 1, 'profiles': []},
+for empty in ({'version': 1}, {'version': 1, 'profiles': []},
               {'version': 1, 'profiles': [{'name': 'demo'}]}):
     try:
         m._validate_registry(copy.deepcopy(empty))
@@ -814,8 +769,7 @@ assert 'foreign' in opencode['provider']
 real_refresh_server = m.refresh_server  # restored for the mirror assertions
 seen = []
 m.refresh_server = lambda name, cfg: seen.append(name) or True
-sys.argv = [path, 'refresh']
-m.main()
+m.refresh_models()
 assert seen == ['demo'], seen
 
 # The Hermes mirror runs off the refreshed list, never the registry: fetch
@@ -870,7 +824,7 @@ m.fetch_models = lambda *_: (_ for _ in ()).throw(
 static_models = m.refresh_server('demo', static)
 assert list(static_models) == ['@vendor/model']
 assert '@vendor/model' in m.load_json(m.OPENCODE_PATH)['provider']['demo']['models']
-# The single-provider refresh path in main() mirrors after the fetch.
+# Refreshed model inventories reach the Hermes mirror.
 m._sync_hermes_mirror(servers, {'demo': models})
 if HAVE_YAML:
     mirrored = _load_yaml(m.HERMES_CONFIG)
@@ -1067,121 +1021,6 @@ m._sync_hermes_mirror(servers, {'demo': {'fresh-3': {}}})
 assert open(m.HERMES_CONFIG).read() == 'custom_providers: [broken\n'
 with open(m.HERMES_CONFIG, 'w') as handle:
     handle.write('custom_providers:\n  - name: demo\n    models:\n      - stale-1\n')
-
-# Enablement without a key is refused (key comes from vault or cache).
-assert not m._set_provider_enabled('demo', False) is False  # no-op sanity
-assert m._set_provider_enabled('demo', False)
-assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is False
-assert set(m.load_json(m.OPENCODE_PATH)['disabled_providers']) == {
-    'foreign-disabled', 'demo', 'unused'
-}
-
-assert not m._set_provider_enabled('unused', True)  # no key yet
-m.cache_set('unused', 'unused-key')
-assert m._set_provider_enabled('unused', True)
-assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
-assert m._set_provider_enabled('demo', True)
-assert m.load_json(m.STATE_PATH)['providers']['demo']['enabled'] is True
-
-m._set_key(m._auth_provider('unused', servers['unused']), 'unused-key')
-m._set_provider_enabled('unused', True)
-assert m.load_json(m.STATE_PATH)['providers']['unused']['enabled'] is True
-assert m.load_json(m.OPENCODE_PATH)['disabled_providers'] == ['foreign-disabled']
-
-sys.argv = [path, 'refresh', 'unused']
-m.refresh_server = lambda name, cfg: seen.append(name) or True
-m.main()
-assert seen[-1] == 'unused'
-
-m.REGISTRY_PATH = '$ROOT/files/provider-registry.json'
-try:
-    m._add_provider('grimoire', 'https://wrong-endpoint.invalid/v1', 'k')
-except ValueError as exc:
-    assert 'already registered' in str(exc)
-else:
-    raise AssertionError('provider add allowed an endpoint override on a registry provider')
-
-m.REGISTRY_PATH = fixture_registry
-m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
-captured = {}
-m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
-m._add_provider('added', 'https://added.invalid/v1', 'secret-token')
-assert captured['provider']['name'] == 'added'
-assert set(captured['provider']) == {
-    'name', 'provider_type', 'base_url', 'auth', 'enabled', 'api_format', 'npm'
-}
-assert captured['token'] == 'secret-token'
-
-# Agents can add a provider directly without any prompts. The endpoint is
-# normalized before it is published, and the token is never printed.
-m.fetch_models = lambda base, auth: None
-captured = {}
-m._provision_provider = lambda provider, token: captured.update(provider=provider, token=token)
-m._add_provider('static', 'https://static.invalid/v1', 'secret-token', '@vendor/static')
-assert captured['provider']['models'] == [{'id': '@vendor/static'}]
-assert captured['token'] == 'secret-token'
-
-import contextlib, io
-builtins.input = lambda prompt='': (_ for _ in ()).throw(AssertionError(f'unexpected prompt: {prompt}'))
-m.getpass.getpass = builtins.input
-m.fetch_models = lambda base, auth: {'data': [{'id': 'small'}, {'id': 'large'}]}
-captured.clear()
-sys.argv = [path, 'add', 'agent-added', 'https://agent-added.invalid/v1/', 'agent-token']
-add_output = io.StringIO()
-with contextlib.redirect_stdout(add_output):
-    m.main()
-assert captured['provider']['name'] == 'agent-added'
-assert captured['provider']['base_url'] == 'https://agent-added.invalid/v1'
-assert captured['token'] == 'agent-token'
-assert 'agent-token' not in add_output.getvalue()
-
-m.fetch_models = lambda base, auth: None
-captured.clear()
-sys.argv = [
-    path,
-    'add',
-    'agent-static',
-    'https://agent-static.invalid/v1',
-    'agent-token',
-    '@vendor/static',
-]
-with contextlib.redirect_stdout(add_output):
-    m.main()
-assert captured['provider']['models'] == [{'id': '@vendor/static'}]
-
-schedule_output = io.StringIO()
-m._is_macos = lambda: True
-with contextlib.redirect_stdout(schedule_output):
-    m.cmd_schedule_status()
-assert schedule_output.getvalue().strip() == 'schedule: not installed'
-
-# The command tree is explicit: provider state and schedule control are
-# separate branches, and removed or malformed forms are rejected.
-dispatch = []
-m._set_provider_enabled = lambda name, enabled: dispatch.append((name, enabled)) or True
-m.cmd_schedule_enable = lambda: dispatch.append(('schedule', 'enable'))
-m.cmd_schedule_disable = lambda: dispatch.append(('schedule', 'disable'))
-m.cmd_schedule_status = lambda: dispatch.append(('schedule', 'status'))
-for argv in ([path, 'enable', 'demo'], [path, 'disable', 'demo'],
-             [path, 'schedule'], [path, 'schedule', 'disable'],
-             [path, 'schedule', 'status']):
-    sys.argv = argv
-    m.main()
-assert dispatch == [
-    ('demo', True), ('demo', False), ('schedule', 'enable'),
-    ('schedule', 'disable'), ('schedule', 'status')
-]
-for argv in ([path, 'timer'], [path, 'auth'], [path, 'sync'], [path, 'audit'],
-             [path, 'rename'], [path, 'ls'], [path, 'list'], [path, '--list'],
-             [path, 'add', 'only-name'], [path, 'enable'], [path, 'disable'],
-             [path, 'schedule', 'bogus'], [path, 'unused']):
-    sys.argv = argv
-    try:
-        m.main()
-    except SystemExit as exc:
-        assert exc.code == 1, argv
-    else:
-        raise AssertionError(f'removed command form was accepted: {argv}')
 
 with open(m.STATE_PATH, 'w') as handle:
     handle.write('{truncated')
