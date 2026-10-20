@@ -187,12 +187,12 @@ settings. Model discovery runs hourly through fleet's schedule and preserves the
 last good list during an outage. OpenCodex reads the resulting capability cache
 directly. Neither sync nor model refresh restarts the proxy.
 
-The retired `providers` setup module points to fleet. Migration preserves the
-current account's local provider choices and backs up its old registry and state under
-`~/.local/state/fleet/backup/`. Fleet removes the old executable and schedule
-after a successful sync has produced account-bound provider settings; an offline
-upgrade keeps the existing installation until setup can finish the migration.
-Migration publishes the imported enabled choices to Auth before retiring the old command.
+Run `python3 scripts/migrate-providers-to-fleet.py` once on each existing machine,
+from this checkout after deploying Auth and before normal Fleet updates. It backs up
+the old registry, state and executable under `~/.local/state/fleet/backup/providers-migration/`,
+publishes proven account choices, installs this checkout's Fleet payload, and replaces
+the old job after the new schedule succeeds. It preserves disabled schedules and can
+be retried after failure. Normal Fleet sync and installation contain no migration steps.
 Keys and cached models are bound to the Auth origin and account subject, and
 confirmed key removal clears managed copies. New accounts start with optional
 API-key providers disabled.

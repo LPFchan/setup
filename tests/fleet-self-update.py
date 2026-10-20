@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upgrade an existing Windows fleet without installing or scheduling host tools."""
+"""Validate Windows payload provisioning without changing host tools."""
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -53,11 +53,9 @@ with tempfile.TemporaryDirectory() as directory:
 
     events = []
     with patch.object(fleet, "_self_update", side_effect=lambda: events.append("update")), \
-         patch.object(fleet, "provider_engine", return_value=object()), \
-         patch.object(fleet, "provider_schedule", side_effect=lambda enabled: events.append(("hourly", enabled)) or 0), \
          patch.object(fleet, "cmd_sync", side_effect=lambda **kw: events.append(("sync", kw)) or 0), \
          patch.object(fleet, "cmd_update", side_effect=lambda _: events.append("harnesses") or 0):
         assert fleet.cmd_nightly() == 0
-    assert events == ["update", ("hourly", True), ("sync", {"pull": True}), "harnesses"]
+    assert events == ["update", ("sync", {"pull": True}), "harnesses"]
 
 print("fleet self-update provisioning, atomicity and hourly scheduling tests passed")

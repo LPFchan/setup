@@ -161,7 +161,7 @@ provider_check = r'''
 import pathlib, runpy, sys
 m = runpy.run_path(sys.argv[1], run_name="provider_windows_test")
 context = {"origin": "https://auth.test", "subject": "7"}
-m["_save_cache"]({"demo": "fixture-key", "_common_auth_context": context})
+m["_save_cache"]({"demo": "fixture-key", "_fleet_account": context})
 m["bind_account"](context)
 m["_sync_mirrors"]()
 assert m["cache_get"]("demo") == "fixture-key"
@@ -176,5 +176,8 @@ result = subprocess.run([sys.executable, "-c", provider_check, str(ROOT/"files/f
 check(result.returncode == 0, "provider Windows lock and account isolation: " + result.stderr)
 result = subprocess.run([sys.executable, str(ROOT/"tests/fleet-self-update.py")],
                         env=env, capture_output=True, text=True)
-check(result.returncode == 0, "fleet self-update migration: " + result.stdout + result.stderr)
+check(result.returncode == 0, "fleet self-update: " + result.stdout + result.stderr)
+result = subprocess.run([sys.executable, str(ROOT/"tests/provider-migration.py")],
+                        env=env, capture_output=True, text=True)
+check(result.returncode == 0, "one-off provider migration: " + result.stdout + result.stderr)
 print("fleet-windows: ok")

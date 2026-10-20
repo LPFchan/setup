@@ -578,9 +578,6 @@ def _sync_agents_once(push):
         state = {"subject": subject}
     first = "files" not in state
     joining = first and config["counter"] > 0
-    config = migrate_provider_settings(config, subject)
-    if _subject() != subject:
-        raise ApiError("the signed-in account changed during provider migration")
     base = state.get("files", {})
     server = {f["path"]: f for f in config["files"] if _synced(f["path"])}
     # An account copy of the built-in skill predates it: it goes on the next push.
@@ -636,7 +633,7 @@ def _sync_agents_once(push):
         elif rel in base and rel not in take:
             files[rel] = base[rel]  # a local change still to push
     state.update(counter=config["counter"], version=config.get("version", ""))
-    if push or not first or config["counter"] > 0:
+    if push or not first or joining:
         state["files"] = files
     if not WINDOWS:
         sync_installs(installs, state)
@@ -1696,33 +1693,6 @@ def provider_engine():
     return engine
 
 
-def migrate_provider_settings(config, subject):
-    """Publish proven legacy choices once, without pushing other local edits."""
-    if any(f["path"] == "settings/providers.json" for f in config["files"]):
-        return config
-    engine = provider_engine()
-    if (engine is None or PROVIDER_SETTINGS.exists() or pathlib.Path(engine.CATALOG_PATH).exists()
-            or not pathlib.Path(engine.REGISTRY_PATH).exists()):
-        return config
-    try:
-        context = engine.common_auth_context()
-        if not context or context.get("subject") != subject:
-            return config
-        settings = engine.legacy_settings(context)
-        if settings is None:
-            return config
-        content = (json.dumps(settings, indent=2) + "\n").encode()
-        _api("POST", "/api/fleet/config/push", {
-            "base": config["counter"], "subject": subject, "delete": [],
-            "put": [{"path": "settings/providers.json", "executable": False,
-                     "content": base64.b64encode(content).decode()}]})
-        if engine.common_auth_context() != context:
-            raise ApiError("the signed-in account changed during provider migration")
-        return _api("GET", "/api/fleet/config")
-    except (OSError, ValueError, RuntimeError) as exc:
-        raise ApiError(f"provider choices not migrated: {exc}") from exc
-
-
 def sync_provider_credentials():
     engine = provider_engine()
     if engine is None:
@@ -2085,11 +2055,8 @@ def _self_update():
 
 def cmd_nightly():
     """The scheduled pass: proxy, pull sync, harness updates, proxy route."""
-    schedule_rc = 0
     if WINDOWS:
         _self_update()
-        if provider_engine() is not None:
-            schedule_rc = provider_schedule(True)
     opencodex = HOME/".local/bin/opencodex"
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__apply"])
@@ -2097,7 +2064,7 @@ def cmd_nightly():
     rc = cmd_update([]) or rc
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__export"])
-    return schedule_rc or (0 if rc == 3 else rc)
+    return 0 if rc == 3 else rc
 
 
 # --- schedule ------------------------------------------------------------
@@ -2151,7 +2118,7 @@ def _windows_schedule():
 
 
 def provider_schedule(enable):
-    """Fleet owns the hourly model refresh; setup retires the legacy job."""
+    """Manage the hourly provider model refresh."""
     script = os.path.abspath(sys.argv[0])
     name, label = "fleet-providers", "com.lost.plus.fleet-providers"
     if WINDOWS:

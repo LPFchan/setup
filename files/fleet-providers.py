@@ -1194,7 +1194,7 @@ def _sync_hermes_credentials_without_yaml(servers, authoritative_missing=None):
             changed = True
             continue
         key = (
-            _get_common_auth_key(auth_provider)
+            _get_key(auth_provider)
             if cfg.get("auth", {}).get("type") == "common_auth"
             else _get_key(auth_provider)
         )
@@ -1285,7 +1285,7 @@ def _sync_hermes_mirror_once(servers, refreshed, authoritative_missing=None):
             continue
         if _provider_enabled(name, cfg) and auth_provider not in authoritative_missing:
             key = (
-                _get_common_auth_key(auth_provider)
+                _get_key(auth_provider)
                 if cfg.get("auth", {}).get("type") == "common_auth"
                 else _get_key(auth_provider)
             )
@@ -1524,48 +1524,9 @@ def _sync_pi_models_mirror(servers, refreshed):
             )
 
 
-def _fallback_auth_json(provider, api_only=False):
-    """Last-resort read of opencode's old auth.json for fleet providers the vault
-    does not (yet) manage. Kept for backward compatibility with OAuth entries."""
-    if not os.path.exists(OLD_AUTH_PATH):
-        return ""
-    try:
-        data = load_json(OLD_AUTH_PATH)
-    except Exception:
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    entry = data.get(provider, {})
-    if not isinstance(entry, dict):
-        return ""
-    etype = entry.get("type", "")
-    if etype == "api":
-        return entry.get("key", "")
-    if etype == "oauth" and not api_only:
-        return entry.get("access", "")
-    return ""
-
-
 def _get_key(provider):
-    """Resolve a provider's api key: cache (canonical local) first, then env,
-    then legacy auth.json."""
-    if "_fleet_account" in _load_cache():
-        return cache_get(provider)
-    key = cache_get(provider)
-    if key:
-        return key
-    key = os.environ.get(_env_name(provider), "")
-    if key:
-        return key
-    key = _read_env_block().get(_env_name(provider), "")
-    if key:
-        return key
-    return _fallback_auth_json(provider)
-
-
-def _get_common_auth_key(provider):
-    """Resolve only from stores reconciled under the persisted Auth context."""
-    return cache_get(provider) or _fallback_auth_json(provider, api_only=True)
+    """Read the credential reconciled for the current Auth account."""
+    return cache_get(provider)
 
 
 # --- registry / servers ------------------------------------------------
@@ -1582,7 +1543,7 @@ def get_auth(auth_cfg):
             return "api_key", key
     elif atype == "common_auth":
         provider = auth_cfg.get("provider", "")
-        key = _get_common_auth_key(provider)
+        key = _get_key(provider)
         if key:
             return "api_key", key
     elif atype == "api_key":
@@ -2326,32 +2287,6 @@ def _provider_settings(path=None):
     return value
 
 
-def _backup_legacy_registry():
-    if os.path.exists(CATALOG_PATH) or not os.path.exists(REGISTRY_PATH):
-        return
-    folder = pathlib.Path(os.path.expanduser("~/.local/state/fleet/backup"))
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for source, name in ((REGISTRY_PATH, "provider-registry.json"), (STATE_PATH, "provider-state.json")):
-        target = folder/name
-        if os.path.exists(source) and not target.exists():
-            shutil.copyfile(source, target)
-
-
-def legacy_settings(context):
-    """Read original account-bound choices for Fleet's one-time server import."""
-    if (not context or os.path.exists(SETTINGS_PATH) or os.path.exists(CATALOG_PATH)
-            or not os.path.exists(REGISTRY_PATH) or _load_cache().get("_common_auth_context") != context):
-        return None
-    registry = _validate_registry(load_json(REGISTRY_PATH))
-    state = _load_provider_state()
-    if state is None:
-        raise ValueError("cannot migrate unreadable provider state")
-    _backup_legacy_registry()
-    return {"version": 2, "enabled": {
-        n: state["providers"].get(n, {}).get("enabled", p["enabled"])
-        for n, p in registry["providers"].items() if p["provider_type"] == "OpenAICompatible"}}
-
-
 def materialize_catalog(context, shared):
     """Join shared definitions with account choices and machine-local native OAuth entries."""
     registry = _validate_registry(shared["registry"])
@@ -2373,22 +2308,15 @@ def materialize_catalog(context, shared):
 def bind_account(context):
     """Bind every cached provider key and model list to the active Auth account."""
     with _consumer_sync_lock():
-        _backup_legacy_registry()
         cache = _load_cache()
         previous = cache.get("_fleet_account")
         if context is not None and previous == context:
             return
-        # The old cache already bound its Common Auth credentials. Import its
-        # third-party keys only when that binding proves the same account.
-        if previous is not None or cache.get("_common_auth_context") != context:
-            removed = {name for name in cache if not name.startswith("_")}
-            _save_cache({"_fleet_account": context})
-            _sync_mirrors(managed_absent=removed)
-            _prune_retired(sorted(removed))
-            _save_capabilities({"version": CAPABILITIES_VERSION, "providers": {}})
-        cache = _load_cache()
-        cache["_fleet_account"] = context
-        _save_cache(cache)
+        removed = {name for name in cache if not name.startswith("_")}
+        _save_cache({"_fleet_account": context})
+        _sync_mirrors(managed_absent=removed)
+        _prune_retired(sorted(removed))
+        _save_capabilities({"version": CAPABILITIES_VERSION, "providers": {}})
 
 
 def sync_credentials(context, fetch_catalog):

@@ -103,38 +103,7 @@ _apply() {
     # A pull: local edits in ~/.agents go up only when the operator syncs.
     # Exit 3 means Auth gave no authoritative answer: what is on disk stays,
     # and status says so rather than failing every run.
-    local sync_rc=0
-    "$BIN" sync --pull || sync_rc=$?
-    (( sync_rc == 0 || sync_rc == 3 )) || return 1
-    if [[ -x "$HOME/.local/bin/providers" ]]; then
-        # Keep the working legacy installation until a successful account sync
-        # has produced provider settings and its bound catalog.
-        if (( sync_rc == 3 )) || ! python3 - \
-            "${XDG_STATE_HOME:-$HOME/.local/state}/fleet/agents.json" \
-            "${FLEET_AGENTS_DIR:-$HOME/.agents}/settings/providers.json" "$HOME/.config/providers/catalog.json" <<'PY'
-import hashlib, json, os, sys
-try:
-    state, settings, catalog = [json.load(open(os.path.expanduser(path))) for path in sys.argv[1:]]
-    if not all(isinstance(value, dict) for value in (state, settings, catalog)):
-        sys.exit(1)
-    if (not state.get('subject') or catalog['account']['subject'] != state['subject'] or
-            settings['version'] != 2 or not isinstance(settings['enabled'], dict) or
-            state.get('files', {}).get('settings/providers.json') !=
-            hashlib.sha256(open(os.path.expanduser(sys.argv[2]), 'rb').read()).hexdigest()):
-        sys.exit(1)
-except (OSError, ValueError, KeyError, TypeError):
-    sys.exit(1)
-PY
-        then
-            echo "fleet: provider migration deferred; keeping the existing command and schedule"
-            return 0
-        fi
-        "$BIN" schedule enable || return 1
-        "$HOME/.local/bin/providers" schedule disable >/dev/null 2>&1 || return 1
-        rm -f "$HOME/.local/bin/providers"
-    elif [[ "$("$BIN" schedule status 2>/dev/null)" == 'fleet: nightly pass on' ]]; then
-        "$BIN" schedule enable || return 1
-    fi
+    "$BIN" sync --pull || (( $? == 3 )) || return 1
 }
 
 install() { _apply installed; }
@@ -156,11 +125,7 @@ status() {
     rc=0
     "$BIN" sync --check 2>/dev/null || rc=$?
     case "$rc" in
-        0) if [[ -x "$HOME/.local/bin/providers" ]]; then
-               printf '%-25s %-12s provider migration pending\n' "$MODULE" "outdated"
-               return 1
-           fi
-           printf '%-25s %-12s local=%s remote=%s target=%s\n' \
+        0) printf '%-25s %-12s local=%s remote=%s target=%s\n' \
                "$MODULE" "current" "${desired:0:7}" "${desired:0:7}" "$BIN" ;;
         1) printf '%-25s %-12s local=%s remote=%s target=%s\n' \
                "$MODULE" "outdated" "${desired:0:7}" "${desired:0:7}" "$BIN"

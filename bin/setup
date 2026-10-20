@@ -252,10 +252,8 @@ module_is_retired() {
 # (comma-separated module names). Dependencies are installed automatically and
 # a module cannot be uninstalled while something that needs it is installed.
 #
-# Only unconditional dependencies belong here. `providers` needs `schedule`
-# on Linux but uses launchd on macOS, and one column cannot say that, so it
-# keeps its own runtime check instead. `fleet` has the same need, which
-# module_requires adds itself.
+# Only unconditional dependencies belong here. Fleet needs schedule on Linux
+# and launchd on macOS, so module_requires adds that platform-specific edge.
 
 # Membership test. The array subscript flag (Ie) reports a match's index, and
 # under KSH_ARRAYS the first element is index 0, which reads as "absent" --

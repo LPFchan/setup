@@ -162,7 +162,7 @@ assert 'grimoire' not in m.load_json(m.OLD_AUTH_PATH)
 m.save_json_atomic(m.OLD_AUTH_PATH, {
     'grimoire': {'type': 'oauth', 'access': 'separate-oauth-session'},
 })
-assert m._get_common_auth_key('grimoire') == ''
+assert m._get_key('grimoire') == ''
 assert m.get_auth(canonical_servers['grimoire']['auth']) == (None, None)
 assert m.load_json(m.OLD_AUTH_PATH)['grimoire']['access'] == 'separate-oauth-session'
 m.cache_set('grimoire', 'common-chat-v1')
