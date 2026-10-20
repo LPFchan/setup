@@ -1157,7 +1157,7 @@ _reg = m.load_json(m.REGISTRY_PATH)
 _reg['retired_providers'] = ['ghost', 'spectre']
 m.save_json(m.REGISTRY_PATH, _reg)
 assert set(m._load_retired()) == {'ghost', 'spectre'}
-# The sweep runs hourly and its report is the only visible sign it did anything,
+# The sweep runs nightly and its report is the only visible sign it did anything,
 # so it must name what it actually removed. 'absent' is retired but present
 # nowhere, and must not be claimed.
 _reg['retired_providers'] = ['ghost', 'spectre', 'absent', 'hermesonly']
@@ -1200,7 +1200,7 @@ assert 'demo' in m._load_cache()
 assert 'foreign' in m.load_json(m.OPENCODE_PATH)['provider']
 assert m.load_json(m.OLD_AUTH_PATH)['demo']['key'] == 'demo-key'
 
-# Idempotent: the sweep runs on every hourly refresh, so a second pass on an
+# Idempotent: the sweep runs on every nightly refresh, so a second pass on an
 # already-clean machine must be a no-op rather than an error.
 m._prune_retired(m._load_retired())
 assert 'demo' in m._load_cache()

@@ -90,16 +90,19 @@ assert m.cache_get('demo')=='current-key'
 # The current Passage list shape is a list of folder groups.
 m._vault_call=lambda *args:json.dumps([{'folder':'llm','items':[{'name':'DEMO_API_KEY'}]}])
 assert read_items()==[{'name':'DEMO_API_KEY'}]
-# Fleet manages its own hourly and nightly schedules.
+# Fleet keeps one nightly schedule and removes the old hourly provider timer.
 f=module('fleet_test',root/'files/fleet');calls=[]
 f.provider_engine=lambda:object();f._run_schedule=lambda *args,**kw:calls.append(args) or 0
 f.sys.argv=[str(root/'files/fleet')]
+units=home/'.config/systemd/user';units.mkdir(parents=True,exist_ok=True)
+(units/'fleet-providers.timer').write_text('')
 assert f.schedule_enable()==0
-assert not any(c[:3]==('uninstall-timer','user','providers') for c in calls)
-assert any(c[:3]==('install-timer','user','fleet-providers') and '__refresh-providers' in c[4] for c in calls)
-assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
-calls.clear();assert f.schedule_disable()==0
 assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
+assert not any(c[:3]==('install-timer','user','fleet-providers') for c in calls)
+assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
+(units/'fleet-providers.timer').unlink()
+calls.clear();assert f.schedule_disable()==0
+assert not any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
 assert any(c[:3]==('uninstall-timer','user','fleet-sync') for c in calls)
 # On macOS a run missed while shut down catches up at the next login.
 import types
@@ -108,7 +111,7 @@ f.provider_engine=lambda:None;f.subprocess.run=lambda *a,**k:types.SimpleNamespa
 try: assert f.schedule_enable()==0
 finally: f.subprocess.run,f.sys.platform=real_run,real_platform
 assert '<key>RunAtLoad</key>\n    <true/>' in f._plist_path().read_text()
-# The timer pulls the account before refreshing; operator CLI management is absent.
+# The nightly pass pulls the account, then refreshes models; the hourly entry point is gone.
 from types import SimpleNamespace
 calls.clear()
 engine=SimpleNamespace(common_auth_context=lambda:ctx,
@@ -116,15 +119,40 @@ engine=SimpleNamespace(common_auth_context=lambda:ctx,
     VaultError=m.VaultError, CommonAuthError=m.CommonAuthError, bind_account=lambda _:None)
 f.provider_engine=lambda:engine
 f.cmd_sync=lambda **kw:calls.append(('sync',kw)) or 0
+f.cmd_update=lambda _:calls.append('harnesses') or 0
 f._auth=lambda *args:(0,json.dumps(ctx))
 f._heal_path=lambda:None
-f.sys.argv=[str(root/'files/fleet'),'__refresh-providers']
-assert f.main()==0 and calls==[('sync',{'pull':True}),'models']
+f.sys.argv=[str(root/'files/fleet'),'nightly']
+opencodex=home/'.local/bin/opencodex';opencodex.parent.mkdir(parents=True,exist_ok=True);opencodex.write_text('')
+real_subprocess=f.subprocess;f.subprocess=SimpleNamespace(run=lambda args,**kw:calls.append(args[-1]))
+try:assert f.main()==0
+finally:f.subprocess=real_subprocess;opencodex.unlink()
+assert calls==[('sync',{'pull':True}),'models','__apply','harnesses','__export']
 import contextlib,io
+f.sys.argv=[str(root/'files/fleet'),'__refresh-providers']
+with contextlib.redirect_stderr(io.StringIO()):assert f.main()==2
 for args in (['providers'],['providers','add'],['providers','capabilities']):
     f.sys.argv=[str(root/'files/fleet'),*args]
     with contextlib.redirect_stderr(io.StringIO()):assert f.main()==2
 assert 'fleet providers' not in f.USAGE
+# macOS: an identical, loaded agent is left alone, since a reload shows a
+# "Background Items Added" notification; a changed one is rewritten and reloaded.
+g=module('fleet_darwin',root/'files/fleet');launchctl=[]
+g.sys.argv=[str(root/'files/fleet')];g.WINDOWS=False
+g.subprocess=SimpleNamespace(run=lambda args,**kw:launchctl.append(args[:2]) or SimpleNamespace(returncode=0))
+g._plist_path().unlink(missing_ok=True)
+old=g.LAUNCHD_DIR/'com.lost.plus.fleet-providers.plist';old.parent.mkdir(parents=True,exist_ok=True);old.write_text('')
+real_platform=g.sys.platform;g.sys.platform='darwin'
+try:
+    with contextlib.redirect_stdout(io.StringIO()):assert g.schedule_enable()==0
+    assert not old.exists() and ['launchctl','bootstrap'] in launchctl
+    launchctl.clear()
+    with contextlib.redirect_stdout(io.StringIO()):assert g.schedule_enable()==0
+    assert ['launchctl','bootstrap'] not in launchctl and ['launchctl','bootout'] not in launchctl
+    g._plist_path().write_text('stale')
+    with contextlib.redirect_stdout(io.StringIO()):assert g.schedule_enable()==0
+    assert ['launchctl','bootstrap'] in launchctl and g._plist_path().read_text()!='stale'
+finally:g.sys.platform=real_platform
 
 # Pull-only first syncs reconcile catalog/credentials without a settings file.
 # Legacy files never seed account settings during routine reconciliation.

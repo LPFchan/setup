@@ -1707,10 +1707,7 @@ def sync_provider_credentials():
 
 
 def refresh_provider_models():
-    """The hourly job: pull account choices and credentials, then refresh models."""
-    rc = cmd_sync(pull=True)
-    if rc:
-        return rc
+    """Rediscover provider models; the nightly pass runs it after its sync."""
     engine = provider_engine()
     if engine is None:
         eprint("fleet: provider support is missing; run: setup update fleet")
@@ -2054,13 +2051,16 @@ def _self_update():
 
 
 def cmd_nightly():
-    """The scheduled pass: proxy, pull sync, harness updates, proxy route."""
+    """The scheduled pass: pull sync, model refresh, proxy, harness updates, proxy route."""
     if WINDOWS:
         _self_update()
+    rc = cmd_sync(pull=True)
+    if rc == 0 and provider_engine() is not None:
+        rc = refresh_provider_models()
+    # After the refresh, so the restarted proxy serves tonight's models.
     opencodex = HOME/".local/bin/opencodex"
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__apply"])
-    rc = cmd_sync(pull=True)
     rc = cmd_update([]) or rc
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__export"])
@@ -2117,43 +2117,21 @@ def _windows_schedule():
     return 0
 
 
-def provider_schedule(enable):
-    """Manage the hourly provider model refresh."""
-    script = os.path.abspath(sys.argv[0])
+def _remove_hourly_providers():
+    """Remove the hourly provider job earlier versions installed; the nightly pass refreshes now."""
     name, label = "fleet-providers", "com.lost.plus.fleet-providers"
     if WINDOWS:
-        if not enable:
-            if _schtasks("/Query", "/TN", name) == 0:
-                return _schtasks("/Delete", "/TN", name, "/F")
-            return 0
-        pythonw = pathlib.Path(sys.executable).with_name("pythonw.exe")
-        return _schtasks("/Create", "/TN", name, "/SC", "HOURLY", "/MO", "1", "/F",
-                         "/TR", f'"{pythonw}" -X utf8 "{script}" __refresh-providers')
+        return 0  # no Windows machine ever ran the hourly job
     if sys.platform == "darwin":
-        import plistlib
-        uid = os.getuid()
         path = LAUNCHD_DIR/(label + ".plist")
-        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True)
-        if not enable:
-            path.unlink(missing_ok=True)
-            return 0
-        LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
-        log = FLEET_STATE/"providers.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        save_text(path, plistlib.dumps({"Label": label, "ProgramArguments": [script, "__refresh-providers"],
-            "StartCalendarInterval": {"Minute": 0}, "StandardOutPath": str(log), "StandardErrorPath": str(log)}).decode())
-        result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(path)], capture_output=True)
-        return 0 if result.returncode == 125 else result.returncode
-    if not enable:
-        return _run_schedule("uninstall-timer", "user", name)
-    with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:
-        handle.write("Persistent=true\n")
-        extra = handle.name
-    try:
-        return _run_schedule("install-timer", "user", name, "Refresh fleet provider models",
-                             f"{script} __refresh-providers", "hourly", "", extra)
-    finally:
-        os.unlink(extra)
+        if path.exists():
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
+            path.unlink()
+        return 0
+    units = pathlib.Path(os.environ.get("SCHEDULE_USER_DIR") or HOME/".config/systemd/user")
+    if not (units/(name + ".timer")).exists():
+        return 0
+    return _run_schedule("uninstall-timer", "user", name)
 
 
 def schedule_installed():
@@ -2169,12 +2147,19 @@ def schedule_installed():
         return False
 
 
+def _launchd_loaded(label):
+    """None when there is no GUI session to ask (over SSH)."""
+    uid = os.getuid()
+    if subprocess.run(["launchctl", "print", f"gui/{uid}"], capture_output=True).returncode:
+        return None
+    return subprocess.run(["launchctl", "print", f"gui/{uid}/{label}"], capture_output=True).returncode == 0
+
+
 def schedule_enable():
-    if provider_engine() is not None:
-        rc = provider_schedule(True)
-        if rc:
-            eprint("fleet: hourly provider schedule failed")
-            return rc
+    rc = _remove_hourly_providers()
+    if rc:
+        eprint("fleet: could not remove the old hourly provider job")
+        return rc
     if WINDOWS:
         return _windows_schedule()
     if sys.platform == "darwin":
@@ -2183,7 +2168,7 @@ def schedule_enable():
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        _plist_path().write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+        plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -2207,7 +2192,14 @@ def schedule_enable():
     <string>{log}</string>
 </dict>
 </plist>
-""")
+"""
+        # Rewriting or reloading the agent makes macOS announce it as a new
+        # background item, so leave an identical, loaded agent alone.
+        current = _plist_path().exists() and _plist_path().read_text() == plist
+        if current and _launchd_loaded(PLIST_NAME) is not False:
+            print(f"fleet: nightly pass scheduled at {SCHEDULE_HOUR:02d}:00 (launchd)")
+            return 0
+        _plist_path().write_text(plist)
         uid = os.getuid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{PLIST_NAME}"], capture_output=True)
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(_plist_path())],
@@ -2239,10 +2231,9 @@ def schedule_enable():
 
 
 def schedule_disable():
-    if provider_engine() is not None:
-        rc = provider_schedule(False)
-        if rc:
-            return rc
+    rc = _remove_hourly_providers()
+    if rc:
+        return rc
     if WINDOWS:
         if _schtasks("/Query", "/TN", TIMER_NAME) == 0 and _schtasks("/Delete", "/TN", TIMER_NAME, "/F"):
             eprint("fleet: Task Scheduler disable failed")
@@ -2270,7 +2261,7 @@ USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, cred
 def main():
     args = sys.argv[1:]
     command, rest = (args[0], args[1:]) if args else (None, [])
-    if command in ("install", "update", "nightly", "sync", "__refresh-providers"):
+    if command in ("install", "update", "nightly", "sync"):
         _heal_path()
     if command == "sync" and rest in ([], ["--check"], ["--pull"]):
         return cmd_sync(check=rest == ["--check"], pull=rest == ["--pull"])
@@ -2280,8 +2271,6 @@ def main():
         return cmd_install(rest)
     if command == "update":
         return cmd_update(rest)
-    if args == ["__refresh-providers"]:
-        return refresh_provider_models()
     if command == "skills":
         return cmd_skills(rest)
     if command == "mcp-headers":

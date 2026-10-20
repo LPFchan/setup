@@ -45,17 +45,13 @@ with tempfile.TemporaryDirectory() as directory:
         assert all(path.read_bytes() == previous[name] for name, path in targets.items())
 
     fleet.WINDOWS = True
-    scheduled = []
-    with patch.object(fleet, "_schtasks", side_effect=lambda *args: scheduled.append(args) or 0), \
-         patch.object(sys, "argv", [str(work/".local/bin/fleet")]):
-        assert fleet.provider_schedule(True) == 0
-    assert scheduled[0][0] == "/Create" and "__refresh-providers" in scheduled[0][-1]
 
     events = []
     with patch.object(fleet, "_self_update", side_effect=lambda: events.append("update")), \
          patch.object(fleet, "cmd_sync", side_effect=lambda **kw: events.append(("sync", kw)) or 0), \
-         patch.object(fleet, "cmd_update", side_effect=lambda _: events.append("harnesses") or 0):
+         patch.object(fleet, "cmd_update", side_effect=lambda _: events.append("harnesses") or 0), \
+         patch.object(fleet, "refresh_provider_models", side_effect=lambda: events.append("models") or 0):
         assert fleet.cmd_nightly() == 0
-    assert events == ["update", ("sync", {"pull": True}), "harnesses"]
+    assert events == ["update", ("sync", {"pull": True}), "models", "harnesses"]
 
-print("fleet self-update provisioning, atomicity and hourly scheduling tests passed")
+print("fleet self-update provisioning, atomicity and nightly scheduling tests passed")
