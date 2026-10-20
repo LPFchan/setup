@@ -123,7 +123,11 @@ f.cmd_update=lambda _:calls.append('harnesses') or 0
 f._auth=lambda *args:(0,json.dumps(ctx))
 f._heal_path=lambda:None
 f.sys.argv=[str(root/'files/fleet'),'nightly']
-assert f.main()==0 and calls==[('sync',{'pull':True}),'models','harnesses']
+opencodex=home/'.local/bin/opencodex';opencodex.parent.mkdir(parents=True,exist_ok=True);opencodex.write_text('')
+real_subprocess=f.subprocess;f.subprocess=SimpleNamespace(run=lambda args,**kw:calls.append(args[-1]))
+try:assert f.main()==0
+finally:f.subprocess=real_subprocess;opencodex.unlink()
+assert calls==[('sync',{'pull':True}),'models','__apply','harnesses','__export']
 import contextlib,io
 f.sys.argv=[str(root/'files/fleet'),'__refresh-providers']
 with contextlib.redirect_stderr(io.StringIO()):assert f.main()==2

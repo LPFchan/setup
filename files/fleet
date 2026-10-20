@@ -2051,15 +2051,18 @@ def _self_update():
 
 
 def cmd_nightly():
-    """The scheduled pass: proxy, pull sync, harness updates, proxy route."""
+    """The scheduled pass: pull sync, model refresh, proxy, harness updates, proxy route."""
     if WINDOWS:
         _self_update()
-    opencodex = HOME/".local/bin/opencodex"
-    if opencodex.exists():
-        subprocess.run([sys.executable, str(opencodex), "__apply"])
+    # Windows updates itself here rather than through setup, which re-runs `fleet schedule`.
+    _remove_hourly_providers()
     rc = cmd_sync(pull=True)
     if rc == 0 and provider_engine() is not None:
         rc = refresh_provider_models()
+    # After the refresh, so the restarted proxy serves tonight's models.
+    opencodex = HOME/".local/bin/opencodex"
+    if opencodex.exists():
+        subprocess.run([sys.executable, str(opencodex), "__apply"])
     rc = cmd_update([]) or rc
     if opencodex.exists():
         subprocess.run([sys.executable, str(opencodex), "__export"])
