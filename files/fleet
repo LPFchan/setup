@@ -2054,8 +2054,6 @@ def cmd_nightly():
     """The scheduled pass: pull sync, model refresh, proxy, harness updates, proxy route."""
     if WINDOWS:
         _self_update()
-    # Windows updates itself here rather than through setup, which re-runs `fleet schedule`.
-    _remove_hourly_providers()
     rc = cmd_sync(pull=True)
     if rc == 0 and provider_engine() is not None:
         rc = refresh_provider_models()
@@ -2123,9 +2121,7 @@ def _remove_hourly_providers():
     """Remove the hourly provider job earlier versions installed; the nightly pass refreshes now."""
     name, label = "fleet-providers", "com.lost.plus.fleet-providers"
     if WINDOWS:
-        if _schtasks("/Query", "/TN", name) == 0:
-            return _schtasks("/Delete", "/TN", name, "/F")
-        return 0
+        return 0  # no Windows machine ever ran the hourly job
     if sys.platform == "darwin":
         path = LAUNCHD_DIR/(label + ".plist")
         if path.exists():
