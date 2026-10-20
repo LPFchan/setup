@@ -183,7 +183,7 @@ The dashboard lists connections alphabetically and manages API-key enrollment
 and enabled choices. Fleet caches the shared Auth catalog and projects its
 definitions plus account choices into the local `~/.config/providers/registry.json`
 used by OpenCode, Hermes, Pi and OpenCodex. Normal sync refreshes credentials and
-settings. Model discovery runs hourly through fleet's schedule and preserves the
+settings. Model discovery runs in fleet's 04:00 nightly pass and preserves the
 last good list during an outage. OpenCodex reads the resulting capability cache
 directly. Neither sync nor model refresh restarts the proxy.
 

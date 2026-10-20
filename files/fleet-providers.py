@@ -5,7 +5,7 @@
 
 The Auth dashboard owns provider management. Fleet reconciles the shared catalog
 with account enablement, reads keys from Passage, and maintains credential and
-model mirrors for OpenCode, Hermes, Pi and OpenCodex. Its hourly job refreshes
+model mirrors for OpenCode, Hermes, Pi and OpenCodex. Its nightly pass refreshes
 model inventories and capability snapshots while preserving the proxy process.
 """
 
@@ -1249,7 +1249,7 @@ def _sync_hermes_mirror_once(servers, refreshed, authoritative_missing=None):
     source of provider routing while live /v1/models fetches stay the
     source of model availability. Network-optional: missing PyYAML or an
     unreadable config skips silently, so a mirror failure can never crash
-    the hourly timer.
+    the nightly pass.
     """
     try:
         import yaml  # PyYAML is optional: skip silently when absent.
@@ -1878,7 +1878,7 @@ def _prune_retired(retired):
     deletes an entry only it knows about, which then re-mirrors the dead key
     into .zshenv and auth.json on the next pass. This is the one sweep that
     closes that loop. Idempotent and silent when there is nothing to remove,
-    because it runs on every hourly refresh.
+    because it runs on every nightly refresh.
     """
     retired = [name for name in retired if name]
     if not retired:
@@ -2122,8 +2122,8 @@ def _sync_opencode_provider_statuses(servers):
 def _sync_opencodex_provider_statuses(restart=True):
     """Mirror provider status into OpenCodex and the Codex model catalog.
 
-    `restart=False` is for the refresh path. A refresh runs hourly and can land
-    at any moment, and a proxy restart aborts whatever turn is in flight; the
+    `restart=False` is for the refresh path. The nightly refresh runs unattended,
+    and a proxy restart aborts whatever turn is in flight; the
     config is brought current on disk and the daily harnesses pass is what
     restarts the proxy onto it.
     """
