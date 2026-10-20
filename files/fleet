@@ -2178,6 +2178,8 @@ def schedule_enable():
     if WINDOWS:
         return _windows_schedule()
     if sys.platform == "darwin":
+        # launchd skips a run missed while the Mac was shut down; RunAtLoad
+        # catches it up at the next login.
         LAUNCHD_DIR.mkdir(parents=True, exist_ok=True)
         log = STATE.parent/"sync.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -2197,6 +2199,8 @@ def schedule_enable():
         <key>Hour</key><integer>{SCHEDULE_HOUR}</integer>
         <key>Minute</key><integer>0</integer>
     </dict>
+    <key>RunAtLoad</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>{log}</string>
     <key>StandardErrorPath</key>

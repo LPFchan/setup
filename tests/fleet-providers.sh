@@ -101,6 +101,13 @@ assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
 calls.clear();assert f.schedule_disable()==0
 assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
 assert any(c[:3]==('uninstall-timer','user','fleet-sync') for c in calls)
+# On macOS a run missed while shut down catches up at the next login.
+import types
+real_run,real_platform=f.subprocess.run,f.sys.platform
+f.provider_engine=lambda:None;f.subprocess.run=lambda *a,**k:types.SimpleNamespace(returncode=0);f.sys.platform='darwin'
+try: assert f.schedule_enable()==0
+finally: f.subprocess.run,f.sys.platform=real_run,real_platform
+assert '<key>RunAtLoad</key>\n    <true/>' in f._plist_path().read_text()
 # The timer pulls the account before refreshing; operator CLI management is absent.
 from types import SimpleNamespace
 calls.clear()

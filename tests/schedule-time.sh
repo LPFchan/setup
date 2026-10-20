@@ -61,6 +61,8 @@ grep -q '<key>Hour</key><integer>6</integer>' "$plist" \
     || fail "macOS timer is not scheduled for 06:00"
 grep -A4 '<key>ProgramArguments</key>' "$plist" | grep -q '<string>--batch</string>' \
     || fail "macOS timer does not use non-interactive update mode"
+grep -A1 '<key>RunAtLoad</key>' "$plist" | grep -q '<true/>' \
+    || fail "macOS timer does not catch up a run missed while shut down"
 grep -q 'scheduled daily at 06:00 (launchd)' "$TMP/macos-out" \
     || fail "macOS schedule output has the wrong time"
 grep -q 'bootstrap gui/501' "$LAUNCHCTL_CALLS" \

@@ -1778,6 +1778,8 @@ cmd_schedule() {
     local script_path
     script_path="$(command -v setup 2>/dev/null || echo "$HOME/.local/bin/setup")"
     if [[ "$(uname -s)" == "Darwin" ]]; then
+        # launchd skips a run missed while the Mac was shut down; RunAtLoad
+        # catches it up at the next login.
         local plist_dir="$HOME/Library/LaunchAgents"
         local plist="$plist_dir/com.lost.plus.setup-update.plist"
         mkdir -p "$plist_dir"
@@ -1799,6 +1801,8 @@ cmd_schedule() {
         <key>Hour</key><integer>6</integer>
         <key>Minute</key><integer>0</integer>
     </dict>
+    <key>RunAtLoad</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>/tmp/setup-update.log</string>
     <key>StandardErrorPath</key>
