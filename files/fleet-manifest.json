@@ -80,7 +80,8 @@
     "attribution": {
       "commit": "",
       "pr": ""
-    }
+    },
+    "disableClaudeAiConnectors": true
   },
   "localPluginMcpServers": [
     {

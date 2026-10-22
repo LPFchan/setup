@@ -92,6 +92,7 @@ python3 - "$HOME/.claude/settings.json" <<'PY' || fail "claude settings"
 import json, sys
 s = json.load(open(sys.argv[1]))
 assert s["keep"] and s["effortLevel"] == "high" and s["attribution"] == {"commit": "", "pr": ""}, s
+assert s["disableClaudeAiConnectors"] is True, s
 assert s["permissions"]["allow"] == ["Read", "mcp__okdam__*"], s
 PY
 grep -q "export OKDAM_MCP_TOKEN=tok-okdam-mcp" "$HOME/.zshenv" || fail "hub token not exported"
