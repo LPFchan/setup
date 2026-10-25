@@ -382,6 +382,10 @@ def _vault_call(tool, arguments):
     for content in result.get("content", []):
         if content.get("type") == "text":
             text += content.get("text", "")
+    # An empty list comes back with no content blocks at all; only the
+    # structured copy carries it.
+    if not text and isinstance(result.get("structuredContent"), dict) and "result" in result["structuredContent"]:
+        text = json.dumps(result["structuredContent"]["result"])
     return text
 
 
