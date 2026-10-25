@@ -2166,6 +2166,11 @@ def run_reel_picker(
     def restart() -> None:
         try:
             restart_stale_proxy("restart", quiet=True)
+            # A provider the old process never loaded only shows up now.
+            fetched["index"] = merged_model_index(registry)
+            fetched["applied"] = False
+        except Exception:
+            pass
         finally:
             fetch_proxy()
             fetched["restarting"] = False
