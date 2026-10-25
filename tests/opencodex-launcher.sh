@@ -926,9 +926,15 @@ assert state.focus == 0
 header = namespace["picker_header"]
 assert header((True, 10100, [], "2.10.1")) == ("opencodex · 2.10.1 · :10100 running", "title")
 assert header((True, 10100, ["stale"], "2.10.0")) == (
-    "opencodex · 2.10.0 · :10100 running · restart on launch",
+    "opencodex · 2.10.0 · :10100 running · restart pending",
     "warn",
 )
+assert header((True, 10100, [], "2.10.1"), restarting=True) == (
+    "opencodex · restarting proxy…", "dim")
+# ctrl+r restarts the proxy from the menu and leaves the selection alone.
+focus, cursors = state.focus, list(state.cursors)
+assert namespace["handle_key"](state, "restart") == "restart"
+assert (state.focus, state.cursors) == (focus, cursors)
 assert header((False, None, [], "2.10.1")) == ("opencodex · 2.10.1 · proxy stopped", "dim")
 assert header((True, 10100, [], None)) == ("opencodex · :10100 running", "title")
 assert header(None) == ("opencodex · …", "dim")
