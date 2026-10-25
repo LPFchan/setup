@@ -104,6 +104,17 @@ assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
 calls.clear();assert f.schedule_disable()==0
 assert not any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
 assert any(c[:3]==('uninstall-timer','user','fleet-sync') for c in calls)
+# A sync removes it too: an update never re-runs `fleet schedule`.
+import contextlib
+(units/'fleet-providers.timer').write_text('');calls.clear()
+saved={n:getattr(f,n) for n in ('_fleet_lock','sync_ssh','sync_agents','sync_builtin_skill','sync_links','render_harnesses','sync_provider_credentials','provider_engine')}
+f._fleet_lock=contextlib.nullcontext;f.sync_ssh=lambda check:0;f.sync_agents=lambda push:0
+f.sync_builtin_skill=f.sync_links=lambda *a,**k:None;f.render_harnesses=lambda:True
+f.sync_provider_credentials=lambda:None;f.provider_engine=lambda:None
+assert f.cmd_sync(pull=True)==0
+assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
+for n,v in saved.items(): setattr(f,n,v)
+(units/'fleet-providers.timer').unlink()
 # On macOS a run missed while shut down catches up at the next login.
 import types
 real_run,real_platform=f.subprocess.run,f.sys.platform

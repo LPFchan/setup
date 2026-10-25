@@ -1976,6 +1976,10 @@ def cmd_sync(check=False, pull=False):
             rc = 3
         sync_builtin_skill()
         sync_links()
+        # Machines that took the update without re-running `fleet schedule`
+        # still carry the retired hourly job, which now fails every hour.
+        if _remove_hourly_providers():
+            eprint("fleet: could not remove the old hourly provider job")
         if not render_harnesses() and rc == 0:
             rc = 3
         if rc != 3:
