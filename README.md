@@ -199,8 +199,34 @@ and enabled choices. Fleet caches the shared Auth catalog and projects its
 definitions plus account choices into the local `~/.config/providers/registry.json`
 used by OpenCode, Hermes, Pi and OpenCodex. Normal sync refreshes credentials and
 settings. Model discovery runs in fleet's 04:00 nightly pass and preserves the
-last good list during an outage. OpenCodex reads the resulting capability cache
-directly. Neither sync nor model refresh restarts the proxy.
+last good list during an outage. Neither sync nor model refresh restarts the proxy.
+
+Codex speaks only the OpenAI Responses API and Claude Code only the Anthropic
+Messages API, so other providers reach them through the OpenCodex proxy (`ocx`).
+`fleet install ocx` installs it from npm with its background service (launchd,
+a systemd user unit, or a hidden Task Scheduler task on Windows). On Linux fleet
+gives that unit a 330s stop timeout (`opencodex-proxy.service.d/50-stop-timeout.conf`):
+the proxy drains in-flight turns for up to 300s on stop, upstream's unit sets none,
+and systemd's default 90s would kill it mid-turn. Fleet then
+writes the account's providers into `~/.opencodex/config.json` as a fourth mirror:
+only the providers the registry names, recorded in
+`~/.opencodex/setup-managed-providers.json`, so every other key and provider stays
+as you or OpenCodex left it and a provider the registry drops is removed. A disabled
+provider or one without a key is marked `disabled`, and the capability cache
+supplies each provider's model allowlist, effort ladders and context windows.
+While the proxy answers, fleet points Claude Code at it through `env.ANTHROPIC_BASE_URL`
+in `~/.claude/settings.json`, and drops that route once the proxy stays down. The
+proxy reads its config only at startup and keeps serving the old build after an
+update, so the nightly pass restarts it (`ocx service restart`) when either changed,
+once no turn is running; a proxy that stays busy is restarted the next night. A
+logout or account change found by any sync strips the old keys from `config.json`
+(every provider there is then disabled) and restarts the proxy as soon as it is idle,
+rather than at night. ocx
+rewrites `config.json` itself, so "changed" means fleet's own providers differ from
+what the proxy last started on (a hash in the managed-providers record). On Windows a
+running proxy locks its files, so `ocx update`, which stops and restarts it, runs only
+when npm has a new release, and also waits for that moment. While setup's own runtime (`~/.local/libexec/opencodex`) is
+installed, the `opencodex` module keeps owning the proxy and fleet leaves it alone.
 
 Run `python3 scripts/migrate-providers-to-fleet.py` once on each existing machine,
 from this checkout after deploying Auth and before normal Fleet updates. It backs up
@@ -227,7 +253,7 @@ fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Co
 - **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, Kimi Code, and Muse Code so you can jump right back into any session.
 - **`opencodex`**: Profile launcher that manages custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
 - **Mixed-tier admission policy**: a provider descriptor may carry `model_allow_ids`, `model_allow_suffixes`, and `model_no_reasoning_suffixes`, which admit only known-free or newly published `-free`/`alpha` model IDs into the mirrored catalogs and keep `alpha` IDs off OpenCodex's generic reasoning ladder. OpenCode Zen used all three; it has since been retired, so no live provider sets them, and they remain for the next mixed free/paid endpoint.
-- **Retiring a provider**: deleting a provider from the registry is not enough, because every consumer write path is an upsert — the credential and model list would sit on each machine forever. Name it in `retired_providers` and each refresh sweeps it out of the credential cache, the `.zshenv` key block, opencode's `auth.json` and provider block, the provider state, the capability cache, Hermes, and Pi. A name that is itself live, or that a live provider borrows as its credential, is rejected at validation.
+- **Retiring a provider**: deleting a provider from the registry is not enough, because every consumer write path is an upsert — the credential and model list would sit on each machine forever. Name it in `retired_providers` and each refresh sweeps it out of the credential cache, the `.zshenv` key block, opencode's `auth.json` and provider block, the provider state, the capability cache, Hermes, Pi, and OpenCodex's config. A name that is itself live, or that a live provider borrows as its credential, is rejected at validation.
 - **OpenCode Go session affinity**: `opencodex` carries the stable request/conversation lane required by OpenCode's routes as `x-opencode-session`. This is upstream behaviour — setup used to patch the installed runtime to extend it to OpenCode Zen as well, but Zen is retired and OpenCodex 2.59.0 rewrote that transport, so the patch is gone and the runtime is installed verbatim.
 
 ---

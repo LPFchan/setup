@@ -42,6 +42,11 @@ CATALOG_PATH = os.path.expanduser("~/.config/providers/catalog.json")
 OPENCODEX_BIN = os.environ.get(
     "OPENCODEX_LAUNCHER", os.path.expanduser("~/.local/bin/opencodex")
 )
+# While setup's own OpenCodex runtime is installed, its launcher owns the ocx config.
+OPENCODEX_LEGACY = os.path.expanduser("~/.local/libexec/opencodex")
+OPENCODEX_CONFIG = os.path.expanduser("~/.opencodex/config.json")
+OPENCODEX_MANAGED = os.path.expanduser("~/.opencodex/setup-managed-providers.json")
+OCX_BIN = None  # fleet sets the ocx it installed; None leaves OpenCodex alone
 AUTH_BIN = os.environ.get("FLEET_AUTH_BIN", os.environ.get("AUTH_BIN", os.path.expanduser("~/.local/bin/auth")))
 CONSUMER_SYNC_LOCK = os.path.expanduser("~/.config/auth/consumer-sync.lock")
 _SYNC_LOCK_DEPTH = 0
@@ -2123,24 +2128,211 @@ def _sync_opencode_provider_statuses(servers):
     save_json_atomic(OPENCODE_PATH, opencode)
 
 
-def _sync_opencodex_provider_statuses(restart=True):
-    """Mirror provider status into OpenCodex and the Codex model catalog.
+def _opencodex_seed():
+    return {
+        "port": 10100,
+        "openaiProviderTierVersion": 2,
+        "providers": {
+            "openai": {
+                "adapter": "openai-responses",
+                "baseUrl": "https://chatgpt.com/backend-api/codex",
+                "authMode": "forward",
+                "codexAccountMode": "pool",
+            }
+        },
+        "defaultProvider": "openai",
+        "websockets": True,
+        "codexAutoStart": True,
+        "codexShimAutoRestore": True,
+    }
 
-    `restart=False` is for the refresh path. The nightly refresh runs unattended,
-    and a proxy restart aborts whatever turn is in flight; the
-    config is brought current on disk and the daily harnesses pass is what
-    restarts the proxy onto it.
+
+def _capability_models(capabilities, name):
+    """A provider's model records in the capability cache, or None when absent."""
+    snapshot = capabilities.get("providers", {}).get(name)
+    models = snapshot.get("models", {}) if isinstance(snapshot, dict) else None
+    return models if isinstance(models, dict) else None
+
+
+def _capability_ladders(models):
+    """{native model id: supported efforts} for models with full reasoning control."""
+    ladders = {}
+    for model_id, record in models.items():
+        reasoning = record.get("reasoning") if isinstance(record, dict) else None
+        reasoning = reasoning if isinstance(reasoning, dict) else {}
+        efforts = reasoning.get("supported_efforts")
+        if not model_id or reasoning.get("support") != "full" or not isinstance(efforts, list):
+            continue
+        efforts = [value for value in efforts if isinstance(value, str) and value]
+        if efforts:
+            ladders[model_id] = efforts
+    return ladders
+
+
+def _capability_contexts(models):
+    return {
+        model_id: record["context"] for model_id, record in models.items()
+        if model_id and isinstance(record, dict)
+        and isinstance(record.get("context"), int) and record["context"] > 0
+    }
+
+
+def _opencodex_config(registry, original, state, previously_managed, capabilities):
+    """OpenCodex's config.json with the registry's providers merged in.
+
+    Only providers the registry names are touched; every other key and
+    provider stays as the user or OpenCodex left it. A provider this file
+    managed before and the registry no longer names (retired or removed) is
+    dropped. Returns (config, managed provider names).
     """
-    if not (os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK)):
-        return
-    argv = [OPENCODEX_BIN, "__apply"] + ([] if restart else ["--no-restart"])
-    if subprocess.run(argv).returncode:
-        print("  OpenCodex config unchanged; run: setup update opencodex", file=sys.stderr)
-        return
-    ocx = shutil.which("ocx")
-    if ocx is None:
-        return
-    if subprocess.run([ocx, "sync"]).returncode:
+    config = json.loads(json.dumps(original or _opencodex_seed()))
+    providers = config.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise ValueError("OpenCodex providers must be an object")
+    providers.setdefault("openai", _opencodex_seed()["providers"]["openai"])
+    config.setdefault("defaultProvider", "openai")
+    managed = {
+        name for name, provider in registry["providers"].items()
+        if provider.get("provider_type") in ("DirectAnthropic", "OpenAICompatible")
+    }
+    for stale in previously_managed - managed:
+        providers.pop(stale, None)
+
+    for name in sorted(managed):
+        descriptor = registry["providers"][name]
+        current = providers.get(name, {})
+        provider = dict(current) if isinstance(current, dict) else {}
+        if descriptor["provider_type"] == "DirectAnthropic":
+            provider.update({"adapter": "anthropic", "baseUrl": descriptor["base_url"], "authMode": "oauth"})
+            for field in ("apiKey", "apiKeyPool", "disabled"):
+                provider.pop(field, None)
+        else:
+            key = _get_key(descriptor["auth"]["key"])
+            entry = state["providers"].get(name)
+            enabled = entry["enabled"] if entry is not None else descriptor.get("enabled") is True
+            # OpenCodex's own `disabled` flag is what `ocx sync` filters on when it
+            # rebuilds the Codex model catalog, so it keeps a disabled provider out
+            # of the Codex model picker, not just out of routing.
+            provider.update({
+                "adapter": "openai-chat",
+                "baseUrl": descriptor["base_url"],
+                "authMode": "key",
+                "apiKey": key,
+                "disabled": not enabled or not key,
+                "liveModels": True,
+            })
+            # The proxy's live /models discovery would re-list models every other
+            # mirror filtered out, so the cache's filtered inventory becomes its
+            # allowlist. Without a refreshed cache, an admission policy's registry
+            # list is the bootstrap floor instead of the full upstream catalog.
+            models = _capability_models(capabilities, name)
+            if models:
+                selected = sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
+            else:
+                allow = descriptor.get("model_allow_ids")
+                selected = sorted(m for m in allow if isinstance(m, str) and m) if isinstance(allow, list) else []
+            if selected:
+                provider["selectedModels"] = selected
+            else:
+                provider.pop("selectedModels", None)
+            # OpenCodex never reads an upstream's supported efforts or context
+            # window off /v1/models, and an api-key provider gets no login
+            # reconcile, so the cached facts are carried across here. A provider
+            # absent from the cache keeps whatever ladders it had.
+            ladders = _capability_ladders(models) if models is not None else {}
+            suffixes = tuple(
+                value.casefold() for value in descriptor.get("model_no_reasoning_suffixes", [])
+                if isinstance(value, str) and value
+            )
+            # A provider can say a model family has no effort control, where the
+            # proxy would otherwise synthesize a generic ladder; a published
+            # ladder still wins.
+            no_reasoning = sorted(
+                model_id for model_id in selected
+                if model_id not in ladders and model_id.casefold().endswith(suffixes)
+            ) if suffixes else []
+            if no_reasoning:
+                provider["noReasoningModels"] = no_reasoning
+            elif "model_no_reasoning_suffixes" in descriptor:
+                provider.pop("noReasoningModels", None)
+            if models is not None:
+                for field, values in (("modelReasoningEfforts", ladders),
+                                      ("modelContextWindows", _capability_contexts(models))):
+                    if values:
+                        provider[field] = values
+                    else:
+                        provider.pop(field, None)
+            # An OAuth provider's `models` is OpenCodex's own login reconcile and
+            # the proxy writes it back; on an api-key provider it is a stale pin.
+            provider.pop("models", None)
+        # Never pin a model: a launch names the one it wants, and with liveModels
+        # the proxy serves each provider's full fleet.
+        provider.pop("defaultModel", None)
+        providers[name] = provider
+
+    # Loopback: a non-loopback bind makes OpenCodex refuse to install or refresh
+    # its service without OPENCODEX_API_AUTH_TOKEN in the calling shell, which an
+    # unattended pass never has. Nothing off-box dials the proxy.
+    config["hostname"] = "127.0.0.1"
+    # The proxy drains in-flight turns this long on shutdown; its 5s default is
+    # shorter than one coding turn, so a restart would land as a cancelled request.
+    config["shutdownTimeoutMs"] = 300000
+    config["syncResumeHistory"] = sys.platform == "darwin"
+    return config, managed
+
+
+def _write_opencodex_config():
+    """Write the ocx config and the managed-provider record when they changed.
+
+    Returns False when an input could not be read; the files are left alone then.
+    """
+    try:
+        registry = _validate_registry(load_json(REGISTRY_PATH))
+        original = load_json(OPENCODEX_CONFIG) if os.path.exists(OPENCODEX_CONFIG) else {}
+        record = load_json(OPENCODEX_MANAGED) if os.path.exists(OPENCODEX_MANAGED) else {}
+        if not isinstance(original, dict) or not isinstance(record, dict):
+            raise ValueError("expected a JSON object")
+        previous = record.get("providers", [])
+        if not isinstance(previous, list) or not all(isinstance(n, str) for n in previous):
+            raise ValueError(f"invalid managed provider record {OPENCODEX_MANAGED}")
+        state = _load_provider_state()
+        if state is None:
+            return False
+        desired, managed = _opencodex_config(registry, original, state, set(previous), _load_capabilities())
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"  OpenCodex config not written: {exc}", file=sys.stderr)
+        return False
+    if desired != original:
+        save_json_atomic(OPENCODEX_CONFIG, desired, mode=0o600)
+    # What fleet wants the proxy to run, hashed: ocx rewrites config.json
+    # itself, so the file's date says nothing about whether this changed.
+    mine = {"providers": {name: desired["providers"][name] for name in sorted(managed)},
+            **{key: desired[key] for key in ("hostname", "shutdownTimeoutMs", "syncResumeHistory")}}
+    record = {"version": 1, "providers": sorted(managed),
+              "sha256": hashlib.sha256(json.dumps(mine, sort_keys=True).encode()).hexdigest()}
+    if not os.path.exists(OPENCODEX_MANAGED) or load_json(OPENCODEX_MANAGED) != record:
+        save_json_atomic(OPENCODEX_MANAGED, record, mode=0o600)
+    return True
+
+
+def sync_opencodex():
+    """Mirror providers into OpenCodex's config and the Codex model catalog.
+
+    Never restarts the proxy: a restart aborts whatever turn is in flight, so
+    fleet's nightly pass restarts it once nothing is running.
+    """
+    if os.path.isdir(OPENCODEX_LEGACY):
+        if not (os.path.isfile(OPENCODEX_BIN) and os.access(OPENCODEX_BIN, os.X_OK)):
+            return
+        if subprocess.run([OPENCODEX_BIN, "__apply", "--no-restart"]).returncode:
+            print("  OpenCodex config unchanged; run: setup update opencodex", file=sys.stderr)
+            return
+        ocx = shutil.which("ocx")
+    else:
+        ocx = OCX_BIN
+        if ocx is None or not _write_opencodex_config():
+            return
+    if ocx is not None and subprocess.run([ocx, "sync"]).returncode:
         print("  Codex model catalog unchanged; run: ocx sync", file=sys.stderr)
 
 
@@ -2277,7 +2469,7 @@ def refresh_models():
                     refreshed[name] = models
         _sync_hermes_mirror(servers, refreshed)
         _sync_pi_models_mirror(servers, refreshed)
-        _sync_opencodex_provider_statuses(restart=False)
+        sync_opencodex()
 
 
 def _provider_settings(path=None):
@@ -2321,6 +2513,15 @@ def bind_account(context):
         _sync_mirrors(managed_absent=removed)
         _prune_retired(sorted(removed))
         _save_capabilities({"version": CAPABILITIES_VERSION, "providers": {}})
+    # The proxy's config carries keys too: without a key every provider there
+    # is disabled, until the new account's sync writes its own.
+    if not os.path.isdir(OPENCODEX_LEGACY) and os.path.exists(OPENCODEX_CONFIG):
+        sync_opencodex()
+
+
+def bound_account():
+    """The Auth account the cached keys belong to."""
+    return _load_cache().get("_fleet_account")
 
 
 def sync_credentials(context, fetch_catalog):
@@ -2364,7 +2565,7 @@ def sync_credentials(context, fetch_catalog):
         _sync_opencode_provider_statuses(servers)
         _sync_hermes_mirror(servers, {})
     _sync_pi_models_mirror(servers, {})
-    _sync_opencodex_provider_statuses(restart=False)
+    sync_opencodex()
 
 
 if __name__ == "__main__":

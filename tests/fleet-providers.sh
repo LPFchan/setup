@@ -48,7 +48,7 @@ save(m.CATALOG_PATH,{'account':ctx,'catalog':shared})
 m.common_auth_context=lambda:ctx
 m._sync_common_auth=lambda servers:None
 m._sync_cache_from_vault=lambda servers:None
-m._sync_opencodex_provider_statuses=lambda **kw:None
+m.sync_opencodex=lambda:None
 m.sync_credentials(ctx,lambda:(_ for _ in ()).throw(OSError('offline')))
 assert 'demo' in json.loads(pathlib.Path(m.REGISTRY_PATH).read_text())['providers']
 other={'origin':'https://auth.test','subject':'2'}
@@ -70,7 +70,7 @@ m=module('fleet_providers_keys',root/'files/fleet-providers.py');read_items=m.va
 m._save_cache({'demo':'account-one-key','_fleet_account':ctx,'_common_auth_context':ctx})
 m.bind_account(ctx)
 assert m.cache_get('demo')=='account-one-key'
-m._sync_mirrors();m._sync_opencodex_provider_statuses=lambda **kw:None
+m._sync_mirrors();m.sync_opencodex=lambda:None
 m.bind_account({'origin':'https://auth.test','subject':'2'})
 assert not m.cache_get('demo')
 assert 'account-one-key' not in pathlib.Path(m.OLD_AUTH_PATH).read_text()
@@ -153,10 +153,12 @@ f._auth=lambda *args:(0,json.dumps(ctx))
 f._heal_path=lambda:None
 f._self_update=lambda:calls.append('self-update')
 f.sys.argv=[str(root/'files/fleet'),'nightly']
+# While setup's runtime is installed, its launcher still applies and routes.
 opencodex=home/'.local/bin/opencodex';opencodex.parent.mkdir(parents=True,exist_ok=True);opencodex.write_text('')
+f.OCX_LEGACY.mkdir(parents=True)
 real_subprocess=f.subprocess;f.subprocess=SimpleNamespace(run=lambda args,**kw:calls.append(args[-1]))
 try:assert f.main()==0
-finally:f.subprocess=real_subprocess;opencodex.unlink()
+finally:f.subprocess=real_subprocess;opencodex.unlink();f.OCX_LEGACY.rmdir()
 assert calls==['self-update',('sync',{'pull':True}),'models','__apply','harnesses','__export']
 import contextlib,io
 f.sys.argv=[str(root/'files/fleet'),'__refresh-providers']
@@ -204,7 +206,7 @@ def isolated_engine(label):
     n._sync_opencode_provider_statuses=lambda _:None
     n._sync_hermes_mirror=lambda *args,**kw:None
     n._sync_pi_models_mirror=lambda *args:None
-    n._sync_opencodex_provider_statuses=lambda **kw:None
+    n.sync_opencodex=lambda:None
     return n
 catalog=copy.deepcopy(shared);catalog['registry']['providers']['demo']['enabled']=False
 n=isolated_engine('fresh');n.context=ctx

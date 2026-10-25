@@ -67,6 +67,19 @@
       ]
     },
     {
+      "name": "ocx",
+      "comment": "The OpenCodex proxy. A bare `ocx service` installs its background service, or repairs one an earlier install left. The update swaps only the package, and fleet restarts the proxy once no turn is running; on Windows a running proxy locks its files, so fleet runs `ocx update`, which stops it, only while it is idle.",
+      "install": "npm install -g --allow-scripts=bun @bitkyc08/opencodex && \"$(npm prefix -g)/bin/ocx\" service",
+      "update": "npm install -g --allow-scripts=bun @bitkyc08/opencodex@latest",
+      "windows": {
+        "install": "npm install -g --allow-scripts=bun @bitkyc08/opencodex; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & \"$(npm prefix -g)\\ocx.cmd\" service; exit $LASTEXITCODE",
+        "updateArgs": "update",
+        "candidates": [
+          "~/AppData/Roaming/npm/ocx.cmd"
+        ]
+      }
+    },
+    {
       "name": "miniharness",
       "install": "npm install -g miniharness",
       "update": "npm install -g miniharness@latest",
