@@ -39,25 +39,13 @@ function Find-Python {
     return $null
 }
 
-function Test-SshReady {
-    $service = Get-Service sshd -ErrorAction SilentlyContinue
-    if (-not $service -or $service.StartType -ne 'Automatic' -or $service.Status -ne 'Running') { return $false }
-    $shell = (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
-    if (-not $shell -or -not (Test-Path $shell)) { return $false }
-    $rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    if (-not $rule -or "$($rule.Enabled)" -ne 'True' -or "$($rule.Profile)" -ne 'Any' -or
-        "$($rule.Direction)" -ne 'Inbound' -or "$($rule.Action)" -ne 'Allow') { return $false }
-    $port = $rule | Get-NetFirewallPortFilter
-    if ("$($port.Protocol)" -ne 'TCP' -or "$($port.LocalPort)" -ne '22') { return $false }
-    try { $config = Get-Content "$env:ProgramData\ssh\sshd_config" -ErrorAction Stop } catch { return $false }
-    return -not ($config -match '^\s*Match\s+Group\s+administrators')
-}
-
 # --- OpenSSH server (elevated) ----------------------------------------------
 # Password logins stay on and the firewall rule is not limited to Tailscale.
 # The administrators block in sshd_config is commented out so an admin's own
-# ~\.ssh\authorized_keys, which fleet writes, is the one sshd reads.
+# ~\.ssh\authorized_keys, which fleet writes, is the one sshd reads; the keys
+# administrators_authorized_keys let in are copied there first.
 $Elevated = @'
+param($UserKeys, $Stamp)
 $ErrorActionPreference = 'Stop'
 foreach ($name in 'OpenSSH.Client', 'OpenSSH.Server') {
     $cap = Get-WindowsCapability -Online | Where-Object Name -like "$name~*" | Select-Object -First 1
@@ -78,6 +66,16 @@ $edited = foreach ($line in $original) {
     if ($inBlock -and $line -match '^\s*[^#\s]') { "#$line"; continue }
     $line
 }
+$adminKeys = "$env:ProgramData\ssh\administrators_authorized_keys"
+if (Test-Path $adminKeys) {
+    $have = if (Test-Path $UserKeys) { [IO.File]::ReadAllText($UserKeys) } else { '' }
+    $missing = @(Get-Content $adminKeys | Where-Object { $_ -match '^\s*[^#\s]' -and ($have -split "`r?`n") -notcontains $_ })
+    if ($missing) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $UserKeys) | Out-Null
+        $lead = if ($have -and -not $have.EndsWith("`n")) { "`n" } else { '' }
+        [IO.File]::AppendAllText($UserKeys, $lead + ($missing -join "`n") + "`n")
+    }
+}
 if (($edited -join "`n") -ne ($original -join "`n")) {
     Copy-Item $config "$config.pre-fleet.bak" -Force
     [IO.File]::WriteAllText($config, ($edited -join "`n") + "`n", (New-Object Text.UTF8Encoding $false))
@@ -89,7 +87,20 @@ Restart-Service sshd
 Remove-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Direction Inbound `
     -Protocol TCP -LocalPort 22 -Action Allow -Profile Any | Out-Null
+New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name FleetSetup -Value $Stamp -PropertyType String -Force | Out-Null
 '@
+
+# A standard user cannot read the firewall rules or sshd_config, so the check
+# trusts the stamp the elevated pass leaves: its own hash, so a changed $Elevated
+# runs once more.
+$Stamp = (Get-FileHash -Algorithm SHA256 -InputStream (
+    New-Object IO.MemoryStream (, [Text.Encoding]::UTF8.GetBytes($Elevated)))).Hash
+function Test-SshReady {
+    $service = Get-Service sshd -ErrorAction SilentlyContinue
+    if (-not $service -or $service.StartType -ne 'Automatic' -or $service.Status -ne 'Running') { return $false }
+    $key = Get-ItemProperty HKLM:\SOFTWARE\OpenSSH -ErrorAction SilentlyContinue
+    return [bool]($key -and $key.FleetSetup -eq $Stamp -and $key.DefaultShell -and (Test-Path $key.DefaultShell))
+}
 
 if (Test-SshReady) {
     Step 'OpenSSH server already set up'
@@ -99,7 +110,8 @@ if (Test-SshReady) {
     Set-Content -Path $script -Value $Elevated -Encoding utf8
     try {
         $run = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script`"")
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script`"",
+            "`"$(Join-Path $HOME '.ssh\authorized_keys')`"", $Stamp)
         if ($run.ExitCode) { throw "OpenSSH setup failed (exit $($run.ExitCode))" }
     } finally {
         Remove-Item $script -ErrorAction SilentlyContinue
