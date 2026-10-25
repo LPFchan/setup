@@ -434,7 +434,24 @@ globals_["proxy_self_reported_restart"] = lambda port: ["proxy reports restart_r
 namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
 assert restarts == [[str(ocx), "service", "restart"]], restarts
 globals_["proxy_self_reported_restart"] = orig_self_reported
+
+# Launching a new session never restarts a stale proxy under turns other agents
+# have in flight; it launches on it as is.
+config_path.write_text(json.dumps({"providers": {"commandcode": {"disabled": False}}}))
+live_disabled = {"commandcode": True}
+active_turns = 1
+restarts.clear()
+namespace["launch"]("commandcode", "codex", [], "commandcode/some-model")
+assert [str(ocx), "service", "restart"] not in restarts, restarts
+assert [str(ocx), "ensure"] in restarts, restarts
 active_turns = None
+
+# The menu's restart keeps ocx's output off the curses screen and reports success.
+captured = []
+globals_["subprocess"].run = lambda argv, *a, **k: captured.append(k) or FakeRun()
+assert namespace["restart_stale_proxy"]("restart", quiet=True) is True
+assert captured == [{"capture_output": True}], captured
+globals_["subprocess"].run = lambda argv, *a, **k: restarts.append(argv) or FakeRun()
 
 # Provider on/off goes to the running proxy instead of a restart.
 toggle = namespace["toggle_live_providers"]

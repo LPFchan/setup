@@ -727,7 +727,7 @@ def proxy_restart_status() -> tuple[bool, int | None, list[str]]:
     return True, port, proxy_stale_reasons(port, providers)
 
 
-def restart_stale_proxy(context: str) -> None:
+def restart_stale_proxy(context: str, quiet: bool = False) -> bool:
     """Replace the running proxy process. Shared by apply and launch.
 
     The service manager is asked first because `ocx restart` cannot recover the
@@ -736,19 +736,23 @@ def restart_stale_proxy(context: str) -> None:
     "nothing is there", skips the kill, and then cannot bind the port the
     survivor still holds. systemd and launchd stop a process by PID and never
     ask it for permission. Plain `restart` remains the fallback for an install
-    with no registered service.
+    with no registered service. `quiet` keeps ocx's output off a screen the
+    menu owns.
     """
     if not (OCX.is_file() and os.access(OCX, os.X_OK)):
-        print(
-            "opencodex: the running proxy is stale but ocx is missing; "
-            f"restart the proxy to {context} it",
-            file=sys.stderr,
-        )
-        return
+        if not quiet:
+            print(
+                "opencodex: the running proxy is stale but ocx is missing; "
+                f"restart the proxy to {context} it",
+                file=sys.stderr,
+            )
+        return False
     for command in (["service", "restart"], ["restart"]):
-        if not subprocess.run([str(OCX), *command]).returncode:
-            return
-    print("opencodex: proxy restart failed; run: ocx service restart", file=sys.stderr)
+        if not subprocess.run([str(OCX), *command], capture_output=quiet).returncode:
+            return True
+    if not quiet:
+        print("opencodex: proxy restart failed; run: ocx service restart", file=sys.stderr)
+    return False
 
 
 def _without_disabled(config: dict[str, Any]) -> dict[str, Any]:
@@ -1566,7 +1570,20 @@ def launch(
     effort: str | None = None,
 ) -> int:
     running, port, reasons = proxy_restart_status()
-    if running and reasons:
+    # A restart would cut turns other agents have in flight on this proxy, so
+    # a busy one keeps serving as it is; ctrl+r in the menu restarts it on demand.
+    busy = bool(running and port and reasons and not proxy_self_reported_restart(port)
+                and live_active_turns(port))
+    if busy:
+        print(
+            "opencodex: the running proxy is stale but busy; launching on it as is "
+            "(ctrl+r in the opencodex menu restarts it)",
+            file=sys.stderr,
+        )
+        for reason in reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        ensure_opencodex()
+    elif running and reasons:
         # The proxy snapshots config.json at startup, never reloads it, and
         # keeps running the build that was on disk when it started, so a stale
         # process would serve old routing — or an old runtime — to every
@@ -1966,7 +1983,7 @@ def reel_at(x: int, width: int, gap: int) -> int | None:
 
 
 def handle_key(state: ReelState, action: str) -> str | None:
-    """Returns 'launch', 'cancel', or None (state mutated in place)."""
+    """Returns 'launch', 'cancel', 'restart', or None (state mutated in place)."""
     if action == "left":
         state.move_focus(-1)
     elif action == "right":
@@ -1979,8 +1996,8 @@ def handle_key(state: ReelState, action: str) -> str | None:
         if state.selected_model() is None:
             return None
         return "launch"
-    elif action == "cancel":
-        return "cancel"
+    elif action in ("cancel", "restart"):
+        return action
     return None
 
 
@@ -2100,6 +2117,7 @@ SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⦠⦯⦿"
 
 def picker_header(
     proxy: tuple[bool, int | None, list[str], str | None] | None,
+    restarting: bool = False,
 ) -> tuple[str, str]:
     """(text, style) for the picker's single title/status line.
 
@@ -2107,6 +2125,8 @@ def picker_header(
     'opencodex · 2.10.1 · :10100 running' — rather than a stacked pair.
     `proxy` is None while the background probe is still in flight.
     """
+    if restarting:
+        return "opencodex · restarting proxy…", "dim"
     if proxy is None:
         return "opencodex · …", "dim"
     running, port, reasons, version = proxy
@@ -2117,7 +2137,7 @@ def picker_header(
         return " · ".join(parts + ["proxy stopped"]), "dim"
     parts.append(f":{port} running" if port else "running")
     if reasons:
-        return " · ".join(parts + ["restart on launch"]), "warn"
+        return " · ".join(parts + ["restart pending"]), "warn"
     return " · ".join(parts), "title"
 
 
@@ -2135,13 +2155,28 @@ def run_reel_picker(
     state = ReelState(providers, registry, {}, harnesses, load_picker_state())
     fetched: dict[str, Any] = {}
 
-    def fetch() -> None:
+    def fetch_proxy() -> None:
         try:
             running, port, reasons = proxy_restart_status()
             live = live_proxy_version(port) if running and port else None
             fetched["proxy"] = (running, port, reasons, live or installed_ocx_version())
         except Exception:
             fetched["proxy"] = None
+
+    def restart() -> None:
+        try:
+            restart_stale_proxy("restart", quiet=True)
+            # A provider the old process never loaded only shows up now.
+            fetched["index"] = merged_model_index(registry)
+            fetched["applied"] = False
+        except Exception:
+            pass
+        finally:
+            fetch_proxy()
+            fetched["restarting"] = False
+
+    def fetch() -> None:
+        fetch_proxy()
         try:
             fetched["index"] = merged_model_index(registry)
         except Exception:
@@ -2164,6 +2199,8 @@ def run_reel_picker(
             return "enter"
         if key in (27, ord("q")):
             return "cancel"
+        if key == 18:  # ctrl+r
+            return "restart"
         return None
 
     def draw(stdscr: Any, y: int, x: int, width: int, text: str, attr: int) -> None:
@@ -2213,7 +2250,7 @@ def run_reel_picker(
             draw(stdscr, rows // 2, 0, cols, message.center(cols - 1), attrs["dim"])
             stdscr.refresh()
             return
-        banner, style = picker_header(fetched.get("proxy"))
+        banner, style = picker_header(fetched.get("proxy"), fetched.get("restarting", False))
         draw(stdscr, 0, 0, cols, f" {banner} ".center(cols - 1), attrs[style])
         width, gap, header_y, center_y, body, _ = picker_layout(rows, cols)
         for reel in range(4):
@@ -2221,7 +2258,7 @@ def run_reel_picker(
                 stdscr, reel * (width + gap), header_y, center_y, body, width,
                 reel, state.reel_entries(reel), attrs,
             )
-        hint = "←/→ column · ↑/↓ select · enter launch · q cancel"
+        hint = "←/→ column · ↑/↓ select · enter launch · ctrl+r restart · q cancel"
         draw(stdscr, rows - 1, 0, cols, hint.center(cols - 1), attrs["dim"])
         stdscr.refresh()
 
@@ -2292,9 +2329,16 @@ def run_reel_picker(
                 if action is None:
                     continue
             result = handle_key(state, action)
+            if result == "restart" and not fetched.get("restarting"):
+                fetched["restarting"] = True
+                fetched["restart"] = threading.Thread(target=restart, daemon=True)
+                fetched["restart"].start()
             if result == "cancel":
                 return None
             if result == "launch":
+                # Launching probes the proxy itself; let the menu's restart land first.
+                if fetched.get("restart"):
+                    fetched["restart"].join()
                 return state.selection()
 
     return curses.wrapper(loop)
@@ -2458,7 +2502,7 @@ def render_catalogue(data: dict[str, Any]) -> str:
         if proxy.get("restart_pending"):
             lines.append(
                 "# warning: the running proxy is stale; "
-                "invoking opencodex will run: ocx restart"
+                "invoking opencodex restarts it unless it is busy"
             )
             for reason in proxy.get("reasons", []):
                 lines.append(f"#   - {reason}")
