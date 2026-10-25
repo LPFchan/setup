@@ -15,22 +15,26 @@ export TEST_TMP
 while IFS='=' read -r name _; do
     case "$name" in ANTHROPIC_*|CLAUDE_CODE_EFFORT_LEVEL) unset "$name" ;; esac
 done < <(env)
-export OPENCODEX_REGISTRY="$HOME/.config/opencodex/managed-profiles.json"
-export OPENCODEX_AUTH_JSON="$HOME/.local/share/opencode/auth.json"
-export OPENCODEX_CONFIG="$HOME/.opencodex/config.json"
-export OPENCODEX_MANAGED="$HOME/.opencodex/setup-managed-providers.json"
+export PROVIDERS_REGISTRY="$HOME/.config/providers/registry.json"
 export PROVIDER_STATE_PATH="$HOME/.config/providers/state.json"
-export OPENCODEX_BIN="$HOME/.local/bin/ocx"
 export CODEX_HOME="$TEST_TMP/codex \"home"
 export OPENCODEX_PICKER_STATE="$HOME/.config/opencodex/picker-state.json"
-# Point the live proxy view at a dead port: the catalog fixture must be the
-# only model source, otherwise the real ocx on this machine injects extras.
-export OPENCODEX_MODELS_URL="http://127.0.0.1:9/v1/models"
 export PROVIDERS_CAPABILITIES_PATH="$TEST_TMP/capabilities.json"
-mkdir -p "$HOME/.local/bin" "$(dirname "$OPENCODEX_REGISTRY")" "$(dirname "$OPENCODEX_AUTH_JSON")" "$CODEX_HOME"
+mkdir -p "$HOME/.opencodex" "$(dirname "$PROVIDERS_REGISTRY")" "$CODEX_HOME" "$TEST_TMP/proxy/v1"
 # The test drives commandcode, openrouter and kimicode; keep them enabled here whatever the live registry says.
-jq '.providers.commandcode.enabled = true | .providers.openrouter.enabled = true | .providers.kimicode.enabled = true' "$ROOT/files/provider-registry.json" > "$OPENCODEX_REGISTRY"
-printf '{"commandcode":{"type":"api","key":"secret"}}\n' > "$OPENCODEX_AUTH_JSON"
+jq '.providers.commandcode.enabled = true | .providers.openrouter.enabled = true | .providers.kimicode.enabled = true' "$ROOT/files/provider-registry.json" > "$PROVIDERS_REGISTRY"
+# A stand-in proxy that lists no models, so the catalog fixture below stays the
+# only model source. proxy_down points the launcher at a dead port instead;
+# neither may reach the real proxy on this machine.
+printf '{"data":[]}' > "$TEST_TMP/proxy/v1/models"
+proxy_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+python3 -m http.server --bind 127.0.0.1 --directory "$TEST_TMP/proxy" "$proxy_port" >/dev/null 2>&1 &
+proxy_pid=$!
+trap 'kill "$proxy_pid" 2>/dev/null; rm -rf "$TEST_TMP"' EXIT
+proxy_up() { printf '{"port":%s}' "$proxy_port" > "$HOME/.opencodex/runtime-port.json"; }
+proxy_down() { printf '{"port":9}' > "$HOME/.opencodex/runtime-port.json"; }
+proxy_up
+for _ in $(seq 50); do curl -fs "http://127.0.0.1:$proxy_port/v1/models" >/dev/null && break; sleep 0.1; done
 # The two commandcode models the assertions below launch and compare against.
 # Nothing in the registry ranks a provider's models, so the test names its own.
 cc_model="xiaomi/mimo-v2.5-pro"
@@ -61,15 +65,14 @@ PY
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-help_output=$(OPENCODEX_REGISTRY="$TEST_TMP/missing-registry.json" "$ROOT/files/opencodex" --help)
+help_output=$(PROVIDERS_REGISTRY="$TEST_TMP/missing-registry.json" "$ROOT/files/opencodex" --help)
 [[ "$help_output" == *'Usage: opencodex'* ]] || fail "opencodex --help did not print usage"
 [[ "$help_output" == *'without loading provider configuration'* ]] \
     || fail "opencodex --help does not work independently of its registry"
 
-cat > "$OPENCODEX_BIN" <<'EOF'
+cat > "$TEST_TMP/ocx" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-    ensure) printf 'ensure\n' >> "$TEST_TMP/ocx-calls" ;;
     account)
         printf 'account %s\n' "${3:-}" >> "$TEST_TMP/ocx-calls"
         if [[ -e "$TEST_TMP/anthropic-login" ]]; then
@@ -134,12 +137,18 @@ n=$((n + 1))
 echo "$n" > "$TEST_TMP/fzf-call"
 sed -n "${n}p" "$TEST_TMP/fzf-responses"
 EOF
-chmod +x "$OPENCODEX_BIN" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/kimi" "$TEST_TMP/fzf"
+chmod +x "$TEST_TMP/ocx" "$TEST_TMP/claude" "$TEST_TMP/codex" "$TEST_TMP/grok" "$TEST_TMP/kimi" "$TEST_TMP/fzf"
 cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
 {"version":1,"providers":{}}
 EOF
-PATH="$TEST_TMP:$PATH"
+# A pinned PATH: the real ocx in ~/.local/bin must stay out of reach.
+PATH="$TEST_TMP:/usr/bin:/bin"
 export PATH
+
+# The config, proxy and route commands are fleet's now.
+! "$ROOT/files/opencodex" __apply 2>"$TEST_TMP/moved-error" || fail "the launcher still accepted __apply"
+grep -q '__apply moved to fleet' "$TEST_TMP/moved-error" || fail "__apply did not point at fleet"
+! "$ROOT/files/opencodex" proxy 2>/dev/null || fail "the launcher still accepted proxy"
 
 # The fallback prompt lists display labels (routing prefix stripped), so the
 # canned answers use the stripped form too.
@@ -161,8 +170,8 @@ jq -e --arg model "commandcode/$cc_model" '
     || fail "pre-discovery authentication did not login exactly once"
 [[ $(grep -c '^sync$' "$TEST_TMP/ocx-calls") == 1 ]] \
     || fail "fresh pre-discovery login did not sync exactly once"
-[[ $(sed -n '1,4p' "$TEST_TMP/ocx-calls") == "$(printf '%s\n%s\n%s\n%s' \
-    ensure 'account anthropic' 'login anthropic' sync)" ]] \
+[[ $(sed -n '1,3p' "$TEST_TMP/ocx-calls") == "$(printf '%s\n%s\n%s' \
+    'account anthropic' 'login anthropic' sync)" ]] \
     || fail "Anthropic authentication did not finish before model discovery/launch"
 
 printf '%s\n' commandcode "$cc_opus" max claude > "$TEST_TMP/fzf-responses"
@@ -281,6 +290,7 @@ rm "$PROVIDER_STATE_PATH"
 
 # The catalogue is a non-interactive view of the same four reels the picker
 # offers, so it must run with no TTY, start no proxy, and prompt for nothing.
+proxy_down
 ocx_calls_before=$(wc -l < "$TEST_TMP/ocx-calls" 2>/dev/null || echo 0)
 "$ROOT/files/opencodex" list </dev/null > "$TEST_TMP/list-out" \
     || fail "list failed without a TTY"
@@ -312,9 +322,42 @@ jq -e '(.harnesses | index("codex")) and ([.providers[] | select(.name == "comma
     || fail "list --json did not carry the expected catalogue shape"
 jq -e '[.providers[] | has("default_model")] | any | not' "$TEST_TMP/list-json" >/dev/null \
     || fail "list --json still advertises a per-provider default model"
-jq -e '.proxy.running == false and .proxy.restart_pending == false
-    and .proxy.reasons == [] and .proxy.port == null' "$TEST_TMP/list-json" >/dev/null \
+jq -e '.proxy == {"running": false, "port": null}' "$TEST_TMP/list-json" >/dev/null \
     || fail "list --json did not report the offline proxy state"
+
+# A stopped proxy or a missing ocx stops a launch with what fixes it; the
+# launcher no longer starts or restarts anything itself.
+! "$ROOT/files/opencodex" run commandcode --model "$cc_model" codex 2>"$TEST_TMP/down-error" \
+    || fail "run launched with the proxy down"
+grep -q 'the ocx proxy is not running; run: ocx service' "$TEST_TMP/down-error" \
+    || fail "a stopped proxy did not say how to start it"
+proxy_up
+"$ROOT/files/opencodex" list --json </dev/null | jq -e --argjson port "$proxy_port" \
+    '.proxy == {"running": true, "port": $port}' >/dev/null \
+    || fail "list --json did not report the running proxy's port"
+# A launch needs only the proxy answering; ocx itself is run just for claude
+# (and Anthropic login), and is found in nvm's bins too, where fleet looks.
+mv "$TEST_TMP/ocx" "$TEST_TMP/ocx.off"
+rm -f "$TEST_TMP/codex-args"
+"$ROOT/files/opencodex" run commandcode --model "$cc_model" codex \
+    || fail "a running proxy did not launch codex without ocx on PATH"
+[[ -s "$TEST_TMP/codex-args" ]] || fail "codex was not launched without ocx on PATH"
+! "$ROOT/files/opencodex" run commandcode --model "$cc_model" claude 2>"$TEST_TMP/no-ocx-error" \
+    || fail "claude launched with no ocx anywhere"
+grep -q 'ocx is not installed; run: fleet install ocx' "$TEST_TMP/no-ocx-error" \
+    || fail "a missing ocx did not point at fleet install ocx"
+proxy_down
+! "$ROOT/files/opencodex" run commandcode --model "$cc_model" codex 2>"$TEST_TMP/no-ocx-error" \
+    || fail "run launched with neither ocx nor a proxy"
+grep -q 'ocx is not installed; run: fleet install ocx' "$TEST_TMP/no-ocx-error" \
+    || fail "with no ocx and no proxy, the launcher did not point at fleet install ocx"
+proxy_up
+mkdir -p "$HOME/.nvm/versions/node/v22.0.0/bin"
+mv "$TEST_TMP/ocx.off" "$HOME/.nvm/versions/node/v22.0.0/bin/ocx"
+rm -f "$TEST_TMP/ocx-args"
+"$ROOT/files/opencodex" --nvm-probe || fail "the launcher did not find ocx in nvm's bins"
+grep -qx -- '--nvm-probe' "$TEST_TMP/ocx-args" || fail "a passed-through command did not reach the nvm ocx"
+mv "$HOME/.nvm/versions/node/v22.0.0/bin/ocx" "$TEST_TMP/ocx"
 
 ! "$ROOT/files/opencodex" list --provider bogus </dev/null \
     2>"$TEST_TMP/list-unknown-error" \
@@ -460,171 +503,7 @@ grep -q 'pass --model to launch commandcode' "$TEST_TMP/foreign-resume-error" \
 ! grep -Fq 'deepseek-v4-flash-0731' "$TEST_TMP/claude-env" \
     || fail "a foreign provider's transcript model reached the harness"
 
-# Provider capability records also carry each model's real context window,
-# and apply mirrors them into the proxy's per-model context map so the
-# harness compacts against that window instead of its fallback constant.
-cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
-{"version":1,"providers":{"commandcode":{"models":{"xiaomi/mimo-v2.5-pro":{"context":400000,"reasoning":{"support":"full","supported_efforts":["native-balanced"]}}}}}}
-EOF
-
-"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
-# Codex Desktop resume-history sync is a macOS behaviour, so the rendered flag
-# tracks the host platform rather than a fixed value.
-if [[ $(uname -s) == Darwin ]]; then expected_sync=true; else expected_sync=false; fi
-jq -e --argjson want "$expected_sync" '.syncResumeHistory == $want' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "Codex Desktop history synchronization did not follow the platform"
-jq -e '.providers.anthropic.adapter == "anthropic"
-    and .providers.anthropic.authMode == "oauth"
-    and .providers.anthropic.baseUrl == "https://api.anthropic.com"
-    and (.providers.anthropic | has("defaultModel") | not)
-    and (.providers.anthropic | has("apiKey") | not)' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "Anthropic subscription OAuth provider was not rendered"
-jq -e '.providers.commandcode.apiKey == "secret"' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "OpenCodex provider credentials were not rendered"
-jq -e --arg model "$cc_model" '
-    .providers.commandcode.modelContextWindows[$model] == 400000
-' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "provider context windows were not fed to the OpenCodex proxy config"
-
-# When the shared cache later reports no windows at all, the apply pops the
-# map instead of leaving a stale one behind beside live effort ladders.
-cat > "$PROVIDERS_CAPABILITIES_PATH" <<'EOF'
-{"version":1,"providers":{"commandcode":{"models":{}}}}
-EOF
-"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY" --no-restart
-jq -e "(.providers.commandcode | has(\"modelContextWindows\")) | not" "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "an empty capability cache kept a stale modelContextWindows map"
-
-"$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
-    || fail "freshly applied OpenCodex config was not current"
-
-# The bind address is managed, not merely seeded. A non-loopback hostname makes
-# OpenCodex refuse `service install` without a token that only the service
-# unit's own environment holds, so an unattended update cannot restart the
-# proxy and the superseded build keeps serving.
-jq -e '.hostname == "127.0.0.1"' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "apply did not bind the OpenCodex proxy to loopback"
-python3 - "$OPENCODEX_CONFIG" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as stream:
-    config = json.load(stream)
-config["hostname"] = "0.0.0.0"
-with open(path, "w") as stream:
-    json.dump(config, stream)
-PY
-if "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY"; then
-    fail "a non-loopback bind was not reported as drift"
-fi
-"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
-jq -e '.hostname == "127.0.0.1"' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "apply did not converge a non-loopback bind back to loopback"
-
-# A machine whose config still carries a pin from an older release converges on
-# the next apply; leaving it would silently outrank what a launch asks for.
-python3 - "$OPENCODEX_CONFIG" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as stream:
-    config = json.load(stream)
-for name in ("anthropic", "commandcode"):
-    config["providers"][name]["defaultModel"] = "stale-pin"
-with open(path, "w") as stream:
-    json.dump(config, stream)
-PY
-"$ROOT/files/opencodex" __apply "$OPENCODEX_REGISTRY"
-jq -e '[.providers[] | has("defaultModel")] | any | not' "$OPENCODEX_CONFIG" >/dev/null \
-    || fail "apply kept a stale defaultModel pin in the OpenCodex config"
-
-# OpenCodex persists OAuth preset metadata while reconciling providers at
-# service startup. Those runtime-owned fields must not create setup drift.
-cp "$OPENCODEX_CONFIG" "$TEST_TMP/opencodex-config-clean.json"
-python3 - "$OPENCODEX_CONFIG" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as stream:
-    config = json.load(stream)
-provider = config["providers"]["anthropic"]
-provider.update(
-    {
-        "models": ["claude-sonnet-5"],
-        "contextWindow": 200000,
-        "modelContextWindows": {"claude-sonnet-5": 200000},
-        "defaultMaxOutputTokens": 64000,
-        "modelMaxOutputTokens": {"claude-sonnet-5": 64000},
-        "modelInputModalities": {"claude-sonnet-5": ["text", "image"]},
-        "noReasoningModels": [],
-        "noVisionModels": [],
-        "reasoningEfforts": ["low", "medium", "high"],
-        "modelReasoningEfforts": {"claude-sonnet-5": ["low", "high"]},
-        "reasoningEffortMap": {"low": "low"},
-        "modelReasoningEffortMap": {"claude-sonnet-5": {"high": "high"}},
-        "noTemperatureModels": [],
-        "noTopPModels": [],
-        "noPenaltyModels": [],
-        "autoToolChoiceOnlyModels": [],
-        "preserveReasoningContentModels": ["claude-sonnet-5"],
-    }
-)
-with open(path, "w") as stream:
-    json.dump(config, stream)
-PY
-"$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
-    || fail "OpenCodex OAuth runtime reconciliation fields created setup drift"
-
-python3 - "$OPENCODEX_CONFIG" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as stream:
-    config = json.load(stream)
-config["providers"]["anthropic"]["baseUrl"] = "https://drift.example"
-with open(path, "w") as stream:
-    json.dump(config, stream)
-PY
-if "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY"; then
-    fail "setup-owned Anthropic provider drift was ignored"
-fi
-
-cp "$TEST_TMP/opencodex-config-clean.json" "$OPENCODEX_CONFIG"
-python3 - "$OPENCODEX_CONFIG" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as stream:
-    config = json.load(stream)
-# API key values are intentionally redacted from status comparisons.
-config["providers"]["commandcode"]["apiKey"] = "rotated-secret"
-with open(path, "w") as stream:
-    json.dump(config, stream)
-PY
-"$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY" \
-    || fail "API key redaction created setup drift"
-python3 - "$OPENCODEX_CONFIG" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path) as stream:
-    config = json.load(stream)
-config["providers"]["commandcode"]["models"] = ["runtime-field-must-not-be-ignored"]
-with open(path, "w") as stream:
-    json.dump(config, stream)
-PY
-if "$ROOT/files/opencodex" __status "$OPENCODEX_REGISTRY"; then
-    fail "runtime-field drift on a key-auth provider was ignored"
-fi
-cp "$TEST_TMP/opencodex-config-clean.json" "$OPENCODEX_CONFIG"
-
-python3 - "$ROOT/files/opencodex" "$OPENCODEX_REGISTRY" <<'PY'
+python3 - "$ROOT/files/opencodex" "$PROVIDERS_REGISTRY" <<'PY'
 import copy
 import json
 import runpy
@@ -634,7 +513,7 @@ import types
 from pathlib import Path
 
 namespace = runpy.run_path(sys.argv[1], run_name="opencodex_test")
-registry = namespace["load_registry"](Path(sys.argv[2]))
+registry = json.loads(Path(sys.argv[2]).read_text())
 module_globals = namespace["choose_launch"].__globals__
 
 # The neutral provider state overrides OpenAI-compatible registry defaults,
@@ -771,68 +650,6 @@ try:
         raise AssertionError("a failed post-login sync was ignored")
 finally:
     namespace["subprocess"].run = original_run
-original = namespace["sys"].platform
-namespace["sys"].platform = "darwin"
-try:
-    # The stale pin in the incoming config stands in for a machine still
-    # carrying what an older release wrote; reconciling must retire it.
-    config, managed = namespace["desired_opencodex_config"](
-        registry,
-        {
-            "providers": {
-                "anthropic": {
-                    "authMode": "key",
-                    "apiKey": "old-key",
-                    "defaultModel": "stale-pin",
-                }
-            }
-        },
-        {},
-    )
-finally:
-    namespace["sys"].platform = original
-assert config["syncResumeHistory"] is True
-assert "anthropic" in managed
-assert config["providers"]["anthropic"] == {
-    "adapter": "anthropic",
-    "authMode": "oauth",
-    "baseUrl": "https://api.anthropic.com",
-}
-assert "defaultModel" not in config["providers"]["commandcode"]
-assert "defaultModel" not in config["providers"]["kimicode"]
-
-# A provider-only entry is rendered, and it pins no model either.
-solo_registry = copy.deepcopy(registry)
-solo_registry["providers"]["soloroute"] = {
-    "provider_type": "OpenAICompatible",
-    "base_url": "https://solo.example/v1",
-    "api_format": "openai",
-    "npm": "@ai-sdk/openai-compatible",
-    "auth": {"type": "api-key", "store": "opencode", "key": "soloroute"},
-    "enabled": True,
-}
-namespace["validate_registry"](solo_registry)
-config, _ = namespace["desired_opencodex_config"](solo_registry, {}, {"soloroute": {"key": "k"}})
-assert config["providers"]["soloroute"]["baseUrl"] == "https://solo.example/v1"
-assert "defaultModel" not in config["providers"]["soloroute"]
-
-# The validator requires the canonical top-level shape.
-namespace["validate_registry"]({"version": 1, "providers": registry["providers"]})
-legacy = copy.deepcopy(registry)
-legacy["profiles"] = []
-try:
-    namespace["validate_registry"](legacy)
-except namespace["UserError"]:
-    pass
-else:
-    raise AssertionError("legacy profile-bearing registry was accepted")
-# A provider default_model is ignored rather than used for routing.
-stale = copy.deepcopy(registry)
-stale["providers"]["commandcode"]["default_model"] = "xiaomi/mimo-v2.5-pro"
-namespace["validate_registry"](stale)
-config, _ = namespace["desired_opencodex_config"](stale, {}, {"commandcode": {"key": "k"}})
-assert "defaultModel" not in config["providers"]["commandcode"]
-
 index = {
     "gpt-5.6-sol": {"id": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "default_effort": "low"},
     "anthropic/claude-opus-5": {"id": "anthropic/claude-opus-5", "efforts": ["low", "medium", "high"], "default_effort": "high"},
@@ -922,21 +739,10 @@ if click is not None:
     namespace["handle_key"](state, "left")  # ...to the provider reel
 assert state.focus == 0
 
-# Title, runtime version and proxy state share one banner line.
+# Title and proxy state share one banner line.
 header = namespace["picker_header"]
-assert header((True, 10100, [], "2.10.1")) == ("opencodex · 2.10.1 · :10100 running", "title")
-assert header((True, 10100, ["stale"], "2.10.0")) == (
-    "opencodex · 2.10.0 · :10100 running · restart pending",
-    "warn",
-)
-assert header((True, 10100, [], "2.10.1"), restarting=True) == (
-    "opencodex · restarting proxy…", "dim")
-# ctrl+r restarts the proxy from the menu and leaves the selection alone.
-focus, cursors = state.focus, list(state.cursors)
-assert namespace["handle_key"](state, "restart") == "restart"
-assert (state.focus, state.cursors) == (focus, cursors)
-assert header((False, None, [], "2.10.1")) == ("opencodex · 2.10.1 · proxy stopped", "dim")
-assert header((True, 10100, [], None)) == ("opencodex · :10100 running", "title")
+assert header("http://127.0.0.1:10101") == ("opencodex · :10101 running", "title")
+assert header("") == ("opencodex · proxy stopped", "warn")
 assert header(None) == ("opencodex · …", "dim")
 
 # The reel body uses all rows between the header and the hint line.
@@ -1174,52 +980,37 @@ assert reel_at(4 * (width + gap), width, gap) is None  # padding
 assert reel_at(-1, width, gap) is None
 PY
 
-# A proxy that reports `restart_required` is running and needs replacing. It
-# used to read as an empty port, so nothing restarted it and the replacement
-# could not bind the port the survivor still held.
-python3 - "$ROOT/files/opencodex" <<'PY'
-import json
-import runpy
-import sys
-import tempfile
-from pathlib import Path
-
-namespace = runpy.run_path(sys.argv[1], run_name="opencodex_test")
-module_globals = namespace["live_proxy_port"].__globals__
-
-runtime_port = Path(tempfile.mkdtemp()) / "runtime-port.json"
-runtime_port.write_text(json.dumps({"port": 10100}))
-module_globals["RUNTIME_PORT"] = runtime_port
-
-payloads: dict[str, object] = {}
-module_globals["proxy_health"] = lambda port: payloads.get("value")
-# Never let the assertions below reach a proxy that is actually running on this
-# machine's port 10100.
-module_globals["live_provider_view"] = lambda port: None
-
-payloads["value"] = {"status": "ok", "version": "2.35.0"}
-assert namespace["live_proxy_port"]() == 10100
-assert namespace["proxy_self_reported_restart"](10100) == []
-
-payloads["value"] = {
-    "status": "restart_required",
-    "version": "2.34.0",
-    "error": {"code": "package_tree_changed", "message": "package files changed"},
-}
-assert namespace["live_proxy_port"]() == 10100, "a proxy asking to restart read as no proxy"
-assert namespace["proxy_self_reported_restart"](10100) == ["package files changed"]
-
-# Its own report stands alone: a reinstall of the same version swaps every file
-# while both version numbers still match.
-module_globals["installed_ocx_version"] = lambda: "2.34.0"
-assert namespace["proxy_version_drift"](10100) == []
-assert namespace["proxy_stale_reasons"](10100, {}) == ["package files changed"]
-
-payloads["value"] = {"status": "draining"}
-assert namespace["live_proxy_port"]() is None
-payloads["value"] = None
-assert namespace["live_proxy_port"]() is None
+# Smoke test of the curses picker itself: on a terminal it opens, shows the
+# proxy in its banner and the reels, and q leaves without launching anything.
+rm -f "$TEST_TMP/codex-args"
+python3 - "$ROOT/files/opencodex" "$proxy_port" <<'PY'
+import fcntl, os, pty, select, signal, struct, sys, termios, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm"
+    os.execv(sys.argv[1], [sys.argv[1]])
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+os.kill(pid, signal.SIGWINCH)  # curses reads the size set above
+seen, deadline = b"", time.monotonic() + 10
+while b"Harness" not in seen or f":{sys.argv[2]} running".encode() not in seen:
+    assert time.monotonic() < deadline, f"picker never drew its reels: {seen[-400:]!r}"
+    if select.select([fd], [], [], 0.2)[0]:
+        seen += os.read(fd, 65536)
+os.write(fd, b"q")
+deadline = time.monotonic() + 10
+while True:
+    done, status = os.waitpid(pid, os.WNOHANG)
+    if done:
+        break
+    assert time.monotonic() < deadline, "q did not close the picker"
+    if select.select([fd], [], [], 0.2)[0]:
+        try:
+            os.read(fd, 65536)
+        except OSError:
+            pass
+assert os.waitstatus_to_exitcode(status) == 0
 PY
+[[ ! -e "$TEST_TMP/codex-args" ]] || fail "cancelling the picker launched a harness"
 
 "$ROOT/files/opencodex" --version
 grep -q '^--version$' "$TEST_TMP/ocx-args" || fail "OpenCodex CLI arguments were not forwarded"

@@ -78,13 +78,13 @@ A module names what it needs in the manifest's `requires` column (comma-separate
 - A module installed only as a dependency is remembered, so removing the last thing that needed it offers to take it away too.
 - A dependency cycle is a hard error naming the module it runs through.
 
-A module declares a dependency when the two are always installed together — not only when it would crash without it. `opencodex` depends on `fleet`, which supplies account provider settings, credential mirrors and model capabilities.
+A module declares a dependency when the two are always installed together — not only when it would crash without it. `opencodex` depends on `fleet`, which installs and runs the OpenCodex proxy the picker launches through.
 
 The current edges:
 
 | Module | Requires | Why |
 |--------|----------|-----|
-| `opencodex` | `fleet` | Fleet supplies provider connections and the shared model capability cache |
+| `opencodex` | `fleet` | Fleet runs the ocx proxy and writes the provider registry and model capabilities the picker reads |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
 | `system-updates` | `schedule`, `fleet` | `schedule` for the timer; `fleet` because `fleet install miniharness` provides the model summon its 07:00 reboot check asks, and `system-updates enable` refuses to run without it |
@@ -137,7 +137,7 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `zsh-basics` | Machine color identity, common aliases (`/exit`, `ll`), and basic zsh options | `files/zsh-basics.sh` |
 | `mac-boot` | Fleet-only macOS boot-volume switcher whose status shows the selected volume and other bootable choices; accepts exact volume names, switches through a narrowly scoped passwordless sudo rule, requests a normal application-aware restart, and guarantees reboot after 60 seconds | `files/mac-boot.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
-| `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
+| `opencodex` | Provider, model, effort and harness picker that launches through fleet's OpenCodex proxy (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
 | `auth` | Retired: `auth` comes with fleet now (see [Installing and updating fleet](#installing-and-updating-fleet)) | `files/auth.sh` |
 | `fleet` | Hands the machine to standalone fleet (see [Installing and updating fleet](#installing-and-updating-fleet)); kept so `setup install fleet` in an old onboarding prompt still works | `files/fleet.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
@@ -225,8 +225,21 @@ rather than at night. ocx
 rewrites `config.json` itself, so "changed" means fleet's own providers differ from
 what the proxy last started on (a hash in the managed-providers record). On Windows a
 running proxy locks its files, so `ocx update`, which stops and restarts it, runs only
-when npm has a new release, and also waits for that moment. While setup's own runtime (`~/.local/libexec/opencodex`) is
-installed, the `opencodex` module keeps owning the proxy and fleet leaves it alone.
+when npm has a new release, and also waits for that moment. While setup's old runtime
+(`~/.local/libexec/opencodex`) is installed, fleet leaves the proxy alone.
+
+The `opencodex` module's next install or update hands that old runtime over to
+fleet. It waits up to two minutes for no turn in flight; a proxy that stays busy
+puts the hand-over off to the next run and nothing changes. Otherwise it removes
+the old `~/.local/bin/ocx` link (fleet would read it as ocx already installed) and
+runs `fleet install ocx`, whose `ocx service` restarts the proxy once onto the new
+install. Once that proxy answers and its service no longer points at the old
+runtime, the module deletes the old runtime and the old launcher's leftovers,
+installs the slim picker, and runs `fleet sync --pull` so fleet writes the config and
+Claude's route. If the install fails, the link comes back and the old runtime
+keeps serving. The systemd drop-in that gives the proxy 330s to drain on stop
+(`opencodex-proxy.service.d/50-stop-timeout.conf`) stays, since upstream's unit
+sets no stop timeout.
 
 Run `python3 scripts/migrate-providers-to-fleet.py` once on each existing machine,
 from this checkout after deploying Auth and before normal Fleet updates. It backs up
@@ -251,7 +264,7 @@ fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Co
 ### AI Tools Integration
 
 - **`resume`**: Scans active and previous sessions across Claude Code, Codex, OpenCode, Antigravity CLI, ForgeCode, Hermes, Grok, Kimi Code, and Muse Code so you can jump right back into any session.
-- **`opencodex`**: Profile launcher that manages custom API keys, OAuth sessions, model aliases, and provider endpoints across multiple AI tools.
+- **`opencodex`**: A terminal picker of provider, model, effort and harness (Claude Code, Codex, Grok, Kimi Code) that launches through fleet's OpenCodex proxy. It reads fleet's provider registry and capability cache, `opencodex list` prints the same choices for scripts, and `opencodex run` launches one directly. When ocx or its proxy is missing it says what to run rather than fixing it.
 - **Mixed-tier admission policy**: a provider descriptor may carry `model_allow_ids`, `model_allow_suffixes`, and `model_no_reasoning_suffixes`, which admit only known-free or newly published `-free`/`alpha` model IDs into the mirrored catalogs and keep `alpha` IDs off OpenCodex's generic reasoning ladder. OpenCode Zen used all three; it has since been retired, so no live provider sets them, and they remain for the next mixed free/paid endpoint.
 - **Retiring a provider**: deleting a provider from the registry is not enough, because every consumer write path is an upsert — the credential and model list would sit on each machine forever. Name it in `retired_providers` and each refresh sweeps it out of the credential cache, the `.zshenv` key block, opencode's `auth.json` and provider block, the provider state, the capability cache, Hermes, Pi, and OpenCodex's config. A name that is itself live, or that a live provider borrows as its credential, is rejected at validation.
 - **OpenCode Go session affinity**: `opencodex` carries the stable request/conversation lane required by OpenCode's routes as `x-opencode-session`. This is upstream behaviour — setup used to patch the installed runtime to extend it to OpenCode Zen as well, but Zen is retired and OpenCodex 2.59.0 rewrote that transport, so the patch is gone and the runtime is installed verbatim.

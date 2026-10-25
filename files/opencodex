@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Provider/model/effort/harness reel-picker launcher and registry helper for OpenCodex."""
+"""Provider/model/effort/harness reel-picker launcher for the OpenCodex proxy.
+
+fleet installs ocx, writes its config and keeps the proxy running; this only
+reads fleet's provider files and launches a harness through the proxy.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Any
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 
@@ -24,23 +25,9 @@ CLAUDE_PROJECTS = HOME / ".claude/projects"
 KIMI_HOME = Path(os.environ.get("KIMI_CODE_HOME", HOME / ".kimi-code")).expanduser()
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex")).expanduser().resolve()
 CODEX_CATALOG = CODEX_HOME / "opencodex-catalog.json"
-OCX = Path(os.environ.get("OPENCODEX_BIN", HOME / ".local/bin/ocx"))
-OPENCODEX_CONFIG = Path(
-    os.environ.get("OPENCODEX_CONFIG", HOME / ".opencodex/config.json")
-)
-OPENCODEX_MANAGED = Path(
-    os.environ.get(
-        "OPENCODEX_MANAGED", HOME / ".opencodex/setup-managed-providers.json"
-    )
-)
 REGISTRY = Path(
-    os.environ.get(
-        "OPENCODEX_REGISTRY", HOME / ".config/opencodex/managed-profiles.json"
-    )
-)
-AUTH_JSON = Path(
-    os.environ.get("OPENCODEX_AUTH_JSON", HOME / ".local/share/opencode/auth.json")
-)
+    os.environ.get("PROVIDERS_REGISTRY", HOME / ".config/providers/registry.json")
+).expanduser()
 PROVIDER_CAPABILITIES = Path(
     os.environ.get("PROVIDERS_CAPABILITIES_PATH",
         os.environ.get("PROVIDER_CAPABILITIES_PATH", HOME / ".config/providers/capabilities.json"))
@@ -52,160 +39,69 @@ PROVIDER_STATE = Path(
 SESSIONS = Path(
     os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
 )
-RUNTIME_PORT = Path(
-    os.environ.get("OPENCODEX_RUNTIME_PORT", HOME / ".opencodex/runtime-port.json")
-)
-ADMIN_TOKEN = Path(
-    os.environ.get("OPENCODEX_ADMIN_TOKEN", HOME / ".opencodex/admin-api-token")
-)
-# Dated when the running proxy took a provider toggle live, so the config.json
-# write that follows does not read as a change it never loaded.
-LIVE_APPLIED = Path(
-    os.environ.get("OPENCODEX_LIVE_APPLIED", HOME / ".opencodex/setup-live-applied")
-)
-# How long an apply waits for the proxy to go idle before it puts a restart off.
-IDLE_WAIT = float(os.environ.get("OPENCODEX_IDLE_WAIT", "120"))
-NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
-PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
-# OAuth provider presets are reconciled and persisted by OpenCodex at runtime.
-# They are not setup-owned desired state and must not make status report drift.
-OAUTH_RECONCILE_FIELDS = frozenset(
-    {
-        "models",
-        "contextWindow",
-        "modelContextWindows",
-        "defaultMaxOutputTokens",
-        "modelMaxOutputTokens",
-        "modelInputModalities",
-        "noReasoningModels",
-        "noVisionModels",
-        "reasoningEfforts",
-        "modelReasoningEfforts",
-        "reasoningEffortMap",
-        "modelReasoningEffortMap",
-        "noTemperatureModels",
-        "noTopPModels",
-        "noPenaltyModels",
-        "autoToolChoiceOnlyModels",
-        "preserveReasoningContentModels",
-    }
-)
+RUNTIME_PORT = HOME / ".opencodex/runtime-port.json"
+NOT_INSTALLED = "ocx is not installed; run: fleet install ocx"
+NOT_RUNNING = "the ocx proxy is not running; run: ocx service"
 
 
 class UserError(RuntimeError):
     pass
 
 
-def valid_base_url(value: str) -> bool:
-    parsed = urllib.parse.urlsplit(value)
-    return (
-        parsed.scheme in {"http", "https"}
-        and bool(parsed.hostname)
-        and parsed.username is None
-        and parsed.password is None
-        and not parsed.query
-        and not parsed.fragment
-        and not any(character.isspace() for character in value)
-    )
-
-
-def _string(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
-        raise UserError(f"invalid {field}")
-    return value
-
-
-def validate_registry(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict) or data.get("version") != 1:
-        raise UserError("registry version must be 1")
-    known = {"version", "providers", "retired_providers", "retired_providers_comment"}
-    if not set(data) <= known or not {"version", "providers"} <= set(data):
-        raise UserError("registry must contain only version, providers, and retired_providers")
-    providers = data.get("providers")
-    if not isinstance(providers, dict):
-        raise UserError("registry providers must be an object")
-    for provider_name, provider in providers.items():
-        if not NAME_RE.fullmatch(provider_name) or not isinstance(provider, dict):
-            raise UserError(f"invalid provider: {provider_name}")
-        if provider.get("provider_type") not in PROVIDER_TYPES:
-            raise UserError(f"invalid provider_type for {provider_name}")
-        base_url = _string(provider.get("base_url"), f"base_url for {provider_name}")
-        if not valid_base_url(base_url):
-            raise UserError(f"invalid base_url for {provider_name}")
-        auth = provider.get("auth")
-        if not isinstance(auth, dict) or auth.get("type") not in {"oauth", "api-key", "common-auth"}:
-            raise UserError(f"invalid auth descriptor for {provider_name}")
-        if provider["provider_type"] == "OpenAICompatible":
-            auth_type = auth.get("type")
-            if auth_type == "api-key" and auth.get("store") != "opencode":
-                raise UserError(f"invalid API-key auth descriptor for {provider_name}")
-            if auth_type == "common-auth" and not NAME_RE.fullmatch(
-                _string(auth.get("scope"), f"auth scope for {provider_name}")
-            ):
-                raise UserError(f"invalid Common Auth descriptor for {provider_name}")
-            if auth_type not in {"api-key", "common-auth"}:
-                raise UserError(f"invalid auth descriptor for {provider_name}")
-            if not NAME_RE.fullmatch(_string(auth.get("key"), f"auth key for {provider_name}")):
-                raise UserError(f"invalid auth key for {provider_name}")
-            if not isinstance(provider.get("enabled"), bool):
-                raise UserError(f"enabled for {provider_name} must be a boolean")
-            if provider.get("api_format") not in {"grimoire", "openai"}:
-                raise UserError(f"invalid api_format for {provider_name}")
-            _string(provider.get("npm"), f"npm package for {provider_name}")
-            for field in (
-                "model_allow_ids",
-                "model_allow_suffixes",
-                "model_no_reasoning_suffixes",
-            ):
-                values = provider.get(field, [])
-                if not isinstance(values, list):
-                    raise UserError(f"{field} for {provider_name} must be a list")
-                if any(
-                    not isinstance(value, str)
-                    or not value
-                    or any(ord(character) < 32 for character in value)
-                    for value in values
-                ):
-                    raise UserError(f"invalid {field} entry for {provider_name}")
-                if len(values) != len(set(values)):
-                    raise UserError(f"duplicate {field} entry for {provider_name}")
-        elif auth.get("type") != "oauth":
-            raise UserError(f"invalid OAuth descriptor for {provider_name}")
-        else:
-            _string(auth.get("provider"), f"oauth provider for {provider_name}")
+def load_registry() -> dict[str, Any]:
+    """fleet's provider registry; fleet validated it when it wrote it."""
+    try:
+        data = json.loads(REGISTRY.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UserError(f"cannot read provider registry {REGISTRY}: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("providers"), dict):
+        raise UserError(f"provider registry {REGISTRY} has no providers")
     return data
 
 
-def load_registry(path: Path = REGISTRY) -> dict[str, Any]:
-    account = HOME / ".config/providers/registry.json"
-    if path == REGISTRY and "OPENCODEX_REGISTRY" not in os.environ and account.exists():
-        path = account
+def ocx() -> str:
+    """The ocx fleet installed: on PATH or in nvm's bins, where fleet looks too.
+
+    Only the claude harness, Anthropic login and passed-through commands run it;
+    every launch needs just the proxy answering.
+    """
+    found = shutil.which("ocx")
+    if found is None:
+        nvm = sorted((HOME / ".nvm/versions/node").glob("*/bin/ocx"), reverse=True)
+        found = next((str(path) for path in nvm if os.access(path, os.X_OK)), None)
+    if found is None:
+        raise UserError(NOT_INSTALLED)
+    return found
+
+
+def proxy_url() -> str | None:
+    """Where a token-less client reaches the proxy, or None when nothing answers.
+
+    Same lookup as fleet's: where the main port wants an API token, ocx opens
+    an unauthenticated loopback listener one port up, and that one wins.
+    """
     try:
-        return validate_registry(json.loads(path.read_text()))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise UserError(f"cannot read provider registry {path}: {exc}") from exc
+        port = json.loads(RUNTIME_PORT.read_text())["port"]
+    except (OSError, ValueError, KeyError, TypeError):
+        port = 10100
+    if not isinstance(port, int):
+        port = 10100
+    for candidate in (port + 1, port):
+        url = f"http://127.0.0.1:{candidate}"
+        try:
+            with urllib.request.urlopen(url + "/v1/models", timeout=0.75):
+                return url
+        except (OSError, ValueError):
+            continue
+    return None
 
 
-def load_auth() -> dict[str, Any]:
-    if not AUTH_JSON.exists():
-        return {}
-    try:
-        data = json.loads(AUTH_JSON.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def load_auth_strict() -> dict[str, Any]:
-    if not AUTH_JSON.exists():
-        return {}
-    try:
-        data = json.loads(AUTH_JSON.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise UserError(f"cannot read local auth store {AUTH_JSON}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise UserError(f"local auth store {AUTH_JSON} must contain a JSON object")
-    return data
+def require_proxy() -> str:
+    url = proxy_url()
+    if url is None:
+        ocx()  # with no ocx at all, how to install it comes before how to start it
+        raise UserError(NOT_RUNNING)
+    return url
 
 
 def load_provider_state(path: Path | None = None) -> dict[str, dict[str, bool]]:
@@ -227,7 +123,6 @@ def load_provider_state(path: Path | None = None) -> dict[str, dict[str, bool]]:
         raise UserError(f"invalid provider state {path}: expected version 1 provider state")
     if not all(
         isinstance(name, str)
-        and NAME_RE.fullmatch(name)
         and isinstance(entry, dict)
         and set(entry) == {"enabled"}
         and isinstance(entry["enabled"], bool)
@@ -251,653 +146,6 @@ def write_json_atomic(path: Path, data: dict[str, Any], mode: int = 0o600) -> No
             os.unlink(tmp_name)
         except FileNotFoundError:
             pass
-
-
-def load_json_object(path: Path, label: str) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise UserError(f"cannot read {label} {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise UserError(f"{label} {path} must contain a JSON object")
-    return data
-
-
-def managed_provider_names() -> set[str]:
-    if not OPENCODEX_MANAGED.exists():
-        return set()
-    data = load_json_object(OPENCODEX_MANAGED, "managed provider record")
-    names = data.get("providers", [])
-    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
-        raise UserError(f"invalid managed provider record {OPENCODEX_MANAGED}")
-    return set(names)
-
-
-def opencodex_seed() -> dict[str, Any]:
-    return {
-        "port": 10100,
-        "openaiProviderTierVersion": 2,
-        "providers": {
-            "openai": {
-                "adapter": "openai-responses",
-                "baseUrl": "https://chatgpt.com/backend-api/codex",
-                "authMode": "forward",
-                "codexAccountMode": "pool",
-            }
-        },
-        "defaultProvider": "openai",
-        "websockets": True,
-        "codexAutoStart": True,
-        "codexShimAutoRestore": True,
-    }
-
-
-def desired_opencodex_config(
-    registry: dict[str, Any], original: dict[str, Any], auth_data: dict[str, Any]
-) -> tuple[dict[str, Any], set[str]]:
-    config = json.loads(json.dumps(original or opencodex_seed()))
-    providers = config.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        raise UserError("OpenCodex providers must be an object")
-    providers.setdefault("openai", opencodex_seed()["providers"]["openai"])
-    config.setdefault("defaultProvider", "openai")
-
-    managed = {
-        name
-        for name, provider in registry.get("providers", {}).items()
-        if provider.get("provider_type") in {"DirectAnthropic", "OpenAICompatible"}
-    }
-    for stale in managed_provider_names() - managed:
-        providers.pop(stale, None)
-
-    # Machine-local enablement is provider-owned state, and OpenCodex's own
-    # `disabled` flag is what `ocx sync` filters on when it rebuilds the Codex
-    # model catalog. Mirroring it here is what keeps a disabled provider out of
-    # the Codex model picker, not just out of launcher selection.
-    state = load_provider_state()
-    ladders_by_provider = capability_effort_ladders(registry)
-    contexts_by_provider = capability_context_windows(registry)
-
-    for name in sorted(managed):
-        descriptor = registry["providers"][name]
-        current = providers.get(name, {})
-        provider = dict(current) if isinstance(current, dict) else {}
-        if descriptor["provider_type"] == "DirectAnthropic":
-            provider.update(
-                {
-                    "adapter": "anthropic",
-                    "baseUrl": descriptor["base_url"],
-                    "authMode": "oauth",
-                }
-            )
-            for field in ("apiKey", "apiKeyPool", "disabled"):
-                provider.pop(field, None)
-        else:
-            auth_name = descriptor["auth"]["key"]
-            entry = auth_data.get(auth_name, {})
-            key = entry.get("key", "") if isinstance(entry, dict) else ""
-            override = state.get(name)
-            enabled = (
-                override["enabled"]
-                if override is not None
-                else descriptor.get("enabled") is True
-            )
-            provider.update(
-                {
-                    "adapter": "openai-chat",
-                    "baseUrl": descriptor["base_url"],
-                    "authMode": "key",
-                    "apiKey": key,
-                    "disabled": not enabled or not bool(key),
-                    "liveModels": True,
-                }
-            )
-            narrowed = _catalog_selected_models(name)
-            if narrowed is None:
-                narrowed = _registry_selected_models(descriptor)
-            if narrowed is not None:
-                provider["selectedModels"] = narrowed
-            else:
-                provider.pop("selectedModels", None)
-            no_reasoning = _registry_no_reasoning_models(
-                descriptor,
-                narrowed or [],
-                ladders_by_provider.get(name, {}),
-            )
-            if no_reasoning:
-                provider["noReasoningModels"] = no_reasoning
-            elif "model_no_reasoning_suffixes" in descriptor:
-                provider.pop("noReasoningModels", None)
-            # OAuth providers are excluded on purpose: OpenCodex reconciles
-            # their ladders itself at login, which is what OAUTH_RECONCILE_FIELDS
-            # protects. An api-key provider gets no such reconcile, so setup is
-            # the only thing that can carry the upstream fact across.
-            if name in ladders_by_provider:
-                ladders = ladders_by_provider[name]
-                if ladders:
-                    provider["modelReasoningEfforts"] = ladders
-                else:
-                    provider.pop("modelReasoningEfforts", None)
-            if name in contexts_by_provider:
-                contexts = contexts_by_provider[name]
-                if contexts:
-                    provider["modelContextWindows"] = contexts
-                else:
-                    provider.pop("modelContextWindows", None)
-            # An OAuth provider's `models` is OpenCodex's own login reconcile,
-            # not a pin, and the proxy writes it back; stripping it there made
-            # every apply rewrite config.json and restart the proxy.
-            provider.pop("models", None)
-        # Never pin a model: a launch names the one it wants, and with
-        # liveModels the proxy serves each provider's full rotating fleet
-        # rather than a profile-mapped subset. Popping rather than merely
-        # not writing is what retires a pin an older release left behind.
-        provider.pop("defaultModel", None)
-        providers[name] = provider
-
-    # Bind loopback. A non-loopback bind makes OpenCodex refuse to install or
-    # refresh its service unless OPENCODEX_API_AUTH_TOKEN is exported in the
-    # calling shell — a variable that only lives inside the unit's own
-    # ExecStart. An unattended `setup update` never has it, so the
-    # `ocx service` that restarts the proxy after a package swap fails,
-    # and the previous build keeps serving with nothing left to restart it.
-    # Agents reach the proxy over loopback anyway; nothing off-box dials it.
-    config["hostname"] = "127.0.0.1"
-    # The proxy drains in-flight turns on SIGTERM for this long before aborting
-    # them. Its 5s default is shorter than a single coding turn, so a restart
-    # lands as a cancelled request. harnesses raises the unit's TimeoutStopSec
-    # to match; systemd SIGKILLs at 90s otherwise and the drain never finishes.
-    config["shutdownTimeoutMs"] = 300000
-    config["syncResumeHistory"] = sys.platform == "darwin"
-    return config, managed
-
-
-def proxy_health(port: int) -> dict[str, Any] | None:
-    """/healthz payload of the proxy on `port`, or None when it is unreachable."""
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/healthz", headers={"Accept": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=1.0) as response:
-            payload = json.load(response)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def live_proxy_port() -> int | None:
-    """Port of a running proxy that a restart could act on, else None.
-
-    Both callers ask "is a process holding this port, and is it stale?", never
-    "may I route a request here" — so a proxy that answers is live even when it
-    answers unhappily. `restart_required` is the case that matters: an upgrade
-    swapped the package tree underneath it, and it reports that instead of
-    exiting. Reading only `ok` as alive made the one state that exists to ask
-    for a restart look like an empty port, so the restart never ran and the
-    replacement could not bind.
-    """
-    try:
-        port = json.loads(RUNTIME_PORT.read_text())["port"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        return None
-    if not isinstance(port, int):
-        return None
-    payload = proxy_health(port)
-    if payload is None:
-        return None
-    return port if payload.get("status") in {"ok", "restart_required"} else None
-
-
-def live_proxy_version(port: int) -> str | None:
-    """Version the RUNNING proxy reports, or None when it does not report one."""
-    payload = proxy_health(port) or {}
-    version = payload.get("version")
-    return version if isinstance(version, str) and version else None
-
-
-def installed_ocx_version() -> str | None:
-    """Version of the ocx build on disk, or None when it cannot be read.
-
-    Taken from the package manifest beside the resolved binary: `ocx --version`
-    pays a node startup on a path that runs before every launch. The manifest
-    is only missing for a non-npm install, which falls back to the CLI.
-    """
-    try:
-        resolved = OCX.resolve(strict=True)
-    except (OSError, RuntimeError):
-        return None
-    for parent in list(resolved.parents)[:4]:
-        try:
-            manifest = json.loads((parent / "package.json").read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        version = manifest.get("version") if isinstance(manifest, dict) else None
-        if isinstance(version, str) and version:
-            return version
-    try:
-        proc = subprocess.run(
-            [str(OCX), "--version"], capture_output=True, text=True, timeout=15
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode:
-        return None
-    fields = (proc.stdout or "").split()
-    return fields[-1] if fields else None
-
-
-def live_provider_view(port: int) -> dict[str, dict[str, Any]] | None:
-    """Provider name -> full row, as the RUNNING proxy sees it. None if unreadable.
-
-    Rows are already URL-sanitized by the proxy (no userinfo/query/hash;
-    trailing slash preserved). Missing optional fields are tolerated by
-    callers, so the minimal rows the test fixtures serve never falsely flag.
-    """
-    try:
-        token = ADMIN_TOKEN.read_text().strip()
-    except OSError:
-        return None
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/providers",
-        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=2.0) as response:
-            # Model metadata the proxy echoes back can carry raw control
-            # characters, which strict JSON rejects.
-            payload = json.loads(response.read().decode("utf-8", "replace"), strict=False)
-    except (OSError, urllib.error.URLError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, list):
-        return None
-    return {
-        row["name"]: row
-        for row in payload
-        if isinstance(row, dict) and isinstance(row.get("name"), str)
-    }
-
-
-def live_active_turns(port: int) -> int | None:
-    """Requests the RUNNING proxy has in flight, or None when unreadable."""
-    try:
-        token = ADMIN_TOKEN.read_text().strip()
-    except OSError:
-        return None
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/system/memory",
-        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=2.0) as response:
-            payload = json.loads(response.read().decode("utf-8", "replace"), strict=False)
-    except (OSError, urllib.error.URLError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    count = payload.get("activeTurnCount") if isinstance(payload, dict) else None
-    return count if isinstance(count, int) else None
-
-
-def set_live_provider_disabled(port: int, name: str, disabled: bool) -> bool:
-    """Flip one provider on or off in the RUNNING proxy. True when it took it."""
-    try:
-        token = ADMIN_TOKEN.read_text().strip()
-    except OSError:
-        return False
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/providers?name={urllib.parse.quote(name)}",
-        data=json.dumps({"disabled": disabled}).encode(),
-        method="PATCH",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-    )
-    try:
-        # The proxy refreshes its model catalog before it answers.
-        with urllib.request.urlopen(request, timeout=30.0) as response:
-            return 200 <= response.status < 300
-    except (OSError, urllib.error.URLError):
-        return False
-
-
-def live_provider_disabled(port: int) -> dict[str, bool] | None:
-    """Provider -> disabled, as the RUNNING proxy sees it. None if unreadable."""
-    view = live_provider_view(port)
-    if view is None:
-        return None
-    return {name: row.get("disabled") is True for name, row in view.items()}
-
-
-def _normalized_base_url(value: str) -> str:
-    """Routing-safe form of a base URL: no userinfo/query/fragment/trailing '/'.
-
-    The proxy URL-sanitizes /api/providers rows (no userinfo, no query, no
-    fragment) but keeps the trailing slash as stored, so both sides are
-    reduced to the same shape before comparison.
-    """
-    parsed = urllib.parse.urlsplit(value)
-    if not parsed.scheme or not parsed.hostname:
-        return value.rstrip("/")
-    port = f":{parsed.port}" if parsed.port else ""
-    netloc = f"{parsed.hostname}{port}"
-    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, "", "")).rstrip("/")
-
-
-def provider_config_diff(
-    desired_providers: dict[str, Any], live_view: dict[str, dict[str, Any]]
-) -> list[str]:
-    """Human-readable reasons the RUNNING proxy's provider routing is stale.
-
-    Direction is desired -> live: only stored-config providers are inspected,
-    and a live-only provider (added out-of-band via ocx or the GUI) is never
-    flagged. A field absent from a live row — or unset in the desired entry —
-    is not compared, so minimal rows (the test fixtures) never falsely flag.
-    """
-    reasons: list[str] = []
-    for name, desired in desired_providers.items():
-        if not isinstance(desired, dict):
-            continue
-        live = live_view.get(name)
-        if not isinstance(live, dict):
-            reasons.append(f"provider '{name}' is not loaded by the running proxy")
-            continue
-        for field in ("adapter", "authMode"):
-            if field in live and desired.get(field) is not None and desired[field] != live[field]:
-                reasons.append(
-                    f"provider '{name}' {field} differs "
-                    f"(config: {desired[field]}, proxy: {live[field]})"
-                )
-        if "disabled" in live and (desired.get("disabled") is True) != (
-            live["disabled"] is True
-        ):
-            reasons.append(
-                f"provider '{name}' disabled differs "
-                f"(config: {desired.get('disabled') is True}, proxy: {live['disabled'] is True})"
-            )
-        if "liveModels" in live and (
-            desired.get("liveModels", True) is not False
-        ) != (live["liveModels"] is not False):
-            reasons.append(
-                f"provider '{name}' liveModels differs "
-                f"(config: {desired.get('liveModels', True) is not False}, "
-                f"proxy: {live['liveModels'] is not False})"
-            )
-        if (
-            "baseUrl" in live
-            and "baseUrl" in desired
-            and _normalized_base_url(str(desired["baseUrl"]))
-            != _normalized_base_url(str(live["baseUrl"]))
-        ):
-            reasons.append(
-                f"provider '{name}' baseUrl differs "
-                f"(config: {desired['baseUrl']}, proxy: {live['baseUrl']})"
-            )
-        if "hasApiKey" in live and bool(desired.get("apiKey")) != (live["hasApiKey"] is True):
-            reasons.append(
-                f"provider '{name}' hasApiKey differs "
-                f"(config: {bool(desired.get('apiKey'))}, proxy: {live['hasApiKey'] is True})"
-            )
-    return reasons
-
-
-def proxy_self_reported_restart(port: int) -> list[str]:
-    """Reason the proxy itself is asking to be restarted, else [].
-
-    Stands apart from version drift because the proxy knows things the two
-    version numbers do not: a reinstall of the same version still swaps every
-    file, and `restart_required` is how it reports that its own code changed
-    on disk. Reading its stated reason keeps the restart from depending on the
-    versions happening to differ.
-    """
-    payload = proxy_health(port) or {}
-    if payload.get("status") != "restart_required":
-        return []
-    error = payload.get("error")
-    detail = error.get("message") if isinstance(error, dict) else None
-    return [detail if isinstance(detail, str) and detail else "proxy reports restart_required"]
-
-
-def proxy_version_drift(port: int) -> list[str]:
-    """Reason the RUNNING proxy predates the ocx build on disk, else [].
-
-    An update swaps the runtime root out from under the running process — the
-    old code keeps serving until it is restarted — so a version mismatch is
-    stale exactly like a config mismatch. Either side reporting no version
-    (an older proxy, a manifest-less install) is never treated as drift.
-    """
-    running = live_proxy_version(port)
-    installed = installed_ocx_version()
-    if not running or not installed or running == installed:
-        return []
-    return [f"proxy is running ocx {running} but {installed} is installed"]
-
-
-def config_written_after_start() -> list[str]:
-    """Stale because config.json was rewritten after the proxy loaded it.
-
-    The server snapshots config.json at startup and never watches the file, so
-    anything written afterwards is invisible to the running process. Comparing
-    the file against /api/providers only catches fields that view echoes back,
-    and it echoes adapter/authMode/disabled/baseUrl and nothing else -- a
-    reasoning ladder written to disk compared equal forever and the proxy kept
-    forwarding efforts the model rejects.
-
-    So compare timestamps instead of fields. ocx rewrites runtime-port.json
-    every time it starts, which dates the snapshot the process is holding, and
-    apply only writes config.json when the content actually changed. That makes
-    this specific to a real change and blind to which field changed, so the next
-    key we add is covered without anyone remembering to list it here.
-    """
-    try:
-        written = OPENCODEX_CONFIG.stat().st_mtime
-        started = (HOME/".opencodex/runtime-port.json").stat().st_mtime
-    except OSError:
-        return []
-    try:
-        started = max(started, LIVE_APPLIED.stat().st_mtime)
-    except OSError:
-        pass
-    if written <= started:
-        return []
-    return ["config.json was written after the running proxy loaded it"]
-
-
-def proxy_stale_reasons(port: int, desired_providers: dict[str, Any]) -> list[str]:
-    """Human-readable reasons the proxy on `port` must restart to be current.
-
-    A healthy but unreadable provider view contributes no reasons, so callers
-    never blind-restart on routing; the proxy's own restart request and the
-    version drift are both read from /healthz and each stands on its own.
-    """
-    reasons = (proxy_self_reported_restart(port) + proxy_version_drift(port)
-               + config_written_after_start())
-    live = live_provider_view(port)
-    if live is not None:
-        reasons.extend(provider_config_diff(desired_providers, live))
-    return reasons
-
-
-def proxy_restart_status() -> tuple[bool, int | None, list[str]]:
-    """(running, port, reasons) — is the live proxy stale against disk?"""
-    port = live_proxy_port()
-    if port is None:
-        return False, None, []
-    stored = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
-    providers = stored.get("providers", {})
-    if not isinstance(providers, dict):
-        providers = {}
-    return True, port, proxy_stale_reasons(port, providers)
-
-
-def restart_stale_proxy(context: str, quiet: bool = False) -> bool:
-    """Replace the running proxy process. Shared by apply and launch.
-
-    The service manager is asked first because `ocx restart` cannot recover the
-    `restart_required` case this most exists for: its stop half asks the same
-    health endpoint whether a proxy is running, reads the unhappy answer as
-    "nothing is there", skips the kill, and then cannot bind the port the
-    survivor still holds. systemd and launchd stop a process by PID and never
-    ask it for permission. Plain `restart` remains the fallback for an install
-    with no registered service. `quiet` keeps ocx's output off a screen the
-    menu owns.
-    """
-    if not (OCX.is_file() and os.access(OCX, os.X_OK)):
-        if not quiet:
-            print(
-                "opencodex: the running proxy is stale but ocx is missing; "
-                f"restart the proxy to {context} it",
-                file=sys.stderr,
-            )
-        return False
-    for command in (["service", "restart"], ["restart"]):
-        if not subprocess.run([str(OCX), *command], capture_output=quiet).returncode:
-            return True
-    if not quiet:
-        print("opencodex: proxy restart failed; run: ocx service restart", file=sys.stderr)
-    return False
-
-
-def _without_disabled(config: dict[str, Any]) -> dict[str, Any]:
-    providers = config.get("providers")
-    if not isinstance(providers, dict):
-        return config
-    return {
-        **config,
-        "providers": {
-            name: {k: v for k, v in row.items() if k != "disabled"}
-            if isinstance(row, dict) else row
-            for name, row in providers.items()
-        },
-    }
-
-
-def toggle_live_providers(original: dict[str, Any], desired: dict[str, Any]) -> bool:
-    """Apply provider on/off to the running proxy instead of restarting it.
-
-    A restart drains: new requests from every agent are refused until the old
-    process exits, and a turn still running when the drain times out is cut.
-    Enable/disable is the one change the proxy takes live, and it saves
-    config.json itself from what it holds in memory. That is only `desired`
-    when the proxy already loaded `original` and nothing but `disabled`
-    differs, so anything else is left to the restart path. True when the
-    proxy now holds `desired`.
-    """
-    if config_written_after_start():
-        return False
-    if _without_disabled(original) != _without_disabled(desired):
-        return False
-    port = live_proxy_port()
-    if port is None:
-        return False
-    live = live_provider_disabled(port)
-    if live is None:
-        return False
-    for name, row in desired.get("providers", {}).items():
-        if not isinstance(row, dict) or name not in live:
-            continue
-        want = row.get("disabled") is True
-        if live[name] != want and not set_live_provider_disabled(port, name, want):
-            return False
-    return True
-
-
-def wait_for_idle(port: int) -> bool:
-    """True once the proxy has no request in flight; False if it stays busy.
-
-    A count the proxy does not report reads as idle, which is the old
-    restart-right-away behavior.
-    """
-    deadline = time.monotonic() + IDLE_WAIT
-    while live_active_turns(port):
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.5)
-    return True
-
-
-def converge_live_proxy(desired: dict[str, Any]) -> None:
-    """Restart a running proxy left stale by the apply that just ran.
-
-    The server snapshots config.json at startup and never watches the file, so
-    a provider we enable on disk keeps failing every request with
-    `Provider is disabled: <name>` — or stays entirely absent from
-    /api/providers (the reported deepseek case) — until the process restarts.
-    An `_ensure_runtime` upgrade is the same shape: the new build is on disk
-    while the old one keeps serving. Comparing the live view (not the disk
-    diff) is what heals a proxy that went stale on an earlier apply.
-
-    The restart waits for a moment with no request in flight, when stopping
-    takes about a second and clients retry through it. A proxy that stays busy
-    keeps serving and is restarted by the next apply or launch instead.
-    `restart_required` does not wait: that proxy already refuses every request.
-    """
-    port = live_proxy_port()
-    if port is None:
-        return
-    reasons = proxy_stale_reasons(port, desired.get("providers", {}))
-    if not reasons:
-        return
-    if not proxy_self_reported_restart(port) and not wait_for_idle(port):
-        print(
-            "opencodex: the proxy stayed busy; restart put off to the next sync or launch",
-            file=sys.stderr,
-        )
-        for reason in reasons:
-            print(f"  - {reason}", file=sys.stderr)
-        return
-    restart_stale_proxy("apply")
-
-
-def apply_opencodex_registry(registry_path: Path, restart: bool = True) -> None:
-    registry = load_registry(registry_path)
-    original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
-    desired, managed = desired_opencodex_config(registry, original, load_auth())
-    live = restart and toggle_live_providers(original, desired)
-    if desired != original:
-        write_json_atomic(OPENCODEX_CONFIG, desired)
-    if live:
-        LIVE_APPLIED.touch()
-    record = {"version": 1, "providers": sorted(managed)}
-    if not OPENCODEX_MANAGED.exists() or load_json_object(
-        OPENCODEX_MANAGED, "managed provider record"
-    ) != record:
-        write_json_atomic(OPENCODEX_MANAGED, record, 0o600)
-    if restart:
-        converge_live_proxy(desired)
-
-
-def opencodex_config_status(registry_path: Path) -> bool:
-    if not OPENCODEX_CONFIG.exists() or not OPENCODEX_MANAGED.exists():
-        return False
-    registry = load_registry(registry_path)
-    original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
-    desired, managed = desired_opencodex_config(registry, original, load_auth())
-    for config in (original, desired):
-        providers = config.get("providers", {})
-        for name in managed:
-            if isinstance(providers.get(name), dict):
-                providers[name]["apiKey"] = ""
-                descriptor = registry["providers"][name]
-                if descriptor.get("auth", {}).get("type") == "oauth":
-                    for field in OAUTH_RECONCILE_FIELDS:
-                        providers[name].pop(field, None)
-    record = load_json_object(OPENCODEX_MANAGED, "managed provider record")
-    return original == desired and record == {"version": 1, "providers": sorted(managed)}
-
-
-def remove_opencodex_managed() -> None:
-    if not OPENCODEX_CONFIG.exists():
-        return
-    config = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
-    providers = config.get("providers", {})
-    if isinstance(providers, dict):
-        for name in managed_provider_names():
-            providers.pop(name, None)
-    config.pop("hostname", None)
-    config.pop("syncResumeHistory", None)
-    write_json_atomic(OPENCODEX_CONFIG, config)
-    try:
-        OPENCODEX_MANAGED.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def choose(prompt: str, options: list[str], allow_cancel: bool = True) -> str | None:
@@ -1081,11 +329,6 @@ EFFORT_CLAUDE_LEVELS = {
     "max": "max",
     "ultra": "max",
 }
-OCX_MODELS_URL = os.environ.get(
-    "OPENCODEX_MODELS_URL", "http://localhost:10100/v1/models"
-)
-
-
 def provider_capability_view() -> dict[str, Any]:
     """Read fleet's capability snapshot without credentials or network access."""
     try:
@@ -1099,70 +342,6 @@ def provider_capability_view() -> dict[str, Any]:
     ):
         return {}
     return payload
-
-
-def _catalog_selected_models(provider: str) -> list[str] | None:
-    """Sorted model ids a provider's last successful refresh kept.
-
-    The ocx proxy runs its own live /models discovery and would happily
-    re-list models fleet filtered out of every other mirror
-    (the grimoire eastself checkpoints). Feeding the providers-owned,
-    already-filtered inventory back as the proxy's selectedModels allowlist
-    narrows what ships to Codex's catalog and /v1/models to the same set.
-    None means no usable snapshot. Providers with an admission policy then use
-    their registry bootstrap list instead of exposing the full live catalog.
-    """
-    view = provider_capability_view()
-    providers = view.get("providers", {})
-    snapshot = providers.get(provider) if isinstance(providers, dict) else None
-    models = snapshot.get("models") if isinstance(snapshot, dict) else None
-    if not isinstance(models, dict) or not models:
-        return None
-    return sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
-
-
-def _registry_selected_models(descriptor: dict[str, Any]) -> list[str] | None:
-    """Return a safe static fallback for providers with an admission policy.
-
-    A live provider without a refreshed capability cache would otherwise make
-    OpenCodex expose its entire upstream catalog. The registry list is only a
-    bootstrap floor; a successful fleet model refresh replaces it with the
-    current filtered inventory.
-    """
-    models = descriptor.get("model_allow_ids")
-    if not isinstance(models, list):
-        return None
-    selected = sorted(model_id for model_id in models if isinstance(model_id, str) and model_id)
-    return selected or None
-
-
-def _registry_no_reasoning_models(
-    descriptor: dict[str, Any],
-    selected: list[str],
-    ladders: dict[str, list[str]] | None = None,
-) -> list[str]:
-    """Return selected models whose registry policy has no effort control.
-
-    OpenCodex's catalog fallback synthesizes a generic reasoning ladder when a
-    model has no advertised levels. A provider may explicitly say that a model
-    family has no selectable reasoning control, while a refreshed capability
-    ladder takes precedence if the provider later publishes one.
-    """
-    suffixes = tuple(
-        value.casefold()
-        for value in descriptor.get("model_no_reasoning_suffixes", [])
-        if isinstance(value, str) and value
-    )
-    known_ladders = set(ladders or {})
-    if not suffixes:
-        return []
-    return sorted(
-        model_id
-        for model_id in selected
-        if isinstance(model_id, str)
-        and model_id not in known_ladders
-        and model_id.casefold().endswith(suffixes)
-    )
 
 
 def model_efforts(info: dict[str, Any]) -> list[str]:
@@ -1227,14 +406,6 @@ def provider_uses_bare_ids(registry: dict[str, Any], provider: str) -> bool:
     )
 
 
-def provider_model_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Offline baseline: no model ids of its own (the registry's providers only
-    know base_urls), so this simply returns an empty index. Model data comes
-    from the catalog and the live proxy. Kept as a named seam for symmetry and
-    so a future registry-carried model list has one obvious home."""
-    return {}
-
-
 def _restore_catalog_slug(slug: str, known_ids: set[str] | None) -> str:
     """Undo the catalog's provider/model joining when it hid a '/' in the id.
 
@@ -1293,9 +464,12 @@ def catalog_model_index(
     return index
 
 
-def live_model_index(url: str = OCX_MODELS_URL, timeout: float = 0.75) -> dict[str, dict[str, Any]]:
+def live_model_index(timeout: float = 0.75) -> dict[str, dict[str, Any]]:
     """Model id -> info, from the running ocx proxy's /v1/models (best effort)."""
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    url = proxy_url()
+    if url is None:
+        return {}
+    request = urllib.request.Request(url + "/v1/models", headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
@@ -1316,82 +490,6 @@ def _capability_route_id(provider: str, model_id: str) -> str:
     the id (for example ``openrouter/auto``); preserve that existing route.
     """
     return model_id if model_id.startswith(f"{provider}/") else f"{provider}/{model_id}"
-
-
-def capability_effort_ladders(registry: dict[str, Any]) -> dict[str, dict[str, list[str]]]:
-    """Provider -> {native model id: supported efforts}, from the providers cache.
-
-    OpenCodex never reads `supported_efforts` off an upstream /v1/models, so for
-    an api-key provider nothing fills its reasoning ladder. Without one the
-    proxy has nothing to clamp against and forwards an effort the model rejects
-    verbatim; with one it drops to the nearest level the model does take. The
-    fact is already published upstream and already cached here, so this reads it
-    rather than restating it per model.
-
-    Only providers present in the view are returned. A missing cache leaves the
-    caller's existing ladders untouched instead of erasing them.
-    """
-    view = provider_capability_view()
-    providers = view.get("providers", {}) if isinstance(view, dict) else {}
-    if not isinstance(providers, dict):
-        return {}
-    enrolled = registry.get("providers", {})
-    result: dict[str, dict[str, list[str]]] = {}
-    for provider, snapshot in providers.items():
-        if enrolled.get(provider, {}).get("provider_type") != "OpenAICompatible":
-            continue
-        models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
-        if not isinstance(models, dict):
-            continue
-        ladders: dict[str, list[str]] = {}
-        for native_id, record in models.items():
-            if not isinstance(native_id, str) or not native_id or not isinstance(record, dict):
-                continue
-            reasoning = record.get("reasoning")
-            reasoning = reasoning if isinstance(reasoning, dict) else {}
-            if reasoning.get("support") != "full":
-                continue
-            efforts = reasoning.get("supported_efforts")
-            if not isinstance(efforts, list):
-                continue
-            efforts = [value for value in efforts if isinstance(value, str) and value]
-            if efforts:
-                ladders[native_id] = efforts
-        result[provider] = ladders
-    return result
-
-
-def capability_context_windows(registry: dict[str, Any]) -> dict[str, dict[str, int]]:
-    """Provider -> {native model id: context window}, from the providers cache.
-
-    OpenCodex fills a routed model's context window from provider config or
-    its own fallback constant, and the constant is what every grimoire model
-    was getting: the proxy compacts a 393k window at 115k. The upstream
-    /v1/models answer and the registry both already carry the real number,
-    and the shared cache mirrors it, so read it from there instead of
-    restating it per model. Same cache-only boundary as the effort ladders.
-    """
-    view = provider_capability_view()
-    providers = view.get("providers", {}) if isinstance(view, dict) else {}
-    if not isinstance(providers, dict):
-        return {}
-    enrolled = registry.get("providers", {})
-    result: dict[str, dict[str, int]] = {}
-    for provider, snapshot in providers.items():
-        if enrolled.get(provider, {}).get("provider_type") != "OpenAICompatible":
-            continue
-        models = snapshot.get("models", {}) if isinstance(snapshot, dict) else {}
-        if not isinstance(models, dict):
-            continue
-        windows: dict[str, int] = {}
-        for native_id, record in models.items():
-            if not isinstance(native_id, str) or not native_id or not isinstance(record, dict):
-                continue
-            context = record.get("context")
-            if isinstance(context, int) and context > 0:
-                windows[native_id] = context
-        result[provider] = windows
-    return result
 
 
 def provider_capability_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1509,20 +607,12 @@ def launch_efforts(provider: str | None, model: str) -> list[str]:
     return list(EFFORT_ORDER) + [EFFORT_DEFAULT]
 
 
-def ensure_opencodex() -> None:
-    if not OCX.is_file() or not os.access(OCX, os.X_OK):
-        raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
-    proc = subprocess.run([str(OCX), "ensure"])
-    if proc.returncode:
-        raise UserError("OpenCodex could not be started")
-
-
 def ensure_provider_auth(provider: str | None) -> bool:
     """Ensure provider-owned OAuth is usable; return whether login was new."""
     if provider != "anthropic":
         return False
     proc = subprocess.run(
-        [str(OCX), "account", "list", provider, "--json", "--all"],
+        [ocx(), "account", "list", provider, "--json", "--all"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1539,16 +629,16 @@ def ensure_provider_auth(provider: str | None) -> bool:
         for account in accounts
     ):
         return False
-    if subprocess.run([str(OCX), "login", provider]).returncode:
+    if subprocess.run([ocx(), "login", provider]).returncode:
         raise UserError("Anthropic OAuth login failed; run ocx login anthropic")
-    if subprocess.run([str(OCX), "sync"]).returncode:
+    if subprocess.run([ocx(), "sync"]).returncode:
         raise UserError("OpenCodex sync failed after Anthropic OAuth login; run ocx sync")
     return True
 
 
 def ensure_discovery_auth(registry: dict[str, Any]) -> None:
     """Import/login managed Anthropic OAuth before discovering proxy models."""
-    ensure_opencodex()
+    require_proxy()
     state = load_provider_state()
     for provider, descriptor in registry.get("providers", {}).items():
         if not provider_enabled(provider, descriptor, state):
@@ -1569,35 +659,7 @@ def launch(
     model: str | None = None,
     effort: str | None = None,
 ) -> int:
-    running, port, reasons = proxy_restart_status()
-    # A restart would cut turns other agents have in flight on this proxy, so
-    # a busy one keeps serving as it is; ctrl+r in the menu restarts it on demand.
-    busy = bool(running and port and reasons and not proxy_self_reported_restart(port)
-                and live_active_turns(port))
-    if busy:
-        print(
-            "opencodex: the running proxy is stale but busy; launching on it as is "
-            "(ctrl+r in the opencodex menu restarts it)",
-            file=sys.stderr,
-        )
-        for reason in reasons:
-            print(f"  - {reason}", file=sys.stderr)
-        ensure_opencodex()
-    elif running and reasons:
-        # The proxy snapshots config.json at startup, never reloads it, and
-        # keeps running the build that was on disk when it started, so a stale
-        # process would serve old routing — or an old runtime — to every
-        # harness the moment it launches. A restart is stop + ensure, so the
-        # plain ensure below is skipped (it covers it and resyncs the catalog).
-        print(
-            "opencodex: the running proxy is stale; restarting it",
-            file=sys.stderr,
-        )
-        for reason in reasons:
-            print(f"  - {reason}", file=sys.stderr)
-        restart_stale_proxy("refresh")
-    else:
-        ensure_opencodex()
+    require_proxy()
     ensure_provider_auth(provider)
     if model is None:
         raise UserError("a model is required to launch")
@@ -1661,7 +723,7 @@ def launch(
                 f"reasoning effort {explicit!r} has no Claude effort mapping"
             )
         env["CLAUDE_CODE_EFFORT_LEVEL"] = EFFORT_CLAUDE_LEVELS[explicit]
-    command = [str(OCX), "claude"]
+    command = [ocx(), "claude"]
     # A settings.json "model" pin outranks ANTHROPIC_MODEL in claude's
     # precedence; the --model flag is the only override that always wins.
     command.extend(["--model", routed])
@@ -1983,7 +1045,7 @@ def reel_at(x: int, width: int, gap: int) -> int | None:
 
 
 def handle_key(state: ReelState, action: str) -> str | None:
-    """Returns 'launch', 'cancel', 'restart', or None (state mutated in place)."""
+    """Returns 'launch', 'cancel', or None (state mutated in place)."""
     if action == "left":
         state.move_focus(-1)
     elif action == "right":
@@ -1996,7 +1058,7 @@ def handle_key(state: ReelState, action: str) -> str | None:
         if state.selected_model() is None:
             return None
         return "launch"
-    elif action in ("cancel", "restart"):
+    elif action == "cancel":
         return action
     return None
 
@@ -2115,30 +1177,17 @@ def handle_mouse(
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⦠⦯⦿"
 
 
-def picker_header(
-    proxy: tuple[bool, int | None, list[str], str | None] | None,
-    restarting: bool = False,
-) -> tuple[str, str]:
+def picker_header(proxy: str | None) -> tuple[str, str]:
     """(text, style) for the picker's single title/status line.
 
-    Title, runtime version and proxy state read as one banner —
-    'opencodex · 2.10.1 · :10100 running' — rather than a stacked pair.
-    `proxy` is None while the background probe is still in flight.
+    `proxy` is the proxy's URL, "" when nothing answers, or None while the
+    background probe is still in flight.
     """
-    if restarting:
-        return "opencodex · restarting proxy…", "dim"
     if proxy is None:
         return "opencodex · …", "dim"
-    running, port, reasons, version = proxy
-    parts = ["opencodex"]
-    if version:
-        parts.append(version)
-    if not running:
-        return " · ".join(parts + ["proxy stopped"]), "dim"
-    parts.append(f":{port} running" if port else "running")
-    if reasons:
-        return " · ".join(parts + ["restart pending"]), "warn"
-    return " · ".join(parts), "title"
+    if not proxy:
+        return "opencodex · proxy stopped", "warn"
+    return f"opencodex · :{proxy.rsplit(':', 1)[1]} running", "title"
 
 
 def run_reel_picker(
@@ -2155,28 +1204,8 @@ def run_reel_picker(
     state = ReelState(providers, registry, {}, harnesses, load_picker_state())
     fetched: dict[str, Any] = {}
 
-    def fetch_proxy() -> None:
-        try:
-            running, port, reasons = proxy_restart_status()
-            live = live_proxy_version(port) if running and port else None
-            fetched["proxy"] = (running, port, reasons, live or installed_ocx_version())
-        except Exception:
-            fetched["proxy"] = None
-
-    def restart() -> None:
-        try:
-            restart_stale_proxy("restart", quiet=True)
-            # A provider the old process never loaded only shows up now.
-            fetched["index"] = merged_model_index(registry)
-            fetched["applied"] = False
-        except Exception:
-            pass
-        finally:
-            fetch_proxy()
-            fetched["restarting"] = False
-
     def fetch() -> None:
-        fetch_proxy()
+        fetched["proxy"] = proxy_url() or ""
         try:
             fetched["index"] = merged_model_index(registry)
         except Exception:
@@ -2199,8 +1228,6 @@ def run_reel_picker(
             return "enter"
         if key in (27, ord("q")):
             return "cancel"
-        if key == 18:  # ctrl+r
-            return "restart"
         return None
 
     def draw(stdscr: Any, y: int, x: int, width: int, text: str, attr: int) -> None:
@@ -2250,7 +1277,7 @@ def run_reel_picker(
             draw(stdscr, rows // 2, 0, cols, message.center(cols - 1), attrs["dim"])
             stdscr.refresh()
             return
-        banner, style = picker_header(fetched.get("proxy"), fetched.get("restarting", False))
+        banner, style = picker_header(fetched.get("proxy"))
         draw(stdscr, 0, 0, cols, f" {banner} ".center(cols - 1), attrs[style])
         width, gap, header_y, center_y, body, _ = picker_layout(rows, cols)
         for reel in range(4):
@@ -2258,7 +1285,7 @@ def run_reel_picker(
                 stdscr, reel * (width + gap), header_y, center_y, body, width,
                 reel, state.reel_entries(reel), attrs,
             )
-        hint = "←/→ column · ↑/↓ select · enter launch · ctrl+r restart · q cancel"
+        hint = "←/→ column · ↑/↓ select · enter launch · q cancel"
         draw(stdscr, rows - 1, 0, cols, hint.center(cols - 1), attrs["dim"])
         stdscr.refresh()
 
@@ -2329,16 +1356,9 @@ def run_reel_picker(
                 if action is None:
                     continue
             result = handle_key(state, action)
-            if result == "restart" and not fetched.get("restarting"):
-                fetched["restarting"] = True
-                fetched["restart"] = threading.Thread(target=restart, daemon=True)
-                fetched["restart"].start()
             if result == "cancel":
                 return None
             if result == "launch":
-                # Launching probes the proxy itself; let the menu's restart land first.
-                if fetched.get("restart"):
-                    fetched["restart"].join()
                 return state.selection()
 
     return curses.wrapper(loop)
@@ -2423,9 +1443,8 @@ def catalogue(
     Reads exactly the sources the picker reads — enabled_providers() for
     disablement, merged_model_index() for models, model_efforts() for the
     effort reel, available_harnesses() for the harness reel — plus the live
-    proxy's routing status, but nothing that can block, prompt, or start
-    anything: no OAuth discovery, no proxy launch, no restart. The proxy
-    status line is read-only (health + /api/providers HTTP). With the proxy
+    proxy's address, but nothing that can block, prompt, or start anything:
+    no OAuth discovery, no proxy launch, no restart. With the proxy
     down merged_model_index() narrows to the Codex catalog, which is the right
     answer here rather than an error.
 
@@ -2471,15 +1490,13 @@ def catalogue(
                 ],
             }
         )
-    running, port, reasons = proxy_restart_status()
+    url = proxy_url()
     return {
         "providers": entries,
         "harnesses": available_harnesses(),
         "proxy": {
-            "running": running,
-            "port": port,
-            "restart_pending": bool(reasons),
-            "reasons": reasons,
+            "running": url is not None,
+            "port": int(url.rsplit(":", 1)[1]) if url else None,
         },
     }
 
@@ -2499,13 +1516,6 @@ def render_catalogue(data: dict[str, Any]) -> str:
     proxy = data.get("proxy", {})
     if proxy.get("running"):
         lines.append(f"# proxy: running on {proxy.get('port')}")
-        if proxy.get("restart_pending"):
-            lines.append(
-                "# warning: the running proxy is stale; "
-                "invoking opencodex restarts it unless it is busy"
-            )
-            for reason in proxy.get("reasons", []):
-                lines.append(f"#   - {reason}")
     else:
         lines.append("# proxy: stopped")
     if any(not entry["launchable"] for entry in data["providers"]):
@@ -2521,244 +1531,14 @@ def render_catalogue(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# --- proxy ---------------------------------------------------------------
-# `opencodex proxy` keeps the proxy service up and points Claude at it. It
-# took over `harnesses proxy`; the export markers keep their harnesses: name
-# so both clients edit the same block while machines move over.
-
-PROXY_DEFAULT_PORT = 10100
-PROXY_UNIT = "opencodex-proxy.service"
-# `ocx service` registers a systemd user unit on Linux and this launchd agent
-# on macOS.
-PROXY_LAUNCHD_LABEL = "com.opencodex.proxy"
-ZSHENV = HOME / ".zshenv"
-CLAUDE_SETTINGS = HOME / ".claude/settings.json"
-ENVIRONMENT_D = HOME / ".config/environment.d/10-harnesses-anthropic.conf"
-# fleet and providers rewrite ~/.claude/settings.json too, under this lock.
-CONSUMER_SYNC_LOCK = HOME / ".config/auth/consumer-sync.lock"
-BASE_URL_BEGIN = "# BEGIN harnesses:anthropic-base-url"
-BASE_URL_END = "# END harnesses:anthropic-base-url"
-
-
-def _is_macos() -> bool:
-    return sys.platform == "darwin"
-
-
-def proxy_service_name() -> str:
-    return PROXY_LAUNCHD_LABEL if _is_macos() else PROXY_UNIT
-
-
-def proxy_service_active() -> bool:
-    try:
-        if _is_macos():
-            result = subprocess.run(
-                ["launchctl", "list"], capture_output=True, text=True, timeout=10
-            )
-            for line in result.stdout.splitlines():
-                fields = line.split()
-                # "<pid>\t<status>\t<label>"; a loaded but stopped agent has
-                # "-" where the pid would be.
-                if len(fields) == 3 and fields[2] == PROXY_LAUNCHD_LABEL:
-                    return fields[0].isdigit()
-            return False
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", PROXY_UNIT],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.stdout.strip() == "active"
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _port_answers(port: int) -> bool:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-
-def proxy_port() -> int:
-    """The port a token-less client should point ANTHROPIC_BASE_URL at.
-
-    Where the main port requires an API token, ocx opens a second,
-    unauthenticated loopback listener one port up. Claude Code sends no token,
-    so that listener wins when it answers.
-    """
-    override = os.environ.get("HARNESSES_PROXY_PORT")
-    if override:
-        return int(override)
-    port = PROXY_DEFAULT_PORT
-    try:
-        port = int(json.loads(RUNTIME_PORT.read_text())["port"])
-    except Exception:
-        pass
-    for candidate in (port + 1, port):
-        if _port_answers(candidate):
-            return candidate
-    return port
-
-
-class _ConsumerSyncLock:
-    def __enter__(self):
-        import fcntl
-
-        CONSUMER_SYNC_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = open(CONSUMER_SYNC_LOCK, "a+")
-        os.chmod(CONSUMER_SYNC_LOCK, 0o600)
-        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *exc):
-        self.handle.close()
-
-
-def _save_text_atomic(path: Path, text: str) -> None:
-    """One rename, so the headersHelper reading ~/.zshenv never sees half a file."""
-    path = Path(os.path.realpath(path))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        mode = path.stat().st_mode & 0o777
-    except FileNotFoundError:
-        mode = 0o600
-    fd, tmp = tempfile.mkstemp(prefix=".opencodex.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    finally:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-
-
-def _claude_settings() -> dict:
-    if not CLAUDE_SETTINGS.exists():
-        return {}
-    try:
-        data = json.loads(CLAUDE_SETTINGS.read_text())
-    except json.JSONDecodeError:
-        raise UserError(f"{CLAUDE_SETTINGS} does not parse; fix it and re-run")
-    return data if isinstance(data, dict) else {}
-
-
-def _remove_legacy_service_env() -> None:
-    """Undo the launchctl / environment.d exports settings.json replaced."""
-    if _is_macos():
-        subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], check=False)
-        return
-    if ENVIRONMENT_D.exists():
-        ENVIRONMENT_D.unlink()
-        print(f"  removed {ENVIRONMENT_D}")
-    subprocess.run(
-        ["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
-        check=False, capture_output=True,
-    )
-
-
-def write_base_url_export() -> None:
-    url = f"http://127.0.0.1:{proxy_port()}"
-    block = f"{BASE_URL_BEGIN}\nexport ANTHROPIC_BASE_URL={url}\n{BASE_URL_END}\n"
-    with _ConsumerSyncLock():
-        text = ZSHENV.read_text() if ZSHENV.exists() else ""
-        if BASE_URL_BEGIN in text and BASE_URL_END in text:
-            text = re.sub(
-                re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
-                lambda _: block, text, flags=re.S,
-            )
-        else:
-            text = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block
-        _save_text_atomic(ZSHENV, text)
-        print(f"  exported ANTHROPIC_BASE_URL={url} in {ZSHENV}")
-        # .zshenv only reaches shells. A claude started by a GUI app or a
-        # service (T3 Code) reads the env block of its own settings file.
-        settings = _claude_settings()
-        settings.setdefault("env", {})["ANTHROPIC_BASE_URL"] = url
-        _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
-        print(f"  set env.ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
-        _remove_legacy_service_env()
-
-
-def remove_base_url_export() -> None:
-    with _ConsumerSyncLock():
-        _remove_legacy_service_env()
-        settings = _claude_settings()
-        env = settings.get("env")
-        if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
-            del env["ANTHROPIC_BASE_URL"]
-            if not env:
-                del settings["env"]
-            _save_text_atomic(CLAUDE_SETTINGS, json.dumps(settings, indent=2) + "\n")
-            print(f"  removed env.ANTHROPIC_BASE_URL from {CLAUDE_SETTINGS}")
-        if not ZSHENV.exists():
-            return
-        text = ZSHENV.read_text()
-        if BASE_URL_BEGIN not in text:
-            return
-        text = re.sub(
-            re.escape(BASE_URL_BEGIN) + r".*?" + re.escape(BASE_URL_END) + r"\n?",
-            "", text, flags=re.S,
-        )
-        _save_text_atomic(ZSHENV, text)
-        print(f"  removed the ANTHROPIC_BASE_URL block from {ZSHENV}")
-
-
-def _wait_for_proxy() -> bool:
-    """True once a proxy answers /healthz, polling up to OPENCODEX_ACTIVATE_WAIT.
-
-    `ocx service` gives a fresh proxy ~20s, and a cold start syncing providers
-    and the model catalogue can take longer, so its nonzero exit alone is not
-    a failure (the install path in opencodex.sh waits the same way).
-    """
-    wait = int(os.environ.get("OPENCODEX_ACTIVATE_WAIT", "120"))
-    print(f"  ocx service did not confirm; waiting up to {wait}s for /healthz", file=sys.stderr)
-    deadline = time.monotonic() + wait
-    while True:
-        if live_proxy_port() is not None:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(2)
-
-
-def cmd_proxy() -> int:
-    """Install or repair the proxy service, then export the route to it.
-
-    The export is written only once the service is confirmed active, and this
-    is the one place that removes it: the nightly pass only ever writes it, so
-    a proxy caught mid-restart never strips the route.
-    """
-    ocx = str(OCX)
-    if not os.access(ocx, os.X_OK):
-        raise UserError("ocx not installed; run: setup install opencodex")
-    print(f"ensuring the opencodex proxy service ({proxy_service_name()}) ...")
-    # `ocx service` installs when absent and repairs an existing service.
-    if subprocess.run([ocx, "service"]).returncode != 0 and not _wait_for_proxy():
-        print("  ocx service install/repair failed; see ~/.opencodex/service.log", file=sys.stderr)
-        return 1
-    if not proxy_service_active():
-        print(f"  {proxy_service_name()} is not active after repair; removing ANTHROPIC_BASE_URL",
-              file=sys.stderr)
-        remove_base_url_export()
-        return 1
-    print(f"  {proxy_service_name()} is active (restarts on failure)")
-    write_base_url_export()
-    return 0
-
-
 def print_help() -> None:
     print(
-        """Usage: opencodex [list [--provider NAME] [--json] | run <provider> [options] | proxy | --help]
+        """Usage: opencodex [list [--provider NAME] [--json] | run <provider> [options] | --help]
 
 Open the interactive provider, model, effort, and harness launcher.
 
   list [--provider NAME] [--json]  List launchable models and capabilities.
   run <provider> [options]          Launch an exact provider/model selection.
-  proxy                             Ensure the proxy service is up and point Claude at it.
   -h, --help                        Show this help without loading provider configuration.
 
 Other arguments are forwarded to ocx."""
@@ -2769,41 +1549,9 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] in ("--help", "-h", "help"):
         print_help()
         return 0
-    if len(sys.argv) >= 2 and sys.argv[1].startswith("__"):
-        command = sys.argv[1]
-        if command == "__validate":
-            load_registry(Path(sys.argv[2]))
-        elif command == "__apply":
-            # The registry path is optional so provider-state consumers can
-            # re-apply enablement without knowing where the snapshot lives.
-            # --no-restart is for callers on a frequent cadence: they refresh
-            # what is on disk and leave the restart to the daily pass, so an
-            # hourly job can never cancel a turn that is mid-flight.
-            rest = [a for a in sys.argv[2:] if a != "--no-restart"]
-            apply_opencodex_registry(
-                Path(rest[0]) if rest else REGISTRY,
-                restart="--no-restart" not in sys.argv[2:],
-            )
-        elif command == "__remove":
-            remove_opencodex_managed()
-        elif command == "__status":
-            return 0 if opencodex_config_status(Path(sys.argv[2])) else 1
-        elif command == "__names":
-            print("\n".join(load_registry(Path(sys.argv[2]))["providers"]))
-        elif command == "__export":
-            # fleet's nightly pass: write the route while the service is up,
-            # never remove it, since a proxy caught mid-restart must keep it.
-            if proxy_service_active():
-                write_base_url_export()
-        elif command == "__unexport":
-            remove_base_url_export()
-        elif command == "__proxy-url":
-            print(f"http://127.0.0.1:{proxy_port()}")
-        else:
-            raise UserError("unknown internal command")
-        return 0
-    if len(sys.argv) >= 2 and sys.argv[1] == "proxy":
-        return cmd_proxy()
+    if len(sys.argv) >= 2 and (sys.argv[1].startswith("__") or sys.argv[1] == "proxy"):
+        # The config, proxy and route commands moved to fleet.
+        raise UserError(f"{sys.argv[1]} moved to fleet; fleet installs and runs ocx now")
     registry = load_registry()
     if len(sys.argv) >= 2 and sys.argv[1] == "run":
         if len(sys.argv) < 3:
@@ -2845,9 +1593,7 @@ def main() -> int:
         print(json.dumps(data, indent=2) if as_json else render_catalogue(data))
         return 0
     if len(sys.argv) > 1:
-        if not OCX.is_file() or not os.access(OCX, os.X_OK):
-            raise UserError(f"OpenCodex is not installed at {OCX}; run setup update opencodex")
-        return subprocess.run([str(OCX), *sys.argv[1:]]).returncode
+        return subprocess.run([ocx(), *sys.argv[1:]]).returncode
     selection = choose_launch(registry)
     if selection is None:
         return 0

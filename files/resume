@@ -123,7 +123,7 @@ _opencodex_provider_for() {
     # names its own provider in the model it recorded. A prefixless name —
     # every native Claude model among them — claims no provider and is
     # deliberately never guessed at.
-    local registry="$HOME/.config/opencodex/managed-profiles.json"
+    local registry="$HOME/.config/providers/registry.json"
     [[ -f "$registry" ]] || return
     if [[ -z "$session_file" ]]; then
         session_file=$(find "$CLAUDE_DIR" -maxdepth 2 -type f -name "$sid.jsonl" -print -quit 2>/dev/null)
