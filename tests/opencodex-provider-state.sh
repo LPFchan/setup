@@ -54,6 +54,16 @@ desired, _ = namespace["desired_opencodex_config"](registry, {}, auth)
 assert desired["providers"]["commandcode"]["disabled"] is True
 assert desired["providers"]["opencode-go"]["disabled"] is False
 
+# OpenCodex writes an OAuth provider's `models` back itself, so apply keeps it
+# rather than rewriting config.json on every run; an api-key pin still goes.
+stored = {"providers": {
+    "anthropic": {"models": ["claude-x"]},
+    "commandcode": {"models": ["pinned"]},
+}}
+desired, _ = namespace["desired_opencodex_config"](registry, stored, auth)
+assert desired["providers"]["anthropic"]["models"] == ["claude-x"]
+assert "models" not in desired["providers"]["commandcode"]
+
 # Admission policy reaching the OpenCodex config, on a synthetic provider rather
 # than whichever live one happens to carry the fields: no registry provider sets
 # them today, and pinning the test to one means retiring that provider breaks it.
@@ -141,12 +151,28 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 live_disabled = {"commandcode": True}
+# None answers 404, as a proxy that does not report the count would.
+active_turns = None
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_PATCH(self):
+        name = self.path.partition("?name=")[2]
+        if self.headers.get("Authorization") != "Bearer test-token" or name not in live_disabled:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        live_disabled[name] = body["disabled"]
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         if self.path == "/healthz":
             body = json.dumps({"status": "ok"}).encode()
+        elif self.path == "/api/system/memory" and active_turns is not None:
+            body = json.dumps({"activeTurnCount": active_turns}).encode()
         elif self.path == "/api/providers":
             if self.headers.get("Authorization") != "Bearer test-token":
                 self.send_response(401)
@@ -388,6 +414,61 @@ try:
 finally:
     globals_["live_proxy_port"] = orig_port
     globals_["live_provider_view"] = orig_view
+
+# A restart cuts every agent's request while the old process drains, so it
+# waits for a moment with nothing in flight and is put off if none comes.
+globals_["IDLE_WAIT"] = 0
+live_disabled = {"commandcode": True}
+active_turns = 1
+restarts.clear()
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [], restarts
+active_turns = 0
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [[str(ocx), "service", "restart"]], restarts
+# A proxy asking for a restart already refuses every request: nothing to wait for.
+active_turns = 1
+restarts.clear()
+orig_self_reported = globals_["proxy_self_reported_restart"]
+globals_["proxy_self_reported_restart"] = lambda port: ["proxy reports restart_required"]
+namespace["converge_live_proxy"]({"providers": {"commandcode": {"disabled": False}}})
+assert restarts == [[str(ocx), "service", "restart"]], restarts
+globals_["proxy_self_reported_restart"] = orig_self_reported
+active_turns = None
+
+# Provider on/off goes to the running proxy instead of a restart.
+toggle = namespace["toggle_live_providers"]
+before = {"providers": {"commandcode": {"disabled": True}}}
+after = {"providers": {"commandcode": {"disabled": False}}}
+live_disabled = {"commandcode": True}
+assert toggle(before, after) is True
+assert live_disabled == {"commandcode": False}, live_disabled
+restarts.clear()
+namespace["converge_live_proxy"](after)
+assert restarts == [], restarts
+# The proxy saves its own config over the file, so anything beyond the
+# toggle is left to the restart path.
+live_disabled = {"commandcode": True}
+assert toggle(before, {"providers": {"commandcode": {
+    "disabled": False, "baseUrl": "https://example.com/v1"}}}) is False
+assert live_disabled == {"commandcode": True}, live_disabled
+
+# A config.json written after the proxy started is stale, unless the proxy
+# took the change live after that write.
+import os
+opencodex_home = home / ".opencodex"
+started = opencodex_home / "runtime-port.json"
+started.write_text("{}")
+os.utime(started, (1000, 1000))
+os.utime(config_path, (2000, 2000))
+assert namespace["config_written_after_start"]() != []
+assert toggle(before, after) is False  # the proxy does not hold `before`
+live_applied = Path(globals_["LIVE_APPLIED"])
+live_applied.touch()
+os.utime(live_applied, (3000, 3000))
+assert namespace["config_written_after_start"]() == []
+started.unlink()
+live_applied.unlink()
 server.shutdown()
 
 for malformed in (

@@ -58,6 +58,13 @@ RUNTIME_PORT = Path(
 ADMIN_TOKEN = Path(
     os.environ.get("OPENCODEX_ADMIN_TOKEN", HOME / ".opencodex/admin-api-token")
 )
+# Dated when the running proxy took a provider toggle live, so the config.json
+# write that follows does not read as a change it never loaded.
+LIVE_APPLIED = Path(
+    os.environ.get("OPENCODEX_LIVE_APPLIED", HOME / ".opencodex/setup-live-applied")
+)
+# How long an apply waits for the proxy to go idle before it puts a restart off.
+IDLE_WAIT = float(os.environ.get("OPENCODEX_IDLE_WAIT", "120"))
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 PROVIDER_TYPES = {"DirectAnthropic", "OpenAICompatible", "OpenAIResponses"}
 # OAuth provider presets are reconciled and persisted by OpenCodex at runtime.
@@ -379,12 +386,15 @@ def desired_opencodex_config(
                     provider["modelContextWindows"] = contexts
                 else:
                     provider.pop("modelContextWindows", None)
+            # An OAuth provider's `models` is OpenCodex's own login reconcile,
+            # not a pin, and the proxy writes it back; stripping it there made
+            # every apply rewrite config.json and restart the proxy.
+            provider.pop("models", None)
         # Never pin a model: a launch names the one it wants, and with
         # liveModels the proxy serves each provider's full rotating fleet
         # rather than a profile-mapped subset. Popping rather than merely
         # not writing is what retires a pin an older release left behind.
         provider.pop("defaultModel", None)
-        provider.pop("models", None)
         providers[name] = provider
 
     # Bind loopback. A non-loopback bind makes OpenCodex refuse to install or
@@ -507,6 +517,45 @@ def live_provider_view(port: int) -> dict[str, dict[str, Any]] | None:
         for row in payload
         if isinstance(row, dict) and isinstance(row.get("name"), str)
     }
+
+
+def live_active_turns(port: int) -> int | None:
+    """Requests the RUNNING proxy has in flight, or None when unreadable."""
+    try:
+        token = ADMIN_TOKEN.read_text().strip()
+    except OSError:
+        return None
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/system/memory",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"), strict=False)
+    except (OSError, urllib.error.URLError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    count = payload.get("activeTurnCount") if isinstance(payload, dict) else None
+    return count if isinstance(count, int) else None
+
+
+def set_live_provider_disabled(port: int, name: str, disabled: bool) -> bool:
+    """Flip one provider on or off in the RUNNING proxy. True when it took it."""
+    try:
+        token = ADMIN_TOKEN.read_text().strip()
+    except OSError:
+        return False
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/providers?name={urllib.parse.quote(name)}",
+        data=json.dumps({"disabled": disabled}).encode(),
+        method="PATCH",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        # The proxy refreshes its model catalog before it answers.
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            return 200 <= response.status < 300
+    except (OSError, urllib.error.URLError):
+        return False
 
 
 def live_provider_disabled(port: int) -> dict[str, bool] | None:
@@ -642,6 +691,10 @@ def config_written_after_start() -> list[str]:
         started = (HOME/".opencodex/runtime-port.json").stat().st_mtime
     except OSError:
         return []
+    try:
+        started = max(started, LIVE_APPLIED.stat().st_mtime)
+    except OSError:
+        pass
     if written <= started:
         return []
     return ["config.json was written after the running proxy loaded it"]
@@ -698,6 +751,64 @@ def restart_stale_proxy(context: str) -> None:
     print("opencodex: proxy restart failed; run: ocx service restart", file=sys.stderr)
 
 
+def _without_disabled(config: dict[str, Any]) -> dict[str, Any]:
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        return config
+    return {
+        **config,
+        "providers": {
+            name: {k: v for k, v in row.items() if k != "disabled"}
+            if isinstance(row, dict) else row
+            for name, row in providers.items()
+        },
+    }
+
+
+def toggle_live_providers(original: dict[str, Any], desired: dict[str, Any]) -> bool:
+    """Apply provider on/off to the running proxy instead of restarting it.
+
+    A restart drains: new requests from every agent are refused until the old
+    process exits, and a turn still running when the drain times out is cut.
+    Enable/disable is the one change the proxy takes live, and it saves
+    config.json itself from what it holds in memory. That is only `desired`
+    when the proxy already loaded `original` and nothing but `disabled`
+    differs, so anything else is left to the restart path. True when the
+    proxy now holds `desired`.
+    """
+    if config_written_after_start():
+        return False
+    if _without_disabled(original) != _without_disabled(desired):
+        return False
+    port = live_proxy_port()
+    if port is None:
+        return False
+    live = live_provider_disabled(port)
+    if live is None:
+        return False
+    for name, row in desired.get("providers", {}).items():
+        if not isinstance(row, dict) or name not in live:
+            continue
+        want = row.get("disabled") is True
+        if live[name] != want and not set_live_provider_disabled(port, name, want):
+            return False
+    return True
+
+
+def wait_for_idle(port: int) -> bool:
+    """True once the proxy has no request in flight; False if it stays busy.
+
+    A count the proxy does not report reads as idle, which is the old
+    restart-right-away behavior.
+    """
+    deadline = time.monotonic() + IDLE_WAIT
+    while live_active_turns(port):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+    return True
+
+
 def converge_live_proxy(desired: dict[str, Any]) -> None:
     """Restart a running proxy left stale by the apply that just ran.
 
@@ -708,11 +819,25 @@ def converge_live_proxy(desired: dict[str, Any]) -> None:
     An `_ensure_runtime` upgrade is the same shape: the new build is on disk
     while the old one keeps serving. Comparing the live view (not the disk
     diff) is what heals a proxy that went stale on an earlier apply.
+
+    The restart waits for a moment with no request in flight, when stopping
+    takes about a second and clients retry through it. A proxy that stays busy
+    keeps serving and is restarted by the next apply or launch instead.
+    `restart_required` does not wait: that proxy already refuses every request.
     """
     port = live_proxy_port()
     if port is None:
         return
-    if not proxy_stale_reasons(port, desired.get("providers", {})):
+    reasons = proxy_stale_reasons(port, desired.get("providers", {}))
+    if not reasons:
+        return
+    if not proxy_self_reported_restart(port) and not wait_for_idle(port):
+        print(
+            "opencodex: the proxy stayed busy; restart put off to the next sync or launch",
+            file=sys.stderr,
+        )
+        for reason in reasons:
+            print(f"  - {reason}", file=sys.stderr)
         return
     restart_stale_proxy("apply")
 
@@ -721,8 +846,11 @@ def apply_opencodex_registry(registry_path: Path, restart: bool = True) -> None:
     registry = load_registry(registry_path)
     original = load_json_object(OPENCODEX_CONFIG, "OpenCodex config")
     desired, managed = desired_opencodex_config(registry, original, load_auth())
+    live = restart and toggle_live_providers(original, desired)
     if desired != original:
         write_json_atomic(OPENCODEX_CONFIG, desired)
+    if live:
+        LIVE_APPLIED.touch()
     record = {"version": 1, "providers": sorted(managed)}
     if not OPENCODEX_MANAGED.exists() or load_json_object(
         OPENCODEX_MANAGED, "managed provider record"
