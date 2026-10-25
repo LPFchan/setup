@@ -13,6 +13,7 @@ import base64
 import contextlib
 import glob
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -1596,13 +1597,13 @@ T3_SETTINGS = HOME/".t3/userdata/settings.json"
 
 def _effort_descriptors():
     """slug -> t3's reasoning selector, from the opencodex proxy's catalog."""
-    opencodex = HOME/".local/bin/opencodex"
+    url = proxy_url()
+    if url is None:
+        return {}
     try:
-        url = subprocess.run([sys.executable, str(opencodex), "__proxy-url"], capture_output=True,
-                             text=True, timeout=15).stdout.strip()
         with urllib.request.urlopen(url + "/v1/models", timeout=15) as response:
             rows = json.load(response).get("data") or []
-    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
         return {}
     out = {}
     for row in rows:
@@ -1712,6 +1713,7 @@ def provider_engine():
     engine.SETTINGS_PATH = str(PROVIDER_SETTINGS)
     engine.DEFAULTS_PATH = str(PROVIDER_DEFAULTS)
     engine.AUTH_BIN = _auth_bin() or str(HOME/".local/bin/auth")
+    engine.OCX_BIN = ocx_bin()
     return engine
 
 
@@ -1792,6 +1794,18 @@ def _version(binary):
     return lines[0].strip() if lines else None
 
 
+def _npm_latest(package):
+    """The version npm would install, or None when it cannot say."""
+    npm = shutil.which("npm")
+    try:
+        out = subprocess.run([npm, "view", package, "version"], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=60) if npm else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    version = out.stdout.strip() if out and out.returncode == 0 else ""
+    return version or None
+
+
 def _node_bin(binary):
     """The bin/ of the node install npm put this harness under: its own
     updater runs `npm install -g`, which must land in that same install."""
@@ -1846,11 +1860,24 @@ def cmd_install(names):
     chosen, specs = _harnesses(names)
     rc = 0
     for spec in chosen or _pick(specs):
-        if _resolve(spec) and not spec.get("rerunWhenInstalled"):
+        installed = _resolve(spec)
+        if spec["name"] == "ocx" and installed and ocx_bin() and _ocx_live()[0] is None:
+            installed = None  # the package is there but nothing serves: install again to repair the service
+        if installed and not spec.get("rerunWhenInstalled"):
             print(f"fleet: {spec['name']} already installed")
             continue
         print(f"fleet: installing {spec['name']}")
-        if subprocess.run(_shell(spec["install"]), env=_shell_env()).returncode:
+        ok = subprocess.run(_shell(spec["install"]), env=_shell_env()).returncode == 0
+        if spec["name"] == "ocx" and ocx_bin():
+            # `ocx service` gives a cold start ~20s, so one still syncing exits 1
+            # and comes up anyway: the proxy answering is what counts.
+            ok = _ocx_live(OCX_WAIT)[0] is not None
+            if ok:
+                engine = provider_engine()
+                if engine is not None:
+                    engine.sync_opencodex()
+                converge_ocx()
+        if not ok:
             eprint(f"fleet: {spec['name']} install failed")
             rc = 1
     return rc
@@ -1860,12 +1887,27 @@ def cmd_update(names):
     chosen, specs = _harnesses(names)
     failed = []
     for spec in chosen or specs.values():
-        binary = _resolve(spec)
+        binary = ocx_bin() if spec["name"] == "ocx" else _resolve(spec)
         if not binary:
             if chosen:
                 eprint(f"fleet: {spec['name']} is not installed")
                 failed.append(spec["name"])
             continue
+        if WINDOWS and spec["name"] == "ocx":
+            # A running bun.exe keeps its files locked, so `ocx update` stops and
+            # restarts the proxy even with nothing new: only for a new release,
+            # and only once no turn is in flight.
+            latest = _npm_latest("@bitkyc08/opencodex")
+            if latest is None:
+                eprint("fleet: could not look up the latest ocx; its update is skipped")
+                continue
+            if latest == _installed_ocx_version(binary):
+                print(f"fleet: ocx {latest} (unchanged)")
+                continue
+            port = _ocx_live()[0]
+            if port is not None and not _ocx_idle(port):
+                eprint("fleet: the ocx proxy stayed busy; its update is put off to the next night")
+                continue
         env = _shell_env()
         lead = [p for p in (_node_bin(binary), os.path.dirname(binary)) if p]
         env["PATH"] = os.pathsep.join(lead + [env.get("PATH", "")])
@@ -1888,6 +1930,236 @@ def cmd_update(names):
     if failed:
         eprint(f"fleet: could not update: {' '.join(failed)}")
     return 1 if failed else 0
+
+
+# --- ocx -----------------------------------------------------------------
+
+# setup's opencodex module owns ocx while its runtime is installed; fleet then
+# leaves the proxy, its config and Claude's route alone.
+OCX_LEGACY = HOME/".local/libexec/opencodex"
+OCX_HOME = HOME/".opencodex"
+OCX_STATE = FLEET_STATE/"ocx.json"
+# How long a restart waits for no turn in flight, and for a proxy to answer.
+OCX_IDLE_WAIT = float(os.environ.get("FLEET_OCX_IDLE_WAIT", "120"))
+OCX_WAIT = float(os.environ.get("FLEET_OCX_WAIT", "120"))
+# setup's launcher exported the route here before Claude's settings carried it.
+BASE_URL_BLOCK = ("# BEGIN harnesses:anthropic-base-url", "# END harnesses:anthropic-base-url")
+# The proxy drains in-flight turns for up to 300s on SIGTERM (shutdownTimeoutMs);
+# upstream's unit sets no stop timeout, and systemd's default 90s would SIGKILL it mid-drain.
+OCX_STOP_TIMEOUT = "[Service]\nTimeoutStopSec=330\n"
+
+
+def ocx_bin():
+    """The ocx fleet owns, or None while setup's runtime owns it or none is installed."""
+    if OCX_LEGACY.exists():
+        return None
+    spec = _harnesses([])[1].get("ocx")
+    return _resolve(spec) if spec else None
+
+
+def _ocx_port():
+    try:
+        port = json.loads((OCX_HOME/"runtime-port.json").read_text())["port"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return 10100
+    return port if isinstance(port, int) else 10100
+
+
+def _ocx_json(port, path, token=False):
+    headers = {"Accept": "application/json"}
+    if token:
+        try:
+            headers["Authorization"] = "Bearer " + (OCX_HOME/"admin-api-token").read_text().strip()
+        except OSError:
+            return None
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            # Model metadata the proxy echoes can carry raw control characters.
+            value = json.loads(response.read().decode("utf-8", "replace"), strict=False)
+    except (OSError, ValueError, http.client.HTTPException):  # whatever else holds the port
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def proxy_url():
+    """Where a token-less client reaches the proxy, or None when nothing answers.
+
+    Where the main port wants an API token, ocx opens an unauthenticated
+    loopback listener one port up; Claude Code sends no token, so that one wins.
+    """
+    port = _ocx_port()
+    for candidate in (port + 1, port):
+        if _ocx_json(candidate, "/v1/models") is not None:
+            return f"http://127.0.0.1:{candidate}"
+    return None
+
+
+def _ocx_live(wait=0):
+    """(port, /healthz) of the running proxy, polling up to `wait` seconds.
+
+    `restart_required` counts as running: an update swapped the package under
+    it, and it says so instead of exiting.
+    """
+    deadline = time.monotonic() + wait
+    while True:
+        port = _ocx_port()
+        health = _ocx_json(port, "/healthz")
+        if health and health.get("status") in ("ok", "restart_required"):
+            return port, health
+        if time.monotonic() >= deadline:
+            return None, None
+        time.sleep(2)
+
+
+def _ocx_idle(port):
+    """True once the proxy has no turn in flight; a count it does not report reads as idle."""
+    deadline = time.monotonic() + OCX_IDLE_WAIT
+    while True:
+        memory = _ocx_json(port, "/api/system/memory", token=True) or {}
+        if not memory.get("activeTurnCount"):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def _installed_ocx_version(ocx):
+    """The build on disk, from the package manifest beside the binary (no node start), else --version."""
+    shim_package = pathlib.Path(ocx).parent/"node_modules/@bitkyc08/opencodex/bin"  # Windows npm layout
+    for parent in [shim_package, *list(pathlib.Path(os.path.realpath(ocx)).parents)[:4]]:
+        try:
+            package = json.loads((parent/"package.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(package, dict) and package.get("name") == "@bitkyc08/opencodex":
+            return package.get("version")
+    line = _version(ocx)
+    return line.split()[-1] if line else None
+
+
+def _ocx_stale(ocx, health):
+    """Why the running proxy must restart to serve what is on disk; [] when it is current."""
+    if health.get("status") == "restart_required":
+        return ["it reports restart_required"]
+    reasons = []
+    running, installed = health.get("version"), _installed_ocx_version(ocx)
+    if running and installed and running != installed:
+        reasons.append(f"it runs ocx {running} but {installed} is installed")
+    # The proxy reads config.json only at startup. The provider engine hashes
+    # what it wants there; a restart records the hash the proxy then loaded.
+    wanted = _ocx_wanted()
+    if wanted and wanted != _load_json_quiet(OCX_STATE).get("loaded"):
+        reasons.append("fleet's provider config changed since it started")
+    return reasons
+
+
+def _ocx_wanted():
+    try:
+        return json.loads((OCX_HOME/"setup-managed-providers.json").read_text()).get("sha256")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _ocx_loaded():
+    """The proxy just (re)started on what is on disk now."""
+    save_json(OCX_STATE, {"loaded": _ocx_wanted()})
+
+
+def converge_ocx():
+    """Restart a fleet-owned proxy left behind the config or build on disk, then route Claude.
+
+    A restart refuses new requests while the old process drains, so it waits
+    for a moment with nothing in flight and is put off to the next night when
+    none comes. A proxy reporting restart_required already refuses every
+    request, so that one does not wait.
+    """
+    ocx = ocx_bin()
+    if ocx is None:
+        return
+    _ocx_stop_timeout()
+    port, health = _ocx_live()
+    reasons = _ocx_stale(ocx, health) if port is not None else []
+    if reasons and (health["status"] == "restart_required" or _ocx_idle(port)):
+        print("fleet: restarting the ocx proxy: " + "; ".join(reasons))
+        if subprocess.run([ocx, "service", "restart"], stdin=subprocess.DEVNULL).returncode:
+            eprint("fleet: the ocx proxy did not restart; run: ocx service restart")
+        else:
+            _ocx_loaded()
+        _ocx_live(OCX_WAIT)
+    elif reasons:
+        eprint("fleet: the ocx proxy stayed busy; its restart is put off to the next night: "
+               + "; ".join(reasons))
+    route_claude()
+
+
+def _ocx_stop_timeout():
+    """Give the proxy's systemd unit time to drain before a stop turns into SIGKILL."""
+    if WINDOWS or sys.platform == "darwin":
+        return
+    dropin = _units_dir()/"opencodex-proxy.service.d/50-stop-timeout.conf"
+    try:
+        if dropin.read_text() == OCX_STOP_TIMEOUT:
+            return
+    except OSError:
+        pass
+    save_text(dropin, OCX_STOP_TIMEOUT, 0o644)
+    _systemctl("daemon-reload")
+    print("fleet: ocx proxy stop timeout raised to 330s")
+
+
+def _drop_legacy_route():
+    """Remove the ~/.zshenv block and service-manager exports setup's launcher wrote."""
+    zshenv = HOME/".zshenv"
+    text = zshenv.read_text() if not WINDOWS and zshenv.exists() else ""
+    begin, end = BASE_URL_BLOCK
+    if begin not in text:
+        return
+    save_text(zshenv, re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n?", "", text, flags=re.S))
+    print(f"fleet: removed the ANTHROPIC_BASE_URL block from {zshenv}")
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["launchctl", "unsetenv", "ANTHROPIC_BASE_URL"], capture_output=True)
+        else:
+            (HOME/".config/environment.d/10-harnesses-anthropic.conf").unlink(missing_ok=True)
+            subprocess.run(["systemctl", "--user", "unset-environment", "ANTHROPIC_BASE_URL"],
+                           capture_output=True)
+    except OSError:
+        pass
+
+
+def route_claude():
+    """Point Claude Code at a fleet-owned proxy while it answers, through the
+    env block of its settings, which a claude started by an app or a service
+    reads too. A route is dropped only once the proxy stays down past a restart.
+    """
+    if ocx_bin() is None or not CLAUDE_SETTINGS.parent.is_dir():
+        return
+    try:
+        url = proxy_url()
+        env = load_json(CLAUDE_SETTINGS).get("env")
+        if url is None and isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+            print("fleet: the ocx proxy is not answering; waiting before dropping Claude's route")
+            if _ocx_live(OCX_WAIT)[0] is not None:
+                url = proxy_url()
+        with _consumer_lock():
+            settings = load_json(CLAUDE_SETTINGS)
+            before = json.dumps(settings)
+            env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
+            if url:
+                env["ANTHROPIC_BASE_URL"] = url
+            else:
+                env.pop("ANTHROPIC_BASE_URL", None)
+            if env:
+                settings["env"] = env
+            else:
+                settings.pop("env", None)
+            if json.dumps(settings) != before:
+                save_json(CLAUDE_SETTINGS, settings)
+                print(f"fleet: {'set' if url else 'removed'} Claude's ANTHROPIC_BASE_URL in {CLAUDE_SETTINGS}")
+            _drop_legacy_route()
+    except (OSError, ValueError) as exc:
+        eprint(f"fleet: Claude's route to the ocx proxy not written: {exc}")
 
 
 # --- marketplace ---------------------------------------------------------
@@ -1974,6 +2246,7 @@ def cmd_sync(check=False, pull=False):
                 rc = 1
             return rc
         engine = provider_engine()
+        account = engine.bound_account() if engine is not None else None
         if engine is not None:
             context_rc, raw = _auth("context")
             if context_rc == 0:
@@ -2000,12 +2273,17 @@ def cmd_sync(check=False, pull=False):
             eprint("fleet: could not remove the old hourly provider job")
         if not render_harnesses() and rc == 0:
             rc = 3
+        route_claude()
         if rc != 3:
             try:
                 sync_provider_credentials()
             except (ApiError, OSError, ValueError, RuntimeError) as exc:
                 eprint(f"fleet: provider credentials not synced: {exc}")
                 rc = 3
+        # Keys of another account, or of none, must not wait for the nightly
+        # pass to stop being served: restart once the proxy is idle.
+        if engine is not None and provider_engine().bound_account() != account:
+            converge_ocx()
         return rc
 
 
@@ -2189,7 +2467,7 @@ def cmd_self_install(args):
 
 
 def cmd_nightly():
-    """The scheduled pass: self-update, pull sync, model refresh, proxy, harness updates, proxy route."""
+    """The scheduled pass: self-update, pull sync, model refresh, harness updates, then the proxy and its route."""
     if not _setup_owns_fleet():
         _self_update()
     rc = cmd_sync(pull=True)
@@ -2197,11 +2475,14 @@ def cmd_nightly():
         rc = refresh_provider_models()
     # After the refresh, so the restarted proxy serves tonight's models.
     opencodex = HOME/".local/bin/opencodex"
-    if opencodex.exists():
+    legacy = OCX_LEGACY.exists() and opencodex.exists()  # setup's module still owns ocx
+    if legacy:
         subprocess.run([sys.executable, str(opencodex), "__apply"])
     rc = cmd_update([]) or rc
-    if opencodex.exists():
+    if legacy:
         subprocess.run([sys.executable, str(opencodex), "__export"])
+    else:
+        converge_ocx()
     return 0 if rc == 3 else rc
 
 

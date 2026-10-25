@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """fleet on Windows, against a stand-in Auth: skills linked by junction, copies
-of AGENTS.md in place of links, a token file of its own, LF-only writes, the msvcrt lock, and
-only the harnesses with a windows block. Runs on Windows only (CI)."""
+of AGENTS.md in place of links, a token file of its own, LF-only writes, the msvcrt lock,
+only the harnesses with a windows block, and ocx found as npm's shim with its config and
+Claude's route written. Runs on Windows only (CI)."""
 import base64
 import hashlib
 import json
@@ -195,6 +196,48 @@ assert not pathlib.Path(m["ZSENV_PATH"]).exists()
 result = subprocess.run([sys.executable, "-c", provider_check, str(ROOT/"files/fleet-providers.py")],
                         env=env, capture_output=True, text=True)
 check(result.returncode == 0, "provider Windows lock and account isolation: " + result.stderr)
+# ocx: found as npm's .cmd shim, its config mirrored under ~\.opencodex, and
+# Claude routed to the proxy through its settings.
+npm_bin = HOME/"AppData/Roaming/npm"
+npm_bin.mkdir(parents=True)
+(npm_bin/"ocx.cmd").write_text('@echo %*>> "%~dp0ocx.log"\r\n')
+ocx_check = r'''
+import json, pathlib, runpy, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+home = pathlib.Path.home()
+class Proxy(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"status": "ok"} if self.path == "/healthz" else {"data": []}).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+port = server.server_address[1]
+(home/".opencodex").mkdir(parents=True, exist_ok=True)
+# One below ours: the token-less listener one port up is probed first and is
+# this server, so no other port on the runner is ever dialed.
+(home/".opencodex/runtime-port.json").write_text(json.dumps({"port": port - 1}))
+f = runpy.run_path(sys.argv[1], run_name="fleet_windows_ocx")
+ocx = f["ocx_bin"]()
+assert ocx and ocx.lower().endswith("ocx.cmd"), ocx
+engine = f["provider_engine"]()
+assert engine.OCX_BIN == ocx
+pathlib.Path(engine.REGISTRY_PATH).parent.mkdir(parents=True, exist_ok=True)
+pathlib.Path(engine.REGISTRY_PATH).write_text(pathlib.Path(sys.argv[2]).read_text())
+engine.sync_opencodex()
+config = json.loads((home/".opencodex/config.json").read_text())
+assert config["hostname"] == "127.0.0.1" and "grimoire" in config["providers"], config
+assert (pathlib.Path(ocx).parent/"ocx.log").read_text().split() == ["sync"]
+f["route_claude"]()
+settings = json.loads((home/".claude/settings.json").read_text())
+assert settings["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:%d" % port, settings
+'''
+result = subprocess.run([sys.executable, "-c", ocx_check, str(ROOT/"files/fleet"), str(ROOT/"files/provider-registry.json")],
+                        env={**env, "FLEET_PROVIDER_ENGINE": str(ROOT/"files/fleet-providers.py")},
+                        capture_output=True, text=True)
+check(result.returncode == 0, "ocx on Windows: " + result.stdout + result.stderr)
 result = subprocess.run([sys.executable, str(ROOT/"tests/fleet-self-update.py")],
                         env=env, capture_output=True, text=True)
 check(result.returncode == 0, "fleet self-update: " + result.stdout + result.stderr)

@@ -70,16 +70,17 @@ with tempfile.TemporaryDirectory() as directory:
              patch.object(fleet, "provider_engine", return_value=object()), \
              patch.object(fleet, "cmd_sync", side_effect=lambda **kw: events.append(("sync", kw)) or 0), \
              patch.object(fleet, "cmd_update", side_effect=lambda _: events.append("harnesses") or 0), \
-             patch.object(fleet, "refresh_provider_models", side_effect=lambda: events.append("models") or 0):
+             patch.object(fleet, "refresh_provider_models", side_effect=lambda: events.append("models") or 0), \
+             patch.object(fleet, "converge_ocx", side_effect=lambda: events.append("ocx")):  # never the host's proxy
             assert fleet.cmd_nightly() == 0
         return events
     for windows in (False, True):
         fleet.WINDOWS = windows
         events = nightly()
-        assert events == ["update", ("sync", {"pull": True}), "models", "harnesses"], (windows, events)
+        assert events == ["update", ("sync", {"pull": True}), "models", "harnesses", "ocx"], (windows, events)
     setup_state.write_text("fleet\tfleet\tx\tx\n")
     events = nightly()
-    assert events == [("sync", {"pull": True}), "models", "harnesses"], events
+    assert events == [("sync", {"pull": True}), "models", "harnesses", "ocx"], events
 
 
     # fleet self-install, what the installers run: the payload (here from a local
