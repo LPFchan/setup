@@ -31,6 +31,7 @@ import urllib.request
 
 WINDOWS = sys.platform == "win32"
 if WINDOWS:
+    import _winapi
     import msvcrt
 else:
     import fcntl
@@ -491,8 +492,7 @@ def _builtin(rel):
     return rel.startswith("skills/fleet/") and not rel.startswith("skills/fleet/references/")
 
 
-# Windows takes no skills: no harness there reads them from ~/.agents.
-TREES = ("settings",) if WINDOWS else ("settings", "skills")
+TREES = ("settings", "skills")
 
 
 def _synced(rel):
@@ -635,8 +635,7 @@ def _sync_agents_once(push):
     state.update(counter=config["counter"], version=config.get("version", ""))
     if push or not first or joining:
         state["files"] = files
-    if not WINDOWS:
-        sync_installs(installs, state)
+    sync_installs(installs, state)
     save_json(AGENTS_STATE, state)
 
     if put or drop:
@@ -833,8 +832,6 @@ def _builtin_skill_path():
 def sync_builtin_skill(check=False):
     """Write the built-in skill unless it is already in place; with check, only say
     whether it is. False means a sync would write it."""
-    if WINDOWS:
-        return True
     path = _builtin_skill_path()
     if path is None:
         eprint("fleet: skills/fleet is reached through a symlink; the built-in fleet skill is not written")
@@ -843,6 +840,8 @@ def sync_builtin_skill(check=False):
             and path.read_text() == FLEET_SKILL):
         return True
     if not check:
+        if WINDOWS and path.is_file():
+            path.chmod(0o644)  # Windows will not delete a read-only file
         path.unlink(missing_ok=True)
         save_text(path, FLEET_SKILL, 0o444)
     return False
@@ -859,9 +858,19 @@ def _backup_of(path):
     return path.with_name(path.name + ".pre-agents.bak")
 
 
+def _link_dest(path):
+    """Where a symlink, or a Windows junction, points; None for anything else."""
+    try:
+        dest = os.readlink(path)
+    except (OSError, ValueError):
+        return None
+    return dest[4:] if dest.startswith("\\\\?\\") else dest
+
+
 def _link(target, source):
-    if target.is_symlink():
-        if os.readlink(target) == str(source):
+    dest = _link_dest(target)
+    if dest is not None:
+        if dest == str(source):
             return
         target.unlink()
     elif target.exists():
@@ -869,12 +878,16 @@ def _link(target, source):
             eprint(f"fleet: {target} is not ours and {_backup_of(target).name} exists; left alone")
             return
         target.rename(_backup_of(target))
-    target.symlink_to(source)
+    if WINDOWS:  # a junction: symlinks need Developer Mode or elevation, junctions neither
+        _winapi.CreateJunction(str(source), str(target))
+    else:
+        target.symlink_to(source)
 
 
 def _unlink_ours(target):
     """Drop a link into ~/.agents whose source is gone; restore what it hid."""
-    if target.is_symlink() and os.readlink(target).startswith(str(AGENTS) + "/") and not target.exists():
+    dest = _link_dest(target)
+    if dest is not None and dest.startswith(str(AGENTS) + os.sep) and not target.exists():
         target.unlink()
         if _backup_of(target).exists() and not _backup_of(target).is_symlink():
             _backup_of(target).rename(target)
@@ -916,11 +929,12 @@ def _copy_agents_md(source):
 def sync_links():
     source = AGENTS/"AGENTS.md"
     if WINDOWS:
-        return _copy_agents_md(source)
-    for target in AGENTS_MD_LINKS:
-        if source.exists() and target.parent.is_dir():
-            _link(target, source)
-        _unlink_ours(target)
+        _copy_agents_md(source)
+    else:
+        for target in AGENTS_MD_LINKS:
+            if source.exists() and target.parent.is_dir():
+                _link(target, source)
+            _unlink_ours(target)
     if not SKILL_LINK_DIR.parent.is_dir():
         return
     SKILL_LINK_DIR.mkdir(exist_ok=True)
@@ -1872,9 +1886,6 @@ def cmd_update(names):
 # --- marketplace ---------------------------------------------------------
 
 def cmd_skills(args):
-    if WINDOWS:
-        eprint("fleet: skills are not synced on Windows")
-        return 2
     action, rest = (args[0], args[1:]) if args else ("list", [])
     try:
         if action == "list" and not rest:
@@ -1952,7 +1963,7 @@ def cmd_sync(check=False, pull=False):
             state = _load_json_quiet(AGENTS_STATE)
             if rc == 0 and (config["counter"] != state.get("counter") or pending_local()
                             or not sync_builtin_skill(check=True)
-                            or not WINDOWS and any(_builtin(f["path"]) for f in config["files"])):
+                            or any(_builtin(f["path"]) for f in config["files"])):
                 rc = 1
             return rc
         engine = provider_engine()

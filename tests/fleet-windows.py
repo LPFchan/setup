@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""fleet on Windows, against a stand-in Auth: no skills, copies of AGENTS.md in
-place of links, a token file of its own, LF-only writes, the msvcrt lock, and
+"""fleet on Windows, against a stand-in Auth: skills linked by junction, copies
+of AGENTS.md in place of links, a token file of its own, LF-only writes, the msvcrt lock, and
 only the harnesses with a windows block. Runs on Windows only (CI)."""
 import base64
 import hashlib
@@ -103,7 +103,14 @@ server({"AGENTS.md": ("be kind — always\n", 0), "settings/tool.sh": ("echo hi\
 
 fleet("sync")
 check((AGENTS/"AGENTS.md").read_bytes() == "be kind — always\n".encode(), "AGENTS.md pulled as UTF-8 with LF")
-check(not (AGENTS/"skills").exists(), "skills pulled on Windows")
+check((AGENTS/"skills/notes/SKILL.md").read_bytes() == b"notes\n", "skills pulled")
+builtin = AGENTS/"skills/fleet/SKILL.md"
+check(builtin.read_text(encoding="utf-8").startswith("---\nname: fleet") and not os.access(builtin, os.W_OK),
+      "built-in skill written read-only")
+CLAUDE_SKILLS = HOME/".claude/skills"
+check(os.path.realpath(CLAUDE_SKILLS/"notes") == os.path.realpath(AGENTS/"skills/notes")
+      and (CLAUDE_SKILLS/"notes/SKILL.md").read_bytes() == b"notes\n", "skill reached through a junction")
+check((CLAUDE_SKILLS/"fleet/SKILL.md").exists(), "built-in skill linked")
 check(CLAUDE_MD.read_bytes() == (AGENTS/"AGENTS.md").read_bytes() and not CLAUDE_MD.is_symlink(), "CLAUDE.md copy")
 check((HOME/".claude/CLAUDE.md.pre-agents.bak").read_bytes() == b"mine\n", "own CLAUDE.md kept as a backup")
 check(HOME_MD.read_bytes() == (AGENTS/"AGENTS.md").read_bytes(), "~/AGENTS.md copy")
@@ -124,7 +131,7 @@ fleet("sync")
 check(CLAUDE_MD.read_bytes() == b"be kinder\n" and HOME_MD.read_bytes() == b"be kinder\n", "copies updated")
 check((HOME/".claude/CLAUDE.md.pre-agents.bak").read_bytes() == b"mine\n", "backup untouched")
 
-# A local edit pushes and keeps Auth's executable bit; skills never push.
+# A local edit pushes and keeps Auth's executable bit; a new skill pushes too.
 (AGENTS/"settings/tool.sh").write_bytes(b"echo bye\n")
 (AGENTS/"skills/mine").mkdir(parents=True)
 (AGENTS/"skills/mine/SKILL.md").write_bytes(b"local\n")
@@ -132,7 +139,21 @@ fleet("sync")
 files = server_files()
 check(base64.b64decode(files["settings/tool.sh"]["content"]) == b"echo bye\n" and files["settings/tool.sh"]["executable"],
       "push keeps the executable bit")
-check("skills/mine/SKILL.md" not in files and "skills/notes/SKILL.md" in files, "skills left alone in Auth")
+check(base64.b64decode(files["skills/mine/SKILL.md"]["content"]) == b"local\n", "new skill pushed")
+check((CLAUDE_SKILLS/"mine/SKILL.md").read_bytes() == b"local\n", "new skill linked")
+check(not any(p.startswith("skills/fleet/") for p in files), "built-in skill never pushed")
+
+# An outdated built-in skill is replaced although it is read-only; a skill gone
+# from Auth loses its junction.
+builtin.chmod(0o644)
+builtin.write_text("older", encoding="utf-8")
+builtin.chmod(0o444)
+server({p: (base64.b64decode(f["content"]).decode(), f["executable"]) for p, f in server_files().items()
+        if p != "skills/notes/SKILL.md"}, 5)
+fleet("sync")
+check(builtin.read_text(encoding="utf-8").startswith("---\nname: fleet"), "built-in skill restored")
+check(not os.path.lexists(CLAUDE_SKILLS/"notes") and not (AGENTS/"skills/notes").exists(), "junction dropped")
+check(fleet("sync", "--check").returncode == 0, "nothing pending after a sync")
 
 # Two passes at once wait for each other on the lock.
 runs = [subprocess.Popen([sys.executable, str(ROOT/"files/fleet"), "sync"], env=env,
@@ -153,7 +174,7 @@ if pythonw.exists():
           "sync under pythonw")
     check((STATE/"fleet/sync.log").read_text(encoding="utf-8").startswith("--- "), "pythonw output in sync.log")
 
-check(fleet("skills", expect=2).returncode == 2, "skills command refused")
+check("Usage: fleet skills" in fleet("skills", "bogus", expect=2).stderr, "skills command offered")
 unknown = fleet("install", "t3", expect=None)
 check(unknown.returncode != 0 and "unknown harness" in unknown.stderr, "t3 offered on Windows")
 # Provider caches use the Windows lock and native auth.json, without .zshenv.
