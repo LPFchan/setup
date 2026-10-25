@@ -774,6 +774,7 @@ Edit the source in `~/.agents`, then run `fleet sync`:
 | This account's machine notes | `~/.agents/skills/fleet/references/*.md` |
 | MCP servers | `~/.agents/mcp.json` |
 | Harness settings | `~/.agents/settings/<harness>.json` |
+| T3 Code's Claude model list | `~/.agents/settings/t3.json`: `claudeCustomModels` entries of `{"slug", "name"}`; add `"effortsFrom": "<slug>"` to borrow that model's effort levels until the proxy lists this one |
 | SSH aliases, users, keys | the Fleet tab at auth.lost.plus (not a file) |
 
 `~/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and
