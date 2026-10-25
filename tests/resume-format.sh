@@ -302,8 +302,9 @@ ocxbaresession="$HOME/.claude/projects/-home-opencodex-bare-proj/$ocxbareid.json
     printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"Bare model session"}}\n' "$ocxbarecwd"
     printf '{"type":"assistant","message":{"role":"assistant","model":"gpt-5.6-sol","content":[{"type":"text","text":"ok"}]}}\n'
 } > "$ocxbaresession"
+mkdir -p "$HOME/.config/providers"
 printf '{"providers":{"codex":{},"commandcode":{}}}\n' \
-    > "$HOME/.config/opencodex/managed-profiles.json"
+    > "$HOME/.config/providers/registry.json"
 touch -t 202407061400.00 "$ocxactivesession"
 touch -t 202407061350.00 "$ocxbaresession"
 

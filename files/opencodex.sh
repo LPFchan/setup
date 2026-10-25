@@ -2,69 +2,24 @@
 # setup-module: opencodex
 # setup-type: script
 #
-# Installs a four-reel provider/model/effort/harness launcher at ~/.local/bin/opencodex, a
-# latest OpenCodex runtime, and a setup-managed provider registry snapshot.
-# Routing is provider-only; provider metadata is fleet state shared with
-# providers via files/provider-registry.json while
-# credentials remain machine-local.
+# Installs the four-reel provider/model/effort/harness picker at
+# ~/.local/bin/opencodex. fleet installs ocx, writes its config and keeps the
+# proxy running (`fleet install ocx`); the picker only launches through it.
+#
+# Machines this module once gave its own OpenCodex runtime
+# (~/.local/libexec/opencodex) hand it over to fleet on install or update.
 
 (( ${+functions[git_clone_if_missing]} )) || source "${${(%):-%x}:A:h}/../lib/script-helpers.sh"
 
 MODULE="opencodex"
 BIN="${OPENCODEX_LAUNCHER:-$HOME/.local/bin/opencodex}"
-REGISTRY="${OPENCODEX_REGISTRY:-$HOME/.config/opencodex/managed-profiles.json}"
-AUTH_JSON="${OPENCODEX_AUTH_JSON:-$HOME/.local/share/opencode/auth.json}"
-OPENCODEX_ROOT="${OPENCODEX_ROOT:-$HOME/.local/libexec/opencodex}"
-OPENCODEX_BIN="${OPENCODEX_BIN:-$HOME/.local/bin/ocx}"
-OPENCODEX_CONFIG="${OPENCODEX_CONFIG:-$HOME/.opencodex/config.json}"
-OPENCODEX_MANAGED="${OPENCODEX_MANAGED:-$HOME/.opencodex/setup-managed-providers.json}"
-OPENCODEX_PACKAGE_NAME="@bitkyc08/opencodex"
-OPENCODEX_RELEASE_VERSION="${OPENCODEX_RELEASE_VERSION:-}"
 SOURCE_BASE="${LINUX_SETUP_SOURCE_URL:-${SOURCE_URL:-https://raw.githubusercontent.com/LPFchan/setup/main}}"
 LAUNCHER_SOURCE="${OPENCODEX_LAUNCHER_SOURCE:-$SOURCE_BASE/files/opencodex}"
-REGISTRY_SOURCE="${OPENCODEX_REGISTRY_SOURCE:-${PROVIDER_REGISTRY_SOURCE:-$SOURCE_BASE/files/provider-registry.json}}"
-# The proxy drains in-flight turns for 300s on SIGTERM (shutdownTimeoutMs);
-# systemd's default 90s stop timeout would SIGKILL it mid-drain.
-STOP_TIMEOUT_DROPIN="${OPENCODEX_STOP_TIMEOUT_DROPIN:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/opencodex-proxy.service.d/50-stop-timeout.conf}"
-STOP_TIMEOUT_BODY=$'[Service]\nTimeoutStopSec=330'
-
-_installed_version() {
-    "$OPENCODEX_BIN" --version 2>/dev/null | awk '{print $NF; exit}'
-}
-
-_resolve_release_version() {
-    if [[ -n "$OPENCODEX_RELEASE_VERSION" ]]; then
-        printf '%s\n' "$OPENCODEX_RELEASE_VERSION"
-        return 0
-    fi
-
-    command -v npm >/dev/null 2>&1 || {
-        echo "opencodex: npm is required to resolve the latest release" >&2
-        return 1
-    }
-    local response version
-    response=$(npm view "$OPENCODEX_PACKAGE_NAME" dist-tags.latest \
-        --fetch-retries=0 --fetch-timeout=10000 2>/dev/null) || {
-        echo "opencodex: could not resolve the latest $OPENCODEX_PACKAGE_NAME release" >&2
-        return 1
-    }
-    version=$(printf '%s\n' "$response" | awk 'NF { print $1; exit }')
-    [[ -n "$version" && "$version" != undefined ]] || {
-        echo "opencodex: latest $OPENCODEX_PACKAGE_NAME release has no version" >&2
-        return 1
-    }
-    printf '%s\n' "$version"
-}
-
-_runtime_root_is_safe() {
-    [[ "$OPENCODEX_ROOT" == /*/opencodex && "$OPENCODEX_ROOT" != "/opencodex" ]]
-}
-
-_require_safe_runtime_root() {
-    _runtime_root_is_safe && return 0
-    echo "opencodex: refusing unsafe OpenCodex runtime path: $OPENCODEX_ROOT" >&2
-    return 1
-}
+FLEET="${FLEET_BIN:-$HOME/.local/bin/fleet}"
+# What the old module installed. fleet leaves ocx alone while this runtime exists.
+LEGACY_ROOT="$HOME/.local/libexec/opencodex"
+LEGACY_OCX="$HOME/.local/bin/ocx"
+LEGACY_FILES=("$HOME/.config/opencodex/managed-profiles.json" "$HOME/.opencodex/setup-live-applied")
 
 _fetch_file() {
     local source="$1" destination="$2"
@@ -77,245 +32,152 @@ _fetch_file() {
     fi
 }
 
-_stage_assets() {
-    local directory="$1"
-    _fetch_file "$LAUNCHER_SOURCE" "$directory/opencodex" || {
+_stage_launcher() {
+    _fetch_file "$LAUNCHER_SOURCE" "$1" || {
         echo "opencodex: could not fetch launcher from $LAUNCHER_SOURCE" >&2
         return 1
     }
-    _fetch_file "$REGISTRY_SOURCE" "$directory/provider-registry.json" || {
-        echo "opencodex: could not fetch registry from $REGISTRY_SOURCE" >&2
-        return 1
-    }
-    chmod +x "$directory/opencodex"
-    OPENCODEX_AUTH_JSON="$AUTH_JSON" python3 "$directory/opencodex" __validate "$directory/provider-registry.json" || return 1
 }
 
-_ensure_runtime() {
-    local version="$1"
-    if [[ "$(_installed_version)" == "$version" ]]; then
-        return 0
-    fi
-    _require_safe_runtime_root || return 1
-    command -v npm >/dev/null 2>&1 || {
-        echo "opencodex: npm is required to install OpenCodex" >&2
-        return 1
-    }
-    local staged old package="$OPENCODEX_PACKAGE_NAME@$version"
-    staged=$(mktemp -d)
-    mkdir -p "$staged/root"
-    printf '%s\n' \
-        '{' \
-        '  "private": true,' \
-        '  "allowScripts": {' \
-        '    "bun": true' \
-        '  }' \
-        '}' > "$staged/root/package.json"
-    if ! npm install --prefix "$staged/root" --no-audit --no-fund --no-package-lock \
-        "$package"; then
-        rm -rf "$staged"
-        return 1
-    fi
-    [[ -x "$staged/root/node_modules/.bin/ocx" ]] || {
-        echo "opencodex: OpenCodex package did not install its CLI" >&2
-        rm -rf "$staged"
-        return 1
-    }
-    mkdir -p "$(dirname "$OPENCODEX_ROOT")" "$(dirname "$OPENCODEX_BIN")"
-    old="${OPENCODEX_ROOT}.old.$$"
-    [[ ! -e "$OPENCODEX_ROOT" ]] || mv "$OPENCODEX_ROOT" "$old"
-    mv "$staged/root" "$OPENCODEX_ROOT" || {
-        [[ ! -e "$old" ]] || mv "$old" "$OPENCODEX_ROOT"
-        rm -rf "$staged"
-        return 1
-    }
-    if ! ln -sfn "$OPENCODEX_ROOT/node_modules/.bin/ocx" "${OPENCODEX_BIN}.tmp.$$" \
-        || ! mv "${OPENCODEX_BIN}.tmp.$$" "$OPENCODEX_BIN"; then
-        rm -f "${OPENCODEX_BIN}.tmp.$$"
-        rm -rf "$OPENCODEX_ROOT"
-        [[ ! -e "$old" ]] || mv "$old" "$OPENCODEX_ROOT"
-        rm -rf "$staged"
-        return 1
-    fi
-    rm -rf "$old" "$staged"
-}
-
-_install_assets() {
-    local staged="$1" bin_tmp registry_tmp
-    mkdir -p "$(dirname "$BIN")" "$(dirname "$REGISTRY")"
-    bin_tmp="${BIN}.tmp.$$"
-    registry_tmp="${REGISTRY}.tmp.$$"
-    cp "$staged/opencodex" "$bin_tmp" || return 1
-    chmod +x "$bin_tmp"
-    cp "$staged/provider-registry.json" "$registry_tmp" || { rm -f "$bin_tmp"; return 1; }
-    mv "$registry_tmp" "$REGISTRY"
-    mv "$bin_tmp" "$BIN"
-}
-
-_apply_all_providers() {
-    OPENCODEX_AUTH_JSON="$AUTH_JSON" OPENCODEX_BIN="$OPENCODEX_BIN" \
-        OPENCODEX_CONFIG="$OPENCODEX_CONFIG" OPENCODEX_MANAGED="$OPENCODEX_MANAGED" \
-        python3 "$BIN" __apply "$REGISTRY"
-}
-
-_providers_current() {
-    OPENCODEX_AUTH_JSON="$AUTH_JSON" OPENCODEX_CONFIG="$OPENCODEX_CONFIG" \
-        OPENCODEX_MANAGED="$OPENCODEX_MANAGED" \
-        python3 "$BIN" __status "$REGISTRY"
-}
-
-_desired_hash_from() {
-    local staged="$1" version="$2"
-    {
-        printf '%s\n' "$version"
-        cat "$staged/opencodex"
-        cat "$staged/provider-registry.json"
-    } | setup_sha256_string
-}
-
-_desired_hash() {
-    local staged version hash
-    version=$(_resolve_release_version) || return 1
-    staged=$(mktemp -d)
-    _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    hash=$(_desired_hash_from "$staged" "$version")
-    rm -rf "$staged"
-    printf '%s' "$hash"
-}
-
-_assets_current_from() {
-    local staged="$1" rc=0
-    cmp -s "$staged/opencodex" "$BIN" || rc=1
-    cmp -s "$staged/provider-registry.json" "$REGISTRY" || rc=1
-    return $rc
-}
-
-_recorded_hash() {
-    local rt lr rr
-    IFS=$'\t' read -r rt lr rr < <(script_state_for "$MODULE" 2>/dev/null) && printf '%s' "$lr"
-}
-
-_release_ref() {
-    printf 'release:%s' "$1"
-}
-
-# Version the RUNNING proxy reports, empty when nothing answers on its port.
-# `ocx --version` reads the build on disk, which is exactly the number that
-# does NOT tell us whether the swap took effect.
-_live_proxy_version() {
-    python3 - "$OPENCODEX_CONFIG" <<'PY' 2>/dev/null
-import json, sys, urllib.request
-
+# Exit 0 once the running proxy has no turn in flight, 1 if it stays busy past
+# OPENCODEX_IDLE_WAIT (default 120s). A proxy that does not answer has nothing
+# to cut, so it reads as idle, like fleet's own check.
+_proxy_idle() {
+    python3 - "${OPENCODEX_IDLE_WAIT:-120}" <<'PY'
+import json, pathlib, sys, time, urllib.request
+home = pathlib.Path.home() / ".opencodex"
+deadline = time.monotonic() + float(sys.argv[1])
 try:
-    port = json.load(open(sys.argv[1])).get("port", 10100)
-except (OSError, ValueError):
-    port = 10100
-try:
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as response:
-        print(json.load(response).get("version", ""))
-except Exception:
-    pass
+    port = json.loads((home / "runtime-port.json").read_text())["port"]
+    token = (home / "admin-api-token").read_text().strip()
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(0)
+request = urllib.request.Request(f"http://127.0.0.1:{port}/api/system/memory",
+                                 headers={"Authorization": f"Bearer {token}"})
+while True:
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            turns = json.loads(response.read().decode("utf-8", "replace"), strict=False).get("activeTurnCount")
+    except (OSError, ValueError, AttributeError):
+        sys.exit(0)
+    if not turns:
+        sys.exit(0)
+    if time.monotonic() >= deadline:
+        sys.exit(1)
+    time.sleep(0.5)
 PY
 }
 
-# Poll /healthz for up to $1 seconds (default 120); print the live version as
-# soon as one answers, fail if the window closes first.
-_wait_live_proxy() {
-    local deadline=$(( SECONDS + ${1:-120} )) live
-    while (( SECONDS < deadline )); do
-        live=$(_live_proxy_version)
-        if [[ -n "$live" ]]; then
-            printf '%s\n' "$live"
-            return 0
-        fi
-        sleep 2
+# Exit 0 once the proxy answers /healthz, polling up to OPENCODEX_ACTIVATE_WAIT
+# (default 120s): `ocx service` gives a cold start ~20s, so it can exit 1 for a
+# proxy that is still coming up.
+_proxy_live() {
+    python3 - "${OPENCODEX_ACTIVATE_WAIT:-120}" <<'PY'
+import json, pathlib, sys, time, urllib.request
+deadline = time.monotonic() + float(sys.argv[1])
+while True:
+    try:
+        port = json.loads((pathlib.Path.home() / ".opencodex/runtime-port.json").read_text())["port"]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as response:
+            if json.load(response).get("status") in ("ok", "restart_required"):
+                sys.exit(0)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    if time.monotonic() >= deadline:
+        sys.exit(1)
+    time.sleep(2)
+PY
+}
+
+# Exit 1 only when ocx's service record launches an installed ocx outside the
+# old runtime. A path is judged by where it resolves, not by its name: with an
+# npm prefix of ~/.local the new ocx is ~/.local/bin/ocx too. A missing record
+# or a recorded path that is gone proves no new install, so both count as old.
+_service_on_legacy() {
+    python3 - "$LEGACY_ROOT" <<'PY'
+import json, os, pathlib, sys
+root = os.path.realpath(sys.argv[1]) + "/"
+try:
+    state = json.loads((pathlib.Path.home() / ".opencodex/service-state.json").read_text())
+except (OSError, ValueError):
+    sys.exit(0)
+paths = [p for p in (state.get(k) for k in ("launcherPath", "bunPath", "cliPath")) if isinstance(p, str)]
+legacy = not paths or any(not os.path.exists(p) or os.path.realpath(p).startswith(root) for p in paths)
+sys.exit(0 if legacy else 1)
+PY
+}
+
+# An ocx outside the old runtime on PATH or in nvm's bins (where fleet's own
+# PATH looks), or nothing.
+_new_ocx() {
+    local dir
+    for dir in ${(s.:.)PATH} $HOME/.nvm/versions/node/*/bin(N); do
+        [[ -x "$dir/ocx" && ${${:-$dir/ocx}:A} != ${LEGACY_ROOT:A}/* ]] || continue
+        print -r -- "$dir/ocx"
+        return 0
     done
     return 1
 }
 
-# A package swap leaves the previous build serving until something restarts it.
-# Bare `ocx service` installs when no service is registered and otherwise
-# repairs, which reloads the service only when its definition changed. Never
-# `service install` over a running service: it unloads the service, then asks
-# the still-answering proxy to stop, and a proxy that is shutting down refuses,
-# so install aborts with the service unloaded and nothing serving. The version
-# probe below restarts a proxy the repair left on the old build.
+# Move a machine off the old runtime onto fleet's ocx. Returns 0 when there is
+# nothing (left) to hand over, 1 when the new install failed and the old
+# runtime keeps serving, 2 when a busy proxy puts it off to the next run.
 #
-# The service command only gives the fresh proxy ~20s to answer /healthz, and a
-# cold start can spend longer than that syncing providers and the model catalog
-# — so it exits 1 while the proxy is still coming up. Believing that exit
-# failed the module before record_script_state, and `setup update` re-swapped
-# and re-failed every night. On a failure, keep polling until
-# OPENCODEX_ACTIVATE_WAIT (default 120s) expires before deciding; a proxy that
-# answers inside the window with the installed version is a success.
-_activate_runtime() {
-    local service_rc=0 installed live
-    "$OPENCODEX_BIN" service || service_rc=$?
-    installed=$(_installed_version)
-    if (( service_rc != 0 )); then
-        echo "opencodex: ocx service exited $service_rc; waiting up to ${OPENCODEX_ACTIVATE_WAIT:-120}s for /healthz" >&2
-        if ! live=$(_wait_live_proxy "${OPENCODEX_ACTIVATE_WAIT:-120}"); then
-            echo "opencodex: no proxy answered /healthz within ${OPENCODEX_ACTIVATE_WAIT:-120}s; activation treated as failed" >&2
-            return 1
-        fi
-    else
-        live=$(_live_proxy_version)
+# `fleet install ocx` ends in `ocx service`, which restarts the proxy, so the
+# idle wait comes first. The ~/.local/bin/ocx link goes before it: fleet would
+# read it as ocx already installed, and ocx's service would keep launching the
+# path it recorded. The old runtime stays on disk until the new proxy answers,
+# since the old one draining its last turns still loads code from it.
+_handover() {
+    [[ -d "$LEGACY_ROOT" ]] || return 0
+    if ! _proxy_idle; then
+        echo "opencodex: the ocx proxy stayed busy; its hand-over to fleet is put off to the next run" >&2
+        return 2
     fi
-    # An unreachable proxy reports no version, which is not evidence of drift.
-    if [[ -z "$installed" || -z "$live" || "$live" == "$installed" ]]; then
-        return 0
+    local link ocx
+    link=$(readlink "$LEGACY_OCX" 2>/dev/null) || link=""
+    rm -f "$LEGACY_OCX"
+    # `ocx service` exits 1 for a cold start still coming up, and fleet waits only
+    # for a proxy it owns, so what came up decides rather than the exit code.
+    "$FLEET" install ocx || echo "opencodex: fleet install ocx exited $?; waiting for the proxy" >&2
+    # A retry finds the package an earlier attempt installed: fleet calls it
+    # already installed and leaves a service it does not own yet unrepaired.
+    if _service_on_legacy && ocx=$(_new_ocx); then
+        "$ocx" service || echo "opencodex: ocx service exited $?; waiting for the proxy" >&2
     fi
-    echo "opencodex: proxy still serving $live after install; restarting" >&2
-    "$OPENCODEX_BIN" service restart || return 1
-    live=$(_live_proxy_version)
-    if [[ -z "$live" || "$live" == "$installed" ]]; then
-        return 0
+    if ! _proxy_live || _service_on_legacy; then
+        [[ -z "$link" || -e "$LEGACY_OCX" ]] || ln -s "$link" "$LEGACY_OCX"
+        echo "opencodex: fleet install ocx did not take over; the old OpenCodex runtime keeps serving" >&2
+        return 1
     fi
-    echo "opencodex: proxy is serving $live but $installed is installed" >&2
-    return 1
+    rm -rf "$LEGACY_ROOT"
+    rm -f "${LEGACY_FILES[@]}"
+    # fleet left the config and Claude's route alone while the old runtime existed.
+    # Pull only, like fleet's own module: an unattended run must not push local ~/.agents edits.
+    "$FLEET" sync --pull || echo "opencodex: fleet sync --pull failed; fleet's next pass writes the ocx config and Claude's route" >&2
+    echo "opencodex: handed the ocx proxy over to fleet"
 }
 
-# Drift, not just "is a process registered". A proxy running last week's build
-# answers `service status` perfectly happily, and treating that as current is
-# what let a failed restart record itself as a finished update — leaving
-# `setup update` with nothing left to retry.
-_runtime_active() {
-    "$OPENCODEX_BIN" service status >/dev/null 2>&1 || return 1
-    local installed live
-    installed=$(_installed_version)
-    live=$(_live_proxy_version)
-    if [[ -z "$installed" || -z "$live" ]]; then
-        return 0
-    fi
-    [[ "$live" == "$installed" ]]
-}
-
-_stop_timeout_current() {
-    [[ "$(uname -s)" != Linux ]] && return 0
-    [[ -f "$STOP_TIMEOUT_DROPIN" && "$(<"$STOP_TIMEOUT_DROPIN")" == "$STOP_TIMEOUT_BODY" ]]
-}
-
-_write_stop_timeout() {
-    _stop_timeout_current && return 0
-    mkdir -p "${STOP_TIMEOUT_DROPIN:h}"
-    print -r -- "$STOP_TIMEOUT_BODY" > "$STOP_TIMEOUT_DROPIN"
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
-    echo "opencodex: proxy stop timeout raised to 330s"
+_desired_hash_from() {
+    setup_sha256_string < "$1"
 }
 
 _apply() {
-    local action="$1" staged version hash
-    version=$(_resolve_release_version) || return 1
-    staged=$(mktemp -d)
-    _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    _ensure_runtime "$version" || { rm -rf "$staged"; return 1; }
-    hash=$(_desired_hash_from "$staged" "$version")
-    _install_assets "$staged" || { rm -rf "$staged"; return 1; }
-    rm -rf "$staged"
-    _apply_all_providers || return 1
-    _write_stop_timeout
-    _activate_runtime || return 1
-    record_script_state "$MODULE" "$(_release_ref "$version")" "$hash" "$hash"
+    local action="$1" staged hash rc=0
+    staged=$(mktemp)
+    _stage_launcher "$staged" || { rm -f "$staged"; return 1; }
+    _handover || rc=$?
+    # Until it is handed over, the old launcher keeps serving fleet's calls into it.
+    if (( rc != 0 )); then
+        rm -f "$staged"
+        return $(( rc == 2 ? 0 : 1 ))
+    fi
+    mkdir -p "${BIN:h}"
+    cp "$staged" "$BIN.tmp.$$" && chmod +x "$BIN.tmp.$$" && mv "$BIN.tmp.$$" "$BIN" \
+        || { rm -f "$staged" "$BIN.tmp.$$"; return 1; }
+    hash=$(_desired_hash_from "$staged")
+    rm -f "$staged"
+    record_script_state "$MODULE" "launcher" "$hash" "$hash"
     echo "opencodex: $action -> $BIN"
 }
 
@@ -332,57 +194,26 @@ status() {
         printf '%-25s %-12s\n' "$MODULE" "uninstalled"
         return 2
     fi
-    local staged version installed desired recorded drift=0
-    installed=$(_installed_version)
-    if ! version=$(_resolve_release_version); then
-        printf '%-25s %-12s local=%s remote=- target=%s\n' \
-            "$MODULE" "unknown" "${installed:-unknown}" "$BIN"
-        return 0
+    local staged desired state=current local_label
+    staged=$(mktemp)
+    _stage_launcher "$staged" || { rm -f "$staged"; return 1; }
+    desired=$(_desired_hash_from "$staged")
+    local_label=${desired:0:7}
+    if [[ -d "$LEGACY_ROOT" ]]; then
+        state=outdated local_label=legacy-runtime
+    elif ! cmp -s "$staged" "$BIN"; then
+        state=outdated local_label=$([[ -f "$BIN" ]] && echo modified || echo missing)
     fi
-    staged=$(mktemp -d)
-    _stage_assets "$staged" || { rm -rf "$staged"; return 1; }
-    desired=$(_desired_hash_from "$staged" "$version")
-    recorded=$(_recorded_hash)
-    [[ -x "$BIN" && -x "$OPENCODEX_BIN" && -f "$REGISTRY" ]] || drift=1
-    if (( drift == 0 )); then
-        [[ "$installed" == "$version" ]] || drift=1
-        _assets_current_from "$staged" || drift=1
-        (( drift == 1 )) || _providers_current || drift=1
-        (( drift == 1 )) || _runtime_active || drift=1
-        _stop_timeout_current || drift=1
-    fi
-    rm -rf "$staged"
-    if (( drift == 1 )); then
-        printf '%-25s %-12s local=%s remote=%s target=%s\n' \
-            "$MODULE" "outdated" "${installed:-unknown}" "$version" "$BIN"
-        record_script_state "$MODULE" "$(_release_ref "${installed:-unknown}")" "${recorded:-none}" "$desired"
-        return 1
-    fi
+    rm -f "$staged"
     printf '%-25s %-12s local=%s remote=%s target=%s\n' \
-        "$MODULE" "current" "$installed" "$version" "$BIN"
-    record_script_state "$MODULE" "$(_release_ref "$version")" "$desired" "$desired"
+        "$MODULE" "$state" "$local_label" "${desired:0:7}" "$BIN"
+    [[ "$state" == current ]]
 }
 
 uninstall() {
-    _require_safe_runtime_root || return 1
-    if [[ -x "$OPENCODEX_BIN" ]]; then
-        "$OPENCODEX_BIN" service uninstall >/dev/null 2>&1 || true
-        "$OPENCODEX_BIN" restore >/dev/null 2>&1 || true
-    fi
-    # A route to the stopped proxy would send every Claude request nowhere.
-    if [[ -x "$BIN" ]]; then
-        python3 "$BIN" __unexport >/dev/null \
-            || echo "opencodex: could not remove ANTHROPIC_BASE_URL; check ~/.zshenv and ~/.claude/settings.json" >&2
-    fi
-    if [[ -x "$BIN" && -f "$REGISTRY" ]]; then
-        OPENCODEX_CONFIG="$OPENCODEX_CONFIG" OPENCODEX_MANAGED="$OPENCODEX_MANAGED" \
-            python3 "$BIN" __remove "$REGISTRY" \
-            || echo "opencodex: could not remove managed providers from $OPENCODEX_CONFIG" >&2
-    fi
-    rm -f "$BIN" "$OPENCODEX_BIN" "$STOP_TIMEOUT_DROPIN"
-    rmdir "${STOP_TIMEOUT_DROPIN:h}" 2>/dev/null || true
-    rm -rf "$OPENCODEX_ROOT"
-    rm -f "$REGISTRY"
+    # The proxy itself is fleet's; an old runtime is handed over, not left orphaned.
+    _handover || return 1
+    rm -f "$BIN"
     remove_script_state "$MODULE"
-    echo "opencodex: uninstalled launcher, OpenCodex runtime, and managed providers"
+    echo "opencodex: uninstalled the launcher; fleet keeps ocx"
 }
