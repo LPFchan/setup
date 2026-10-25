@@ -2326,10 +2326,14 @@ def run_reel_picker(
             result = handle_key(state, action)
             if result == "restart" and not fetched.get("restarting"):
                 fetched["restarting"] = True
-                threading.Thread(target=restart, daemon=True).start()
+                fetched["restart"] = threading.Thread(target=restart, daemon=True)
+                fetched["restart"].start()
             if result == "cancel":
                 return None
             if result == "launch":
+                # Launching probes the proxy itself; let the menu's restart land first.
+                if fetched.get("restart"):
+                    fetched["restart"].join()
                 return state.selection()
 
     return curses.wrapper(loop)
