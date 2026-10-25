@@ -90,6 +90,14 @@ assert m.cache_get('demo')=='current-key'
 # The current Passage list shape is a list of folder groups.
 m._vault_call=lambda *args:json.dumps([{'folder':'llm','items':[{'name':'DEMO_API_KEY'}]}])
 assert read_items()==[{'name':'DEMO_API_KEY'}]
+# An empty folder arrives with no content blocks, only structuredContent.
+import io
+v=module('fleet_providers_vault',root/'files/fleet-providers.py');v.VAULT_TOKEN='test'
+empty={'jsonrpc':'2.0','id':1,'result':{'content':[],'isError':False,'structuredContent':{'result':[]}}}
+real_urlopen=v.urllib.request.urlopen
+v.urllib.request.urlopen=lambda *a,**k:io.BytesIO(json.dumps(empty).encode())
+try:assert v.vault_list_items()==[]
+finally:v.urllib.request.urlopen=real_urlopen
 # Fleet keeps one nightly schedule and removes the old hourly provider timer.
 f=module('fleet_test',root/'files/fleet');calls=[]
 f.provider_engine=lambda:object();f._run_schedule=lambda *args,**kw:calls.append(args) or 0
