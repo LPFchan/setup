@@ -99,30 +99,40 @@ v.urllib.request.urlopen=lambda *a,**k:io.BytesIO(json.dumps(empty).encode())
 try:assert v.vault_list_items()==[]
 finally:v.urllib.request.urlopen=real_urlopen
 # Fleet keeps one nightly schedule and removes the old hourly provider timer.
+import contextlib,io
 f=module('fleet_test',root/'files/fleet');calls=[]
-f.provider_engine=lambda:object();f._run_schedule=lambda *args,**kw:calls.append(args) or 0
+f.provider_engine=lambda:object();f._systemctl=lambda *args:calls.append(args) or (0,'')
 f.sys.argv=[str(root/'files/fleet')]
 units=home/'.config/systemd/user';units.mkdir(parents=True,exist_ok=True)
 (units/'fleet-providers.timer').write_text('')
 assert f.schedule_enable()==0
-assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
-assert not any(c[:3]==('install-timer','user','fleet-providers') for c in calls)
-assert any(c[:3]==('install-timer','user','fleet-sync') for c in calls)
-(units/'fleet-providers.timer').unlink()
+assert ('disable','fleet-providers.timer') in calls and not (units/'fleet-providers.timer').exists()
+assert not (units/'fleet-providers.service').exists()
+# fleet writes its own units, under the name the old helper used, so they replace it in place.
+assert ('enable','--quiet','fleet-sync.timer') in calls and ('start','fleet-sync.timer') in calls
+assert 'OnCalendar=*-*-* 04:00:00\nPersistent=true\n' in (units/'fleet-sync.timer').read_text()
+assert f"ExecStart={root/'files/fleet'} nightly\n" in (units/'fleet-sync.service').read_text()
 calls.clear();assert f.schedule_disable()==0
-assert not any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
-assert any(c[:3]==('uninstall-timer','user','fleet-sync') for c in calls)
+assert ('disable','fleet-providers.timer') not in calls
+assert ('disable','fleet-sync.timer') in calls and not (units/'fleet-sync.timer').exists()
+# A disable that fails without systemd confirming the timer is off keeps the files.
+(units/'fleet-sync.timer').write_text('')
+f._systemctl=lambda *args:(1,'')
+with contextlib.redirect_stderr(io.StringIO()):assert f.schedule_disable()==1
+assert (units/'fleet-sync.timer').exists()
+f._systemctl=lambda *args:(3,'inactive') if args[0]=='is-active' else (1,'disabled') if args[0]=='is-enabled' else (1,'')
+assert f.schedule_disable()==0 and not (units/'fleet-sync.timer').exists()
+f._systemctl=lambda *args:calls.append(args) or (0,'')
 # A sync removes it too: an update never re-runs `fleet schedule`.
-import contextlib
 (units/'fleet-providers.timer').write_text('');calls.clear()
 saved={n:getattr(f,n) for n in ('_fleet_lock','sync_ssh','sync_agents','sync_builtin_skill','sync_links','render_harnesses','sync_provider_credentials','provider_engine')}
 f._fleet_lock=contextlib.nullcontext;f.sync_ssh=lambda check:0;f.sync_agents=lambda push:0
 f.sync_builtin_skill=f.sync_links=lambda *a,**k:None;f.render_harnesses=lambda:True
 f.sync_provider_credentials=lambda:None;f.provider_engine=lambda:None
 assert f.cmd_sync(pull=True)==0
-assert any(c[:3]==('uninstall-timer','user','fleet-providers') for c in calls)
+assert ('disable','fleet-providers.timer') in calls
 for n,v in saved.items(): setattr(f,n,v)
-(units/'fleet-providers.timer').unlink()
+assert not (units/'fleet-providers.timer').exists()
 # On macOS a run missed while shut down catches up at the next login.
 import types
 real_run,real_platform=f.subprocess.run,f.sys.platform
@@ -141,12 +151,13 @@ f.cmd_sync=lambda **kw:calls.append(('sync',kw)) or 0
 f.cmd_update=lambda _:calls.append('harnesses') or 0
 f._auth=lambda *args:(0,json.dumps(ctx))
 f._heal_path=lambda:None
+f._self_update=lambda:calls.append('self-update')
 f.sys.argv=[str(root/'files/fleet'),'nightly']
 opencodex=home/'.local/bin/opencodex';opencodex.parent.mkdir(parents=True,exist_ok=True);opencodex.write_text('')
 real_subprocess=f.subprocess;f.subprocess=SimpleNamespace(run=lambda args,**kw:calls.append(args[-1]))
 try:assert f.main()==0
 finally:f.subprocess=real_subprocess;opencodex.unlink()
-assert calls==[('sync',{'pull':True}),'models','__apply','harnesses','__export']
+assert calls==['self-update',('sync',{'pull':True}),'models','__apply','harnesses','__export']
 import contextlib,io
 f.sys.argv=[str(root/'files/fleet'),'__refresh-providers']
 with contextlib.redirect_stderr(io.StringIO()):assert f.main()==2

@@ -198,6 +198,25 @@ check(result.returncode == 0, "provider Windows lock and account isolation: " + 
 result = subprocess.run([sys.executable, str(ROOT/"tests/fleet-self-update.py")],
                         env=env, capture_output=True, text=True)
 check(result.returncode == 0, "fleet self-update: " + result.stdout + result.stderr)
+# The cmd shims fleet self-install writes run fleet on this Python. The user PATH
+# and the nightly task are left out: both would change the runner's own account.
+shim_home = TMP/"shim"
+add_to_path = r'''
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("fleet_shim_test", sys.argv[1])
+f = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(f)
+f.HOME = pathlib.Path(sys.argv[2])
+f._shell = lambda script: [sys.executable, "-c", "pass"]
+sys.exit(f._add_to_path())
+'''
+result = subprocess.run([sys.executable, "-c", add_to_path, str(ROOT/"files/fleet"), str(shim_home)],
+                        env=env, capture_output=True, text=True)
+check(result.returncode == 0, "fleet shims: " + result.stderr)
+(shim_home/".local/bin/fleet").write_bytes((ROOT/"files/fleet").read_bytes())
+result = subprocess.run(["cmd", "/c", str(shim_home/".local/bin/fleet.cmd"), "skills", "bogus"],
+                        env=env, capture_output=True, text=True, encoding="utf-8")
+check(result.returncode == 2 and "Usage: fleet skills" in result.stderr, "fleet.cmd runs fleet: " + result.stderr)
 result = subprocess.run([sys.executable, str(ROOT/"tests/provider-migration.py")],
                         env=env, capture_output=True, text=True)
 check(result.returncode == 0, "one-off provider migration: " + result.stdout + result.stderr)

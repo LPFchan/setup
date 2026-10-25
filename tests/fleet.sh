@@ -73,6 +73,12 @@ fleet sync >/dev/null 2>&1
 [[ "$(tail -1 "$FLEET_SSH_DIR/config")" == "# <<< setup:fleet <<<" ]] || fail "block not moved last"
 [[ "$(grep -c 'setup:fleet >>>' "$FLEET_SSH_DIR/config")" == 1 ]] || fail "block duplicated"
 
+# The login marker is for setup's login step; with no setup here, none is left.
+serve '{}' 4
+fleet sync >/dev/null 2>&1 || true
+[[ -e "$XDG_STATE_HOME/setup" ]] && fail "login marker written on a machine without setup"
+mkdir -p "$XDG_STATE_HOME/setup"
+
 # No authoritative answer keeps the blocks: an empty set, Auth down, or a
 # rejected session.
 cp "$FLEET_SSH_DIR/config" "$TMP/config.before"
@@ -116,23 +122,6 @@ chmod +x "$TMP/auth.switching"
 serve "$FLEET_JSON" 0 7
 FLEET_AUTH_BIN="$TMP/auth.switching" fleet sync >/dev/null 2>&1 && fail "sync across a login change"
 cmp -s "$TMP/keys.before" "$FLEET_SSH_DIR/authorized_keys" || fail "keys written across a login change"
-
-# The setup module: no answer from Auth installs fine and reads as unknown, not
-# outdated, so setup does not fail every run on a machine waiting to log in.
-serve '{}' 4
-export ROOT BATCH=1 FLEET_BIN="$HOME/.local/bin/fleet" FLEET_SOURCE="$ROOT/files/fleet" \
-    FLEET_PROVIDER_SOURCE="$ROOT/files/fleet-providers.py" PROVIDER_REGISTRY_SOURCE="$ROOT/files/provider-registry.json" \
-    FLEET_MANIFEST_SOURCE="$ROOT/files/fleet-manifest.json" STATE_DIR="$XDG_STATE_HOME/setup"
-module() {
-    zsh -c 'source "$ROOT/lib/script-helpers.sh"; source "$ROOT/files/fleet.sh"; "$@"' module "$@"
-}
-module status >/dev/null && fail "status before install"
-module install >"$TMP/module.log" 2>&1 || { cat "$TMP/module.log"; fail "install without an answer from Auth"; }
-[[ "$(module status)" == "fleet"*"unknown"* ]] || fail "status without an answer: $(module status)"
-serve "${FLEET_JSON/AAAAPeer\"/AAAAPeer\",\"ssh-ed25519 AAAANew\"}"
-[[ "$(module status)" == *outdated* ]] || fail "status missed a pending write"
-module update >/dev/null 2>&1 || fail "update"
-[[ "$(module status)" == *current* ]] || fail "status after update"
 
 # A bare install with nobody at a terminal names nothing and installs nothing.
 fleet install </dev/null >/dev/null 2>&1 && fail "bare install without a terminal"

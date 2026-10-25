@@ -1,7 +1,8 @@
 # Enroll a Windows machine in the fleet:
-#   irm https://raw.githubusercontent.com/LPFchan/setup/main/install.ps1 | iex
-# Installs Python if needed, auth and fleet into ~\.local\bin, turns on the
-# OpenSSH server (one UAC prompt), signs in, syncs and schedules the nightly pass.
+#   irm https://auth.lost.plus/fleet.ps1 | iex
+# Installs Python if needed and turns on the OpenSSH server (one UAC prompt),
+# then fetches fleet and runs `fleet self-install`: auth and fleet in
+# ~\.local\bin, sign-in, sync and the nightly pass.
 # Run it again to repair or update; every step checks before it changes anything.
 
 & {
@@ -16,9 +17,6 @@ if (-not $Source) {
         if ($sha -match '^[0-9a-f]{40}$') { $Source = "https://raw.githubusercontent.com/LPFchan/setup/$sha" }
     } catch {}
 }
-$Bin = Join-Path $HOME '.local\bin'
-$Manifest = Join-Path $HOME '.config\fleet\manifest.json'
-
 function Step($text) { Write-Host "setup: $text" }
 
 function Find-Python {
@@ -141,42 +139,26 @@ if (-not $Python) {
 }
 Step "Python: $Python"
 
-# --- auth and fleet ---------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $Bin, (Split-Path $Manifest) | Out-Null
-# All assets download first; only then does any of them replace the installed copy.
-$files = @(@('auth', (Join-Path $Bin 'auth')), @('fleet', (Join-Path $Bin 'fleet')),
-           @('fleet-manifest.json', $Manifest), @('fleet-providers.py', (Join-Path $Bin 'fleet-providers.py')),
-           @('provider-registry.json', (Join-Path $HOME '.config\fleet\provider-defaults.json')))
-foreach ($file in $files) {
-    Invoke-WebRequest -UseBasicParsing -Uri "$Source/files/$($file[0])" -OutFile "$($file[1]).download"
-}
-foreach ($file in $files) { Move-Item -Force "$($file[1]).download" $file[1] }
-foreach ($name in 'auth', 'fleet') {
-    # cmd shims so both run from any shell; the Python path is baked in.
-    Set-Content -Path (Join-Path $Bin "$name.cmd") -Encoding ascii -Value "@`"$Python`" -X utf8 `"%~dp0$name`" %*"
-}
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (($userPath -split ';') -notcontains $Bin) {
-    [Environment]::SetEnvironmentVariable('Path', (@($Bin) + ($userPath -split ';' | Where-Object { $_ })) -join ';', 'User')
-}
-if (($env:Path -split ';') -notcontains $Bin) { $env:Path = "$Bin;$env:Path" }
-Step "auth and fleet installed in $Bin"
-
-# --- sign in, sync, schedule ------------------------------------------------
+# --- fleet ------------------------------------------------------------------
 # Windows fetches some root certificates only when its own TLS stack meets
 # them; Python reads the store as it is. One request here brings Auth's root in.
 $origin = if ($env:LOST_AUTH_ORIGIN) { $env:LOST_AUTH_ORIGIN } else { 'https://auth.lost.plus' }
 try { Invoke-WebRequest -UseBasicParsing -Uri $origin | Out-Null } catch {}
-& { $ErrorActionPreference = 'Continue'; & auth status *> $null }
-if ($LASTEXITCODE) {
-    & auth login
-    if ($LASTEXITCODE) { throw 'auth login failed' }
+# fleet installs itself from the same commit: auth, its cmd shims, PATH, sign-in,
+# sync and the nightly task. A directory of its own, since Python imports from it.
+$temp = Join-Path $env:TEMP "fleet-$PID"
+New-Item -ItemType Directory -Force -Path $temp | Out-Null
+$previous = $env:SOURCE_URL
+try {
+    Invoke-WebRequest -UseBasicParsing -Uri "$Source/files/fleet" -OutFile (Join-Path $temp 'fleet')
+    $env:SOURCE_URL = $Source
+    & $Python -X utf8 (Join-Path $temp 'fleet') self-install
+    if ($LASTEXITCODE) { throw "fleet self-install failed (exit $LASTEXITCODE)" }
+} finally {
+    $env:SOURCE_URL = $previous
+    Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
 }
-& fleet sync
-$synced = $LASTEXITCODE
-& fleet schedule enable
-if ($LASTEXITCODE) { throw 'fleet schedule enable failed' }
-# 1: a conflict, local copies backed up; 3: Auth gave no answer. The nightly pass retries.
-if ($synced) { throw "fleet sync did not finish (exit $synced); run fleet sync again" }
-Step 'done. Install harnesses with: fleet install claude codex'
+# This shell, too, not only the next one.
+$Bin = Join-Path $HOME '.local\bin'
+if (($env:Path -split ';') -notcontains $Bin) { $env:Path = "$Bin;$env:Path" }
 }

@@ -6,7 +6,6 @@ Fleet from this checkout, then replace the old job. Safe to retry after failure.
 """
 import ast
 import base64
-import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -76,7 +75,7 @@ def legacy_scheduled(fleet):
         return False
     if sys.platform == "darwin":
         return (fleet.LAUNCHD_DIR/"com.lost.plus.providers.plist").exists()
-    return fleet._run_schedule("status", "user", "providers", quiet=True) == 0
+    return fleet._systemd_on("providers")
 
 
 def retire_legacy_job(fleet):
@@ -86,7 +85,7 @@ def retire_legacy_job(fleet):
         import os
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.lost.plus.providers"], capture_output=True)
         (fleet.LAUNCHD_DIR/"com.lost.plus.providers.plist").unlink(missing_ok=True)
-    elif fleet._run_schedule("uninstall-timer", "user", "providers"):
+    elif fleet._systemd_remove("providers"):
         raise RuntimeError("Cannot retire the old provider timer; rerun the script")
 
 
@@ -121,13 +120,10 @@ def migrate(fleet, run=subprocess.check_call):
     if legacy.exists() or old_job:
         retire_legacy_job(fleet)
         legacy.unlink(missing_ok=True)
-    lines = setup_state.read_text().splitlines() if setup_state.exists() else []
-    lines = [line for line in lines if line.split("\t", 1)[0] not in ("providers", "fleet")]
-    digest = hashlib.sha256(b"".join(path.read_bytes() for path in (
-        fleet.HOME/".local/bin/fleet", fleet.MANIFEST_PATH, fleet.HOME/".local/bin/fleet-providers.py",
-        fleet.HOME/".config/fleet/provider-defaults.json"))).hexdigest()
-    lines.append(f"fleet\tfleet\t{digest}\t{digest}")
-    fleet.save_text(setup_state, "\n".join(lines)+"\n")
+    # fleet updates itself now, so setup only forgets the old module.
+    if setup_state.exists():
+        lines = [line for line in setup_state.read_text().splitlines() if line.split("\t", 1)[0] != "providers"]
+        fleet.save_text(setup_state, "".join(line + "\n" for line in lines))
     print("Provider migration complete.")
 
 

@@ -191,7 +191,7 @@ def _auth_command(*args):
 def common_auth_token(scope, context=None):
     """Resolve one lost.plus service credential through the auth module."""
     if not os.access(AUTH_BIN, os.X_OK):
-        raise CommonAuthError(f"auth module not installed at {AUTH_BIN}; run: setup install auth")
+        raise CommonAuthError(f"auth not installed at {AUTH_BIN}; run: fleet self-update")
     try:
         command = _auth_command("token", scope)
         if context is not None:
@@ -216,7 +216,7 @@ def common_auth_token(scope, context=None):
 def common_auth_context():
     """Return the non-secret Auth origin/account binding for managed copies."""
     if not os.access(AUTH_BIN, os.X_OK):
-        raise CommonAuthError(f"auth module not installed at {AUTH_BIN}; run: setup install auth")
+        raise CommonAuthError(f"auth not installed at {AUTH_BIN}; run: fleet self-update")
     try:
         result = subprocess.run(
             _auth_command("context"), capture_output=True, text=True, timeout=10
