@@ -6,7 +6,7 @@ opencodex	~/.local/bin/opencodex	script	files/opencodex.sh				fleet
 kernel-simmer	~/.local/bin/kernel-simmer	0755	bin/kernel-simmer	fleet	linux		schedule
 gpu-fancontrol	~/.local/bin/gpu-fancontrol	0755	files/gpu-fancontrol	fleet	linux
 monitoring	~/.local/bin/monitoring	0755	files/monitoring	fleet	linux
-auth	~/.local/bin/auth	script	files/auth.sh
+auth	~/.local/bin/auth	script	files/auth.sh			retired		fleet
 harnesses	~/.local/bin/harnesses	script	-			retired		fleet
 miniharness	-	script	-			retired		fleet
 schedule	~/.local/bin/schedule	0755	bin/schedule		linux
@@ -20,6 +20,6 @@ fzf-multicolumn	~/.local/bin/fzf-multicolumn	script	files/fzf-multicolumn.sh
 zsh-basics	-	script	files/zsh-basics.sh
 agents	~/.agents/AGENTS.md	script	-			retired		fleet
 ssh-aliases	~/.ssh/config	script	-	fleet		retired		fleet
-fleet	~/.local/bin/fleet	script	files/fleet.sh				auth
+fleet	~/.local/bin/fleet	script	files/fleet.sh
 mac-boot	/usr/local/bin/mac-boot	script	files/mac-boot.sh	fleet	darwin
 tmux	~/.tmux.conf	script	files/tmux.sh				zsh-basics

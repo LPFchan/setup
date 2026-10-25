@@ -79,15 +79,18 @@ def _auth_bin():
     return str(installed) if os.access(installed, os.X_OK) else shutil.which("auth")
 
 
+def _script_argv(binary):
+    """Windows runs a script by its interpreter, not by its shebang."""
+    return [sys.executable, "-X", "utf8", binary] if WINDOWS and not binary.lower().endswith((".exe", ".cmd")) else [binary]
+
+
 def _auth(*args, stdin=None):
     """Run the auth CLI; (exit code, stdout). A missing CLI reads as no session."""
     binary = _auth_bin()
     if not binary:
         return 4, ""
-    # Windows runs a script by its interpreter, not by its shebang.
-    argv = [sys.executable, "-X", "utf8", binary] if WINDOWS and not binary.lower().endswith((".exe", ".cmd")) else [binary]
     try:
-        result = subprocess.run([*argv, *args], input=stdin, capture_output=True, text=True,
+        result = subprocess.run([*_script_argv(binary), *args], input=stdin, capture_output=True, text=True,
                                 timeout=300)
     except (OSError, subprocess.SubprocessError):
         return 1, ""
@@ -95,10 +98,12 @@ def _auth(*args, stdin=None):
 
 
 def _set_login_marker(needed):
+    """Tells setup's next interactive run to offer `auth login`; a machine
+    without setup has no one to tell."""
     try:
         if needed:
-            LOGIN_MARKER.parent.mkdir(parents=True, exist_ok=True)
-            LOGIN_MARKER.touch()
+            if LOGIN_MARKER.parent.is_dir():
+                LOGIN_MARKER.touch()
         else:
             LOGIN_MARKER.unlink(missing_ok=True)
     except OSError:
@@ -743,10 +748,11 @@ changes are overwritten. Notes about this account's own machines live in
 
 ## What fleet is
 
-`fleet` (`~/.local/bin/fleet`, from the LPFchan/setup `fleet` module) keeps
-each of the account's machines in step with the account in Common Auth
-(auth.lost.plus). A machine joins by signing in with `auth login` and being
-approved in the dashboard's Fleet tab. On every sync, fleet:
+`fleet` (`~/.local/bin/fleet`, installed with
+`curl -fsSL https://auth.lost.plus/fleet.sh | sh`) keeps each of the
+account's machines in step with the account in Common Auth (auth.lost.plus).
+A machine joins by signing in with `auth login` and being approved in the
+dashboard's Fleet tab. On every sync, fleet:
 
 - writes the SSH aliases, `authorized_keys` and vouched host keys, so every
   machine reaches every other over SSH without a password: `ssh <alias>`.
@@ -758,9 +764,9 @@ approved in the dashboard's Fleet tab. On every sync, fleet:
   Hermes and T3 Code get the account's instructions, skills, MCP servers and
   settings. MCP tokens go to a marked block in `~/.zshenv`.
 
-The nightly pass (`fleet nightly`, 04:00) pulls the account tree and updates
-each harness. A change made on one machine reaches the others then, or right
-away with `fleet sync` on them.
+The nightly pass (`fleet nightly`, 04:00) updates fleet itself, pulls the
+account tree and updates each harness. A change made on one machine reaches
+the others then, or right away with `fleet sync` on them.
 
 ## Where to make a change
 
@@ -795,6 +801,7 @@ left alone.
     fleet skills uninstall <name|id>
     fleet skills publish <folder>  /  unpublish <folder|id>
     fleet schedule [enable|disable|status]
+    fleet self-update       fetch the current fleet and auth now
 
 Exit 3 means Auth gave no answer and what is on disk stays as it is.
 
@@ -1725,7 +1732,7 @@ def refresh_provider_models():
     """Rediscover provider models; the nightly pass runs it after its sync."""
     engine = provider_engine()
     if engine is None:
-        eprint("fleet: provider support is missing; run: setup update fleet")
+        eprint("fleet: provider support is missing; run: fleet self-update")
         return 1
     rc, raw = _auth("context")
     if rc:
@@ -2044,31 +2051,146 @@ def _source_base():
     return "https://raw.githubusercontent.com/LPFchan/setup/main"
 
 
+def _setup_owns_fleet():
+    """True while setup's `fleet` module still installs and updates fleet here;
+    the next `setup update` hands it over."""
+    try:
+        lines = (STATE_HOME/"setup/script-state.tsv").read_text().splitlines()
+    except OSError:
+        return False
+    return any(line.split("\t", 1)[0] == "fleet" for line in lines)
+
+
+def _fetch_source(base, name):
+    """One repository file from the pinned commit; SOURCE_URL may be a local checkout."""
+    if os.path.isdir(base):
+        return pathlib.Path(base, "files", name).read_bytes()
+    with urllib.request.urlopen(f"{base}/files/{name}", timeout=30) as response:
+        return response.read()
+
+
 def _self_update():
-    """Fetch the complete Windows fleet payload before replacing any files."""
-    bin_dir = HOME/".local/bin"
+    """Fetch the complete fleet payload before replacing any files. The targets
+    are fixed, so a fleet run from a download installs where fleet lives."""
+    bin_dir, config = HOME/".local/bin", HOME/".config/fleet"
     base, fetched = _source_base(), []
-    for name, target, check in (("fleet", bin_dir/"fleet", ast.parse), ("auth", bin_dir/"auth", ast.parse),
-                                ("fleet-manifest.json", MANIFEST_PATH, json.loads),
-                                ("fleet-providers.py", PROVIDER_ENGINE, ast.parse),
-                                ("provider-registry.json", PROVIDER_DEFAULTS, json.loads)):
+    for name, target, check, mode in (("fleet", bin_dir/"fleet", ast.parse, 0o755),
+                                      ("auth", bin_dir/"auth", ast.parse, 0o755),
+                                      ("fleet-manifest.json", config/"manifest.json", json.loads, None),
+                                      ("fleet-providers.py", bin_dir/"fleet-providers.py", ast.parse, None),
+                                      ("provider-registry.json", config/"provider-defaults.json", json.loads, None)):
         try:
-            with urllib.request.urlopen(f"{base}/files/{name}", timeout=30) as response:
-                data = response.read()
+            data = _fetch_source(base, name)
             check(data.decode())
         except (OSError, ValueError, SyntaxError) as exc:
             eprint(f"fleet: not updated, {name}: {exc}")
-            return
-        fetched.append((target, data))
-    for target, data in fetched:
-        if not target.exists() or target.read_bytes() != data:
-            save_text(target, data)
+            return 1
+        fetched.append((target, data, mode))
+    for target, data, mode in fetched:
+        if not target.exists() or target.read_bytes() != data or mode and not os.access(target, os.X_OK):
+            save_text(target, data, mode)
             print(f"fleet: updated {target}")
+    return 0
+
+
+def cmd_self_update():
+    if _setup_owns_fleet():
+        eprint("fleet: setup still updates fleet on this machine; run: setup update")
+        return 1
+    return _self_update()
+
+
+def _add_to_path():
+    """~/.local/bin on PATH for future shells. POSIX: the marked block setup
+    writes too, so the two never add it twice. Windows: the user PATH, and cmd
+    shims that run auth and fleet on this Python."""
+    bin_dir = HOME/".local/bin"
+    if WINDOWS:
+        for name in ("auth", "fleet"):
+            save_text(bin_dir/f"{name}.cmd", f'@"{sys.executable}" -X utf8 "%~dp0{name}" %*\r\n')
+        # [Environment] also tells Explorer, so new shells see it without a sign-out.
+        script = (f"$bin = {_ps_quote(bin_dir)}; $path = [Environment]::GetEnvironmentVariable('Path', 'User'); "
+                  "if (($path -split ';') -notcontains $bin) { [Environment]::SetEnvironmentVariable("
+                  "'Path', (@($bin) + ($path -split ';' | Where-Object { $_ })) -join ';', 'User') }")
+        return subprocess.run(_shell(script), env=_shell_env()).returncode
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    if shell == "zsh":
+        profiles = [HOME/".zshenv"]
+    elif shell == "bash":
+        # A new terminal window is a non-login shell and reads only ~/.bashrc;
+        # login shells (macOS terminals, SSH) read the first that exists.
+        login = next((HOME/n for n in (".bash_profile", ".bash_login") if (HOME/n).exists()), HOME/".profile")
+        profiles = [login, HOME/".bashrc"]
+    else:
+        profiles = [HOME/".profile"]
+    written = []
+    for profile in profiles:
+        text = profile.read_text() if profile.exists() else ""
+        if re.search(r'(^|["=:])(\$HOME|~|/.*)/\.local/bin', text, re.M):
+            continue
+        with open(profile, "a") as handle:
+            handle.write('\n# >>> setup:path >>>\ncase ":$PATH:" in\n    *":$HOME/.local/bin:"*) ;;\n'
+                         '    *) export PATH="$HOME/.local/bin:$PATH" ;;\nesac\n# <<< setup:path <<<\n')
+        written.append(str(profile))
+    if written:
+        print(f"fleet: added ~/.local/bin to PATH in {' and '.join(written)}; open a new terminal to use fleet")
+    return 0
+
+
+def _login_if_needed():
+    """auth login, only with someone at the terminal; setup's batch runs never ask."""
+    if _auth("status")[0] == 0:
+        return
+    binary = _auth_bin()
+    if binary and os.environ.get("SETUP_BATCH") != "1" and sys.stdout.isatty():
+        argv = [*_script_argv(binary), "login"]
+        try:
+            if WINDOWS:
+                rc = subprocess.run(argv).returncode
+            else:
+                # Unbuffered: a buffered read-write handle needs a seekable file.
+                with open("/dev/tty", "r+b", buffering=0) as tty:
+                    rc = subprocess.run(argv, stdin=tty, stdout=tty, stderr=tty).returncode
+            if rc == 0:
+                return
+        except OSError:
+            pass
+    print("fleet: not signed in; run: auth login, then: fleet sync")
+
+
+def cmd_self_install(args):
+    """What the installers run: the payload, PATH, sign-in, sync and the nightly
+    pass, each step checking before it changes anything. setup's hand-over
+    runs it while setup still owns fleet, so no ownership check here."""
+    if args not in ([], ["--pull"]):
+        eprint("Usage: fleet self-install [--pull]")
+        return 2
+    if _self_update():
+        return 1
+    sys.stdout.flush()  # before any child writes to the same output
+    if _add_to_path():
+        eprint("fleet: could not put ~/.local/bin on PATH")
+    _login_if_needed()
+    # The installed copy syncs and schedules, so the nightly pass runs it, not a download.
+    fleet = [sys.executable, *(["-X", "utf8"] if WINDOWS else []), str(HOME/".local/bin/fleet")]
+    sys.stdout.flush()
+    synced = subprocess.run([*fleet, "sync", *args], stdin=subprocess.DEVNULL).returncode
+    if subprocess.run([*fleet, "schedule", "enable"], stdin=subprocess.DEVNULL).returncode:
+        eprint("fleet: fleet schedule enable failed")
+        return 1
+    # 3: Auth gave no answer, so what is on disk stays; the nightly pass retries.
+    if synced == 3:
+        print("fleet: nothing synced yet: Auth gave no answer; the nightly pass retries")
+    elif synced:
+        eprint(f"fleet: fleet sync did not finish (exit {synced}); run: fleet sync")
+        return 1
+    print("fleet: done. Install harnesses with: fleet install claude codex")
+    return 0
 
 
 def cmd_nightly():
-    """The scheduled pass: pull sync, model refresh, proxy, harness updates, proxy route."""
-    if WINDOWS:
+    """The scheduled pass: self-update, pull sync, model refresh, proxy, harness updates, proxy route."""
+    if not _setup_owns_fleet():
         _self_update()
     rc = cmd_sync(pull=True)
     if rc == 0 and provider_engine() is not None:
@@ -2085,19 +2207,46 @@ def cmd_nightly():
 
 # --- schedule ------------------------------------------------------------
 
-def _schedule_bin():
-    configured = os.environ.get("SCHEDULE_BIN")
-    if configured:
-        return configured
-    candidate = pathlib.Path(__file__).resolve().parent.parent/"bin"/"schedule"
-    return str(candidate) if candidate.exists() else str(HOME/".local/bin/schedule")
+def _units_dir():
+    return pathlib.Path(os.environ.get("SCHEDULE_USER_DIR") or HOME/".config/systemd/user")
 
 
-def _run_schedule(*args, quiet=False):
-    path = _schedule_bin()
-    if not os.access(path, os.X_OK):
-        raise SystemExit(f"schedule helper not found at {path}; run: setup install schedule")
-    return subprocess.run([path, *args], capture_output=quiet).returncode
+def _systemctl(*args):
+    """systemctl --user; (exit code, stdout). sshd without pam_systemd (Synology
+    DSM) leaves XDG_RUNTIME_DIR unset, and systemctl then cannot find the
+    lingering user manager."""
+    env = {**os.environ, "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"}
+    try:
+        result = subprocess.run(["systemctl", "--user", *args], env=env, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, str(exc)
+    return result.returncode, result.stdout.strip()
+
+
+def _systemd_on(name):
+    if not (_units_dir()/f"{name}.timer").exists():
+        return False
+    return _systemctl("is-enabled", f"{name}.timer")[1] == "enabled" and \
+        _systemctl("is-active", f"{name}.timer")[1] == "active"
+
+
+def _systemd_remove(name):
+    """Stop and remove a user timer. Its files go only once systemd reports it
+    disabled and inactive; an indeterminate answer keeps them for a retry."""
+    units = _units_dir()
+    if not (units/f"{name}.timer").exists():
+        return 0
+    if _systemctl("disable", f"{name}.timer")[0] or _systemctl("stop", f"{name}.timer")[0]:
+        active_rc, active = _systemctl("is-active", f"{name}.timer")
+        enabled_rc, enabled = _systemctl("is-enabled", f"{name}.timer")
+        if not (active_rc in (3, 4) and active in ("inactive", "failed")
+                and enabled_rc in (0, 1) and enabled == "disabled"):
+            eprint(f"fleet: could not disable {name}.timer; keeping {units}/{name}.{{service,timer}}")
+            return 1
+    for path in (units/f"{name}.service", units/f"{name}.timer", units/f"timers.target.wants/{name}.timer"):
+        path.unlink(missing_ok=True)
+    _systemctl("daemon-reload")
+    return 0
 
 
 def _plist_path():
@@ -2144,10 +2293,7 @@ def _remove_hourly_providers():
             subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
             path.unlink()
         return 0
-    units = pathlib.Path(os.environ.get("SCHEDULE_USER_DIR") or HOME/".config/systemd/user")
-    if not (units/(name + ".timer")).exists():
-        return 0
-    return _run_schedule("uninstall-timer", "user", name)
+    return _systemd_remove(name)
 
 
 def schedule_installed():
@@ -2157,10 +2303,7 @@ def schedule_installed():
         return subprocess.run(_shell(script), env=_shell_env(), capture_output=True).returncode == 0
     if sys.platform == "darwin":
         return _plist_path().exists()
-    try:
-        return _run_schedule("status", "user", TIMER_NAME, quiet=True) == 0
-    except SystemExit:
-        return False
+    return _systemd_on(TIMER_NAME)
 
 
 def _launchd_loaded(label):
@@ -2232,18 +2375,21 @@ def schedule_enable():
         return 0
     # Persistent=true replays a run missed while the machine was off. The path
     # is absolute: systemd 219 (Synology DSM 7) does not expand %h in ExecStart.
-    with tempfile.NamedTemporaryFile("w", suffix=".lines", delete=False) as handle:
-        handle.write("Persistent=true\n")
-        timer_extra = handle.name
-    try:
-        rc = _run_schedule("install-timer", "user", TIMER_NAME, "Nightly fleet sync and harness update",
-                           f"{os.path.abspath(sys.argv[0])} nightly", f"*-*-* {SCHEDULE_HOUR:02d}:00:00",
-                           "", timer_extra)
-    finally:
-        os.unlink(timer_extra)
-    if rc == 0:
-        print(f"fleet: nightly pass scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
-    return rc
+    description = "Nightly fleet sync and harness update"
+    units = _units_dir()
+    save_text(units/f"{TIMER_NAME}.service", f"[Unit]\nDescription={description}\n\n[Service]\nType=oneshot\n"
+              f"ExecStart={os.path.abspath(sys.argv[0])} nightly\n", 0o644)
+    save_text(units/f"{TIMER_NAME}.timer", f"[Unit]\nDescription={description}\n\n[Timer]\n"
+              f"OnCalendar=*-*-* {SCHEDULE_HOUR:02d}:00:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n",
+              0o644)
+    # enable, then start: systemd 219 has no enable --now.
+    for args in (("daemon-reload",), ("enable", "--quiet", f"{TIMER_NAME}.timer"), ("start", f"{TIMER_NAME}.timer")):
+        rc, _ = _systemctl(*args)
+        if rc:
+            eprint(f"fleet: systemctl --user {' '.join(args)} failed (rc={rc})")
+            return 1
+    print(f"fleet: nightly pass scheduled at {SCHEDULE_HOUR:02d}:00 (systemd)")
+    return 0
 
 
 def schedule_disable():
@@ -2257,10 +2403,8 @@ def schedule_disable():
     elif sys.platform == "darwin":
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{PLIST_NAME}"], capture_output=True)
         _plist_path().unlink(missing_ok=True)
-    else:
-        rc = _run_schedule("uninstall-timer", "user", TIMER_NAME)
-        if rc:
-            return rc
+    elif _systemd_remove(TIMER_NAME):
+        return 1
     print("fleet: nightly pass off")
     return 0
 
@@ -2271,6 +2415,8 @@ USAGE = """Usage: fleet sync [--check|--pull]     account tree, SSH blocks, cred
        fleet update [harness...]           every installed harness when none named
        fleet skills [list|install|uninstall|publish|unpublish] ...
        fleet schedule [enable|disable|status]
+       fleet self-update                   fetch the current fleet and auth now
+       fleet self-install [--pull]         what the installers run: also PATH, sign-in, sync, schedule
        fleet nightly                       what the schedule runs"""
 
 
@@ -2298,8 +2444,13 @@ def main():
     if args == ["schedule", "disable"]:
         return schedule_disable()
     if args == ["schedule", "status"]:
-        print(f"fleet: nightly pass {'on' if schedule_installed() else 'off'}")
-        return 0
+        on = schedule_installed()
+        print(f"fleet: nightly pass {'on' if on else 'off'}")
+        return 0 if on else 1
+    if args == ["self-update"]:
+        return cmd_self_update()
+    if command == "self-install":
+        return cmd_self_install(rest)
     eprint(USAGE)
     return 2
 

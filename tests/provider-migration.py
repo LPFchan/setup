@@ -131,7 +131,7 @@ class MigrationTests(unittest.TestCase):
             rows = (h.home/"setup-state/script-state.tsv").read_text()
             self.assertNotIn("providers\t", rows)
             self.assertIn("other\tkeep\tx\ty\n", rows)
-            self.assertIn("fleet\tfleet\t", rows)
+            self.assertNotIn("fleet\t", rows)
             Path(h.engine.REGISTRY_PATH).write_text("changed")
             h.migrate()
             self.assertEqual(len(h.pushes), 1)

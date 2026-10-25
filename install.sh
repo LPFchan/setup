@@ -241,5 +241,5 @@ normalize_block_order "$HOME/.zshrc" "${ZSHRC_BLOCK_ORDER[@]}"
 
 if ((path_ready == 0)); then
     echo
-    echo "Open a new terminal, or run 'exec zsh', to use setup from this one."
+    echo "Open a new terminal, or run 'exec zsh', to use what was installed."
 fi

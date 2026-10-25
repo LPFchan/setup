@@ -38,8 +38,8 @@ DEP_FILE="$STATE_DIR/dependency-installed.txt"
 SCRIPT_HELPERS_FILE="$STATE_DIR/lib/script-helpers.sh"
 FORCE=0
 
-SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring fleet backup system-updates"
-USER_SERVICE_MODULES="fleet"
+SERVICE_MODULES="kernel-simmer gpu-fancontrol monitoring backup system-updates"
+USER_SERVICE_MODULES=""
 BATCH=0
 
 # Cache revalidation remains useful for custom HTTP sources. The default GitHub
@@ -69,8 +69,8 @@ Commands:
   status [module...]   Show installed/current/outdated/modified state
   install [module...]  Install module files (copies to ~/.local/bin/)
   update [module...]   Update installed modules; reports new modules available
-                       AI harnesses update in fleet's nightly pass: see
-                       'fleet update' and 'fleet schedule'
+                       fleet, auth and the AI harnesses update in fleet's own
+                       nightly pass: see 'fleet self-update' and 'fleet update'
   uninstall [module...] Remove managed files
   enable [module...]   Enable service modules (requires sudo)
   disable [module...]  Disable service modules (requires sudo)
@@ -114,7 +114,6 @@ module_enable_cmd() {
         kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin enable" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin "$1"); echo "$bin enable" ;;
-        fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin enable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin enable" ;;
     esac
@@ -126,7 +125,6 @@ module_disable_cmd() {
         kernel-simmer)  bin=$(_resolve_bin kernel-simmer); echo "$bin disable" ;;
         gpu-fancontrol|monitoring)
                         bin=$(_resolve_bin "$1"); echo "$bin disable" ;;
-        fleet)          bin=$(_resolve_bin fleet); echo "$bin schedule disable" ;;
         backup)         bin=$(_resolve_bin backup); echo "$bin disable" ;;
         system-updates) bin=$(_resolve_bin system-updates); echo "$bin disable" ;;
     esac
@@ -137,7 +135,6 @@ module_service_unit() {
         kernel-simmer)  echo "kernel-simmer.timer" ;;
         gpu-fancontrol) echo "gpu-fancontrol.service" ;;
         monitoring)     echo "monitoring.service" ;;
-        fleet)          echo "fleet-sync.timer" ;;
         backup)         echo "backup.timer" ;;
         system-updates) echo "system-updates.timer" ;;
     esac
@@ -149,29 +146,12 @@ is_service_module() {
     return 1
 }
 
-# Over SSH there is no GUI domain to load an agent into; the installers leave
-# the plist for launchd to load at the next login, which counts as enabled.
-launchd_agent_active() {
-    local domain="gui/$(id -u)"
-    if launchctl print "$domain" &>/dev/null; then
-        launchctl print "$domain/$1" &>/dev/null
-    else
-        [[ -f "$HOME/Library/LaunchAgents/$1.plist" ]]
-    fi
-}
-
 module_is_active() {
     local unit user_flag=""
     unit=$(module_service_unit "$1") || return 1
     [[ "$unit" == tool ]] && return 1
     if echo " ${USER_SERVICE_MODULES} " | grep -q " $1 "; then
         user_flag="--user"
-    fi
-    # macOS user timers live in launchd, not systemd.
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        case "$1" in
-            fleet) launchd_agent_active com.lost.plus.fleet-sync; return $? ;;
-        esac
     fi
     [[ "$(systemctl ${user_flag} is-active "${unit}" 2>/dev/null)" == "active" ]]
 }
@@ -252,8 +232,7 @@ module_is_retired() {
 # (comma-separated module names). Dependencies are installed automatically and
 # a module cannot be uninstalled while something that needs it is installed.
 #
-# Only unconditional dependencies belong here. Fleet needs schedule on Linux
-# and launchd on macOS, so module_requires adds that platform-specific edge.
+# Only unconditional dependencies belong here.
 
 # Membership test. The array subscript flag (Ie) reports a match's index, and
 # under KSH_ARRAYS the first element is index 0, which reads as "absent" --
@@ -276,18 +255,15 @@ module_in_catalog() {
     return 1
 }
 
-# Space-separated dependencies of one module. fleet's timer needs `schedule`
-# on Linux only (launchd on macOS), which the requires column cannot say.
+# Space-separated dependencies of one module.
 module_requires() {
-    local wanted="$1" module requires extra=""
-    [[ "$wanted" == fleet && "$(uname -s)" == Linux ]] && extra=" schedule"
-    [[ -f "$REQUIRES_FILE" ]] || { [[ -n "$extra" ]] && printf '%s\n' "${extra# }"; return 0; }
+    local wanted="$1" module requires
+    [[ -f "$REQUIRES_FILE" ]] || return 0
     while IFS=$'\t' read -r module requires; do
         [[ "$module" == "$wanted" ]] || continue
-        printf '%s\n' "${requires//,/ }$extra"
+        printf '%s\n' "${requires//,/ }"
         return 0
     done < "$REQUIRES_FILE"
-    [[ -n "$extra" ]] && printf '%s\n' "${extra# }"
     return 0
 }
 
@@ -295,8 +271,6 @@ module_requires() {
 installed_dependents_of() {
     local wanted="$1" module target mode dep
     [[ -f "$MANIFEST_FILE" ]] || return 0
-    # module_requires, not REQUIRES_FILE alone, so conditional needs such as
-    # fleet's schedule on Linux also protect the dependency.
     while IFS=$'\t' read -r module target mode _; do
         [[ -n "${module:-}" && "$module" != \#* && "$module" != "$wanted" ]] || continue
         for dep in ${=$(module_requires "$module")}; do
@@ -2712,6 +2686,60 @@ _post_auth_setup() {
     return 1
 }
 
+# A machine that came to setup only for fleet has no use for it once fleet
+# runs on its own (files/fleet.sh hands it over): setup takes off its
+# auto-update timer, what it installed only as a dependency, itself and its
+# state. The PATH block in ~/.zshenv and the setup: block markers stay; fleet
+# relies on both. Anything the operator chose keeps setup here. setup's own
+# records decide, not the catalog: the audience and platform filters can hide
+# a module that is installed.
+retire_setup_if_fleet_only() {
+    local module target mode source
+    local -a installed deps
+    [[ -x "$HOME/.local/bin/fleet" && -f "$MANIFEST_FILE" ]] || return 0
+    is_script_installed fleet && return 0
+    installed=()
+    if [[ -f "$SCRIPT_STATE_FILE" ]]; then
+        while IFS=$'\t' read -r module _; do installed+=("$module"); done < "$SCRIPT_STATE_FILE"
+    fi
+    if [[ -f "$HASH_FILE" ]]; then
+        while IFS=$'\t' read -r target _; do
+            [[ -f "$target" ]] && installed+=("$(module_for "$target")")
+        done < "$HASH_FILE"
+    fi
+    deps=()
+    for module in ${installed[@]+"${installed[@]}"}; do
+        [[ "$module" == setup || "$module" == fleet || "$module" == auth ]] && continue
+        # An unnamed or chosen module, or a dependency setup cannot remove, keeps setup.
+        dep_is_marked "$module" && module_in_catalog "$module" || return 0
+        _list_contains "$module" ${deps[@]+"${deps[@]}"} || deps+=("$module")
+    done
+    echo
+    echo "fleet now runs on its own and nothing else here came from setup; removing setup."
+    # The systemd timer comes off through the schedule helper, so before it goes.
+    if [[ -f "${SCHEDULE_USER_DIR:-$HOME/.config/systemd/user}/setup-update.timer" ]]; then
+        cmd_unschedule || { echo "Warning: could not remove setup's auto-update timer; keeping setup for now." >&2; return 1; }
+    fi
+    for module in ${deps[@]+"${deps[@]}"}; do
+        IFS=$'\t' read -r target mode source < <(
+            awk -F '\t' -v m="$module" '$1 == m { print $2 "\t" $3 "\t" $4; exit }' "$MANIFEST_FILE"
+        )
+        uninstall_one "$module" "$target" "$mode" "$source" \
+            || { echo "Warning: could not remove $module; keeping setup for now." >&2; return 1; }
+    done
+    rm -f "$HOME/.local/bin/setup"
+    rm -rf "$STATE_DIR"
+    echo "setup removed; fleet keeps this machine up to date. To bring setup back: curl -fsSL https://setup.lost.plus/install.sh | zsh"
+    # The launchd agent goes last: when it started this run, booting it out
+    # ends this process.
+    local plist="$HOME/Library/LaunchAgents/com.lost.plus.setup-update.plist"
+    if [[ -f "$plist" ]]; then
+        rm -f "$plist"
+        launchctl bootout "gui/$(id -u)/com.lost.plus.setup-update" 2>/dev/null || true
+    fi
+    return 0
+}
+
 if [[ "${SETUP_SOURCE_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
 fi
@@ -2761,12 +2789,14 @@ case "$cmd" in
         command_rc=0
         cmd_install "$@" || command_rc=$?
         _post_auth_setup || true
+        (( command_rc == 0 )) && retire_setup_if_fleet_only
         exit "$command_rc"
         ;;
     update)
         command_rc=0
         cmd_update "$@" || command_rc=$?
         _post_auth_setup || true
+        (( command_rc == 0 )) && retire_setup_if_fleet_only
         exit "$command_rc"
         ;;
     uninstall) cmd_uninstall "$@" ;;

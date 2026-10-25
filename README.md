@@ -18,10 +18,16 @@ curl -fsSL https://setup.lost.plus/install.sh | zsh
 
 > **Note:** `zsh` is required. The installer places the `setup` CLI tool in `~/.local/bin/`.
 
+fleet does not need `setup`. To enroll a macOS or Linux machine in the fleet (see [Installing and updating fleet](#installing-and-updating-fleet)):
+
+```sh
+curl -fsSL https://auth.lost.plus/fleet.sh | sh
+```
+
 On Windows there is no `setup`; this PowerShell command enrolls the machine in the fleet (see [fleet on Windows](#fleet-on-windows)):
 
 ```powershell
-irm https://raw.githubusercontent.com/LPFchan/setup/main/install.ps1 | iex
+irm https://auth.lost.plus/fleet.ps1 | iex
 ```
 
 Running `setup` without arguments opens an interactive terminal menu (powered by `fzf`) where you can pick, install, update, or configure modules.
@@ -39,6 +45,8 @@ fleet install [name...]   # Install harnesses with their own installers; asks wh
 fleet update              # Run each AI harness's own self-updater (claude, codex, opencode, ...)
 fleet sync                # Sync ~/.agents with the account and render harness settings
 fleet schedule            # Install the nightly 04:00 timer that runs 'fleet nightly'
+fleet self-update         # Fetch the current fleet and auth now (the nightly pass does it too)
+fleet self-install        # What the installers run: also PATH, sign-in, sync and the nightly pass
 setup install <module>    # Install and enable a module (e.g., setup install resume)
 setup uninstall <module>  # Disable and remove a module
 setup enable <module>     # Enable a background service module (e.g., setup enable system-updates)
@@ -76,7 +84,6 @@ The current edges:
 
 | Module | Requires | Why |
 |--------|----------|-----|
-| `fleet` | `auth` | Account sync and Passage credentials use the machine's Common Auth login |
 | `opencodex` | `fleet` | Fleet supplies provider connections and the shared model capability cache |
 | `kernel-simmer` | `schedule` | Renders its timer through the shared helper |
 | `backup` | `schedule` | Same |
@@ -86,8 +93,6 @@ The current edges:
 | `tmux` | `zsh-basics` | The status bar reads `SYSTEM_COLOR_HEX`, which only `zsh-basics` exports; without it every machine's bar is the same blue |
 
 `setup` bootstraps `fzf-multicolumn` straight from the manifest on first interactive run, so a fresh `curl | zsh` install still lands a working picker — the declared edge only makes that hand-wired behavior explicit and blocks an uninstall that would immediately be undone.
-
-The column cannot express a platform-conditional dependency: fleet uses `schedule` on Linux, launchd on macOS and Task Scheduler on Windows. `bin/setup` adds the Linux dependency.
 
 #### External requirements
 
@@ -113,7 +118,7 @@ Simple modules that copy a managed script or executable to your machine.
 | `kernel-simmer` | `~/.local/bin/kernel-simmer` | Fleet-only kernel performance tuning tool |
 | `gpu-fancontrol` | `~/.local/bin/gpu-fancontrol` | GPU fan speed control script |
 | `monitoring` | `~/.local/bin/monitoring` | System monitoring utility |
-| `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `fleet`, `backup`, `system-updates`, and `kernel-simmer` all render their timers through it |
+| `schedule` | `~/.local/bin/schedule` | Shared systemd timer helper (unit rendering, enable/disable, status) plus an fzf registry of every timer on the machine; `setup`, `backup`, `system-updates`, and `kernel-simmer` render their timers through it (fleet writes its own) |
 | `backup` | `~/.local/bin/backup` | Restic-based incremental backup script to `bingus` |
 | `system-updates` | `~/.local/bin/system-updates` | Safe daily package updater (Linux only, runs between 03:00–03:30). At 07:00, when a reboot is required, a model with a shell inspects what the machine is actually doing and decides whether rebooting is safe; anything short of a clear yes holds, and every decision goes to Telegram. `system-updates advise` asks without rebooting |
 
@@ -133,8 +138,8 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `mac-boot` | Fleet-only macOS boot-volume switcher whose status shows the selected volume and other bootable choices; accepts exact volume names, switches through a narrowly scoped passwordless sudo rule, requests a normal application-aware restart, and guarantees reboot after 60 seconds | `files/mac-boot.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `opencodex` | Provider and harness launcher for OpenCodex (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
-| `auth` | Public Common Auth client: one browser-approved login, a local `0600` global/per-service credential store, and service-token resolution for other modules (`~/.local/bin/auth`) | `files/auth.sh` |
-| `fleet` | SSH aliases, the account's `~/.agents` tree (instructions, skills, settings, MCP list) synced through Common Auth, harness settings rendered from it, the skill marketplace, provider credentials and models, and harness install/update (`~/.local/bin/fleet`) | `files/fleet.sh` |
+| `auth` | Retired: `auth` comes with fleet now (see [Installing and updating fleet](#installing-and-updating-fleet)) | `files/auth.sh` |
+| `fleet` | Hands the machine to standalone fleet (see [Installing and updating fleet](#installing-and-updating-fleet)); kept so `setup install fleet` in an old onboarding prompt still works | `files/fleet.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
 
 The `fleet` module also sets an outbound default of
@@ -166,7 +171,17 @@ Every module that installs a user-facing command supports `--help`. Configuratio
 
 After syncing, fleet renders harness settings line by line: it only touches the keys it manages and records what it wrote in `~/.local/state/fleet/rendered.json`, so anything else in a harness's settings file is left alone. Personal settings come from `~/.agents/settings/*.json` and `~/.agents/mcp.json`; settings every account shares come from `files/fleet-manifest.json`. Claude's claude.ai connectors are off for every account by default (`disableClaudeAiConnectors`); an account turns them back on with `"disableClaudeAiConnectors": false` in `settings/claude.json`. The lost.plus MCP servers come from `GET /api/services`, which already filters out admin-only services for accounts that aren't admitted. MCP tokens are read from passage and written to a marked block in `~/.zshenv`; Claude reads them through `fleet mcp-headers`, so a Claude started by a service still gets them.
 
-`fleet nightly` (04:00) runs the sync, then each harness's own updater.
+`fleet nightly` (04:00) updates fleet itself, runs the sync, then each harness's own updater.
+
+#### Installing and updating fleet
+
+fleet installs itself: `fleet self-install` downloads and checks `auth`, `fleet`, the provider engine, the provider defaults and the manifest from one commit before replacing any of them, puts `~/.local/bin` on PATH for new shells (the `setup:path` block in `~/.zshenv` for zsh; for bash in `~/.bashrc`, which new terminal windows read, and in the first of `~/.bash_profile`, `~/.bash_login` or `~/.profile` for login shells; `~/.profile` otherwise; on Windows the user PATH and `.cmd` shims), signs in when someone is at the terminal and the machine is not signed in yet, runs `fleet sync` (`--pull` to only pull), and turns on the nightly pass: a launchd agent on macOS, a systemd user timer (`fleet-sync.timer`, `Persistent=true`) on Linux, a Task Scheduler task on Windows. Run it again to repair or update. `SOURCE_URL` points it at another commit or a local checkout.
+
+The installers only bootstrap it. `install-fleet.sh` (POSIX `sh`, served at `https://auth.lost.plus/fleet.sh`, which redirects to the file on `main`) checks for `python3` 3.9 or newer, resolves `main` to one commit, downloads `files/fleet` from it and runs `fleet self-install`; `install.ps1` does the same after the Windows-only steps below.
+
+The nightly pass keeps fleet current with the same download-check-replace step. `fleet self-update` runs it right away.
+
+Machines that got fleet through `setup` move over on their next `setup update`. The `fleet` module runs `install-fleet.sh` from the same commit, and once fleet's own timer is on, setup drops `fleet` and `auth` from its state without uninstalling them; any failure leaves everything as it was for the next run to retry. Until then, fleet leaves updating itself to setup. If nothing else on the machine came from setup (modules installed only as dependencies do not count), setup then removes its own timer, those dependencies, `~/.local/bin/setup` and its state; the `setup:path` block and the `setup:` markers around fleet's blocks stay. Machines without setup's nightly (`setup schedule`), such as those onboarded from the dashboard with `setup install fleet`, need one manual `setup update` to move over.
 
 Every account gets a built-in `fleet` skill, a manual for the agents on its machines. fleet writes `~/.agents/skills/fleet/SKILL.md` read-only on every sync and never pushes it, so it cannot be edited or deleted for good, and its text is the same on every account. `skills/fleet/references/` belongs to the account and syncs like any skill file: that is where an account keeps notes about its own machines, and the manual tells agents to read them.
 
@@ -199,9 +214,9 @@ API-key providers disabled.
 
 #### fleet on Windows
 
-`install.ps1` sets the machine up natively, without WSL. It installs Python if there is none, puts `auth` and `fleet` in `~\.local\bin` with `.cmd` shims, signs in, syncs, and schedules `fleet nightly` in Task Scheduler at 04:00. One UAC prompt turns on the OpenSSH server: PowerShell 7 (or Windows PowerShell) as the login shell, the `Match Group administrators` block in `sshd_config` commented out so an admin's own `~\.ssh\authorized_keys` (which fleet writes) is the one sshd reads (the keys `administrators_authorized_keys` held are copied into it), password logins left on, and the firewall rule open on every network. A standard user cannot read the firewall rules or `sshd_config`, so a rerun skips the prompt when sshd is running and the registry holds the hash of the elevated script that last ran; a changed elevated script asks once more.
+`install.ps1` (served at `https://auth.lost.plus/fleet.ps1`) sets the machine up natively, without WSL. It installs Python if there is none, then hands over to `fleet self-install`, which puts `auth` and `fleet` in `~\.local\bin` with `.cmd` shims, signs in, syncs, and schedules `fleet nightly` in Task Scheduler at 04:00. One UAC prompt turns on the OpenSSH server: PowerShell 7 (or Windows PowerShell) as the login shell, the `Match Group administrators` block in `sshd_config` commented out so an admin's own `~\.ssh\authorized_keys` (which fleet writes) is the one sshd reads (the keys `administrators_authorized_keys` held are copied into it), password logins left on, and the firewall rule open on every network. A standard user cannot read the firewall rules or `sshd_config`, so a rerun skips the prompt when sshd is running and the registry holds the hash of the elevated script that last ran; a changed elevated script asks once more.
 
-On Windows there is no keepout. Skills reach `~\.claude\skills` through directory junctions, which need neither Developer Mode nor elevation. `AGENTS.md` is copied to each harness rather than linked (a junction cannot point at a file, and file symlinks need Developer Mode); a copy whose content fleet did not write is moved aside as `.pre-agents.bak` first. MCP tokens go to `~\.local\state\fleet\mcp-tokens` instead of `.zshenv`. Harnesses install through the `windows` block of their manifest entry, run by Windows PowerShell; a harness without one (t3) is not offered. With no `setup` to update it, `fleet nightly` fetches the current `fleet`, `auth`, provider engine, provider defaults and manifest first. `tests/fleet-windows.py` runs on a Windows runner in CI.
+On Windows there is no keepout. Skills reach `~\.claude\skills` through directory junctions, which need neither Developer Mode nor elevation. `AGENTS.md` is copied to each harness rather than linked (a junction cannot point at a file, and file symlinks need Developer Mode); a copy whose content fleet did not write is moved aside as `.pre-agents.bak` first. MCP tokens go to `~\.local\state\fleet\mcp-tokens` instead of `.zshenv`. Harnesses install through the `windows` block of their manifest entry, run by Windows PowerShell; a harness without one (t3) is not offered. As everywhere, `fleet nightly` fetches the current `fleet`, `auth`, provider engine, provider defaults and manifest first. `tests/fleet-windows.py` runs on a Windows runner in CI.
 
 fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Codex's `config.toml` is checked with `tomllib` (3.11+) or `tomli` when either is there; without one, fleet finds the operator's own servers by their `[mcp_servers.<name>]` headers.
 
