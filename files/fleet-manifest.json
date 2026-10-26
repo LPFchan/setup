@@ -19,8 +19,9 @@
     },
     {
       "name": "codex",
+      "comment": "For a standalone install `codex update` runs this same installer, but it gives up when it cannot tell how Codex was installed (seen with ~/.codex behind a symlink), so the installer then runs directly.",
       "install": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
-      "updateArgs": "update",
+      "update": "codex update || curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
       "windows": {
         "install": "$env:CODEX_NON_INTERACTIVE = '1'; irm https://chatgpt.com/codex/install.ps1 | iex",
         "update": "$env:CODEX_NON_INTERACTIVE = '1'; irm https://chatgpt.com/codex/install.ps1 | iex",
