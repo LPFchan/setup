@@ -1610,7 +1610,9 @@ def _effort_descriptors():
         options = []
         for level in row.get("reasoning_efforts") or [] if isinstance(row, dict) else []:
             if isinstance(level, dict) and isinstance(level.get("value"), str):
-                label = str(level.get("label") or level["value"]).removesuffix(" Effort")
+                label = str(level.get("label") or level["value"])
+                if label.endswith(" Effort"):
+                    label = label[:-len(" Effort")]
                 options.append({"id": level["value"], "label": label, **({"isDefault": True} if level.get("default") is True else {})})
         if options:
             out[row["id"]] = {"id": "effort", "label": "Reasoning", "type": "select", "options": options}

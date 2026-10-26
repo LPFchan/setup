@@ -11,9 +11,9 @@
 
 main() {
     set -eu
-    command -v python3 >/dev/null 2>&1 || die "fleet needs python3 3.9 or newer; install it and run this again"
-    python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' </dev/null \
-        || die "fleet needs python3 3.9 or newer, found $(python3 -V 2>&1); install a newer one and run this again"
+    command -v python3 >/dev/null 2>&1 || die "fleet needs python3 3.8 or newer; install it and run this again"
+    python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' </dev/null \
+        || die "fleet needs python3 3.8 or newer, found $(python3 -V 2>&1); install a newer one and run this again"
 
     # Resolve main once, as bin/setup does, so every file comes from one commit.
     # SOURCE_URL may also be a local checkout.
