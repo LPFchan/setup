@@ -1,10 +1,10 @@
 #!/usr/bin/env zsh
-# install-fleet.sh (so `fleet self-install`) on a fresh machine, and the
-# handover from setup: a machine that had only fleet loses setup, one with
+# The handover from setup to fleet, which lives in LPFchan/auth (its own tests
+# cover fleet's installer): a machine that had only fleet loses setup, one with
 # other modules keeps setup without fleet and auth, and a timer that does not
 # come on hands nothing over. The handover runs under the setup binary from
-# before this change, which updates itself at the end of the pass and
-# finishes under the new one.
+# before fleet stood on its own, which updates itself at the end of the pass
+# and finishes under the new one.
 set -euo pipefail
 [[ "$(uname -s)" == Linux ]] || { echo "fleet standalone tests skipped (Linux only)"; exit 0; }
 ROOT=${0:A:h:h}
@@ -25,7 +25,7 @@ exit 0
 SH
 chmod +x "$TMP/bin/systemctl"
 export TMP PATH="$TMP/bin:/usr/bin:/bin" SHELL=/bin/zsh
-unset SOURCE_URL LINUX_SETUP_SOURCE_URL XDG_STATE_HOME XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS
+unset SOURCE_URL LINUX_SETUP_SOURCE_URL FLEET_SOURCE_URL XDG_STATE_HOME XDG_CONFIG_HOME DBUS_SESSION_BUS_ADDRESS
 export XDG_RUNTIME_DIR=/nonexistent
 
 # A source tree like the repo, with a catalog of setup, schedule, auth, fleet
@@ -34,12 +34,29 @@ SRC="$TMP/src"
 mkdir -p "$SRC/bin" "$SRC/files" "$SRC/lib"
 cp "$ROOT/bin/setup" "$ROOT/bin/schedule" "$SRC/bin/"
 cp "$ROOT/lib/script-helpers.sh" "$SRC/lib/"
-cp "$ROOT/install-fleet.sh" "$SRC/"
-for name in fleet.sh auth.sh fleet auth fleet-manifest.json fleet-providers.py provider-registry.json resume; do
+for name in fleet.sh auth.sh resume; do
     cp "$ROOT/files/$name" "$SRC/files/"
 done
 grep -E '^(# module|setup|schedule|auth|fleet|resume)\b' "$ROOT/manifest.tsv" \
     | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "setup" { $8 = "" } { print }' > "$SRC/manifest.tsv"
+
+# A stand-in for what Auth serves at /fleet: an installer that puts fleet and
+# auth in place and turns fleet's timer on, which fails while systemd does.
+FLEETSRC="$TMP/fleet-src"
+mkdir -p "$FLEETSRC"
+cat > "$FLEETSRC/install.sh" <<'SH'
+set -e
+mkdir -p "$HOME/.local/bin"
+cp "$SOURCE_URL/fleet" "$SOURCE_URL/auth" "$HOME/.local/bin/"
+systemctl --user enable --quiet fleet-sync.timer
+SH
+printf '#!/bin/sh
+[ "$1 $2" = "schedule status" ] && exec systemctl --user is-enabled fleet-sync.timer
+' > "$FLEETSRC/fleet"
+printf '#!/bin/sh
+' > "$FLEETSRC/auth"
+chmod +x "$FLEETSRC/fleet" "$FLEETSRC/auth"
+export FLEET_SOURCE_URL="$FLEETSRC"
 printf 'ssh-ed25519 AAAAOwner owner\n' > "$TMP/owner.keys"
 export SETUP_OWNER_KEYS_URL="file://$TMP/owner.keys"
 
@@ -51,32 +68,8 @@ fresh_home() {
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 state_has() { grep -q "^$1"$'\t' "$HOME/.local/state/setup/script-state.tsv" 2>/dev/null; }
 installed_payload() {
-    [[ -x "$HOME/.local/bin/fleet" && -x "$HOME/.local/bin/auth" && -f "$HOME/.local/bin/fleet-providers.py" \
-       && -f "$HOME/.config/fleet/manifest.json" && -f "$HOME/.config/fleet/provider-defaults.json" ]]
+    cmp -s "$HOME/.local/bin/fleet" "$FLEETSRC/fleet" && [[ -x "$HOME/.local/bin/auth" ]]
 }
-
-# --- a fresh machine ----------------------------------------------------
-fresh_home fresh
-SOURCE_URL="$SRC" sh "$SRC/install-fleet.sh" </dev/null >"$TMP/out" 2>&1 || { cat "$TMP/out"; fail "fresh install"; }
-installed_payload || fail "fresh install left out part of the payload"
-cmp -s "$HOME/.local/bin/fleet" "$ROOT/files/fleet" || fail "fleet is not the source's"
-grep -q 'not signed in; run: auth login' "$TMP/out" || fail "no sign-in hint without a terminal"
-grep -qx 'ExecStart=.*/.local/bin/fleet nightly' "$HOME/.config/systemd/user/fleet-sync.service" || fail "service"
-grep -qx 'Persistent=true' "$HOME/.config/systemd/user/fleet-sync.timer" || fail "missed runs not replayed"
-grep -qx -- '--user enable --quiet fleet-sync.timer' "$TMP/systemctl.log" || fail "timer not enabled"
-grep -q 'setup:path' "$HOME/.zshenv" || fail "~/.local/bin not put on PATH"
-[[ ! -e "$HOME/.local/state/setup" ]] || fail "a machine without setup got setup state"
-# A rerun changes nothing it does not need to, and adds no second PATH block.
-SOURCE_URL="$SRC" sh "$SRC/install-fleet.sh" </dev/null >"$TMP/out" 2>&1 || fail "rerun"
-grep -q 'fleet: updated' "$TMP/out" && fail "rerun replaced current files"
-[[ "$(grep -c 'setup:path >>>' "$HOME/.zshenv")" == 1 ]] || fail "PATH block added twice"
-# A payload that fails its check replaces nothing.
-cp -R "$SRC" "$TMP/broken-src"
-printf 'def broken(\n' > "$TMP/broken-src/files/fleet-providers.py"
-printf '# next fleet\n' >> "$TMP/broken-src/files/fleet"
-SOURCE_URL="$TMP/broken-src" sh "$SRC/install-fleet.sh" </dev/null >/dev/null 2>&1 && fail "a broken payload installed"
-cmp -s "$HOME/.local/bin/fleet" "$ROOT/files/fleet" || fail "a broken payload replaced fleet"
-[[ -z "$(ls -A "$HOME/.local/bin" | grep '^\.fleet')" ]] || fail "temporary files left behind"
 
 # --- a machine setup brought fleet to, under the old setup binary --------
 # What `setup install fleet` left before: fleet and auth in setup's state,
@@ -97,6 +90,7 @@ setup_machine() {
     printf '[Timer]\n' > "$units/setup-update.timer"; printf '[Service]\n' > "$units/setup-update.service"
     printf '[Timer]\n' > "$units/fleet-sync.timer"; printf '[Service]\n' > "$units/fleet-sync.service"
     printf 'print("old fleet")\n' > "$HOME/.local/bin/fleet"; chmod +x "$HOME/.local/bin/fleet"
+    printf '# >>> setup:path >>>\n# <<< setup:path <<<\n' > "$HOME/.zshenv"
 }
 run_setup() {
     LINUX_SETUP_SOURCE_URL="file://$SRC" zsh "$HOME/.local/bin/setup" --batch update >"$TMP/out" 2>&1
@@ -107,13 +101,10 @@ run_setup() {
 setup_machine only-fleet
 run_setup || { cat "$TMP/out"; fail "update on a fleet-only machine"; }
 installed_payload || { cat "$TMP/out"; fail "handover left out part of the payload"; }
-cmp -s "$HOME/.local/bin/fleet" "$ROOT/files/fleet" || fail "handover kept the old fleet"
 grep -q 'Restarting setup' "$TMP/out" || fail "the old setup did not hand the pass to the new one"
 for gone in .local/bin/setup .local/bin/schedule .local/state/setup .config/systemd/user/setup-update.timer; do
     [[ ! -e "$HOME/$gone" ]] || { cat "$TMP/out"; fail "$gone left behind on a fleet-only machine"; }
 done
-grep -qx 'ExecStart=.*/.local/bin/fleet nightly' "$HOME/.config/systemd/user/fleet-sync.service" \
-    || fail "fleet's own timer did not replace the helper's"
 grep -q 'setup:path' "$HOME/.zshenv" || fail "PATH block removed with setup"
 
 # fleet plus a module the operator chose: setup stays, without fleet or auth.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # setup-module: fleet
-# setup-source: files/fleet-providers.py
+# source: LPFchan/auth fleet/fleet-providers.py, served at https://auth.lost.plus/fleet/fleet-providers.py
 """Fleet's private provider credential and model engine.
 
 The Auth dashboard owns provider management. Fleet reconciles the shared catalog

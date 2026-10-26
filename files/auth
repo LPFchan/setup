@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # setup-module: auth
-# setup-source: files/auth
+# source: LPFchan/auth fleet/auth, served at https://auth.lost.plus/fleet/auth
 """auth — one Common Auth login and credential store for setup modules."""
 
 from __future__ import annotations
