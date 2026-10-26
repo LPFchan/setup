@@ -264,19 +264,23 @@ PY
 # --- where npm puts the package ----------------------------------------------
 # A system Node's global folder needs root, so the install goes into ~/.local;
 # a writable one (nvm, Homebrew) is used as it is. An install or update stays
-# wherever the package already is, even after a writable Node shows up.
+# wherever the package already is, even after a writable Node shows up. Only
+# `ocx` is linked: the package's second name, `opencodex`, is setup's picker.
 NPM="$TMP/npmstub"
-mkdir -p "$NPM/bin" "$NPM/system/lib" "$NPM/own/bin" "$NPM/own/lib" "$HOME/.local/bin"
+mkdir -p "$NPM/bin" "$NPM/system/lib" "$NPM/own/lib" "$HOME/.local/bin"
 chmod a-w "$NPM/system/lib"
+# npm records its arguments and unpacks a package whose binary records its own.
 cat > "$NPM/bin/npm" <<STUB
 #!/bin/sh
 [ "\$1 \$2" = "prefix -g" ] && { cat "$NPM/prefix"; exit 0; }
 echo "npm \$*" >> "$NPM/calls"
+prefix=; while [ \$# -gt 0 ]; do [ "\$1" = --prefix ] && prefix=\$2; shift; done
+mkdir -p "\$prefix/lib/node_modules/@bitkyc08/opencodex/bin"
+printf '#!/bin/sh\necho "ocx \$*" >> "$NPM/calls"\n' > "\$prefix/lib/node_modules/@bitkyc08/opencodex/bin/ocx.mjs"
+chmod +x "\$prefix/lib/node_modules/@bitkyc08/opencodex/bin/ocx.mjs"
 STUB
-for dir in "$NPM/own/bin" "$HOME/.local/bin"; do
-    printf '#!/bin/sh\necho "ocx $*" >> "%s/calls"\n' "$NPM" > "$dir/ocx"
-done
-chmod +x "$NPM/bin/npm" "$NPM/own/bin/ocx" "$HOME/.local/bin/ocx"
+chmod +x "$NPM/bin/npm"
+printf '#!/bin/sh\n# setup picker\n' > "$HOME/.local/bin/opencodex"
 ocx_run() {  # kind, npm's global prefix -> what npm and ocx were asked to do
     python3 -c 'import json, sys
 specs = {h["name"]: h for h in json.load(open(sys.argv[1]))["harnesses"]}
@@ -286,12 +290,15 @@ print(specs["ocx"][sys.argv[2]])' "$ROOT/files/fleet-manifest.json" "$1" > "$NPM
     cat "$NPM/calls"
 }
 expect() { [[ "$2" == "$3" ]] || { echo "FAIL: $1: $2" >&2; exit 1; }; }
-package="--allow-scripts=bun @bitkyc08/opencodex"
+package="--no-bin-links --allow-scripts=bun @bitkyc08/opencodex"
 expect "install, writable prefix" "$(ocx_run install "$NPM/own")" \
     "npm install -g --prefix $NPM/own $package"$'\n'"ocx service"
+[[ -x "$NPM/own/bin/ocx" && ! -e "$NPM/own/bin/opencodex" ]] || { echo "FAIL: linked more than ocx" >&2; exit 1; }
 if [ "$(id -u)" != 0 ]; then  # root can write anywhere
     expect "install, system prefix" "$(ocx_run install "$NPM/system")" \
         "npm install -g --prefix $HOME/.local $package"$'\n'"ocx service"
+    grep -q 'setup picker' "$HOME/.local/bin/opencodex" || { echo "FAIL: the picker was replaced" >&2; exit 1; }
+    rm -rf "$HOME/.local/lib"
 fi
 expect "update, package in the npm prefix" "$(ocx_run update "$NPM/own")" \
     "npm install -g --prefix $NPM/own $package@latest"
@@ -300,5 +307,7 @@ expect "update, package in ~/.local" "$(ocx_run update "$NPM/own")" \
     "npm install -g --prefix $HOME/.local $package@latest"
 expect "install (repair), package in ~/.local" "$(ocx_run install "$NPM/own")" \
     "npm install -g --prefix $HOME/.local $package"$'\n'"ocx service"
+[[ -x "$HOME/.local/bin/ocx" ]] && grep -q 'setup picker' "$HOME/.local/bin/opencodex" \
+    || { echo "FAIL: ~/.local links" >&2; exit 1; }
 chmod u+w "$NPM/system/lib"
 echo "fleet ocx npm prefix tests passed"
