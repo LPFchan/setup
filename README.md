@@ -18,13 +18,13 @@ curl -fsSL https://setup.lost.plus/install.sh | zsh
 
 > **Note:** `zsh` is required. The installer places the `setup` CLI tool in `~/.local/bin/`.
 
-fleet does not need `setup`. To enroll a macOS or Linux machine in the fleet (see [Installing and updating fleet](#installing-and-updating-fleet)):
+fleet does not need `setup`, and lives in [LPFchan/auth](https://github.com/LPFchan/auth) (see [fleet](#fleet)). To enroll a macOS or Linux machine in the fleet:
 
 ```sh
 curl -fsSL https://auth.lost.plus/fleet.sh | sh
 ```
 
-On Windows there is no `setup`; this PowerShell command enrolls the machine in the fleet (see [fleet on Windows](#fleet-on-windows)):
+On Windows there is no `setup`; this PowerShell command enrolls the machine in the fleet:
 
 ```powershell
 irm https://auth.lost.plus/fleet.ps1 | iex
@@ -41,12 +41,6 @@ setup                     # Open interactive menu to pick and configure modules
 setup list                # List all available modules
 setup status              # Check installed versions and remote updates
 setup update              # Update all installed modules
-fleet install [name...]   # Install harnesses with their own installers; asks which when none named
-fleet update              # Run each AI harness's own self-updater (claude, codex, opencode, ...)
-fleet sync                # Sync ~/.agents with the account and render harness settings
-fleet schedule            # Install the nightly 04:00 timer that runs 'fleet nightly'
-fleet self-update         # Fetch the current fleet and auth now (the nightly pass does it too)
-fleet self-install        # What the installers run: also PATH, sign-in, sync and the nightly pass
 setup install <module>    # Install and enable a module (e.g., setup install resume)
 setup uninstall <module>  # Disable and remove a module
 setup enable <module>     # Enable a background service module (e.g., setup enable system-updates)
@@ -138,126 +132,22 @@ Modules that run setup, update, and cleanup scripts to configure tools and shell
 | `mac-boot` | Fleet-only macOS boot-volume switcher whose status shows the selected volume and other bootable choices; accepts exact volume names, switches through a narrowly scoped passwordless sudo rule, requests a normal application-aware restart, and guarantees reboot after 60 seconds | `files/mac-boot.sh` |
 | `ai-menu` | Terminal AI launcher menu (`ai` command and interactive menu), with `ai --help` plus auto-launch enable/disable controls | `files/ai-menu.sh` |
 | `opencodex` | Provider, model, effort and harness picker that launches through fleet's OpenCodex proxy (`~/.local/bin/opencodex`) | `files/opencodex.sh` |
-| `auth` | Retired: `auth` comes with fleet now (see [Installing and updating fleet](#installing-and-updating-fleet)) | `files/auth.sh` |
-| `fleet` | Hands the machine to standalone fleet (see [Installing and updating fleet](#installing-and-updating-fleet)); kept so `setup install fleet` in an old onboarding prompt still works | `files/fleet.sh` |
+| `auth` | Retired: `auth` comes with fleet now (see [fleet](#fleet)) | `files/auth.sh` |
+| `fleet` | Hands the machine to standalone fleet (see [fleet](#fleet)); kept so `setup install fleet` in an old onboarding prompt still works | `files/fleet.sh` |
 | `tmux` | `tmux` setup with truecolor support, custom status bar, click-to-select, mouse scrolling, title hooks, and the `ssh` reconnect wrapper | `files/tmux.sh` |
-
-The `fleet` module also sets an outbound default of
-`StrictHostKeyChecking accept-new`, including destinations outside the alias
-list. OpenSSH automatically records first-seen keys in its normal known-hosts
-files and rejects changed keys; first use is trust-on-first-use, not independent
-verification of the server. Existing `known_hosts` files are never cleared or
-rewritten by setup. This replaces the old `yeowoolmac` exception that disabled
-checking and discarded keys, so changing that machine's boot partition may now
-require investigating a host-key mismatch rather than silently accepting it.
-
-The managed default follows existing configuration and uses `Match final` so
-second-pass user policies are considered first. OpenSSH's first-value-wins rules preserve earlier explicit user policies (including stricter `yes` or
-`ask`); an earlier `no` or custom `UserKnownHostsFile` can still override normal
-protection. Command-line options also take precedence. Install/update replaces
-only setup's managed blocks, status detects policy drift, and uninstall removes
-the default without removing saved host keys. Machines receive this through
-normal setup updates, including their enabled nightly schedule.
 
 Every module that installs a user-facing command supports `--help`. Configuration-only modules do not install a command.
 
-`auth login` performs one browser-approved onboarding for the machine and stores a renewable setup session plus the account's active global or per-service bearer set locally with mode `0600`. It reports the machine hostname during login and later refreshes so Auth can identify each setup device without exposing its network address in the console. `auth status`, `auth refresh`, and `auth token` sync through `/api/setup/session/token`, so bearer rotations, revocations, token-mode changes, and admission changes arrive without another browser login. The local bundle and setup-managed consumer copies are bound to the Auth origin and immutable account subject. A confirmed session rejection is remembered and fails closed; temporary Auth unavailability may use the last-known-good bearer while that session remains active. Setup sessions and bearer tokens are separately revokable in Auth. `auth token` uses distinct exit statuses for authoritative absence, rejected setup sessions, and temporary failures, allowing fleet to remove only confirmed revoked managed mirrors while preserving same-account copies during outages or temporary unreadability. During MCP reconciliation, each declared credential source is authoritative; an existing environment or `.zshenv` value is used only as a last-known-good fallback when its source is unavailable. The module is available outside the trusted fleet boundary; Auth account admission still determines which service credentials a user can receive.
 
 ---
 
 ### fleet
 
-`fleet sync` keeps `~/.agents` in step with the account's copy in Common Auth. Each file is compared three ways (server, last synced, local): one-sided changes move in that direction, and a file changed on both sides takes the server copy and backs the local one up under `~/.local/state/fleet/backup/`. Skills installed from the marketplace (`fleet skills`) arrive the same way.
+fleet and `auth` live in [LPFchan/auth](https://github.com/LPFchan/auth) under `fleet/`, and Auth serves them at `https://auth.lost.plus/fleet/<name>`; their docs are `fleet/README.md` there. setup keeps only the `fleet` module, which hands a machine over: on its next `setup update` it runs `https://auth.lost.plus/fleet.sh`, and once fleet's own timer is on, setup drops `fleet` and `auth` from its state without uninstalling them; any failure leaves everything as it was for the next run to retry. If nothing else on the machine came from setup (modules installed only as dependencies do not count), setup then removes its own timer, those dependencies, `~/.local/bin/setup` and its state; the `setup:path` block and the `setup:` markers around fleet's blocks stay. `tests/fleet-handover.sh` covers this against a stand-in fleet.
 
-After syncing, fleet renders harness settings line by line: it only touches the keys it manages and records what it wrote in `~/.local/state/fleet/rendered.json`, so anything else in a harness's settings file is left alone. Personal settings come from `~/.agents/settings/*.json` and `~/.agents/mcp.json`; settings every account shares come from `files/fleet-manifest.json`. Claude's claude.ai connectors are off for every account by default (`disableClaudeAiConnectors`); an account turns them back on with `"disableClaudeAiConnectors": false` in `settings/claude.json`. The lost.plus MCP servers come from `GET /api/services`, which already filters out admin-only services for accounts that aren't admitted. MCP tokens are read from passage and written to a marked block in `~/.zshenv`; Claude reads them through `fleet mcp-headers`, so a Claude started by a service still gets them.
+`files/fleet`, `files/auth`, `files/fleet-providers.py`, `files/fleet-manifest.json` and `files/provider-registry.json` are frozen copies of Auth's. A fleet installed before the move still updates itself from here once, and these copies point it at Auth; they go once every machine has made that step.
 
-`fleet nightly` (04:00) updates fleet itself, runs the sync, then each harness's own updater.
-
-#### Installing and updating fleet
-
-fleet installs itself: `fleet self-install` downloads and checks `auth`, `fleet`, the provider engine, the provider defaults and the manifest from one commit before replacing any of them, puts `~/.local/bin` on PATH for new shells (the `setup:path` block in `~/.zshenv` for zsh; for bash in `~/.bashrc`, which new terminal windows read, and in the first of `~/.bash_profile`, `~/.bash_login` or `~/.profile` for login shells; `~/.profile` otherwise; on Windows the user PATH and `.cmd` shims), signs in when someone is at the terminal and the machine is not signed in yet, runs `fleet sync` (`--pull` to only pull), and turns on the nightly pass: a launchd agent on macOS, a systemd user timer (`fleet-sync.timer`, `Persistent=true`) on Linux, a Task Scheduler task on Windows. Run it again to repair or update. `SOURCE_URL` points it at another commit or a local checkout.
-
-The installers only bootstrap it. `install-fleet.sh` (POSIX `sh`, served at `https://auth.lost.plus/fleet.sh`, which redirects to the file on `main`) checks for `python3` 3.8 or newer (a Synology NAS ships 3.8), resolves `main` to one commit, downloads `files/fleet` from it and runs `fleet self-install`; `install.ps1` does the same after the Windows-only steps below.
-
-The nightly pass keeps fleet current with the same download-check-replace step. `fleet self-update` runs it right away.
-
-Machines that got fleet through `setup` move over on their next `setup update`. The `fleet` module runs `install-fleet.sh` from the same commit, and once fleet's own timer is on, setup drops `fleet` and `auth` from its state without uninstalling them; any failure leaves everything as it was for the next run to retry. Until then, fleet leaves updating itself to setup. If nothing else on the machine came from setup (modules installed only as dependencies do not count), setup then removes its own timer, those dependencies, `~/.local/bin/setup` and its state; the `setup:path` block and the `setup:` markers around fleet's blocks stay. Machines without setup's nightly (`setup schedule`), such as those onboarded from the dashboard with `setup install fleet`, need one manual `setup update` to move over.
-
-Every account gets a built-in `fleet` skill, a manual for the agents on its machines. fleet writes `~/.agents/skills/fleet/SKILL.md` read-only on every sync and never pushes it, so it cannot be edited or deleted for good, and its text is the same on every account. `skills/fleet/references/` belongs to the account and syncs like any skill file: that is where an account keeps notes about its own machines, and the manual tells agents to read them.
-
-#### Provider connections
-
-The Auth dashboard's Providers tab shows the shared provider catalog. Administrators
-manage provider URLs and model descriptors for every account. Each account keeps
-its enabled choices in `~/.agents/settings/providers.json` (version 2, `enabled`
-map), using the same three-way sync and stale-save protection as other fleet
-files. API keys stay in the account's Passage `llm` folder as `*_API_KEY`.
-Native Codex and Anthropic OAuth sessions stay on each machine.
-
-The dashboard lists connections alphabetically and manages API-key enrollment
-and enabled choices. Fleet caches the shared Auth catalog and projects its
-definitions plus account choices into the local `~/.config/providers/registry.json`
-used by OpenCode, Hermes, Pi and OpenCodex. Normal sync refreshes credentials and
-settings. Model discovery runs in fleet's 04:00 nightly pass and preserves the
-last good list during an outage. Neither sync nor model refresh restarts the proxy.
-
-Codex speaks only the OpenAI Responses API and Claude Code only the Anthropic
-Messages API, so other providers reach them through the OpenCodex proxy (`ocx`).
-`fleet install ocx` installs it from npm with its background service (launchd,
-a systemd user unit, or a hidden Task Scheduler task on Windows). On Linux fleet
-gives that unit a 330s stop timeout (`opencodex-proxy.service.d/50-stop-timeout.conf`):
-the proxy drains in-flight turns for up to 300s on stop, upstream's unit sets none,
-and systemd's default 90s would kill it mid-turn. Fleet then
-writes the account's providers into `~/.opencodex/config.json` as a fourth mirror:
-only the providers the registry names, recorded in
-`~/.opencodex/setup-managed-providers.json`, so every other key and provider stays
-as you or OpenCodex left it and a provider the registry drops is removed. A disabled
-provider or one without a key is marked `disabled`, and the capability cache
-supplies each provider's model allowlist, effort ladders and context windows.
-While the proxy answers, fleet points Claude Code at it through `env.ANTHROPIC_BASE_URL`
-in `~/.claude/settings.json`, and drops that route once the proxy stays down. The
-proxy reads its config only at startup and keeps serving the old build after an
-update, so the nightly pass restarts it (`ocx service restart`) when either changed,
-once no turn is running; a proxy that stays busy is restarted the next night. A
-logout or account change found by any sync strips the old keys from `config.json`
-(every provider there is then disabled) and restarts the proxy as soon as it is idle,
-rather than at night. ocx
-rewrites `config.json` itself, so "changed" means fleet's own providers differ from
-what the proxy last started on (a hash in the managed-providers record). On Windows a
-running proxy locks its files, so `ocx update`, which stops and restarts it, runs only
-when npm has a new release, and also waits for that moment. While setup's old runtime
-(`~/.local/libexec/opencodex`) is installed, fleet leaves the proxy alone.
-
-The `opencodex` module's next install or update hands that old runtime over to
-fleet. It waits up to two minutes for no turn in flight; a proxy that stays busy
-puts the hand-over off to the next run and nothing changes. Otherwise it removes
-the old `~/.local/bin/ocx` link (fleet would read it as ocx already installed) and
-runs `fleet install ocx`, whose `ocx service` restarts the proxy once onto the new
-install. Once that proxy answers and its service no longer points at the old
-runtime, the module deletes the old runtime and the old launcher's leftovers,
-installs the slim picker, and runs `fleet sync --pull` so fleet writes the config and
-Claude's route. If the install fails, the link comes back and the old runtime
-keeps serving. The systemd drop-in that gives the proxy 330s to drain on stop
-(`opencodex-proxy.service.d/50-stop-timeout.conf`) stays, since upstream's unit
-sets no stop timeout.
-
-Run `python3 scripts/migrate-providers-to-fleet.py` once on each existing machine,
-from this checkout after deploying Auth and before normal Fleet updates. It backs up
-the old registry, state and executable under `~/.local/state/fleet/backup/providers-migration/`,
-publishes proven account choices, installs this checkout's Fleet payload, and replaces
-the old job after the new schedule succeeds. It preserves disabled schedules and can
-be retried after failure. Normal Fleet sync and installation contain no migration steps.
-Keys and cached models are bound to the Auth origin and account subject, and
-confirmed key removal clears managed copies. New accounts start with optional
-API-key providers disabled.
-
-#### fleet on Windows
-
-`install.ps1` (served at `https://auth.lost.plus/fleet.ps1`) sets the machine up natively, without WSL. It installs Python if there is none, then hands over to `fleet self-install`, which puts `auth` and `fleet` in `~\.local\bin` with `.cmd` shims, signs in, syncs, and schedules `fleet nightly` in Task Scheduler at 04:00. One UAC prompt turns on the OpenSSH server: PowerShell 7 (or Windows PowerShell) as the login shell, the `Match Group administrators` block in `sshd_config` commented out so an admin's own `~\.ssh\authorized_keys` (which fleet writes) is the one sshd reads (the keys `administrators_authorized_keys` held are copied into it), password logins left on, and the firewall rule open on every network. A standard user cannot read the firewall rules or `sshd_config`, so a rerun skips the prompt when sshd is running and the registry holds the hash of the elevated script that last ran; a changed elevated script asks once more.
-
-On Windows there is no keepout. Skills reach `~\.claude\skills` through directory junctions, which need neither Developer Mode nor elevation. `AGENTS.md` is copied to each harness rather than linked (a junction cannot point at a file, and file symlinks need Developer Mode); a copy whose content fleet did not write is moved aside as `.pre-agents.bak` first. MCP tokens go to `~\.local\state\fleet\mcp-tokens` instead of `.zshenv`. Harnesses install through the `windows` block of their manifest entry, run by Windows PowerShell; a harness without one (t3) is not offered. As everywhere, `fleet nightly` fetches the current `fleet`, `auth`, provider engine, provider defaults and manifest first. `tests/fleet-windows.py` runs on a Windows runner in CI.
-
-fleet runs on the `python3` it finds, which on macOS can be the system's 3.9. Codex's `config.toml` is checked with `tomllib` (3.11+) or `tomli` when either is there; without one, fleet finds the operator's own servers by their `[mcp_servers.<name>]` headers.
+---
 
 ## Detailed Feature Overview
 

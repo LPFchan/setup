@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # setup-module: fleet
-# setup-source: files/fleet
+# source: LPFchan/auth fleet/fleet, served at https://auth.lost.plus/fleet/fleet
 """fleet — keeps this machine in step with its account in Common Auth: the SSH
 config and authorized_keys (DEC-20261015-001), the account's ~/.agents tree
 with its marketplace installs, and the harness settings and MCP servers built
@@ -2317,18 +2317,11 @@ def cmd_status():
 
 
 def _source_base():
-    """Like bin/setup: resolve main once, so every file comes from one commit."""
+    """Auth serves every file from one deploy, so they always match. SOURCE_URL
+    may point elsewhere or at a local checkout."""
     if os.environ.get("SOURCE_URL"):
         return os.environ["SOURCE_URL"]
-    try:
-        with urllib.request.urlopen("https://api.github.com/repos/LPFchan/setup/git/ref/heads/main",
-                                    timeout=30) as response:
-            sha = json.load(response)["object"]["sha"]
-        if re.fullmatch(r"[0-9a-f]{40}", sha):
-            return f"https://raw.githubusercontent.com/LPFchan/setup/{sha}"
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    return "https://raw.githubusercontent.com/LPFchan/setup/main"
+    return os.environ.get("LOST_AUTH_ORIGIN", "https://auth.lost.plus").rstrip("/") + "/fleet"
 
 
 def _setup_owns_fleet():
@@ -2342,10 +2335,10 @@ def _setup_owns_fleet():
 
 
 def _fetch_source(base, name):
-    """One repository file from the pinned commit; SOURCE_URL may be a local checkout."""
+    """One of fleet's files; SOURCE_URL may be a local checkout of auth's fleet/."""
     if os.path.isdir(base):
-        return pathlib.Path(base, "files", name).read_bytes()
-    with urllib.request.urlopen(f"{base}/files/{name}", timeout=30) as response:
+        return pathlib.Path(base, name).read_bytes()
+    with urllib.request.urlopen(f"{base}/{name}", timeout=30) as response:
         return response.read()
 
 
