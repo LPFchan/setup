@@ -260,3 +260,45 @@ launcher.write_text('')  # setup's slim launcher may stay: without its runtime i
 assert f.cmd_nightly()==0 and order==['self-update','sync','models','harnesses','converge'] and calls()==[]
 print('fleet ocx mirror, restart, route and hand-off tests passed')
 PY
+
+# --- where npm puts the package ----------------------------------------------
+# A system Node's global folder needs root, so the install goes into ~/.local;
+# a writable one (nvm, Homebrew) is used as it is. An install or update stays
+# wherever the package already is, even after a writable Node shows up.
+NPM="$TMP/npmstub"
+mkdir -p "$NPM/bin" "$NPM/system/lib" "$NPM/own/bin" "$NPM/own/lib" "$HOME/.local/bin"
+chmod a-w "$NPM/system/lib"
+cat > "$NPM/bin/npm" <<STUB
+#!/bin/sh
+[ "\$1 \$2" = "prefix -g" ] && { cat "$NPM/prefix"; exit 0; }
+echo "npm \$*" >> "$NPM/calls"
+STUB
+for dir in "$NPM/own/bin" "$HOME/.local/bin"; do
+    printf '#!/bin/sh\necho "ocx $*" >> "%s/calls"\n' "$NPM" > "$dir/ocx"
+done
+chmod +x "$NPM/bin/npm" "$NPM/own/bin/ocx" "$HOME/.local/bin/ocx"
+ocx_run() {  # kind, npm's global prefix -> what npm and ocx were asked to do
+    python3 -c 'import json, sys
+specs = {h["name"]: h for h in json.load(open(sys.argv[1]))["harnesses"]}
+print(specs["ocx"][sys.argv[2]])' "$ROOT/files/fleet-manifest.json" "$1" > "$NPM/command"
+    echo "$2" > "$NPM/prefix"; : > "$NPM/calls"
+    PATH="$NPM/bin:/usr/bin:/bin" bash -o pipefail -c "$(cat "$NPM/command")"
+    cat "$NPM/calls"
+}
+expect() { [[ "$2" == "$3" ]] || { echo "FAIL: $1: $2" >&2; exit 1; }; }
+package="--allow-scripts=bun @bitkyc08/opencodex"
+expect "install, writable prefix" "$(ocx_run install "$NPM/own")" \
+    "npm install -g --prefix $NPM/own $package"$'\n'"ocx service"
+if [ "$(id -u)" != 0 ]; then  # root can write anywhere
+    expect "install, system prefix" "$(ocx_run install "$NPM/system")" \
+        "npm install -g --prefix $HOME/.local $package"$'\n'"ocx service"
+fi
+expect "update, package in the npm prefix" "$(ocx_run update "$NPM/own")" \
+    "npm install -g --prefix $NPM/own $package@latest"
+mkdir -p "$HOME/.local/lib/node_modules/@bitkyc08/opencodex"
+expect "update, package in ~/.local" "$(ocx_run update "$NPM/own")" \
+    "npm install -g --prefix $HOME/.local $package@latest"
+expect "install (repair), package in ~/.local" "$(ocx_run install "$NPM/own")" \
+    "npm install -g --prefix $HOME/.local $package"$'\n'"ocx service"
+chmod u+w "$NPM/system/lib"
+echo "fleet ocx npm prefix tests passed"

@@ -69,9 +69,12 @@
     },
     {
       "name": "ocx",
-      "comment": "The OpenCodex proxy. A bare `ocx service` installs its background service, or repairs one an earlier install left. The update swaps only the package, and fleet restarts the proxy once no turn is running; on Windows a running proxy locks its files, so fleet runs `ocx update`, which stops it, only while it is idle.",
-      "install": "npm install -g --allow-scripts=bun @bitkyc08/opencodex && \"$(npm prefix -g)/bin/ocx\" service",
-      "update": "npm install -g --allow-scripts=bun @bitkyc08/opencodex@latest",
+      "comment": "The OpenCodex proxy. A bare `ocx service` installs its background service, or repairs one an earlier install left. The update swaps only the package, and fleet restarts the proxy once no turn is running; on Windows a running proxy locks its files, so fleet runs `ocx update`, which stops it, only while it is idle. Where npm's global folder is not writable (a system Node from a distro package), the package goes into ~/.local, whose bin is already on PATH; an install or update stays wherever the package already is.",
+      "install": "p=$HOME/.local; [ -d \"$p/lib/node_modules/@bitkyc08/opencodex\" ] || { p=$(npm prefix -g); [ -w \"$p/lib\" ] || p=$HOME/.local; }; npm install -g --prefix \"$p\" --allow-scripts=bun @bitkyc08/opencodex && \"$p/bin/ocx\" service",
+      "update": "p=$HOME/.local; [ -d \"$p/lib/node_modules/@bitkyc08/opencodex\" ] || { p=$(npm prefix -g); [ -w \"$p/lib\" ] || p=$HOME/.local; }; npm install -g --prefix \"$p\" --allow-scripts=bun @bitkyc08/opencodex@latest",
+      "candidates": [
+        "~/.local/bin/ocx"
+      ],
       "windows": {
         "install": "npm install -g --allow-scripts=bun @bitkyc08/opencodex; if ($LASTEXITCODE) { exit $LASTEXITCODE }; & \"$(npm prefix -g)\\ocx.cmd\" service; exit $LASTEXITCODE",
         "updateArgs": "update",
