@@ -2338,7 +2338,9 @@ def _fetch_source(base, name):
     """One of fleet's files; SOURCE_URL may be a local checkout of auth's fleet/."""
     if os.path.isdir(base):
         return pathlib.Path(base, name).read_bytes()
-    with urllib.request.urlopen(f"{base}/{name}", timeout=30) as response:
+    # Cloudflare refuses Python's default User-Agent with a 403.
+    request = urllib.request.Request(f"{base}/{name}", headers={"User-Agent": "fleet/1.0"})
+    with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()
 
 
