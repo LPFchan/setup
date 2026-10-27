@@ -781,6 +781,16 @@ if [[ -d /opt/node/bin ]]; then
         *) export PATH="/opt/node/bin:$PATH" ;;
     esac
 fi
+# Rust: Homebrew installs rustup keg-only; ~/.cargo/bin holds `cargo install` tools.
+for _setup_dir in /opt/homebrew/opt/rustup/bin "$HOME/.cargo/bin"; do
+    if [[ -d "$_setup_dir" ]]; then
+        case ":$PATH:" in
+            *":$_setup_dir:"*) ;;
+            *) export PATH="$_setup_dir:$PATH" ;;
+        esac
+    fi
+done
+unset _setup_dir
 case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) export PATH="$HOME/.local/bin:$PATH" ;;
