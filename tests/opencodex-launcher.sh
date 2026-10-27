@@ -205,7 +205,13 @@ PY
     || fail "Codex did not receive the configured catalog, routed model, and forwarded arguments"
 python3 - "$expected_catalog_override" "$CODEX_HOME/opencodex-catalog.json" <<'PY'
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    # The pinned PATH gives macOS's /usr/bin/python3 (3.9); tomllib is 3.11+.
+    print("skip: catalog override TOML check needs Python 3.11+", file=sys.stderr)
+    sys.exit(0)
 
 key, value = sys.argv[1].split("=", 1)
 assert tomllib.loads(f"{key} = {value}\n")[key] == sys.argv[2]
