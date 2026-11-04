@@ -40,7 +40,7 @@ SESSIONS = Path(
     os.environ.get("OPENCODEX_SESSIONS", HOME / ".config/opencodex/sessions.tsv")
 )
 RUNTIME_PORT = HOME / ".opencodex/runtime-port.json"
-NOT_INSTALLED = "ocx is not installed; run: fleet install ocx"
+NOT_INSTALLED = "ocx is not installed; run: fleet harness install ocx"
 NOT_RUNNING = "the ocx proxy is not running; run: ocx service"
 
 

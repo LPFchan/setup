@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # The opencodex module installs only the picker, and hands a machine's old
 # setup-managed OpenCodex runtime over to fleet: success, a busy proxy putting
-# it off, and a failed `fleet install ocx` leaving the old runtime serving.
+# it off, and a failed `fleet harness install ocx` leaving the old runtime serving.
 set -euo pipefail
 
 ROOT=${0:A:h:h}
@@ -34,7 +34,7 @@ print -r -- "{\"port\":$port}" > "$HOME/.opencodex/runtime-port.json"
 print -r -- admin > "$HOME/.opencodex/admin-api-token"
 for _ in {1..50}; do curl -fs "http://127.0.0.1:$port/healthz" >/dev/null && break; sleep 0.1; done
 
-# fleet: `install ocx` installs the new ocx, whose service then records it,
+# fleet: `harness install ocx` installs the new ocx, whose service then records it,
 # unless fleet-fails exists (exit 1) or service-stays exists (exit 0 without
 # rewriting the service); it logs whether the old link was still there. With
 # local-prefix, npm's global prefix is ~/.local, so the new ocx is ~/.local/bin/ocx
@@ -43,7 +43,7 @@ PACKAGE="$HOME/.local/lib/node_modules/@bitkyc08/opencodex"
 cat > "$FLEET_BIN" <<EOF
 #!/bin/sh
 echo "\$*" >> "$LOG"
-[ "\$1" = install ] || exit 0
+[ "\$1 \$2" = "harness install" ] || exit 0
 [ -e "$LINK" ] && echo "link present" >> "$LOG"
 [ -e "$TEST_TMP/fleet-fails" ] && exit 1
 [ -e "$TEST_TMP/service-stays" ] && exit 0
@@ -119,9 +119,9 @@ turns 0
 
 # --- a failed new install keeps the old runtime serving ---------------------
 touch "$TEST_TMP/fleet-fails"
-if update 2>"$TEST_TMP/err"; then fail "a failed fleet install reported success"; fi
+if update 2>"$TEST_TMP/err"; then fail "a failed fleet harness install reported success"; fi
 grep -q 'old OpenCodex runtime keeps serving' "$TEST_TMP/err" || fail "a failed hand-over did not say so"
-grep -qx 'install ocx' "$LOG" || fail "the hand-over never asked fleet to install ocx"
+grep -qx 'harness install ocx' "$LOG" || fail "the hand-over never asked fleet to install ocx"
 ! grep -q 'link present' "$LOG" || fail "fleet saw the old ocx link, so it would read ocx as installed"
 old_runtime_intact "failed install"
 rm "$TEST_TMP/fleet-fails"
@@ -142,7 +142,7 @@ EOF
 chmod +x "$NEW_OCX"
 rm -f "$LOG"
 update >/dev/null || fail "a retry with ocx already installed did not repair its service"
-[[ "$(<"$LOG")" == $'install ocx\nocx service\nsync --pull' ]] \
+[[ "$(<"$LOG")" == $'harness install ocx\nocx service\nsync --pull' ]] \
     || fail "the retry did not repair the service through the installed ocx: $(<"$LOG")"
 [[ ! -e "$LEGACY" ]] && cmp -s "$ROOT/files/opencodex" "$BIN" || fail "the retry left the old runtime"
 rm "$TEST_TMP/service-stays"
@@ -151,7 +151,7 @@ legacy_machine
 # --- the hand-over -----------------------------------------------------------
 rm -f "$LOG"
 update >/dev/null || fail "the hand-over failed"
-[[ "$(<"$LOG")" == $'install ocx\nsync --pull' ]] || fail "the hand-over did not install ocx then pull-sync: $(<"$LOG")"
+[[ "$(<"$LOG")" == $'harness install ocx\nsync --pull' ]] || fail "the hand-over did not install ocx then pull-sync: $(<"$LOG")"
 [[ ! -e "$LEGACY" && ! -L "$LINK" ]] || fail "the old runtime or its ocx link survived the hand-over"
 [[ ! -e "$HOME/.config/opencodex/managed-profiles.json" && ! -e "$HOME/.opencodex/setup-live-applied" ]] \
     || fail "the old launcher's files survived the hand-over"
@@ -166,7 +166,7 @@ update >/dev/null
 legacy_machine
 touch "$TEST_TMP/cold-start"
 OPENCODEX_ACTIVATE_WAIT=15 update >/dev/null 2>"$TEST_TMP/err" || fail "a late-answering proxy failed the hand-over"
-grep -q 'fleet install ocx exited 1; waiting for the proxy' "$TEST_TMP/err" || fail "the install's exit 1 went unmentioned"
+grep -q 'fleet harness install ocx exited 1; waiting for the proxy' "$TEST_TMP/err" || fail "the install's exit 1 went unmentioned"
 [[ ! -e "$LEGACY" ]] && cmp -s "$ROOT/files/opencodex" "$BIN" || fail "a late-answering proxy left the old runtime"
 rm "$TEST_TMP/cold-start"
 
@@ -188,6 +188,6 @@ expect_status 2 uninstalled
 legacy_machine
 uninstall >/dev/null || fail "uninstall did not hand the old runtime over"
 [[ ! -e "$LEGACY" && ! -e "$BIN" ]] || fail "uninstall left the old runtime or the launcher"
-grep -qx 'install ocx' "$LOG" || fail "uninstall did not hand the old runtime to fleet"
+grep -qx 'harness install ocx' "$LOG" || fail "uninstall did not hand the old runtime to fleet"
 
 echo "opencodex lifecycle tests passed"

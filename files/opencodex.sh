@@ -4,7 +4,7 @@
 #
 # Installs the four-reel provider/model/effort/harness picker at
 # ~/.local/bin/opencodex. fleet installs ocx, writes its config and keeps the
-# proxy running (`fleet install ocx`); the picker only launches through it.
+# proxy running (`fleet harness install ocx`); the picker only launches through it.
 #
 # Machines this module once gave its own OpenCodex runtime
 # (~/.local/libexec/opencodex) hand it over to fleet on install or update.
@@ -123,7 +123,7 @@ _new_ocx() {
 # nothing (left) to hand over, 1 when the new install failed and the old
 # runtime keeps serving, 2 when a busy proxy puts it off to the next run.
 #
-# `fleet install ocx` ends in `ocx service`, which restarts the proxy, so the
+# `fleet harness install ocx` ends in `ocx service`, which restarts the proxy, so the
 # idle wait comes first. The ~/.local/bin/ocx link goes before it: fleet would
 # read it as ocx already installed, and ocx's service would keep launching the
 # path it recorded. The old runtime stays on disk until the new proxy answers,
@@ -139,7 +139,7 @@ _handover() {
     rm -f "$LEGACY_OCX"
     # `ocx service` exits 1 for a cold start still coming up, and fleet waits only
     # for a proxy it owns, so what came up decides rather than the exit code.
-    "$FLEET" install ocx || echo "opencodex: fleet install ocx exited $?; waiting for the proxy" >&2
+    "$FLEET" harness install ocx || echo "opencodex: fleet harness install ocx exited $?; waiting for the proxy" >&2
     # A retry finds the package an earlier attempt installed: fleet calls it
     # already installed and leaves a service it does not own yet unrepaired.
     if _service_on_legacy && ocx=$(_new_ocx); then
@@ -147,7 +147,7 @@ _handover() {
     fi
     if ! _proxy_live || _service_on_legacy; then
         [[ -z "$link" || -e "$LEGACY_OCX" ]] || ln -s "$link" "$LEGACY_OCX"
-        echo "opencodex: fleet install ocx did not take over; the old OpenCodex runtime keeps serving" >&2
+        echo "opencodex: fleet harness install ocx did not take over; the old OpenCodex runtime keeps serving" >&2
         return 1
     fi
     rm -rf "$LEGACY_ROOT"
