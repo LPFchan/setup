@@ -70,7 +70,7 @@ Commands:
   install [module...]  Install module files (copies to ~/.local/bin/)
   update [module...]   Update installed modules; reports new modules available
                        fleet, auth and the AI harnesses update in fleet's own
-                       nightly pass: see 'fleet self-update' and 'fleet update'
+                       nightly pass: see 'fleet self-update' and 'fleet harness update'
   uninstall [module...] Remove managed files
   enable [module...]   Enable service modules (requires sudo)
   disable [module...]  Disable service modules (requires sudo)
@@ -1444,7 +1444,7 @@ cmd_update() {
     local script_target script_state script_status script_local script_remote script_installed script_extra
     local script_update_rc needed_by
     # `setup update` only updates modules. The harnesses keep their own
-    # cadence: `fleet update` runs the per-harness self-updaters, and fleet's
+    # cadence: `fleet harness update` runs the per-harness self-updaters, and fleet's
     # nightly pass calls it.
     for target_module in "$@"; do
         filters+=("$target_module")

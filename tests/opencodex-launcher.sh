@@ -350,13 +350,13 @@ rm -f "$TEST_TMP/codex-args"
 [[ -s "$TEST_TMP/codex-args" ]] || fail "codex was not launched without ocx on PATH"
 ! "$ROOT/files/opencodex" run commandcode --model "$cc_model" claude 2>"$TEST_TMP/no-ocx-error" \
     || fail "claude launched with no ocx anywhere"
-grep -q 'ocx is not installed; run: fleet install ocx' "$TEST_TMP/no-ocx-error" \
-    || fail "a missing ocx did not point at fleet install ocx"
+grep -q 'ocx is not installed; run: fleet harness install ocx' "$TEST_TMP/no-ocx-error" \
+    || fail "a missing ocx did not point at fleet harness install ocx"
 proxy_down
 ! "$ROOT/files/opencodex" run commandcode --model "$cc_model" codex 2>"$TEST_TMP/no-ocx-error" \
     || fail "run launched with neither ocx nor a proxy"
-grep -q 'ocx is not installed; run: fleet install ocx' "$TEST_TMP/no-ocx-error" \
-    || fail "with no ocx and no proxy, the launcher did not point at fleet install ocx"
+grep -q 'ocx is not installed; run: fleet harness install ocx' "$TEST_TMP/no-ocx-error" \
+    || fail "with no ocx and no proxy, the launcher did not point at fleet harness install ocx"
 proxy_up
 mkdir -p "$HOME/.nvm/versions/node/v22.0.0/bin"
 mv "$TEST_TMP/ocx.off" "$HOME/.nvm/versions/node/v22.0.0/bin/ocx"
