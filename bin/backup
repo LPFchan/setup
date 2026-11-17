@@ -177,8 +177,12 @@ single_line() {
     tr '\t\r\n' '   ' | sed -e 's/[[:space:]]*$//'
 }
 
+# find exits 1 when it merely hit an unreadable directory (a FUSE share without
+# allow_other, a root-unlistable path). Aborting the whole run over that turned
+# a readable-backup night into no backup at all; warn and keep the partial list.
+# Status 2 and up is a real find failure and still stops the run.
 discover_environments() {
-    local root="$1" output="$2"
+    local root="$1" output="$2" status=0
     find "$root" -xdev \
         \( -type d \( -name .cache -o -name .npm -o -name .bun -o -name .cargo \
         -o -name .rustup -o -name .nvm -o -name __pycache__ \) -prune \) -o \
@@ -188,7 +192,12 @@ discover_environments() {
         \( -type d -name .git -printf 'git\t%p\0' -prune \) -o \
         \( -type f -name .git -printf 'git\t%p\0' \) -o \
         \( -type f -name Cargo.toml -printf 'rust\t%p\0' \) \
-        2>/dev/null > "$output"
+        2>/dev/null > "$output" || status=$?
+    case $status in
+        0) ;;
+        1) warn "environment discovery under ${root} skipped unreadable paths; continuing" ;;
+        *) die "environment discovery under ${root} failed (find status ${status})" ;;
+    esac
 }
 
 collect_python_provenance() {
